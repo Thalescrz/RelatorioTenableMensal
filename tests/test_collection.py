@@ -1,0 +1,287 @@
+from __future__ import annotations
+
+import json
+import gzip
+import hashlib
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Any
+
+from tenable_reports.application.collect import (
+    AssetExportRequest,
+    VulnerabilityExportRequest,
+    collect_asset_snapshot,
+    collect_vm_snapshot,
+    reusable_chunk,
+    store_chunk_atomic,
+)
+from tenable_reports.application.collect_was import (
+    WasExportRequest,
+    collect_optional_was_snapshot,
+    collect_was_snapshot,
+)
+from tenable_reports.config.profile import load_client_profile
+from tenable_reports.infrastructure.tenable_vm.client import ApiError
+from tenable_reports.infrastructure.tenable_vm.parser import iter_chunk_records
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class FakeCollectionClient:
+    def __init__(self, chunks: dict[int, bytes]) -> None:
+        self.chunks = chunks
+        self.start_arguments: dict[str, Any] = {}
+        self.download_calls: list[int] = []
+
+    def start_vulnerability_export(self, **kwargs: Any) -> str:
+        self.start_arguments = kwargs
+        return "fixture-export"
+
+    def wait_for_completion(self, export_uuid: str) -> tuple[dict[str, Any], list[int]]:
+        return {"status": "FINISHED"}, sorted(self.chunks)
+
+    def download_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:
+        self.download_calls.append(chunk_id)
+        return self.chunks[chunk_id]
+
+
+class FakeAssetCollectionClient:
+    def __init__(self, chunks: dict[int, bytes]) -> None:
+        self.chunks = chunks
+        self.start_arguments: dict[str, Any] = {}
+
+    def start_asset_export_v2(self, **kwargs: Any) -> str:
+        self.start_arguments = kwargs
+        return "fixture-asset-export"
+
+    def wait_for_asset_completion(self, export_uuid: str) -> tuple[dict[str, Any], list[int]]:
+        return {"status": "FINISHED"}, sorted(self.chunks)
+
+    def download_asset_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:
+        return self.chunks[chunk_id]
+
+
+class FakeWasCollectionClient:
+    def __init__(self, chunks: dict[int, bytes]) -> None:
+        self.chunks = chunks
+        self.start_arguments: dict[str, Any] = {}
+
+    def start_findings_export(self, **kwargs: Any) -> str:
+        self.start_arguments = kwargs
+        return "fixture-was-export"
+
+    def wait_for_findings_completion(self, export_uuid: str) -> tuple[dict[str, Any], list[int]]:
+        return {"status": "FINISHED"}, sorted(self.chunks)
+
+    def download_findings_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:
+        return self.chunks[chunk_id]
+
+
+class UnavailableWasCollectionClient(FakeWasCollectionClient):
+    def start_findings_export(self, **kwargs: Any) -> str:
+        raise ApiError("WAS indisponivel.", status_code=403)
+
+
+class CollectionTests(unittest.TestCase):
+    def test_plain_jsonl_is_persisted_as_valid_gzip_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            result = store_chunk_atomic(
+                directory,
+                [b'{"id":1}\n', b'{"id":2}\n'],
+                chunk_id=1,
+            )
+            self.assertEqual(result.path.suffixes[-2:], [".jsonl", ".gz"])
+            with gzip.open(result.path, "rb") as stream:
+                self.assertEqual(stream.read(), b'{"id":1}\n{"id":2}\n')
+            self.assertEqual(result.record_count, 2)
+            self.assertFalse(list(directory.glob("*.partial")))
+
+    def test_gzip_input_is_recompressed_incrementally_without_download_copy(self) -> None:
+        payload = b'{"id":1}\n{"id":2}\n'
+        compressed = gzip.compress(payload)
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            result = store_chunk_atomic(
+                directory,
+                (compressed[index:index + 1] for index in range(len(compressed))),
+                chunk_id=9,
+            )
+            with gzip.open(result.path, "rb") as stream:
+                self.assertEqual(stream.read(), payload)
+            self.assertEqual(result.record_count, 2)
+            self.assertFalse(list(directory.glob("*.download.partial")))
+
+    def test_large_json_array_is_read_as_individual_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            source = Path(directory_name) / "large.json.gz"
+            expected = [{"id": index} for index in range(5000)]
+            with gzip.open(source, "wt", encoding="utf-8") as stream:
+                json.dump(expected, stream)
+            records = iter_chunk_records(source)
+            self.assertEqual(next(records), {"id": 0})
+            self.assertEqual(sum(1 for _ in records), 4999)
+
+    def test_invalid_partial_chunk_is_not_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            partial = Path(directory_name) / "chunk-000001.jsonl.gz.partial"
+            partial.write_bytes(b"broken")
+            self.assertIsNone(reusable_chunk(partial, expected_sha256="abc"))
+
+    def test_valid_manifest_chunk_skips_network_download(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            stored = store_chunk_atomic(
+                directory / "existing",
+                [b'{"id":"finding-existing","state":"OPEN"}\n'],
+                chunk_id=1,
+            )
+            resume_manifest = directory / "resume-manifest.json"
+            resume_manifest.write_text(json.dumps({
+                "schema_version": 2,
+                "run_id": "old-run",
+                "client_id": profile.client_id,
+                "tenant_id": profile.tenant_id,
+                "source": "tenable_vm_vulnerabilities",
+                "export_uuid": "fixture-export",
+                "query": {},
+                "chunks": [{
+                    "chunk_id": 1,
+                    "path": stored.path.resolve().as_uri(),
+                    "stored_bytes": stored.stored_bytes,
+                    "records": stored.record_count,
+                    "content_sha256": stored.content_sha256,
+                    "storage_sha256": stored.storage_sha256,
+                    "encoding": "gzip",
+                    "complete": True,
+                }],
+            }), encoding="utf-8")
+            client = FakeCollectionClient({1: b"should-not-download"})
+
+            result = collect_vm_snapshot(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                output_root=directory / "new",
+                run_id="resumed-run",
+                resume_from=resume_manifest,
+            )
+
+            self.assertEqual(client.download_calls, [])
+            self.assertTrue(result.raw_manifest_path.is_file())
+            manifest = json.loads(result.raw_manifest_path.read_text(encoding="utf-8"))
+            self.assertTrue(manifest["chunks"][0]["complete"])
+            self.assertEqual(manifest["chunks"][0]["content_sha256"], stored.content_sha256)
+    def test_optional_was_failure_does_not_raise(self) -> None:
+        profile = load_client_profile(
+            ROOT / "clients/examples/client-profile-intelligence-expanded.json"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            attempt = collect_optional_was_snapshot(
+                client=UnavailableWasCollectionClient({}),  # type: ignore[arg-type]
+                profile=profile,
+                request=WasExportRequest(filters={"state": ["OPEN"]}),
+                output_root=directory,
+                run_id="run-was-unavailable",
+            )
+            self.assertIsNone(attempt.result)
+            self.assertEqual(attempt.status, "UNAVAILABLE")
+            self.assertEqual(attempt.warnings[0]["code"], "WAS_NOT_AVAILABLE")
+
+    def test_was_collection_writes_immutable_dedicated_snapshot(self) -> None:
+        profile = load_client_profile(
+            ROOT / "clients/examples/client-profile-intelligence-expanded.json"
+        )
+        client = FakeWasCollectionClient({1: b'[{"finding_id":"was-finding"}]'})
+        with tempfile.TemporaryDirectory() as directory:
+            result = collect_was_snapshot(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=WasExportRequest(
+                    filters={"since": 1782860400, "state": ["OPEN", "FIXED"]}
+                ),
+                output_root=directory,
+                run_id="run-was-fixture",
+            )
+            snapshot = json.loads(result.snapshot_path.read_text(encoding="utf-8"))
+            manifest = json.loads(result.raw_manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["source"], "tenable_was_findings")
+            self.assertEqual(snapshot["record_count"], 1)
+            self.assertEqual(snapshot["query"]["filters"]["since"], 1782860400)
+            chunk = manifest["chunks"][0]
+            chunk_path = result.raw_manifest_path.parent / "chunk-000001.jsonl.gz"
+            self.assertEqual(chunk["path"], chunk_path.resolve().as_uri())
+            self.assertEqual(chunk["encoding"], "gzip")
+            self.assertEqual(chunk["records"], 1)
+            self.assertGreater(chunk["logical_bytes"], 0)
+            self.assertGreater(chunk["stored_bytes"], 0)
+            self.assertEqual(
+                list(iter_chunk_records(chunk_path)),
+                [{"finding_id": "was-finding"}],
+            )
+
+    def test_asset_collection_writes_v2_source_snapshot(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = FakeAssetCollectionClient({1: b'[{"id":"asset-fixture"}]'})
+        with tempfile.TemporaryDirectory() as directory:
+            result = collect_asset_snapshot(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=AssetExportRequest(filters={}, chunk_size=100),
+                output_root=directory,
+                run_id="run-asset-fixture",
+            )
+            snapshot = json.loads(result.snapshot_path.read_text(encoding="utf-8"))
+            manifest = json.loads(result.raw_manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(snapshot["source"], "tenable_vm_assets_v2")
+            self.assertEqual(snapshot["record_count"], 1)
+            self.assertEqual(manifest["query"]["chunk_size"], 100)
+            self.assertFalse(manifest["query"]["include_open_ports"])
+            self.assertFalse(manifest["query"]["include_resource_tags"])
+
+    def test_collection_writes_immutable_raw_and_sanitized_snapshot(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = FakeCollectionClient(
+            {
+                2: b'{"id":"finding-2","state":"REOPENED"}\n',
+                1: b'{"id":"finding-1","state":"OPEN"}\n',
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = collect_vm_snapshot(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(
+                    filters={"state": ["OPEN", "REOPENED"]},
+                    include_plugin_output=False,
+                ),
+                output_root=directory,
+                run_id="run-fixture",
+            )
+            snapshot_data = json.loads(result.snapshot_path.read_text(encoding="utf-8"))
+            manifest_data = json.loads(result.raw_manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(snapshot_data["record_count"], 2)
+            self.assertEqual(snapshot_data["availability"], "AVAILABLE")
+            self.assertEqual(snapshot_data["query"]["include_plugin_output"], False)
+            self.assertEqual([item["chunk_id"] for item in manifest_data["chunks"]], [1, 2])
+            self.assertEqual(len(snapshot_data["raw_sha256"]), 64)
+
+    def test_completed_empty_export_produces_no_data_snapshot(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        with tempfile.TemporaryDirectory() as directory:
+            result = collect_vm_snapshot(
+                client=FakeCollectionClient({}),  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                output_root=directory,
+                run_id="run-empty",
+            )
+            self.assertEqual(result.snapshot.record_count, 0)
+            self.assertEqual(result.snapshot.availability.value, "NO_DATA")
+
+
+if __name__ == "__main__":
+    unittest.main()

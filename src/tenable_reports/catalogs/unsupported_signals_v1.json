@@ -1,0 +1,15 @@
+{
+  "version": "unsupported-signals-v1",
+  "patterns": [
+    "\\bend[ -]of[ -]life\\b",
+    "\\bend[ -]of[ -]support\\b",
+    "\\bunsupported(?: version| software| operating system| product| technology)?\\b",
+    "\\bno longer supported\\b",
+    "\\bobsolete(?: version| software| operating system| product| technology)?\\b"
+  ],
+  "exclusions": [
+    "unsupported severity",
+    "unsupported state",
+    "unsupported protocol"
+  ]
+}

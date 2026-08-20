@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Operações · Relatórios Tenable</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="noise" aria-hidden="true"></div>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Página inicial">
+      <span class="brand-mark">T</span>
+      <span><strong>Tenable Reports</strong><small>central de operações</small></span>
+    </a>
+    <div class="top-actions">
+      <span class="connection"><i></i><span id="connection-label">conectando</span></span>
+      <button class="button ghost" id="check-all-button" type="button">Testar APIs</button>
+      <button class="button ghost" id="admin-button" type="button" title="Administração do banco">Admin</button>
+      <button class="button ghost" id="manage-button" type="button"><span class="desktop-label">Gerenciar </span>clientes</button>
+      <button class="button primary" id="run-all-button" type="button">Gerar todos</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div>
+        <p class="eyebrow">CARTEIRA / VISÃO GERAL</p>
+        <h1>Relatórios mensais,<br><em>sem perder o ritmo.</em></h1>
+      </div>
+      <div class="summary" aria-label="Resumo operacional">
+        <div><span id="metric-clients">0</span><small>clientes ativos</small></div>
+        <div><span id="metric-running">0</span><small>na fila</small></div>
+        <div><span id="metric-alerts">0</span><small>alertas</small></div>
+      </div>
+    </section>
+
+    <section class="alert-strip hidden" id="global-alert" role="alert">
+      <span class="alert-sign">!</span>
+      <div><strong>Atenção necessária</strong><p id="global-alert-text"></p></div>
+      <button type="button" id="open-alerts-button">Ver alertas</button>
+    </section>
+
+    <section class="storage-strip" id="storage-strip" aria-label="Armazenamento">
+      <div><span>ARMAZENAMENTO</span><strong id="storage-free">—</strong><small>livres</small></div>
+      <div><span>TEMPORÁRIOS</span><strong id="storage-temporary">—</strong></div>
+      <div><span>PENDÊNCIAS</span><strong id="storage-pending">—</strong></div>
+      <div><span>RESERVA DA FILA</span><strong id="storage-reserved">—</strong></div>
+      <button class="button ghost" id="cleanup-button" type="button">Revisar limpeza</button>
+    </section>
+
+    <section class="workspace">
+      <div class="section-head">
+        <div><p class="eyebrow">CLIENTES</p><h2>Carteira monitorada</h2></div>
+        <label class="search"><span>⌕</span><input id="search-input" type="search" placeholder="Buscar cliente" autocomplete="off"></label>
+      </div>
+      <div class="client-grid" id="client-grid" aria-live="polite"></div>
+      <div class="empty-state hidden" id="empty-state">
+        <span>01</span>
+        <h3>Sua carteira começa aqui.</h3>
+        <p>Cadastre o primeiro cliente para gerar e acompanhar os relatórios.</p>
+        <button class="button primary" id="empty-add-button" type="button">Adicionar cliente</button>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast-stack" id="toast-stack" aria-live="assertive"></div>
+
+  <dialog id="client-dialog" class="dialog detail-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">CLIENTE</p><h2 id="detail-title">Detalhes</h2><p id="detail-subtitle"></p></div>
+      <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
+    </div>
+    <div class="detail-status" id="detail-status"></div>
+    <div class="dialog-actions">
+      <button class="button primary" id="detail-run-button" type="button">Gerar relatório</button>
+      <button class="button ghost" id="detail-check-button" type="button">Testar API</button>
+      <button class="button ghost" id="detail-edit-button" type="button">Editar cliente</button>
+    </div>
+    <div class="reports-head"><h3>Relatórios gerados</h3><span id="reports-count">0 arquivos</span></div>
+    <div class="report-list" id="report-list"></div>
+  </dialog>
+
+  <dialog id="manage-dialog" class="dialog manage-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">CONFIGURAÇÃO</p><h2>Gerenciar clientes</h2><p>Cadastre clientes e controle quem entra nas execuções gerais.</p></div>
+      <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
+    </div>
+    <div class="manager-layout">
+      <section>
+        <h3>Clientes cadastrados</h3>
+        <div id="manage-client-list" class="manage-list"></div>
+      </section>
+      <form id="client-form" class="client-form">
+        <div class="form-heading"><span id="client-form-mode">NOVO</span><h3 id="client-form-title">Adicionar cliente</h3></div>
+        <label>Nome do cliente<input name="display_name" required placeholder="Ex.: Cliente Norte"></label>
+        <div class="field-row">
+          <label>ID do cliente · automático<input name="client_id" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,79}" placeholder="cliente-norte"></label>
+          <label>Tenant ID · automático<input name="tenant_id" placeholder="cliente-norte"></label>
+        </div>
+        <div class="field-row">
+          <label>Access Key<input name="access_key" type="password" autocomplete="off" placeholder="Opcional agora"></label>
+          <label>Secret Key<input name="secret_key" type="password" autocomplete="off" placeholder="Opcional agora"></label>
+        </div>
+        <label>Tags para comparativo por rede<input name="tags" placeholder="Rede: Matriz, Rede: Filial"></label>
+        <div class="check-grid">
+          <label class="check"><input name="intelligence_enabled" type="checkbox" checked><span>Relatório customizado</span></label>
+          <label class="check"><input name="was_enabled" type="checkbox" checked><span>Vulnerabilidades WEB</span></label>
+          <label class="check"><input name="cloud_enabled" type="checkbox"><span>Cloud Security</span></label>
+          <label class="check"><input name="include_output" type="checkbox"><span>Coluna Output</span></label>
+          <label class="check"><input name="show_source_filters" type="checkbox"><span>Exibir filtros de origem</span></label>
+        </div>
+        <p class="form-note" id="client-form-note">As chaves ficam apenas no arquivo local ignorado pelo Git e nunca retornam à tela.</p>
+        <div class="form-actions">
+          <button class="button ghost hidden" id="cancel-edit-button" type="button">Cancelar edição</button>
+          <button class="button primary" id="save-client-button" type="submit">Salvar cliente</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <dialog id="run-dialog" class="dialog run-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">EXECUÇÃO PONTUAL</p><h2 id="run-title">Gerar relatório</h2><p id="run-subtitle">A execução será adicionada à fila.</p></div>
+      <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
+    </div>
+    <form id="run-form">
+      <fieldset class="period-options">
+        <legend>Período</legend>
+        <label><input type="radio" name="period_type" value="rolling" checked><span><strong>Último mês</strong><small>Um mês até agora</small></span></label>
+        <label><input type="radio" name="period_type" value="days"><span><strong>Últimos dias</strong><small>Quantidade definida</small></span></label>
+        <label><input type="radio" name="period_type" value="range"><span><strong>Período exato</strong><small>Início e fim</small></span></label>
+      </fieldset>
+      <div id="days-fields" class="conditional hidden"><label>Quantidade de dias<input name="days" type="number" min="1" max="366" value="30"></label></div>
+      <div id="range-fields" class="field-row conditional hidden">
+        <label>Início<input name="start_at" type="datetime-local"></label>
+        <label>Fim<input name="end_at" type="datetime-local"></label>
+      </div>
+      <div class="queue-note"><span>→</span><p><strong>Execução em fila</strong><br>Um cliente por vez para reduzir limites e falhas na API.</p></div>
+      <button class="button primary full" type="submit">Adicionar à fila</button>
+    </form>
+  </dialog>
+
+  <dialog id="alerts-dialog" class="dialog alerts-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">LOG OPERACIONAL</p><h2>Alertas e erros</h2></div>
+      <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
+    </div>
+    <div id="alerts-list" class="alerts-list"></div>
+  </dialog>
+
+  <dialog id="admin-dialog" class="dialog admin-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">ADMINISTRAÇÃO</p><h2>Referências históricas</h2><p>Identifique relatórios antigos que podem ser definidos como MAIN com segurança.</p></div>
+      <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
+    </div>
+    <div class="backfill-intro">
+      <span class="backfill-icon">↺</span>
+      <div><strong>Backfill de relatórios</strong><p>A análise não altera dados. Casos com mais de uma opção ficam para decisão manual no histórico do cliente.</p></div>
+      <button class="button ghost" id="analyze-backfill-button" type="button">Analisar</button>
+    </div>
+    <div id="backfill-results" class="backfill-results">
+      <div class="loading">Clique em “Analisar” para verificar os registros existentes.</div>
+    </div>
+    <div class="backfill-actions">
+      <p id="backfill-action-note">Nenhuma alteração foi realizada.</p>
+      <button class="button primary" id="apply-backfill-button" type="button" disabled>Aplicar promoções seguras</button>
+    </div>
+  </dialog>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

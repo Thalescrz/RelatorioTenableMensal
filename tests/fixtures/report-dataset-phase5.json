@@ -1,0 +1,412 @@
+{
+  "schema_version": 1,
+  "metric_definition_version": "report-definition-v1.1",
+  "client_id": "cliente-exemplo",
+  "run_id": "run-sanitizado-fase5",
+  "execution_type": "AUTOMATIC_MONTHLY",
+  "period": {
+    "period_id": "2026-07",
+    "mode": "PREVIOUS_CALENDAR_MONTH",
+    "timezone": "America/Fortaleza",
+    "start_at": "2026-07-01T03:00:00Z",
+    "end_at": "2026-08-01T03:00:00Z",
+    "interval": "[start_at, end_at)",
+    "reference_at": "2026-08-01T12:00:00Z",
+    "trailing_days": null
+  },
+  "generated_at": "2026-08-01T12:00:00Z",
+  "collection_timing": {
+    "collection_completed_at": "2026-08-01T12:00:00Z",
+    "period_end_at": "2026-08-01T03:00:00Z",
+    "lag_seconds": 32400,
+    "lag_days": 0.375,
+    "grace_days": 1,
+    "status": "ON_TIME",
+    "recommended_schedule": "first day of month in report timezone"
+  },
+  "source_coverage": {
+    "requested_finding_states": ["FIXED", "OPEN", "REOPENED"],
+    "open_metrics_collected": true,
+    "fixed_metrics_collected": true,
+    "plugin_output_included": false
+  },
+  "populations": {
+    "assets": {"input": 1000, "observed": 840, "excluded": 160, "by_reason": {}},
+    "findings": {"input": 15000, "included": 14091, "excluded": 909, "by_reason": {}}
+  },
+  "metrics": {
+    "non_mitigated": {
+      "availability": "AVAILABLE",
+      "grain": "finding_instance",
+      "total": 7755,
+      "by_severity": {"critical": 342, "high": 839, "medium": 4354, "low": 2220},
+      "exploitable": 2422,
+      "exploitable_by_severity": {"critical": 200, "high": 400, "medium": 1400, "low": 422},
+      "exploitability_unknown": 0,
+      "vulnerable_assets": 198,
+      "new_in_period": 1481,
+      "new_by_severity": {"critical": 70, "high": 200, "medium": 900, "low": 311},
+      "new_exploitable": 400,
+      "patch_available_over_30_days": 1100,
+      "patch_available_over_30_days_by_severity": {"critical": 100, "high": 250, "medium": 600, "low": 150},
+      "aging": {
+        "0_30_days": 1481,
+        "31_60_days": 2100,
+        "61_90_days": 1200,
+        "91_180_days": 1000,
+        "181_365_days": 1200,
+        "over_365_days": 700,
+        "unknown": 74
+      },
+      "aging_by_severity": {
+        "critical": {"90_plus_days": 100, "61_91_days": 20, "31_60_days": 50, "15_30_days": 60, "8_14_days": 50, "0_7_days": 62, "unknown": 0},
+        "high": {"90_plus_days": 200, "61_91_days": 100, "31_60_days": 150, "15_30_days": 150, "8_14_days": 100, "0_7_days": 139, "unknown": 0},
+        "medium": {"90_plus_days": 1000, "61_91_days": 600, "31_60_days": 900, "15_30_days": 800, "8_14_days": 500, "0_7_days": 554, "unknown": 0},
+        "low": {"90_plus_days": 500, "61_91_days": 300, "31_60_days": 450, "15_30_days": 400, "8_14_days": 250, "0_7_days": 320, "unknown": 0}
+      }
+    },
+    "mitigated": {"availability": "AVAILABLE", "grain": "finding_instance", "total": 6336, "by_severity": {"critical": 120, "high": 700, "medium": 3600, "low": 1916}, "exploitable": 220},
+    "resurfaced": {"availability": "AVAILABLE", "grain": "finding_instance", "total": 42, "by_severity": {"critical": 5, "high": 12, "medium": 20, "low": 5}, "exploitable": 9},
+    "assets": {"normalized_total": 1000, "observed_in_period": 840, "excluded_from_period": 160, "vulnerable_in_period": 198},
+    "by_operating_system": {
+      "availability": "AVAILABLE",
+      "grain": "finding_instance_grouped_by_primary_asset_operating_system",
+      "rows": [
+        {"operating_system": "Sistema Operacional Exemplo A", "non_mitigated": 2450, "mitigated": 1900, "exploitable": 760, "patch_available_over_30_days": 410},
+        {"operating_system": "Sistema Operacional Exemplo B", "non_mitigated": 1900, "mitigated": 1700, "exploitable": 620, "patch_available_over_30_days": 330},
+        {"operating_system": "Sistema Operacional Exemplo C", "non_mitigated": 1400, "mitigated": 1100, "exploitable": 480, "patch_available_over_30_days": 250},
+        {"operating_system": "Sistema Operacional Exemplo D", "non_mitigated": 1100, "mitigated": 900, "exploitable": 350, "patch_available_over_30_days": 180},
+        {"operating_system": "Sistema operacional não informado", "non_mitigated": 905, "mitigated": 736, "exploitable": 212, "patch_available_over_30_days": 96}
+      ]
+    },
+    "by_cvss": [
+      {"label": "CVSSv3 10.0", "mitigated": 500, "non_mitigated": 1000, "exploitable": 300, "patch_available_over_30_days": 200},
+      {"label": "CVSSv3 7.0 - 9.9", "mitigated": 2500, "non_mitigated": 3000, "exploitable": 1000, "patch_available_over_30_days": 450},
+      {"label": "CVSSv3 4.0 - 6.9", "mitigated": 2000, "non_mitigated": 2500, "exploitable": 800, "patch_available_over_30_days": 300},
+      {"label": "CVSSv3 0.0 - 3.9", "mitigated": 1336, "non_mitigated": 1255, "exploitable": 322, "patch_available_over_30_days": 150}
+    ],
+    "cvss_vpr_matrix": [
+      {"label": "CVSSv3 Baixo (0.0-3.9)", "low": 600, "medium": 400, "high": 100, "critical": 20},
+      {"label": "CVSSv3 Médio (4.0-6.9)", "low": 500, "medium": 1200, "high": 600, "critical": 100},
+      {"label": "CVSSv3 Alto (VPR7.0-8.9)", "low": 300, "medium": 1000, "high": 1300, "critical": 300},
+      {"label": "CVSSv3 Crítico (VPR 9.0-10)", "low": 100, "medium": 250, "high": 600, "critical": 250}
+    ],
+    "vpr_rating": {"critical": 670, "high": 2600, "medium": 2850, "low": 1500},
+    "by_exploit_framework": []
+  },
+  "top_assets": [
+    {"asset_key": "asset-fixture-01", "source_asset_id": "fixture-01", "asset_name": "", "ip_address": "", "critical": 30, "high": 74, "medium": 324, "low": 97, "info": 0, "total": 525, "exploitable": 82, "exploitability_unknown": 0, "exploitable_availability": "AVAILABLE"},
+    {"asset_key": "asset-fixture-02", "source_asset_id": "fixture-02", "asset_name": "", "ip_address": "", "critical": 29, "high": 58, "medium": 257, "low": 107, "info": 0, "total": 451, "exploitable": 64, "exploitability_unknown": 0, "exploitable_availability": "AVAILABLE"},
+    {"asset_key": "asset-fixture-03", "source_asset_id": "fixture-03", "asset_name": "", "ip_address": "", "critical": 31, "high": 69, "medium": 296, "low": 47, "info": 0, "total": 443, "exploitable": 78, "exploitability_unknown": 0, "exploitable_availability": "AVAILABLE"},
+    {"asset_key": "asset-fixture-04", "source_asset_id": "fixture-04", "asset_name": "", "ip_address": "", "critical": 27, "high": 67, "medium": 281, "low": 67, "info": 0, "total": 442, "exploitable": 69, "exploitability_unknown": 0, "exploitable_availability": "AVAILABLE"},
+    {"asset_key": "asset-fixture-05", "source_asset_id": "fixture-05", "asset_name": "", "ip_address": "", "critical": 28, "high": 59, "medium": 251, "low": 102, "info": 0, "total": 440, "exploitable": 61, "exploitability_unknown": 0, "exploitable_availability": "AVAILABLE"},
+    {"asset_key": "asset-fixture-06", "source_asset_id": "fixture-06", "asset_name": "", "ip_address": "", "critical": 28, "high": 59, "medium": 250, "low": 102, "info": 0, "total": 439, "exploitable": 59, "exploitability_unknown": 0, "exploitable_availability": "AVAILABLE"},
+    {"asset_key": "asset-fixture-07", "source_asset_id": "fixture-07", "asset_name": "", "ip_address": "", "critical": 28, "high": 59, "medium": 251, "low": 93, "info": 0, "total": 431, "exploitable": 55, "exploitability_unknown": 0, "exploitable_availability": "AVAILABLE"},
+    {"asset_key": "asset-fixture-08", "source_asset_id": "fixture-08", "asset_name": "", "ip_address": "", "critical": 24, "high": 54, "medium": 247, "low": 100, "info": 0, "total": 425, "exploitable": 50, "exploitability_unknown": 0, "exploitable_availability": "AVAILABLE"},
+    {"asset_key": "asset-fixture-09", "source_asset_id": "fixture-09", "asset_name": "", "ip_address": "", "critical": 24, "high": 54, "medium": 245, "low": 100, "info": 0, "total": 423, "exploitable": 49, "exploitability_unknown": 0, "exploitable_availability": "AVAILABLE"},
+    {"asset_key": "asset-fixture-10", "source_asset_id": "fixture-10", "asset_name": "", "ip_address": "", "critical": 29, "high": 57, "medium": 227, "low": 85, "info": 0, "total": 398, "exploitable": 47, "exploitability_unknown": 0, "exploitable_availability": "AVAILABLE"}
+  ],
+  "top_open_vulnerabilities": [
+    {
+      "plugin_id": 900001,
+      "plugin_name": "Atualização crítica ausente no componente de exemplo",
+      "plugin_family": "General",
+      "severity": "CRITICAL",
+      "vpr_score": 9.8,
+      "exploitable": true,
+      "affected_assets": 18,
+      "finding_instances": 24,
+      "oldest_first_found_at": "2026-05-10T12:00:00Z",
+      "cves": ["CVE-2099-0001", "CVE-2099-0002"],
+      "reference_urls": ["https://example.invalid/plugins/900001", "https://example.invalid/advisories/900001"],
+      "synopsis": "O componente de exemplo está sem uma atualização de segurança crítica.",
+      "description": "A verificação identificou uma versão do componente de exemplo que não contém as correções mais recentes. Um invasor que alcance o serviço pode explorar a falha para executar ações não autorizadas. Este texto é sintético e existe somente para validar a paginação, a divisão de descrições extensas e o comportamento do template. A exposição deve ser confirmada pelo analista responsável antes de qualquer decisão de risco. A priorização considera criticidade, VPR, exploitabilidade e quantidade de ativos afetados. A correção deve respeitar a janela de mudança, os testes de regressão e a disponibilidade do serviço. Em ambientes com dependências legadas, recomenda-se validar compatibilidade em homologação e aplicar controles temporários de segmentação, filtragem e monitoramento até que a atualização definitiva seja concluída. A equipe deve registrar evidências da versão anterior, da atualização executada e da nova verificação. Caso o ativo não possa ser corrigido no período, a exceção deve possuir responsável, justificativa, prazo e controles compensatórios. O conteúdo não representa uma vulnerabilidade real, um cliente real ou um ativo real. Ele foi deliberadamente ampliado para ultrapassar o limite de caracteres de um único bloco e comprovar que o gerador divide o texto em partes legíveis sem truncar informações.",
+      "solution": "Aplicar a atualização de segurança disponibilizada pelo fornecedor, reiniciar o serviço quando necessário e executar nova verificação. Enquanto a mudança não for possível, restringir acesso ao serviço e aumentar o monitoramento.",
+      "hosts": [
+        {"asset_key": "asset-fixture-01", "source_asset_id": "fixture-01", "asset_name": "", "ip_addresses": [], "port": 443, "protocol": "TCP", "service": "https"},
+        {"asset_key": "asset-fixture-02", "source_asset_id": "fixture-02", "asset_name": "", "ip_addresses": [], "port": 443, "protocol": "TCP", "service": "https"}
+      ]
+    },
+    {
+      "plugin_id": 900002,
+      "plugin_name": "Configuração insegura no serviço de exemplo",
+      "plugin_family": "Service detection",
+      "severity": "HIGH",
+      "vpr_score": 8.7,
+      "exploitable": true,
+      "affected_assets": 15,
+      "finding_instances": 19,
+      "oldest_first_found_at": "2026-04-18T12:00:00Z",
+      "cves": [],
+      "reference_urls": ["https://example.invalid/plugins/900002"],
+      "synopsis": "O serviço aceita uma configuração que reduz a proteção da comunicação.",
+      "description": "A configuração observada permite mecanismos considerados fracos para o padrão técnico adotado. A condição aumenta a superfície de ataque e pode facilitar interceptação ou manipulação de tráfego em cenários específicos.",
+      "solution": "Desabilitar os mecanismos fracos, habilitar apenas protocolos e algoritmos aprovados e validar a compatibilidade dos clientes antes da mudança.",
+      "hosts": [
+        {"asset_key": "asset-fixture-03", "source_asset_id": "fixture-03", "asset_name": "", "ip_addresses": [], "port": 8443, "protocol": "TCP", "service": "https-alt"}
+      ]
+    },
+    {
+      "plugin_id": 900003,
+      "plugin_name": "Biblioteca desatualizada com correção disponível",
+      "plugin_family": "General",
+      "severity": "HIGH",
+      "vpr_score": 8.1,
+      "exploitable": false,
+      "affected_assets": 12,
+      "finding_instances": 16,
+      "oldest_first_found_at": "2026-06-02T12:00:00Z",
+      "cves": ["CVE-2099-0003"],
+      "reference_urls": ["https://example.invalid/plugins/900003"],
+      "synopsis": "Uma biblioteca de exemplo está abaixo da versão corrigida.",
+      "description": "A versão identificada contém uma falha conhecida e existe atualização disponibilizada pelo fornecedor.",
+      "solution": "Atualizar a biblioteca e os componentes que a incorporam, executar testes de regressão e confirmar a versão na verificação seguinte.",
+      "hosts": [
+        {"asset_key": "asset-fixture-04", "source_asset_id": "fixture-04", "asset_name": "", "ip_addresses": [], "port": 0, "protocol": "TCP", "service": "local"}
+      ]
+    },
+    {
+      "plugin_id": 900004,
+      "plugin_name": "Permissões excessivas no componente de exemplo",
+      "plugin_family": "Policy compliance",
+      "severity": "MEDIUM",
+      "vpr_score": 6.4,
+      "exploitable": false,
+      "affected_assets": 9,
+      "finding_instances": 13,
+      "oldest_first_found_at": "2026-06-15T12:00:00Z",
+      "cves": [],
+      "reference_urls": ["https://example.invalid/plugins/900004"],
+      "synopsis": "O componente executa com privilégios acima do necessário.",
+      "description": "A configuração de permissões amplia o impacto potencial de outras falhas e contraria o princípio do menor privilégio.",
+      "solution": "Revisar a conta de serviço, reduzir permissões ao mínimo necessário e monitorar tentativas de elevação de privilégio.",
+      "hosts": [
+        {"asset_key": "asset-fixture-05", "source_asset_id": "fixture-05", "asset_name": "", "ip_addresses": [], "port": 22, "protocol": "TCP", "service": "ssh"}
+      ]
+    },
+    {
+      "plugin_id": 900005,
+      "plugin_name": "Versão sem suporte do produto de exemplo",
+      "plugin_family": "General",
+      "severity": "MEDIUM",
+      "vpr_score": 5.9,
+      "exploitable": false,
+      "affected_assets": 7,
+      "finding_instances": 10,
+      "oldest_first_found_at": "2026-03-20T12:00:00Z",
+      "cves": [],
+      "reference_urls": ["https://example.invalid/plugins/900005"],
+      "synopsis": "A versão identificada não recebe manutenção regular do fornecedor.",
+      "description": "Produtos fora de suporte deixam de receber correções e podem acumular vulnerabilidades conhecidas ao longo do tempo.",
+      "solution": "Planejar a atualização ou substituição do produto, definir prazo formal e aplicar segmentação e monitoramento durante a transição.",
+      "hosts": [
+        {"asset_key": "asset-fixture-06", "source_asset_id": "fixture-06", "asset_name": "", "ip_addresses": [], "port": 80, "protocol": "TCP", "service": "http"}
+      ]
+    }
+  ],
+  "top_web_vulnerabilities": [
+    {
+      "plugin_id": 980001,
+      "plugin_name": "Componente WEB de exemplo desatualizado",
+      "plugin_family": "Component Vulnerability",
+      "severity": "CRITICAL",
+      "vpr_score": 9.5,
+      "reference_urls": ["https://example.invalid/was/980001"],
+      "description": "A aplicação de exemplo utiliza uma versão de componente que possui correção de segurança disponível.",
+      "solution": "Atualizar o componente para a versão corrigida e executar uma nova varredura da aplicação.",
+      "applications": [{"uri": "", "plugin_output": "Current Version: 1.0 Fixed Version: 1.1"}]
+    },
+    {
+      "plugin_id": 980002,
+      "plugin_name": "Cabeçalho HTTP de segurança ausente",
+      "plugin_family": "HTTP Security Header",
+      "severity": "HIGH",
+      "vpr_score": 8.4,
+      "reference_urls": ["https://example.invalid/was/980002"],
+      "description": "A resposta da aplicação não contém um cabeçalho HTTP de segurança esperado.",
+      "solution": "Configurar o servidor WEB para enviar o cabeçalho recomendado e validar a compatibilidade da aplicação.",
+      "applications": [{"uri": "", "plugin_output": "Header not detected"}]
+    },
+    {
+      "plugin_id": 980003,
+      "plugin_name": "Cookie sem atributo de proteção",
+      "plugin_family": "HTTP Security Header",
+      "severity": "MEDIUM",
+      "vpr_score": 6.2,
+      "reference_urls": ["https://example.invalid/was/980003"],
+      "description": "Um cookie da aplicação foi observado sem um atributo de proteção recomendado.",
+      "solution": "Aplicar o atributo de proteção no cookie e testar novamente o fluxo de autenticação.",
+      "applications": [{"uri": "", "plugin_output": "Cookie attribute missing"}]
+    },
+    {
+      "plugin_id": 980004,
+      "plugin_name": "Informação de versão exposta por HTTP",
+      "plugin_family": "Web Servers",
+      "severity": "MEDIUM",
+      "vpr_score": 5.4,
+      "reference_urls": ["https://example.invalid/was/980004"],
+      "description": "Os cabeçalhos HTTP divulgam detalhes de versão do servidor WEB.",
+      "solution": "Ajustar a configuração do servidor para reduzir a divulgação de informações de versão.",
+      "applications": [{"uri": "", "plugin_output": "Server version disclosed"}]
+    },
+    {
+      "plugin_id": 980005,
+      "plugin_name": "Política de transporte estrito ausente",
+      "plugin_family": "HTTP Security Header",
+      "severity": "LOW",
+      "vpr_score": 3.2,
+      "reference_urls": ["https://example.invalid/was/980005"],
+      "description": "A aplicação HTTPS não apresentou a política de transporte estrito esperada.",
+      "solution": "Habilitar a política após confirmar que todos os recursos e subdomínios necessários operam em HTTPS.",
+      "applications": [{"uri": "", "plugin_output": "Strict transport policy missing"}]
+    }
+  ],
+  "top_fixed_vulnerabilities": [
+    {"plugin_id": 910001, "plugin_name": "Atualização de exemplo aplicada", "plugin_family": "General", "severity": "HIGH", "vpr_score": 7.8, "exploitable": false, "affected_assets": 25, "finding_instances": 31, "oldest_first_found_at": "2026-04-01T12:00:00Z", "cves": [], "reference_urls": [], "synopsis": "Correção sintética.", "description": "Registro sintético de mitigação.", "solution": "Concluída.", "hosts": []},
+    {"plugin_id": 910002, "plugin_name": "Configuração de exemplo corrigida", "plugin_family": "General", "severity": "MEDIUM", "vpr_score": 5.4, "exploitable": false, "affected_assets": 18, "finding_instances": 22, "oldest_first_found_at": "2026-05-01T12:00:00Z", "cves": [], "reference_urls": [], "synopsis": "Correção sintética.", "description": "Registro sintético de mitigação.", "solution": "Concluída.", "hosts": []}
+  ],
+  "top_resurfaced_vulnerabilities": [
+    {"plugin_id": 920001, "plugin_name": "Vulnerabilidade de exemplo ressurgida", "plugin_family": "General", "severity": "HIGH", "vpr_score": 8.0, "exploitable": true, "affected_assets": 6, "finding_instances": 8, "oldest_first_found_at": "2026-02-01T12:00:00Z", "cves": [], "reference_urls": [], "synopsis": "Ressurgimento sintético.", "description": "Registro sintético de ressurgimento.", "solution": "Revalidar a causa da recorrência.", "hosts": []}
+  ],
+  "customizations": {
+    "monthly_history": [
+      {
+        "label": "Junho/2026",
+        "mitigated": 5900,
+        "non_mitigated": 8100,
+        "new": 1300,
+        "mitigated_by_severity": {"critical": 110, "high": 650, "medium": 3350, "low": 1790},
+        "non_mitigated_by_severity": {"critical": 360, "high": 870, "medium": 4500, "low": 2370},
+        "new_by_severity": {"critical": 80, "high": 220, "medium": 700, "low": 300}
+      },
+      {
+        "label": "Julho/2026",
+        "mitigated": 6336,
+        "non_mitigated": 7755,
+        "new": 5991,
+        "mitigated_by_severity": {"critical": 120, "high": 710, "medium": 3600, "low": 1906},
+        "non_mitigated_by_severity": {"critical": 330, "high": 825, "medium": 4310, "low": 2290},
+        "new_by_severity": {"critical": 300, "high": 850, "medium": 3400, "low": 1441}
+      }
+    ],
+    "monthly_views": [
+      {
+        "id": "general",
+        "label": "Geral",
+        "history": [
+          {
+            "label": "Junho/2026",
+            "mitigated": 5900,
+            "non_mitigated": 8100,
+            "new": 1300,
+            "mitigated_by_severity": {"critical": 110, "high": 650, "medium": 3350, "low": 1790},
+            "non_mitigated_by_severity": {"critical": 360, "high": 870, "medium": 4500, "low": 2370},
+            "new_by_severity": {"critical": 80, "high": 220, "medium": 700, "low": 300}
+          },
+          {
+            "label": "Julho/2026",
+            "mitigated": 6336,
+            "non_mitigated": 7755,
+            "new": 5991,
+            "mitigated_by_severity": {"critical": 120, "high": 710, "medium": 3600, "low": 1906},
+            "non_mitigated_by_severity": {"critical": 330, "high": 825, "medium": 4310, "low": 2290},
+            "new_by_severity": {"critical": 300, "high": 850, "medium": 3400, "low": 1441}
+          }
+        ]
+      },
+      {
+        "id": "servers",
+        "label": "Servidores",
+        "history": [
+          {
+            "label": "Junho/2026",
+            "mitigated": 1500,
+            "non_mitigated": 2800,
+            "new": 600,
+            "mitigated_by_severity": {"critical": 50, "high": 180, "medium": 900, "low": 370},
+            "non_mitigated_by_severity": {"critical": 140, "high": 400, "medium": 1600, "low": 660},
+            "new_by_severity": {"critical": 45, "high": 110, "medium": 320, "low": 125}
+          },
+          {
+            "label": "Julho/2026",
+            "mitigated": 1700,
+            "non_mitigated": 2600,
+            "new": 1500,
+            "mitigated_by_severity": {"critical": 60, "high": 220, "medium": 1000, "low": 420},
+            "non_mitigated_by_severity": {"critical": 120, "high": 360, "medium": 1500, "low": 620},
+            "new_by_severity": {"critical": 90, "high": 260, "medium": 800, "low": 350}
+          }
+        ]
+      }
+    ],
+    "previous_period_overview": {
+      "label": "Junho 2026",
+      "total": {"mitigated": 5900, "non_mitigated": 8100, "exploitable": 2500, "patch_available_over_30_days": 1200},
+      "critical": {"mitigated": 110, "non_mitigated": 360, "exploitable": 210, "patch_available_over_30_days": 110},
+      "high": {"mitigated": 650, "non_mitigated": 870, "exploitable": 420, "patch_available_over_30_days": 270},
+      "medium": {"mitigated": 3350, "non_mitigated": 4500, "exploitable": 1450, "patch_available_over_30_days": 650},
+      "low": {"mitigated": 1790, "non_mitigated": 2370, "exploitable": 420, "patch_available_over_30_days": 170}
+    },
+    "network_comparisons": [
+      {
+        "tag_uuid": "tag-rede-exemplo-a",
+        "category": "Rede",
+        "network": "Rede de exemplo A",
+        "periods": [
+          {
+            "period_id": "2026-06",
+            "label": "Junho/26",
+            "assets": [{"asset_key": "cliente-exemplo:tenable_vm:asset-rede-a-01", "source_asset_id": "asset-rede-a-01", "ip_address": "", "asset_name": "", "critical": 4, "high": 12, "medium": 38, "low": 7, "total": 61, "exploitable": 9}]
+          },
+          {
+            "period_id": "2026-07",
+            "label": "Julho/26",
+            "assets": [{"asset_key": "cliente-exemplo:tenable_vm:asset-rede-a-01", "source_asset_id": "asset-rede-a-01", "ip_address": "", "asset_name": "", "critical": 5, "high": 10, "medium": 32, "low": 6, "total": 53, "exploitable": 7}]
+          }
+        ]
+      }
+    ],
+    "scan_auth_health": {"success": 780, "failure": 60},
+    "plugin_family": [
+      {"family": "General", "total": 2100},
+      {"family": "Windows", "total": 1740},
+      {"family": "Local Security Checks", "total": 980}
+    ],
+    "eol_assets": [
+      {"ip_address": "", "asset_name": "", "critical": 3, "high": 12, "medium": 25, "low": 4, "total": 44},
+      {"ip_address": "", "asset_name": "", "critical": 1, "high": 8, "medium": 19, "low": 3, "total": 31}
+    ],
+    "eol_software": [
+      {"plugin_id": 990001, "name": "Produto de exemplo sem suporte", "family": "General", "severity": "Alta", "total": 18},
+      {"plugin_id": 990002, "name": "Sistema operacional de exemplo sem suporte", "family": "Local Security Checks", "severity": "Crítica", "total": 9}
+    ],
+    "vulnerability_evolution": [
+      {"label": "Vulnerabilidade de exemplo A", "change": 28},
+      {"label": "Vulnerabilidade de exemplo B", "change": 17},
+      {"label": "Vulnerabilidade de exemplo C", "change": 9}
+    ],
+    "container_images": [
+      {
+        "repository": "",
+        "tag": "1.0.0",
+        "critical": 12,
+        "high": 44,
+        "medium": 63,
+        "low": 8,
+        "findings": [
+          {"cve": "CVE-2099-1001", "severity": "Crítica", "vpr": 9.5, "software": "pacote-exemplo 1.0", "fixed_by": "1.1"},
+          {"cve": "CVE-2099-1002", "severity": "Alta", "vpr": 8.1, "software": "biblioteca-exemplo 2.0", "fixed_by": "2.1"}
+        ]
+      }
+    ],
+    "attack_vectors": [
+      {"framework": "Exploitable", "local": 520, "network": 1810, "adjacent_network": 92},
+      {"framework": "Metasploit", "local": 44, "network": 190, "adjacent_network": 7}
+    ],
+    "was_unsupported_tech": [
+      {"plugin_id": 981001, "name": "Tecnologia WEB de exemplo sem suporte", "family": "Component Vulnerability", "severity": "Alta", "total": 4, "applications": 2, "vpr": 8.2},
+      {"plugin_id": 981002, "name": "Componente WEB de exemplo em fim de vida", "family": "Component Vulnerability", "severity": "Média", "total": 3, "applications": 1, "vpr": 6.0}
+    ]
+  },
+  "quality_issues": []
+}

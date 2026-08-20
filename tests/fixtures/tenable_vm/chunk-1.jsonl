@@ -1,0 +1,2 @@
+{"id":"finding-1","asset":{"id":"asset-1"},"definition":{"id":1001,"name":"Fixture A"},"state":"OPEN"}
+{"id":"finding-2","asset":{"id":"asset-2"},"definition":{"id":1002,"name":"Fixture B"},"state":"REOPENED"}

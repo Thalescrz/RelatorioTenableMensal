@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "orchestration_id": "carteira-tenable",
+  "defaults": {
+    "output_root": "../data",
+    "template": "../templates/corporate/base-v1.docx",
+    "assets_dir": "../templates/corporate/assets",
+    "database_env_file": "../credentials/database.env",
+    "max_parallel": 2,
+    "retention_days": 395,
+    "retry_max_attempts": 2,
+    "retry_delay_seconds": 900,
+    "minimum_free_gb": 10,
+    "failed_staging_days": 7,
+    "logs_days": 90,
+    "cleanup_after_publish": true,
+    "successful_raw_days": 60,
+    "normalized_days": 90,
+    "documents_days": 395,
+    "include_output": false,
+    "include_software_vulns": false,
+    "mask_sensitive": false
+  },
+  "clients": [
+    {
+      "client_id": "cliente-a-exemplo",
+      "profile": "../clients/examples/orchestration/client-a.json",
+      "env_file": "../credentials/client-a.env",
+      "enabled": true,
+      "tags": ["Rede: Matriz"]
+    },
+    {
+      "client_id": "cliente-b-exemplo",
+      "profile": "../clients/examples/orchestration/client-b.json",
+      "env_file": "../credentials/client-b.env",
+      "enabled": true,
+      "tags": [],
+      "include_output": false
+    }
+  ]
+}

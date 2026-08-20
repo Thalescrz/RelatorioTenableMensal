@@ -1,0 +1,39 @@
+[
+  {
+    "id": "asset-fixture-1",
+    "name": "asset-sanitized-1",
+    "types": ["host"],
+    "sources": [
+      {"name": "NESSUS"}
+    ],
+    "scan": {
+      "first_scan_time": "2026-07-01T10:00:00Z",
+      "last_scan_time": "2026-07-31T10:00:00Z",
+      "last_authenticated_scan_date": "2026-07-30T10:00:00Z"
+    },
+    "network": {
+      "ipv4s": ["192.0.2.10"],
+      "hostnames": ["host-fixture-1.invalid"],
+      "fqdns": ["host-fixture-1.example.invalid"],
+      "mac_addresses": ["00:00:5e:00:53:01"]
+    },
+    "timestamps": {
+      "created_at": "2026-07-01T10:00:00Z",
+      "updated_at": "2026-07-31T10:00:00Z"
+    },
+    "ratings": {
+      "acr": {"score": 7},
+      "aes": {"score": 542}
+    }
+  },
+  {
+    "id": "asset-fixture-2",
+    "types": ["host"],
+    "network": {
+      "ipv4s": ["198.51.100.20"]
+    },
+    "timestamps": {
+      "terminated_at": "2026-07-29T12:00:00Z"
+    }
+  }
+]

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "client_id": "cliente-a-exemplo",
+  "display_name": "Cliente A Exemplo",
+  "tenant_id": "tenant-cliente-a",
+  "report": {
+    "type": "vulnerabilities",
+    "base_modules": ["summary", "infrastructure", "vm_top5", "was", "was_top5"],
+    "intelligence_modules": [
+      "vm_monthly_volume",
+      "vm_previous_period_delta",
+      "vm_network_comparison",
+      "vm_executive_evolution",
+      "vm_monthly_evolution",
+      "vm_exploit_vector"
+    ],
+    "network_comparison_tags": ["Rede: Matriz"]
+  },
+  "scope": {
+    "vm": {"asset_groups": [], "include_unlicensed": false},
+    "was": {"enabled": false, "application_ids": []},
+    "cloud_security": {"enabled": false}
+  },
+  "presentation": {
+    "locale": "pt-BR",
+    "vm_top5_include_output": false,
+    "was_top5_include_output": false
+  },
+  "reporting": {
+    "timezone": "America/Fortaleza",
+    "default_period": "previous_calendar_month",
+    "manual_default_period": "rolling_calendar_month",
+    "include_info_severity": false,
+    "top_assets_limit": 10,
+    "top_vulnerabilities_limit": 5,
+    "late_collection_grace_days": 1
+  }
+}

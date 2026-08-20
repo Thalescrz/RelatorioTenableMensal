@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "client_id": "cliente-exemplo",
+  "display_name": "Cliente Exemplo",
+  "tenant_id": "tenable-cloud-global",
+  "report": {
+    "type": "vulnerabilities",
+    "base_modules": ["summary", "infrastructure", "vm_top5", "was", "was_top5"],
+    "intelligence_modules": [],
+    "network_comparison_tags": []
+  },
+  "scope": {
+    "vm": {"asset_groups": [], "include_unlicensed": false},
+    "was": {"enabled": false, "application_ids": []},
+    "cloud_security": {"enabled": false}
+  },
+  "presentation": {
+    "locale": "pt-BR",
+    "vm_top5_include_output": false,
+    "was_top5_include_output": false
+  },
+  "reporting": {
+    "timezone": "America/Fortaleza",
+    "default_period": "previous_calendar_month",
+    "manual_default_period": "rolling_calendar_month",
+    "include_info_severity": false,
+    "top_assets_limit": 10,
+    "top_vulnerabilities_limit": 5,
+    "late_collection_grace_days": 1
+  }
+}

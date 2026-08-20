@@ -1,0 +1,17 @@
+* text=auto
+
+*.py text eol=lf
+*.md text eol=lf whitespace=-blank-at-eol,-blank-at-eof
+*.json text eol=lf
+*.toml text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.sql text eol=lf
+*.ps1 text eol=crlf
+
+*.docx binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
