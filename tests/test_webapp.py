@@ -97,6 +97,155 @@ class LocalClient:
 
 
 class WebDashboardTests(unittest.TestCase):
+    def test_tag_report_configuration_persists_across_store_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "orchestration" / "clients.json"
+            store = DashboardConfigStore(project_root=root, config_path=config_path)
+            store.add_client({
+                "client_id": "cliente-tags",
+                "display_name": "Cliente Tags",
+                "tag_reports_enabled": True,
+                "tag_reports": [
+                    {
+                        "tag_uuid": "tag-a", "category_uuid": "cat-a",
+                        "category_name": "Equipe", "value": "Infra",
+                        "generate_report": True,
+                        "include_temporal_comparison": True,
+                    },
+                    {
+                        "tag_uuid": "tag-b", "category_uuid": "cat-b",
+                        "category_name": "Local", "value": "Filial",
+                        "generate_report": True,
+                        "include_temporal_comparison": False,
+                    },
+                ],
+            })
+
+            reloaded = DashboardConfigStore(project_root=root, config_path=config_path)
+            client = reloaded.list_clients()[0]
+            self.assertTrue(client["tag_reports_enabled"])
+            self.assertEqual(
+                [item["tag_uuid"] for item in client["tag_reports"]],
+                ["tag-a", "tag-b"],
+            )
+            self.assertTrue(client["tag_reports"][0]["include_temporal_comparison"])
+
+    def test_get_client_tags_combines_saved_unavailable_tag_without_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                tag_lister=lambda _path: [{
+                    "tag_uuid": "tag-a", "category_uuid": "cat-a",
+                    "category_name": "Equipe", "value": "Infra",
+                }],
+            )
+            app.config.add_client({
+                "client_id": "cliente-a", "display_name": "Cliente A",
+                "access_key": "access-value", "secret_key": "secret-value",
+                "tag_reports_enabled": True,
+                "tag_reports": [
+                    {
+                        "tag_uuid": "tag-a", "category_uuid": "cat-a",
+                        "category_name": "Equipe", "value": "Infra",
+                        "generate_report": True,
+                        "include_temporal_comparison": True,
+                    },
+                    {
+                        "tag_uuid": "tag-old", "category_uuid": "cat-old",
+                        "category_name": "Legado", "value": "Ausente",
+                        "generate_report": True,
+                        "include_temporal_comparison": False,
+                    },
+                ],
+            })
+            client = LocalClient(app)
+            try:
+                status, payload = client.request("GET", "/api/clients/cliente-a/tags")
+            finally:
+                client.close()
+
+            self.assertEqual(status, 200)
+            self.assertTrue(payload["tag_reports_enabled"])
+            self.assertEqual(payload["tags"][0]["tag_uuid"], "tag-a")
+            self.assertTrue(payload["tags"][0]["available"])
+            unavailable = next(item for item in payload["tags"] if item["tag_uuid"] == "tag-old")
+            self.assertFalse(unavailable["available"])
+            serialized = json.dumps(payload).lower()
+            self.assertNotIn("access-value", serialized)
+            self.assertNotIn("secret-value", serialized)
+
+    def test_get_client_tags_maps_tenable_auth_and_rate_limit_errors(self) -> None:
+        class StatusError(RuntimeError):
+            def __init__(self, status_code):
+                super().__init__("X-ApiKeys accessKey=valor-secreto; secretKey=outro")
+                self.status_code = status_code
+
+        for api_status in (401, 403, 429):
+            with self.subTest(api_status=api_status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                app = DashboardApplication(
+                    project_root=root,
+                    config_path=root / "orchestration" / "clients.json",
+                    tag_lister=lambda _path, status=api_status: (_ for _ in ()).throw(StatusError(status)),
+                )
+                app.config.add_client({
+                    "client_id": "cliente-a", "display_name": "Cliente A",
+                    "access_key": "access", "secret_key": "secret",
+                })
+                client = LocalClient(app)
+                try:
+                    status, payload = client.request("GET", "/api/clients/cliente-a/tags")
+                finally:
+                    client.close()
+                self.assertEqual(status, api_status)
+                self.assertNotIn("valor-secreto", json.dumps(payload))
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                tag_lister=lambda _path: [],
+            )
+            client = LocalClient(app)
+            try:
+                status, _ = client.request("GET", "/api/clients/inexistente/tags")
+            finally:
+                client.close()
+            self.assertEqual(status, 404)
+
+    def test_job_queue_exposes_incremental_tag_progress_and_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def runner(command, cwd, progress_callback=None):
+                progress_callback({
+                    "event": "TAG_REPORT_PROGRESS", "current": 1, "total": 2,
+                    "tag_uuid": "tag-a", "tag_label": "Equipe: Infra",
+                })
+                return subprocess.CompletedProcess(
+                    command, 0,
+                    stdout=json.dumps({
+                        "status": "COMPLETE", "run_id": "run-web-tags",
+                        "clients": [{"payload": {
+                            "status": "complete_with_warnings",
+                            "warnings": [{"tag_uuid": "tag-b", "message": "falhou"}],
+                        }}],
+                    }) + "\n",
+                    stderr="",
+                )
+
+            jobs = JobQueue(root, root / "orchestration" / "clients.json", runner)
+            jobs.enqueue(["cliente-a"], {"mode": "manual", "days": 30})
+            jobs._pending.join()
+            job = jobs.snapshot()[0]
+            self.assertEqual(job["tag_progress"]["current"], 1)
+            self.assertEqual(job["tag_progress"]["total"], 2)
+            self.assertEqual(job["warnings"][0]["tag_uuid"], "tag-b")
+
     def test_backfill_routes_analyze_and_apply_only_safe_promotions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

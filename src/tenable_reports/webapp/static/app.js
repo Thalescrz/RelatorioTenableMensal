@@ -1,4 +1,4 @@
-const state = { data: null, selectedClient: null, runClientIds: [], filter: "", connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null };
+const state = { data: null, selectedClient: null, runClientIds: [], filter: "", connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "" };
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 const slugify = (value = "") => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[-._]+|[-._]+$/g, "").replace(/[-_.]{2,}/g, "-").slice(0, 80) || "cliente";
@@ -36,16 +36,48 @@ function statusFor(client) {
   return { key: "ready", label: "Pronto" };
 }
 
+function tagProgressCopy(job) {
+  if (!job?.tag_progress) return null;
+  const tag = job.tag_progress;
+  return `TAG ${tag.current}/${tag.total} · ${tag.label || tag.tag_uuid}`;
+}
+
+function documentKind(document) {
+  if (document.document_kind) return document.document_kind;
+  return /inteligência|customiza/i.test(document.name || "") ? "custom" : "base";
+}
+
+function renderDocumentGroups(documents) {
+  const groups = [
+    ["base", "Geral"],
+    ["custom", "Customizado"],
+    ["tag", "Por TAG"],
+  ];
+  return groups.map(([kind, label]) => {
+    const items = documents.filter(document => documentKind(document) === kind);
+    if (!items.length) return "";
+    const links = items.map(document => {
+      const title = kind === "tag"
+        ? `${document.tag_category || "TAG"}: ${document.tag_value || document.name}`
+        : document.name || "documento";
+      return `<div class="report-document"><span>${escapeHtml(title)}</span><div><a class="download" target="_blank" rel="noopener" href="/api/reports/${document.document_id}/download?inline=true">Abrir</a><a class="download" href="/api/reports/${document.document_id}/download">Baixar</a></div></div>`;
+    }).join("");
+    return `<section class="document-group"><strong>${label}</strong>${links}</section>`;
+  }).join("");
+}
+
 function render() {
   if (!state.data) return;
   const clients = state.data.clients || [];
   const activeJobs = (state.data.jobs || []).filter(j => ["QUEUED", "RUNNING"].includes(j.status));
   $("#metric-clients").textContent = clients.filter(c => c.enabled).length;
   $("#metric-running").textContent = activeJobs.length;
-  $("#metric-alerts").textContent = (state.data.alerts || []).length + (state.data.database_error ? 1 : 0);
+  const jobWarningCount = (state.data.jobs || []).reduce((total, job) => total + (job.warnings || []).length, 0);
+  $("#metric-alerts").textContent = (state.data.alerts || []).length + jobWarningCount + (state.data.database_error ? 1 : 0);
   $("#connection-label").textContent = state.data.database_error ? "banco indisponível" : "PostgreSQL online";
   $(".connection").classList.toggle("online", !state.data.database_error);
-  const alert = state.data.database_error || state.data.alerts?.[0]?.message;
+  const firstJobWarning = (state.data.jobs || []).find(job => job.warnings?.length)?.warnings?.[0];
+  const alert = state.data.database_error || state.data.alerts?.[0]?.message || firstJobWarning?.message;
   $("#global-alert").classList.toggle("hidden", !alert);
   $("#global-alert-text").textContent = alert || "";
   $("#run-all-button").disabled = !clients.some(c => c.enabled && c.credentials_ready);
@@ -63,12 +95,13 @@ function render() {
     const progress = job?.progress ?? (client.latest_report ? 100 : 0);
     const report = client.latest_report;
     const connectionCheck = state.connectionChecks[client.client_id];
-    const warning = client.alert || job?.error || !client.credentials_ready || client.profile_error || connectionCheck?.ok === false;
+    const warning = client.alert || job?.error || job?.warnings?.length || !client.credentials_ready || client.profile_error || connectionCheck?.ok === false;
+    const runningCopy = tagProgressCopy(job) || "Coletando e gerando documentos";
     return `<article class="client-card" data-client="${escapeHtml(client.client_id)}" style="animation-delay:${Math.min(index * 45, 300)}ms" tabindex="0">
       <div class="card-top"><span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? '<span class="warning-badge" title="Há um alerta">!</span>' : ""}</div>
       <h3>${escapeHtml(client.display_name)}</h3><p class="client-meta">${escapeHtml(client.client_id)}<br>${escapeHtml(client.tenant_id || "tenant não informado")}</p>
       <div class="card-report"><span>Último relatório</span><strong>${report ? escapeHtml(report.period_id || formatDate(report.ended_at)) : "Ainda não gerado"}</strong></div>
-      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? "Coletando e gerando documentos" : job?.status === "QUEUED" ? "Aguardando execução" : job?.status === "FAILED" ? "Execução interrompida" : report ? `${report.document_count} documento(s)` : "Aguardando primeira execução"}</span><span>${progress}%</span></div><div class="progress-track"><div class="progress-bar ${job?.status === "RUNNING" ? "running" : ""}" style="width:${progress}%"></div></div></div>
+      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(runningCopy) : job?.status === "QUEUED" ? "Aguardando execução" : job?.status === "FAILED" ? "Execução interrompida" : report ? `${report.document_count} documento(s)` : "Aguardando primeira execução"}</span><span>${progress}%</span></div><div class="progress-track"><div class="progress-bar ${job?.status === "RUNNING" && !job?.tag_progress ? "running" : ""}" style="width:${progress}%"></div></div></div>
     </article>`;
   }).join("");
   document.querySelectorAll(".client-card").forEach(card => {
@@ -87,7 +120,7 @@ async function openClient(clientId) {
   const client = state.data.clients.find(c => c.client_id === clientId); if (!client) return;
   state.selectedClient = clientId;
   $("#detail-title").textContent = client.display_name; $("#detail-subtitle").textContent = `${client.client_id} · ${client.tenant_id || "sem tenant"}`;
-  const status = statusFor(client); const warning = client.job?.error || client.alert?.message || client.profile_error || (!client.credentials_ready ? "As credenciais Tenable ainda não foram preenchidas." : "");
+  const status = statusFor(client); const warning = client.job?.error || client.job?.warnings?.[0]?.message || client.alert?.message || client.profile_error || (!client.credentials_ready ? "As credenciais Tenable ainda não foram preenchidas." : "");
   $("#detail-status").innerHTML = `<span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? `<p>${escapeHtml(warning)}</p>` : "<p>Cliente configurado e pronto para uma nova execução.</p>"}`;
   $("#detail-run-button").disabled = !client.enabled || !client.credentials_ready || ["QUEUED","RUNNING"].includes(client.job?.status);
   $("#detail-check-button").disabled = !client.credentials_ready;
@@ -97,7 +130,7 @@ async function openClient(clientId) {
     state.currentReports = reports;
     $("#reports-count").textContent = `${reports.length} execução(ões)`;
     $("#report-list").innerHTML = reports.length ? reports.map(report => {
-      const documents = (report.documents || []).map(doc => `<a class="download" target="_blank" rel="noopener" href="/api/reports/${doc.document_id}/download?inline=true">Abrir ${escapeHtml(doc.name || "documento")}</a><a class="download" href="/api/reports/${doc.document_id}/download">Baixar</a>`).join("");
+      const documents = renderDocumentGroups(report.documents || []);
       const omitted = (report.omitted_modules || []).length ? ` · omitidos: ${escapeHtml(report.omitted_modules.join(", "))}` : "";
       const reference = report.reference_run_id ? ` · referência: ${escapeHtml(report.reference_run_id)}` : "";
       return `<div class="report-row ${report.deleted_at ? "deleted" : ""}" data-report-run="${escapeHtml(report.run_id)}"><div><div class="report-badges">${report.is_main ? '<span class="report-badge main">MAIN</span>' : ""}<span class="report-badge">${escapeHtml(report.origin || "MANUAL")}</span><span class="report-badge">${escapeHtml(report.status || "")}</span>${report.deleted_at ? '<span class="report-badge">EXCLUÍDO</span>' : ""}</div><strong>${escapeHtml(report.period_id || report.run_id)}</strong><small>${escapeHtml(report.run_id)} · ${formatBytes(report.size_bytes)}${reference}${omitted}</small><div class="report-documents">${documents || '<small>Documentos não localizados no disco.</small>'}</div></div><div class="report-actions">${!report.deleted_at && !report.is_main ? '<button class="mini-button" data-report-action="main" type="button">Definir MAIN</button>' : ""}${report.deleted_at ? '<button class="mini-button" data-report-action="restore" type="button">Restaurar</button>' : '<button class="mini-button danger" data-report-action="delete" type="button">Excluir</button>'}</div></div>`;
@@ -180,8 +213,9 @@ async function testConnections(clientIds, button) {
 function renderAlerts() {
   if (!state.data) return; const alerts = [...(state.data.alerts || [])];
   const failedJobs = (state.data.jobs || []).filter(j => j.status === "FAILED").map(j => ({client_id:j.client_id, message:j.error, at:j.ended_at, run_id:j.run_id, job_id:j.job_id}));
+  const tagWarnings = (state.data.jobs || []).flatMap(job => (job.warnings || []).map(warning => ({client_id:job.client_id, message:`${warning.tag_label || warning.tag_uuid || "TAG"}: ${warning.message || "Falha no relatório por TAG."}`, at:job.ended_at, run_id:job.run_id})));
   if (state.data.database_error) alerts.unshift({client_id:"Sistema", message:state.data.database_error, at:state.data.server_time});
-  $("#alerts-list").innerHTML = [...failedJobs, ...alerts].length ? [...failedJobs, ...alerts].map(a => `<div class="alert-row"><span class="alert-sign">!</span><div><strong>${escapeHtml(a.client_id || "Sistema")}</strong><p>${escapeHtml(a.message || "Falha sem detalhes.")}</p><small>${formatDate(a.at)}${a.run_id ? ` · ${escapeHtml(a.run_id)}` : ""}</small>${a.job_id ? `<p><button class="mini-button" data-retry-job="${escapeHtml(a.job_id)}" type="button">Tentar novamente</button></p>` : ""}</div></div>`).join("") : '<div class="loading">Nenhum alerta registrado.</div>';
+  $("#alerts-list").innerHTML = [...failedJobs, ...tagWarnings, ...alerts].length ? [...failedJobs, ...tagWarnings, ...alerts].map(a => `<div class="alert-row"><span class="alert-sign">!</span><div><strong>${escapeHtml(a.client_id || "Sistema")}</strong><p>${escapeHtml(a.message || "Falha sem detalhes.")}</p><small>${formatDate(a.at)}${a.run_id ? ` · ${escapeHtml(a.run_id)}` : ""}</small>${a.job_id ? `<p><button class="mini-button" data-retry-job="${escapeHtml(a.job_id)}" type="button">Tentar novamente</button></p>` : ""}</div></div>`).join("") : '<div class="loading">Nenhum alerta registrado.</div>';
   document.querySelectorAll("[data-retry-job]").forEach(button => button.addEventListener("click", async () => {
     try { await api(`/api/jobs/${encodeURIComponent(button.dataset.retryJob)}/retry`, { method: "POST", body: {} }); await refresh(); toast("Nova tentativa adicionada à fila."); }
     catch (error) { toast(error.message, "error"); }
@@ -285,6 +319,47 @@ const idField = $("#client-form [name='client_id']");
 const tenantField = $("#client-form [name='tenant_id']");
 const clientForm = $("#client-form");
 
+function renderTagSelector() {
+  const root = $("#tag-selector");
+  const query = state.tagSearch.toLowerCase();
+  const visible = state.availableTags.filter(tag =>
+    `${tag.category_name} ${tag.value} ${tag.tag_uuid}`.toLowerCase().includes(query)
+  );
+  if (!visible.length) {
+    root.innerHTML = `<div class="tag-empty">${state.availableTags.length ? "Nenhuma TAG corresponde à busca." : state.editingClientId ? "Clique em “Buscar TAGs da Tenable”." : "Salve o cliente antes de buscar as TAGs."}</div>`;
+    return;
+  }
+  const grouped = visible.reduce((result, tag) => {
+    (result[tag.category_name] ||= []).push(tag); return result;
+  }, {});
+  root.innerHTML = Object.entries(grouped).map(([category, tags]) => `<section class="tag-category"><div class="tag-category-title"><strong>${escapeHtml(category)}</strong><span>${tags.length}</span></div>${tags.map(tag => `<div class="tag-row ${tag.available === false ? "unavailable" : ""}" data-tag-row="${escapeHtml(tag.tag_uuid)}"><div><strong>${escapeHtml(tag.value)}</strong><small>${tag.available === false ? "Não retornada pela API nesta consulta" : escapeHtml(tag.tag_uuid)}</small></div><label><input type="checkbox" data-tag-generate ${tag.generate_report ? "checked" : ""}><span>Gerar relatório</span></label><label><input type="checkbox" data-tag-compare ${tag.include_temporal_comparison ? "checked" : ""} ${tag.generate_report ? "" : "disabled"}><span>Comparativo temporal</span></label></div>`).join("")}</section>`).join("");
+  root.querySelectorAll("[data-tag-row]").forEach(row => {
+    const tag = state.availableTags.find(item => item.tag_uuid === row.dataset.tagRow);
+    const generate = row.querySelector("[data-tag-generate]");
+    const compare = row.querySelector("[data-tag-compare]");
+    generate.addEventListener("change", () => {
+      tag.generate_report = generate.checked;
+      if (!generate.checked) { tag.include_temporal_comparison = false; compare.checked = false; }
+      compare.disabled = !generate.checked;
+    });
+    compare.addEventListener("change", () => { tag.include_temporal_comparison = compare.checked; });
+  });
+}
+
+async function fetchClientTags() {
+  if (!state.editingClientId) return;
+  const button = $("#fetch-tags-button");
+  button.disabled = true; button.textContent = "Buscando…";
+  try {
+    const payload = await api(`/api/clients/${encodeURIComponent(state.editingClientId)}/tags`);
+    state.availableTags = payload.tags || [];
+    clientForm.elements.tag_reports_enabled.checked = Boolean(payload.tag_reports_enabled);
+    renderTagSelector();
+    toast(`${state.availableTags.filter(tag => tag.available).length} TAG(s) disponíveis.`);
+  } catch (error) { toast(error.message, "error"); }
+  finally { button.disabled = false; button.textContent = "Buscar TAGs da Tenable"; }
+}
+
 function resetClientForm() {
   state.editingClientId = null;
   clientForm.reset();
@@ -296,6 +371,12 @@ function resetClientForm() {
   clientForm.elements.secret_key.placeholder = "Opcional agora";
   clientForm.elements.intelligence_enabled.checked = true;
   clientForm.elements.was_enabled.checked = true;
+  clientForm.elements.tag_reports_enabled.checked = false;
+  state.availableTags = [];
+  state.tagSearch = "";
+  $("#tag-search-input").value = "";
+  $("#fetch-tags-button").disabled = true;
+  renderTagSelector();
   $("#client-form-mode").textContent = "NOVO";
   $("#client-form-title").textContent = "Adicionar cliente";
   $("#client-form-note").textContent = "As chaves ficam apenas no arquivo local ignorado pelo Git e nunca retornam à tela.";
@@ -319,7 +400,12 @@ function editClient(clientId) {
   clientForm.elements.secret_key.value = "";
   clientForm.elements.access_key.placeholder = "Preencha somente para trocar";
   clientForm.elements.secret_key.placeholder = "Preencha somente para trocar";
-  clientForm.elements.tags.value = (client.tags || []).join(", ");
+  clientForm.elements.tag_reports_enabled.checked = Boolean(client.tag_reports_enabled);
+  state.availableTags = (client.tag_reports || []).map(tag => ({ ...tag, available: false }));
+  state.tagSearch = "";
+  $("#tag-search-input").value = "";
+  $("#fetch-tags-button").disabled = !client.credentials_ready;
+  renderTagSelector();
   clientForm.elements.intelligence_enabled.checked = Boolean(client.intelligence_enabled);
   clientForm.elements.was_enabled.checked = Boolean(client.was_enabled);
   clientForm.elements.cloud_enabled.checked = Boolean(client.cloud_enabled);
@@ -342,10 +428,22 @@ idField.addEventListener("input", event => { event.target.dataset.manual = event
 tenantField.addEventListener("input", event => { event.target.dataset.manual = event.isTrusted ? "true" : "false"; });
 
 $("#cancel-edit-button").addEventListener("click", resetClientForm);
+$("#fetch-tags-button").addEventListener("click", fetchClientTags);
+$("#tag-search-input").addEventListener("input", event => {
+  state.tagSearch = event.target.value.trim(); renderTagSelector();
+});
 
 clientForm.addEventListener("submit", async event => {
   event.preventDefault(); const form = new FormData(event.currentTarget); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
-  const payload = Object.fromEntries(form.entries()); ["intelligence_enabled","was_enabled","cloud_enabled","include_output","show_source_filters"].forEach(name => payload[name] = form.has(name));
+  const payload = Object.fromEntries(form.entries()); ["intelligence_enabled","was_enabled","cloud_enabled","include_output","show_source_filters","tag_reports_enabled"].forEach(name => payload[name] = form.has(name));
+  payload.tag_reports = state.availableTags.filter(tag => tag.generate_report).map(tag => ({
+    tag_uuid: tag.tag_uuid,
+    category_uuid: tag.category_uuid || "",
+    category_name: tag.category_name,
+    value: tag.value,
+    generate_report: true,
+    include_temporal_comparison: Boolean(tag.include_temporal_comparison),
+  }));
   const editing = state.editingClientId;
   const path = editing ? `/api/clients/${encodeURIComponent(editing)}` : "/api/clients";
   const method = editing ? "PATCH" : "POST";

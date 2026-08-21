@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import mimetypes
 import os
 import queue
@@ -37,6 +38,7 @@ from tenable_reports.application.report_registry import (
     ReportRegistry,
 )
 from tenable_reports.application.storage_guard import required_free_bytes
+from tenable_reports.application.tag_scope import parse_tag_values
 from tenable_reports.application.retention import (
     TRANSIENT_CATEGORIES,
     RetentionCandidate,
@@ -187,6 +189,26 @@ def check_tenable_connection(path: Path) -> dict[str, Any]:
     }
 
 
+def list_tenable_tags(path: Path) -> list[dict[str, str]]:
+    credentials = CredentialConfig.from_environment(_read_env_values(path))
+    if not credentials.is_complete:
+        raise ValueError("Credenciais Tenable incompletas.")
+    client = TenableVmClient(TenableVmConfig(
+        access_key=credentials.access_key,
+        secret_key=credentials.secret_key,
+        base_url=credentials.base_url,
+        timeout_seconds=credentials.timeout_seconds,
+        ca_bundle=credentials.ca_bundle,
+        validate_tls=credentials.validate_tls,
+    ))
+    return [{
+        "tag_uuid": item.uuid,
+        "category_uuid": item.category_uuid,
+        "category_name": item.category_name,
+        "value": item.value,
+    } for item in parse_tag_values(client.list_tag_values())]
+
+
 class DashboardConfigStore:
     """Gerencia a carteira sem expor o conteudo dos arquivos de credenciais."""
 
@@ -269,6 +291,10 @@ class DashboardConfigStore:
                 profile_error = _safe_error(str(exc), limit=300)
             env_exists, credentials_ready = _credential_status(env_path)
             report = profile.get("report") if isinstance(profile.get("report"), Mapping) else {}
+            tag_reports = (
+                report.get("tag_reports")
+                if isinstance(report.get("tag_reports"), Mapping) else {}
+            )
             presentation = (
                 profile.get("presentation")
                 if isinstance(profile.get("presentation"), Mapping) else {}
@@ -292,6 +318,8 @@ class DashboardConfigStore:
                 "intelligence_enabled": bool(report.get("intelligence_modules") or []),
                 "include_output": bool(raw.get("include_output", False)),
                 "show_source_filters": bool(presentation.get("show_source_filters", False)),
+                "tag_reports_enabled": bool(tag_reports.get("enabled", False)),
+                "tag_reports": self._tag_reports(tag_reports.get("tags")),
             })
         return result
 
@@ -306,6 +334,8 @@ class DashboardConfigStore:
         if not tenant_id:
             raise ValueError("Informe o tenant do cliente.")
         tags = self._tags(values.get("tags"))
+        tag_reports = self._tag_reports(values.get("tag_reports"))
+        tag_reports_enabled = bool(values.get("tag_reports_enabled", False))
         access_key = self._secret(values.get("access_key"), "Access Key")
         secret_key = self._secret(values.get("secret_key"), "Secret Key")
         if bool(access_key) != bool(secret_key):
@@ -339,6 +369,10 @@ class DashboardConfigStore:
                     "base_modules": ["summary", "infrastructure", "vm_top5", "was", "was_top5"],
                     "intelligence_modules": intelligence_modules,
                     "network_comparison_tags": tags,
+                    "tag_reports": {
+                        "enabled": tag_reports_enabled,
+                        "tags": tag_reports,
+                    },
                 },
                 "scope": {
                     "vm": {"asset_groups": [], "include_unlicensed": False},
@@ -428,6 +462,22 @@ class DashboardConfigStore:
                     values["show_source_filters"]
                 )
                 profile_changed = True
+            if "tag_reports_enabled" in values or "tag_reports" in values:
+                current = profile.setdefault("report", {}).get("tag_reports")
+                current = current if isinstance(current, Mapping) else {}
+                selected = (
+                    self._tag_reports(values.get("tag_reports"))
+                    if "tag_reports" in values
+                    else self._tag_reports(current.get("tags"))
+                )
+                enabled = bool(
+                    values.get("tag_reports_enabled", current.get("enabled", False))
+                )
+                profile.setdefault("report", {})["tag_reports"] = {
+                    "enabled": enabled,
+                    "tags": selected,
+                }
+                profile_changed = True
             capability_fields = {"was_enabled", "cloud_enabled", "intelligence_enabled"}
             if capability_fields.intersection(values):
                 scope = profile.setdefault("scope", {})
@@ -488,6 +538,42 @@ class DashboardConfigStore:
         result = [str(item).strip() for item in items if str(item).strip()]
         if len(result) != len(set(result)):
             result = list(dict.fromkeys(result))
+        return result
+
+    @staticmethod
+    def _tag_reports(value: Any) -> list[dict[str, Any]]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise ValueError("tag_reports deve ser uma lista.")
+        result: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in value:
+            if not isinstance(raw, Mapping):
+                raise ValueError("Cada TAG selecionada deve ser um objeto.")
+            tag_uuid = str(raw.get("tag_uuid") or "").strip()
+            category_uuid = str(raw.get("category_uuid") or "").strip()
+            category_name = str(raw.get("category_name") or "").strip()
+            tag_value = str(raw.get("value") or "").strip()
+            if not tag_uuid or not category_name or not tag_value:
+                raise ValueError("Cada TAG requer UUID, categoria e valor.")
+            if tag_uuid in seen:
+                raise ValueError(f"TAG duplicada: {tag_uuid}.")
+            seen.add(tag_uuid)
+            generate_report = bool(raw.get("generate_report", True))
+            include_comparison = bool(
+                raw.get("include_temporal_comparison", False)
+            )
+            if include_comparison and not generate_report:
+                include_comparison = False
+            result.append({
+                "tag_uuid": tag_uuid,
+                "category_uuid": category_uuid,
+                "category_name": category_name,
+                "value": tag_value,
+                "generate_report": generate_report,
+                "include_temporal_comparison": include_comparison,
+            })
         return result
 
 
@@ -600,20 +686,87 @@ class DashboardDatabase:
         return Path(str(row[0])).resolve() if row else None
 
 
-Runner = Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]]
+ProgressCallback = Callable[[Mapping[str, Any]], None]
+Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
-def _default_runner(command: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+def _default_runner(
+    command: Sequence[str],
+    cwd: Path,
+    progress_callback: ProgressCallback | None = None,
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
         list(command),
         cwd=cwd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
-        timeout=4 * 60 * 60,
-        check=False,
+        bufsize=1,
     )
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+
+    def drain_stderr() -> None:
+        if process.stderr is not None:
+            stderr_parts.extend(process.stderr)
+
+    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+    stderr_thread.start()
+    if process.stdout is not None:
+        for line in process.stdout:
+            stdout_parts.append(line)
+            if progress_callback is None:
+                continue
+            try:
+                event = json.loads(line.strip())
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if (
+                isinstance(event, Mapping)
+                and event.get("event") == "TAG_REPORT_PROGRESS"
+            ):
+                try:
+                    progress_callback(event)
+                except Exception:
+                    pass
+    return_code = process.wait(timeout=4 * 60 * 60)
+    stderr_thread.join()
+    return subprocess.CompletedProcess(
+        list(command), return_code,
+        stdout="".join(stdout_parts), stderr="".join(stderr_parts),
+    )
+
+
+def _run_web_command(
+    runner: Runner,
+    command: Sequence[str],
+    cwd: Path,
+    progress_callback: ProgressCallback,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        parameters = inspect.signature(runner).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    if any(
+        item.name == "progress_callback"
+        or item.kind is inspect.Parameter.VAR_KEYWORD
+        for item in parameters
+    ):
+        return runner(command, cwd, progress_callback=progress_callback)
+    positional = [
+        item for item in parameters
+        if item.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }
+    ]
+    if len(positional) >= 3 or any(
+        item.kind is inspect.Parameter.VAR_POSITIONAL for item in parameters
+    ):
+        return runner(command, cwd, progress_callback)
+    return runner(command, cwd)
 
 
 class JobQueue:
@@ -675,6 +828,8 @@ class JobQueue:
                     "ended_at": None,
                     "error": None,
                     "run_id": None,
+                    "tag_progress": None,
+                    "warnings": [],
                 }
                 self._jobs[job_id] = job
                 self._pending.put(job_id)
@@ -760,7 +915,26 @@ class JobQueue:
             if job["start_at"]:
                 command.extend(("--start-at", job["start_at"], "--end-at", job["end_at"]))
         try:
-            completed = self.runner(command, self.project_root)
+            def update_tag_progress(event: Mapping[str, Any]) -> None:
+                current = int(event.get("current") or 0)
+                total = max(1, int(event.get("total") or 0))
+                with self._lock:
+                    current_job = self._jobs.get(job_id)
+                    if current_job is None:
+                        return
+                    current_job["tag_progress"] = {
+                        "current": current,
+                        "total": total,
+                        "tag_uuid": str(event.get("tag_uuid") or ""),
+                        "label": str(event.get("tag_label") or ""),
+                    }
+                    current_job["progress"] = min(
+                        92, 45 + round(45 * current / total)
+                    )
+
+            completed = _run_web_command(
+                self.runner, command, self.project_root, update_tag_progress
+            )
             payload: dict[str, Any] = {}
             for line in reversed((completed.stdout or "").splitlines()):
                 try:
@@ -775,6 +949,18 @@ class JobQueue:
                 job["ended_at"] = _utc_now()
                 job["progress"] = 100
                 job["run_id"] = payload.get("run_id")
+                client_payloads = [
+                    item.get("payload")
+                    for item in payload.get("clients") or ()
+                    if isinstance(item, Mapping)
+                    and isinstance(item.get("payload"), Mapping)
+                ]
+                job["warnings"] = [
+                    dict(warning)
+                    for client_payload in client_payloads
+                    for warning in client_payload.get("warnings") or ()
+                    if isinstance(warning, Mapping)
+                ]
                 if completed.returncode == 0:
                     job["status"] = "COMPLETE"
                 else:
@@ -797,6 +983,7 @@ class DashboardApplication:
         config_path: Path,
         runner: Runner = _default_runner,
         connection_checker: Callable[[Path], dict[str, Any]] = check_tenable_connection,
+        tag_lister: Callable[[Path], Sequence[Mapping[str, Any]]] = list_tenable_tags,
         report_registry: ReportRegistry | None = None,
         backfill_state_provider: Callable[[], MainBackfillSourceState] | None = None,
         retention_state_provider: Callable[[], Mapping[str, Any]] | None = None,
@@ -806,6 +993,7 @@ class DashboardApplication:
         self.config = DashboardConfigStore(project_root=self.project_root, config_path=config_path)
         self.jobs = JobQueue(self.project_root, self.config.config_path, runner)
         self.connection_checker = connection_checker
+        self.tag_lister = tag_lister
         self.database_error: str | None = None
         try:
             self.database: DashboardDatabase | None = DashboardDatabase(
@@ -1136,6 +1324,65 @@ class DashboardApplication:
                 }
         return [results[client_id] for client_id in client_ids]
 
+    def list_client_tags(self, client_id: str) -> dict[str, Any]:
+        clients = {item["client_id"]: item for item in self.config.list_clients()}
+        client = clients.get(client_id)
+        if client is None:
+            raise KeyError("Cliente nao encontrado.")
+        discovered = self.tag_lister(self.config.client_env_path(client_id))
+        saved = {
+            str(item.get("tag_uuid") or ""): dict(item)
+            for item in client.get("tag_reports") or ()
+            if isinstance(item, Mapping) and str(item.get("tag_uuid") or "")
+        }
+        combined: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in discovered:
+            tag_uuid = str(raw.get("tag_uuid") or raw.get("uuid") or "").strip()
+            category_uuid = str(raw.get("category_uuid") or "").strip()
+            category_name = str(raw.get("category_name") or "").strip()
+            value = str(raw.get("value") or "").strip()
+            if not tag_uuid or not category_name or not value or tag_uuid in seen:
+                continue
+            selected = saved.get(tag_uuid, {})
+            combined.append({
+                "tag_uuid": tag_uuid,
+                "category_uuid": category_uuid,
+                "category_name": category_name,
+                "value": value,
+                "generate_report": bool(selected.get("generate_report", False)),
+                "include_temporal_comparison": bool(
+                    selected.get("include_temporal_comparison", False)
+                ),
+                "available": True,
+            })
+            seen.add(tag_uuid)
+        for tag_uuid, selected in saved.items():
+            if tag_uuid in seen:
+                continue
+            combined.append({
+                "tag_uuid": tag_uuid,
+                "category_uuid": str(selected.get("category_uuid") or ""),
+                "category_name": str(selected.get("category_name") or ""),
+                "value": str(selected.get("value") or ""),
+                "generate_report": bool(selected.get("generate_report", True)),
+                "include_temporal_comparison": bool(
+                    selected.get("include_temporal_comparison", False)
+                ),
+                "available": False,
+            })
+        combined.sort(key=lambda item: (
+            str(item["category_name"]).casefold(),
+            str(item["value"]).casefold(),
+            str(item["tag_uuid"]),
+        ))
+        return {
+            "client_id": client_id,
+            "tag_reports_enabled": bool(client.get("tag_reports_enabled", False)),
+            "tags": combined,
+            "fetched_at": _utc_now(),
+        }
+
     def state(self) -> dict[str, Any]:
         clients = self.config.list_clients()
         jobs = self.jobs.snapshot()
@@ -1220,6 +1467,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, {"reports": reports})
             except Exception as exc:
                 self._json_error(HTTPStatus.INTERNAL_SERVER_ERROR, _safe_error(str(exc), limit=500))
+            return
+        match = re.fullmatch(r"/api/clients/([^/]+)/tags", parsed.path)
+        if match:
+            try:
+                self._json(
+                    HTTPStatus.OK,
+                    self.app.list_client_tags(unquote(match.group(1))),
+                )
+            except KeyError as exc:
+                self._json_error(HTTPStatus.NOT_FOUND, _safe_error(str(exc), limit=300))
+            except Exception as exc:
+                status_code = int(getattr(exc, "status_code", 0) or 0)
+                if status_code in {401, 403, 429}:
+                    messages = {
+                        401: "Credenciais Tenable invalidas ou expiradas.",
+                        403: "A credencial nao possui permissao para consultar TAGs.",
+                        429: "A Tenable limitou temporariamente a consulta de TAGs.",
+                    }
+                    self._json_error(HTTPStatus(status_code), messages[status_code])
+                else:
+                    self._json_error(
+                        HTTPStatus.BAD_GATEWAY,
+                        _safe_error(str(exc), limit=300),
+                    )
             return
         match = re.fullmatch(r"/api/reports/(\d+)/download", parsed.path)
         if match:

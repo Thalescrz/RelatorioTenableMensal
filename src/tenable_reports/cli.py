@@ -1548,6 +1548,9 @@ def command_orchestrate(args: argparse.Namespace) -> int:
         last_success_bytes_by_client=retention_state.get(
             "last_success_bytes_by_client"
         ),
+        progress_callback=lambda event: print(
+            json.dumps(dict(event), ensure_ascii=False), flush=True
+        ),
     )
     # A dry run only plans commands and must remain usable without database
     # connectivity (or even the PostgreSQL driver) on the analyst's machine.

@@ -102,7 +102,20 @@
           <label>Access Key<input name="access_key" type="password" autocomplete="off" placeholder="Opcional agora"></label>
           <label>Secret Key<input name="secret_key" type="password" autocomplete="off" placeholder="Opcional agora"></label>
         </div>
-        <label>Tags para comparativo por rede<input name="tags" placeholder="Rede: Matriz, Rede: Filial"></label>
+        <section class="tag-config" aria-labelledby="tag-config-title">
+          <div class="tag-config-head">
+            <div><span>RELATÓRIOS POR TAG</span><strong id="tag-config-title">Escopos operacionais</strong></div>
+            <label class="switch-row"><input name="tag_reports_enabled" type="checkbox"><span class="switch-control"></span><em>Ativar</em></label>
+          </div>
+          <p>Uma única coleta geral alimenta os documentos selecionados abaixo.</p>
+          <div class="tag-toolbar">
+            <label class="tag-search"><span>⌕</span><input id="tag-search-input" type="search" placeholder="Filtrar TAGs" autocomplete="off"></label>
+            <button class="button ghost" id="fetch-tags-button" type="button" disabled>Buscar TAGs da Tenable</button>
+          </div>
+          <div class="tag-selector" id="tag-selector">
+            <div class="tag-empty">Salve o cliente e clique em “Buscar TAGs” para selecionar os relatórios.</div>
+          </div>
+        </section>
         <div class="check-grid">
           <label class="check"><input name="intelligence_enabled" type="checkbox" checked><span>Relatório customizado</span></label>
           <label class="check"><input name="was_enabled" type="checkbox" checked><span>Vulnerabilidades WEB</span></label>
