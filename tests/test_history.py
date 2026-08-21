@@ -10,6 +10,7 @@ import pytest
 
 from tenable_reports.application.history import (
     SQLiteSnapshotRepository,
+    _enrich_tag_datasets,
     finalize_history_publication,
     import_history_csv,
     prepare_dataset_history,
@@ -269,6 +270,35 @@ def test_prepare_history_enriches_each_tag_dataset_and_compacts_current_snapshot
     assert enriched["tag_history_status"] == "AVAILABLE"
     assert enriched["tag_history"][-1]["period_id"] == "2026-07"
     assert enriched["tag_history"][-1]["non_mitigated"] == 4
+
+
+def test_tag_enrichment_builds_asset_comparison_only_for_immediate_month(
+    tmp_path: Path,
+) -> None:
+    previous = _tag_history_snapshot("2026-06", total=8)
+    current = _tag_history_snapshot("2026-07", total=7)
+    tag_data = {
+        "tag": {
+            "tag_uuid": "tag-a",
+            "category_name": "Equipe",
+            "value": "Infra",
+            "include_temporal_comparison": True,
+        }
+    }
+    source = tmp_path / "tag-a" / "report-dataset.json"
+    source.parent.mkdir()
+    source.write_text(json.dumps(tag_data), encoding="utf-8")
+
+    outputs = _enrich_tag_datasets(
+        {"tag-a": (source, tag_data)},
+        snapshots=(previous,),
+        current=current,
+    )
+    enriched = json.loads(outputs["tag-a"].read_text(encoding="utf-8"))
+
+    assert [
+        row["period_id"] for row in enriched["tag_comparison"]["periods"]
+    ] == ["2026-06", "2026-07"]
 
 
 def test_two_compatible_months_publish_trends_and_same_tag_comparison() -> None:

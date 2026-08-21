@@ -1065,8 +1065,6 @@ def generate_customizations_report(
             _scan_health(document, data, temp, rendered)
         if _module_enabled(profile, "vm_previous_period_delta"):
             _previous_period(document, data, dataset, profile, rendered)
-        if _module_enabled(profile, "vm_network_comparison"):
-            _network_comparison(document, data, dataset, profile, mask_sensitive, rendered)
         if _module_enabled(profile, "vm_plugin_family"):
             _plugin_family(document, data, dataset, profile, rendered)
         if _module_enabled(profile, "vm_eol_software"):
@@ -1091,7 +1089,9 @@ def generate_customizations_report(
         {
             "module_id": module,
             "reason": (
-                "NO_COMPATIBLE_HISTORY"
+                "MOVED_TO_TAG_REPORT"
+                if module == "vm_network_comparison"
+                else "NO_COMPATIBLE_HISTORY"
                 if module in HISTORICAL_INTELLIGENCE_MODULES
                 else "NO_COMPATIBLE_DATA"
             ),

@@ -39,7 +39,6 @@ def test_customizations_are_kept_outside_the_base_document() -> None:
         assert set(result.rendered_modules) == {
             "vm_monthly_volume",
             "vm_previous_period_delta",
-            "vm_network_comparison",
             "scan_auth_health",
             "vm_plugin_family",
             "vm_eol_software",
@@ -54,7 +53,10 @@ def test_customizations_are_kept_outside_the_base_document() -> None:
                 ROOT / "clients/examples/client-profile-all-customizations.json"
             ).report.intelligence_modules
         )
-        assert result.omitted_modules == ()
+        assert result.omitted_modules == ({
+            "module_id": "vm_network_comparison",
+            "reason": "MOVED_TO_TAG_REPORT",
+        },)
         document = Document(output)
         text = _text(document)
         assert "JULHO/2026" in text
@@ -68,14 +70,8 @@ def test_customizations_are_kept_outside_the_base_document() -> None:
         assert "TENABLE CLOUD SECURITY (CONTAINER IMAGES)" in text
         assert "Vulnerabilidades Exploráveis por Vetor de Ataque" in text
         assert "Dados indisponíveis para este indicador." in text
-        assert "Principais ativos Vulneráveis por Rede" in text
-        assert "Rede de exemplo A" in text
-        assert "Rede de exemplo B" not in text
-        assert "Junho/26" in text
-        assert "Julho/26" in text
         assert "Exploitable" in text
-        assert "Posição anterior" in text
-        assert "Movimentação" in text
+        assert "Principais ativos Vulneráveis por Rede" not in text
         assert "Principais Aplicações “Unsupported”" in text
         assert "SUA MELHOR ALIADA NA JORNADA DA PROTEÇÃO DIGITAL." in text
         assert "METODOLOGIA, QUALIDADE E LIMITAÇÕES" not in text
@@ -106,7 +102,7 @@ def test_customization_modules_without_data_are_omitted_with_reason() -> None:
         assert result.rendered_modules == ()
         reasons = {item["module_id"]: item["reason"] for item in result.omitted_modules}
         assert reasons["vm_monthly_volume"] == "NO_COMPATIBLE_HISTORY"
-        assert reasons["vm_network_comparison"] == "NO_COMPATIBLE_HISTORY"
+        assert reasons["vm_network_comparison"] == "MOVED_TO_TAG_REPORT"
         assert reasons["cloud_container_images"] == "NO_COMPATIBLE_DATA"
 
 
@@ -166,8 +162,7 @@ def test_first_month_renders_current_baseline_and_explicit_no_data_messages() ->
         )
         text = _text(Document(result.output_path))
         assert "Não há histórico do período imediatamente anterior para comparação." in text
-        assert "Baseline do período atual" in text
-        assert "Movimentação" not in text
+        assert "Baseline do período atual" not in text
         assert "Neste mês não foram identificadas vulnerabilidades mitigadas" in text
         assert "Neste mês não foram identificados sistemas ou softwares sem suporte." in text
         assert "Neste mês não foram identificadas vulnerabilidades exploráveis" in text
@@ -247,15 +242,11 @@ def test_source_filter_notes_cover_custom_data_tables() -> None:
         text = _text(Document(output))
         for marker in (
             "Período main anterior",
-            "Tag = Rede:Rede de exemplo A",
-            "Variação de posição do ativo",
             "Agrupar por família de plugin",
             "Catálogo textual de fim de suporte",
             "Exploit Available e vetor CVSS v3",
             "Tecnologias WEB sem suporte",
             "Mitigadas: State = Fixed; Last Fixed = Junho 2026",
-            "Consulta 1: State = Active, New, Resurfaced; Last Seen = Junho/26",
-            "Consulta 2: State = Active, New, Resurfaced; Last Seen = Julho/26",
             "State = Fixed; Severity = Critical, High, Medium, Low; Last Fixed = 01/07/2026 a 31/07/2026",
             "Plugin > Exploit Available = Yes",
             "Plugin ID = 990001, 990002",

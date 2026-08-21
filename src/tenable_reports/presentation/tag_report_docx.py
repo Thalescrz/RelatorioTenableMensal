@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 from pathlib import Path
+import tempfile
 from typing import Any, Mapping
 
 from docx import Document
+from docx.enum.section import WD_SECTION
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from docx.shared import Cm
 
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation import base_report_docx as base
 from tenable_reports.presentation import editorial_catalog as copy
 from tenable_reports.presentation.full_base_report_docx import (
     FULL_TEMPLATE_VERSION,
-    _back_cover,
     _clear_body_after_cover_break,
     _compact_rows,
     _configure_styles,
@@ -29,6 +34,10 @@ from tenable_reports.presentation.full_base_report_docx import (
 )
 from tenable_reports.presentation.source_filters import add_source_filter_note
 from tenable_reports.presentation.translation import TextTranslator
+from tenable_reports.presentation.monthly_visuals import (
+    render_monthly_visual_bundle,
+    render_tag_asset_comparison,
+)
 
 
 TAG_REPORT_TITLE = "RELATÓRIO DE VULNERABILIDADES TENABLE POR TAG"
@@ -44,6 +53,25 @@ class TagReportRenderResult:
     top_open_rows: int
     comparison_rendered: bool
     masked_sensitive_fields: bool
+
+
+def _tag_back_cover(document: Any) -> None:
+    first_section = document.sections[0]
+    blank_first_references = [
+        deepcopy(reference)
+        for reference_tag in ("w:headerReference", "w:footerReference")
+        for reference in first_section._sectPr.findall(qn(reference_tag))
+        if reference.get(qn("w:type")) == "first"
+    ]
+    section = document.add_section(WD_SECTION.NEW_PAGE)
+    section.different_first_page_header_footer = True
+    for reference in reversed(blank_first_references):
+        section._sectPr.insert(0, reference)
+    paragraph = document.add_paragraph()
+    paragraph.paragraph_format.space_before = Cm(9)
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = paragraph.add_run(copy.BACK_COVER)
+    base._set_run_font(run, size=20, color=base.NAVY, bold=True)
 
 
 def _validate_tag_dataset(
@@ -166,6 +194,53 @@ def _tag_body(
     )
 
 
+def _temporal_comparison(
+    document: Any,
+    dataset: Mapping[str, Any],
+    tag: Mapping[str, Any],
+    *,
+    mask_sensitive: bool,
+) -> bool:
+    if not bool(tag.get("include_temporal_comparison", False)):
+        return False
+    status = str(dataset.get("tag_history_status") or "")
+    rows = [
+        item
+        for item in dataset.get("tag_history") or ()
+        if isinstance(item, Mapping)
+    ]
+    _heading(document, "Comparativo Mensal da TAG")
+    if status == "INCOMPATIBLE_PERIOD":
+        _paragraph(
+            document,
+            "O período deste relatório não corresponde a um mês civil completo; "
+            "a série mensal não é apresentada.",
+        )
+        return False
+    if status != "AVAILABLE" or not rows:
+        _paragraph(
+            document,
+            "Ainda não há histórico mensal comparável para esta TAG.",
+        )
+        return False
+    scope_label = f"TAG {tag['category_name']} - {tag['value']}"
+    with tempfile.TemporaryDirectory() as directory:
+        visual_count = render_monthly_visual_bundle(
+            document,
+            rows,
+            directory,
+            scope_label,
+        )
+        comparison = dataset.get("tag_comparison")
+        if isinstance(comparison, Mapping):
+            render_tag_asset_comparison(
+                document,
+                comparison,
+                mask_sensitive=mask_sensitive,
+            )
+    return visual_count == 5
+
+
 def generate_tag_report(
     *,
     template_path: str | Path,
@@ -181,6 +256,10 @@ def generate_tag_report(
     dataset = _load_dataset(Path(dataset_path))
     tag = _validate_tag_dataset(dataset, profile)
     document = Document(template)
+    # The corporate template has an empty even-page header.  Using the same
+    # default header on both sides is also more reliable in LibreOffice when a
+    # large table or chart is carried to the next page.
+    document.settings.odd_and_even_pages_header_footer = False
     _clear_body_after_cover_break(document)
     _configure_styles(document)
     period_label, period_range = base._period_labels(dataset["period"])
@@ -204,7 +283,13 @@ def generate_tag_report(
         mask_sensitive=mask_sensitive,
         translator=translator,
     )
-    _back_cover(document)
+    comparison_rendered = _temporal_comparison(
+        document,
+        dataset,
+        tag,
+        mask_sensitive=mask_sensitive,
+    )
+    _tag_back_cover(document)
     base._enable_field_updates(document)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -216,7 +301,6 @@ def generate_tag_report(
         tag_uuid=str(tag["tag_uuid"]),
         top_asset_rows=len(dataset.get("top_assets") or []),
         top_open_rows=top_open_rows,
-        comparison_rendered=False,
+        comparison_rendered=comparison_rendered,
         masked_sensitive_fields=mask_sensitive,
     )
-

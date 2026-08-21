@@ -694,13 +694,49 @@ def _enrich_tag_datasets(
             enriched["tag_history"] = []
         else:
             enriched["tag_history_status"] = "AVAILABLE"
-            enriched["tag_history"] = list(
-                tag_year_history(
-                    snapshots,
-                    current=current,
-                    tag_uuid=tag_uuid,
-                )
+            history = list(
+                tag_year_history(snapshots, current=current, tag_uuid=tag_uuid)
             )
+            enriched["tag_history"] = history
+            try:
+                current_year, current_month = (
+                    int(value) for value in current.period_id.split("-", 1)
+                )
+            except (TypeError, ValueError):
+                previous_period_id = ""
+            else:
+                previous_year = current_year if current_month > 1 else current_year - 1
+                previous_month = current_month - 1 if current_month > 1 else 12
+                previous_period_id = f"{previous_year:04d}-{previous_month:02d}"
+            history_by_period = {
+                str(row.get("period_id") or ""): row for row in history
+            }
+            previous_row = history_by_period.get(previous_period_id)
+            current_row = history_by_period.get(current.period_id)
+            if (
+                previous_row is not None
+                and current_row is not None
+                and previous_row.get("availability") == "AVAILABLE"
+                and current_row.get("availability") == "AVAILABLE"
+                and isinstance(previous_row.get("top_assets"), list)
+                and isinstance(current_row.get("top_assets"), list)
+            ):
+                enriched["tag_comparison"] = {
+                    "periods": [
+                        {
+                            "period_id": previous_row["period_id"],
+                            "label": previous_row["label"],
+                            "top_assets": previous_row["top_assets"],
+                        },
+                        {
+                            "period_id": current_row["period_id"],
+                            "label": current_row["label"],
+                            "top_assets": current_row["top_assets"],
+                        },
+                    ]
+                }
+            else:
+                enriched.pop("tag_comparison", None)
         output = source_path.parent / "report-dataset-with-history.json"
         _write_enriched_dataset(output, enriched)
         outputs[tag_uuid] = output
