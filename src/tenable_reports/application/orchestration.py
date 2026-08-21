@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import hashlib
+import inspect
 import re
 import shutil
 import subprocess
 import sys
 import time
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
@@ -186,7 +188,8 @@ class OrchestrationResult:
         }
 
 
-CommandRunner = Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]]
+ProgressCallback = Callable[[Mapping[str, Any]], None]
+CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def _reject_embedded_secrets(value: Any, path: str = "$") -> None:
@@ -529,16 +532,86 @@ def build_client_command(
 def _default_runner(
     command: Sequence[str],
     working_directory: Path,
+    progress_callback: ProgressCallback | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    process = subprocess.Popen(
         list(command),
         cwd=working_directory,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
         errors="replace",
-        check=False,
+        bufsize=1,
     )
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+
+    def drain_stderr() -> None:
+        if process.stderr is not None:
+            stderr_parts.extend(process.stderr)
+
+    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+    stderr_thread.start()
+    if process.stdout is not None:
+        for line in process.stdout:
+            stdout_parts.append(line)
+            if progress_callback is None:
+                continue
+            try:
+                event = json.loads(line.strip())
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if (
+                isinstance(event, Mapping)
+                and event.get("event") == "TAG_REPORT_PROGRESS"
+            ):
+                try:
+                    progress_callback(event)
+                except Exception:
+                    pass
+    return_code = process.wait()
+    stderr_thread.join()
+    return subprocess.CompletedProcess(
+        list(command),
+        return_code,
+        stdout="".join(stdout_parts),
+        stderr="".join(stderr_parts),
+    )
+
+
+def _run_with_optional_progress(
+    runner: CommandRunner,
+    command: Sequence[str],
+    working_directory: Path,
+    progress_callback: ProgressCallback | None,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        parameters = inspect.signature(runner).parameters.values()
+    except (TypeError, ValueError):
+        parameters = ()
+    if any(
+        item.name == "progress_callback"
+        or item.kind is inspect.Parameter.VAR_KEYWORD
+        for item in parameters
+    ):
+        return runner(
+            command,
+            working_directory,
+            progress_callback=progress_callback,
+        )
+    positional = [
+        item for item in parameters
+        if item.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }
+    ]
+    if len(positional) >= 3 or any(
+        item.kind is inspect.Parameter.VAR_POSITIONAL for item in parameters
+    ):
+        return runner(command, working_directory, progress_callback)
+    return runner(command, working_directory)
 
 
 def _safe_error(value: str) -> str:
@@ -588,6 +661,7 @@ def _execute_client(
     run_id: str,
     attempt_number: int,
     origin: str,
+    progress_callback: ProgressCallback | None = None,
     append_log: bool = False,
 ) -> ClientExecutionResult:
     started = datetime.now(timezone.utc)
@@ -605,7 +679,22 @@ def _execute_client(
     error_code: str | None = None
     retryable = False
     try:
-        completed = runner(command, working_directory)
+        def forward_progress(event: Mapping[str, Any]) -> None:
+            if progress_callback is None:
+                return
+            payload = dict(event)
+            payload.setdefault("client_id", client.client_id)
+            try:
+                progress_callback(payload)
+            except Exception:
+                pass
+
+        completed = _run_with_optional_progress(
+            runner,
+            command,
+            working_directory,
+            forward_progress if progress_callback is not None else None,
+        )
         ended = datetime.now(timezone.utc)
         duration = round(time.monotonic() - monotonic_started, 3)
         if completed.returncode != 0:
@@ -750,6 +839,7 @@ def _execute_client_with_retry(
     sleeper: Callable[[float], None],
     disk_usage: Callable[[Any], Any],
     last_success_bytes: int | None,
+    progress_callback: ProgressCallback | None = None,
 ) -> ClientExecutionResult:
     max_attempts = config.retry_max_attempts if request.mode == "automatic" else 1
     attempts: list[ClientAttemptResult] = []
@@ -826,6 +916,7 @@ def _execute_client_with_retry(
             run_id=client_run_id,
             attempt_number=attempt_number,
             origin=origin,
+            progress_callback=progress_callback,
             append_log=attempt_number > 1,
         )
         attempts.extend(result.attempts)
@@ -854,6 +945,7 @@ def run_orchestration(
     history_confirmed_run_ids: Sequence[str] = (),
     main_run_ids: Sequence[str] = (),
     retry_required_run_ids: Sequence[str] = (),
+    progress_callback: ProgressCallback | None = None,
 ) -> OrchestrationResult:
     _validate_request(request)
     clients = _select_clients(config, request.selected_client_ids)
@@ -948,6 +1040,7 @@ def run_orchestration(
                     last_success_bytes=(last_success_bytes_by_client or {}).get(
                         client.client_id
                     ),
+                    progress_callback=progress_callback,
                 ): client.client_id
                 for client, _, log_path, _, logical_job_id in jobs
             }

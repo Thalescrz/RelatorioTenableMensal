@@ -29,6 +29,9 @@ from tenable_reports.application.failures import (
 from tenable_reports.application.normalize import normalize_collections
 from tenable_reports.application.normalize_was import normalize_was_collection
 from tenable_reports.application.report_dataset import build_report_dataset_from_snapshot
+from tenable_reports.application.tag_report_dataset import (
+    build_tag_report_datasets_from_snapshot,
+)
 from tenable_reports.application.history import (
     SQLiteSnapshotRepository,
     finalize_history_publication,
@@ -47,7 +50,10 @@ from tenable_reports.application.orchestration import (
     load_orchestration_config,
     run_orchestration,
 )
-from tenable_reports.application.publishing import create_publication_manifest
+from tenable_reports.application.publishing import (
+    PublicationDocument,
+    create_publication_manifest,
+)
 from tenable_reports.application.retention import (
     apply_cleanup_plan,
     plan_published_run_cleanup,
@@ -95,10 +101,14 @@ from tenable_reports.presentation.base_report_docx import (
     generate_base_report,
 )
 from tenable_reports.presentation.full_base_report_docx import generate_full_base_report
-from tenable_reports.presentation.report_filenames import report_filename
+from tenable_reports.presentation.report_filenames import (
+    report_filename,
+    tag_report_filename,
+)
 from tenable_reports.presentation.customizations_report_docx import (
     generate_customizations_report,
 )
+from tenable_reports.presentation.tag_report_docx import generate_tag_report
 
 
 SELECTIVE_PROPERTIES = (
@@ -133,6 +143,9 @@ class _CollectedPeriodExecution:
     history_publication: Any
     selected_tag_count: int
     was_collection_status: str
+    tag_artifacts: tuple[Any, ...] = ()
+    tag_enriched_dataset_paths: Mapping[str, Path] | None = None
+    tag_reports_requested: int = 0
     warnings: tuple[Mapping[str, Any], ...] = ()
     snapshot_repository: Any = None
     report_registry: Any = None
@@ -173,6 +186,7 @@ class _CollectedPeriodExecution:
             "general_collection_filtered_by_tags": False,
             "network_comparison_tags_selected": self.selected_tag_count > 0,
             "selected_tag_count": self.selected_tag_count,
+            "tag_reports_requested": self.tag_reports_requested,
             "dataset": str(self.dataset_path.resolve()),
             "canonical_dataset": str(Path(self.artifact.dataset_path).resolve()),
             "history_status": (
@@ -483,18 +497,37 @@ def _selected_tags(
     interactive = bool(getattr(args, "select_tags", False))
     explicit = tuple(getattr(args, "tags", None) or ())
     configured = tuple(profile.report.network_comparison_tags)
-    if interactive and (explicit or configured):
+    tag_report_config = profile.report.tag_reports
+    report_tags = tuple(
+        VmTag(
+            uuid=item.tag_uuid,
+            category_uuid=item.category_uuid,
+            category_name=item.category_name,
+            value=item.value,
+        )
+        for item in tag_report_config.tags
+        if tag_report_config.enabled and item.generate_report
+    )
+    if interactive and (explicit or configured or report_tags):
         raise ValueError(
             "--select-tags nao pode ser combinado com --tag nem "
-            "report.network_comparison_tags."
+            "TAGs configuradas no perfil."
         )
     selectors = explicit or configured
-    if not interactive and not selectors:
-        return ()
-    available = parse_tag_values(client.list_tag_values())
     if interactive:
+        available = parse_tag_values(client.list_tag_values())
         return prompt_tag_selection(available)
-    return resolve_tag_selectors(available, selectors)
+    resolved = ()
+    if selectors:
+        available = parse_tag_values(client.list_tag_values())
+        resolved = resolve_tag_selectors(available, selectors)
+    combined: list[VmTag] = []
+    seen: set[str] = set()
+    for tag in (*report_tags, *resolved):
+        if tag.uuid not in seen:
+            combined.append(tag)
+            seen.add(tag.uuid)
+    return tuple(combined)
 
 
 def command_preview_period(args: argparse.Namespace) -> int:
@@ -787,6 +820,17 @@ def command_build_report_dataset(args: argparse.Namespace) -> int:
         include_output=args.include_output,
         execution_type=execution_type,
     )
+    tag_dataset_bundle = build_tag_report_datasets_from_snapshot(
+        profile=profile,
+        run_id=actual_run_id,
+        period=period,
+        output_root=output_root,
+        include_output=args.include_output,
+        execution_type=execution_type,
+    )
+    tag_dataset_paths = {
+        item.tag.uuid: item.dataset_path for item in tag_dataset_bundle.artifacts
+    }
     dataset = artifact.result.dataset
     history_publication = None
     if not args.skip_history:
@@ -1007,6 +1051,7 @@ def _execute_period(
             profile=profile,
             dataset_path=artifact.dataset_path,
             normalized_findings_path=normalized.findings_path,
+            tag_dataset_paths=tag_dataset_paths,
             database_path=history_database,
             output_path=artifact.directory / "report-dataset-with-history.json",
             csv_path=getattr(args, "history_export_csv", None),
@@ -1017,6 +1062,16 @@ def _execute_period(
     else:
         repository = None
         report_registry = None
+    tag_report_config = profile.report.tag_reports
+    requested_tag_reports = sum(
+        tag_report_config.enabled and item.generate_report
+        for item in tag_report_config.tags
+    )
+    tag_enriched_dataset_paths = (
+        history_publication.tag_enriched_dataset_paths
+        if history_publication is not None
+        else tag_dataset_paths
+    )
     return _CollectedPeriodExecution(
         profile=profile,
         output_root=output_root,
@@ -1027,7 +1082,10 @@ def _execute_period(
         history_publication=history_publication,
         selected_tag_count=len(selected_tags),
         was_collection_status=was_collection_status,
-        warnings=collection_warnings,
+        tag_artifacts=tag_dataset_bundle.artifacts,
+        tag_enriched_dataset_paths=tag_enriched_dataset_paths,
+        tag_reports_requested=requested_tag_reports,
+        warnings=tuple((*collection_warnings, *tag_dataset_bundle.warnings)),
         snapshot_repository=repository,
         report_registry=report_registry,
     )
@@ -1255,6 +1313,69 @@ def command_run_client(args: argparse.Namespace) -> int:
         output_path=custom_output,
         mask_sensitive=args.mask_sensitive,
     )
+    publication_documents: list[PublicationDocument] = [
+        PublicationDocument(base_result.output_path, "base"),
+        PublicationDocument(custom_result.output_path, "custom"),
+    ]
+    tag_documents: list[dict[str, str]] = []
+    tag_warnings = [dict(item) for item in getattr(collected, "warnings", ())]
+    tag_artifacts = tuple(getattr(collected, "tag_artifacts", ()) or ())
+    tag_enriched_paths = dict(
+        getattr(collected, "tag_enriched_dataset_paths", None) or {}
+    )
+    requested_tag_reports = int(
+        getattr(collected, "tag_reports_requested", len(tag_artifacts)) or 0
+    )
+    for index, tag_artifact in enumerate(tag_artifacts, start=1):
+        tag = tag_artifact.tag
+        print(json.dumps({
+            "event": "TAG_REPORT_PROGRESS",
+            "current": index,
+            "total": requested_tag_reports,
+            "tag_uuid": tag.uuid,
+            "tag_label": tag.label,
+        }, ensure_ascii=False), flush=True)
+        tag_dataset_path = tag_enriched_paths.get(
+            tag.uuid, Path(tag_artifact.dataset_path)
+        )
+        tag_output = report_directory / tag_report_filename(
+            profile.display_name,
+            period,
+            tag.category_name,
+            tag.value,
+            tag.uuid,
+        )
+        try:
+            tag_result = generate_tag_report(
+                template_path=args.template,
+                dataset_path=tag_dataset_path,
+                profile=profile,
+                output_path=tag_output,
+                mask_sensitive=args.mask_sensitive,
+            )
+        except Exception as exc:
+            tag_warnings.append({
+                "code": "TAG_REPORT_RENDER_FAILED",
+                "tag_uuid": tag.uuid,
+                "tag_label": tag.label,
+                "stage": "tag_report_render",
+                "message": str(exc)[:500],
+            })
+            continue
+        publication_documents.append(PublicationDocument(
+            path=tag_result.output_path,
+            document_kind="tag",
+            tag_uuid=tag.uuid,
+            tag_category=tag.category_name,
+            tag_value=tag.value,
+        ))
+        tag_documents.append({
+            "tag_uuid": tag.uuid,
+            "tag_label": tag.label,
+            "path": str(Path(tag_result.output_path).resolve()),
+        })
+    tag_reports_generated = len(tag_documents)
+    tag_reports_failed = max(0, requested_tag_reports - tag_reports_generated)
     publication_manifest = create_publication_manifest(
         output_path=report_directory / "publication-manifest.json",
         client_id=profile.client_id,
@@ -1263,7 +1384,7 @@ def command_run_client(args: argparse.Namespace) -> int:
         execution_type=execution_type,
         period=period.to_dict(),
         dataset_path=collected.dataset_path,
-        documents=(base_result.output_path, custom_result.output_path),
+        documents=tuple(publication_documents),
         history_database=collected.history_database_path,
         history_store=collected.history_store,
         origin=getattr(args, "origin", None),
@@ -1336,12 +1457,19 @@ def command_run_client(args: argparse.Namespace) -> int:
             }
     payload = collected.to_dict()
     payload.update({
-        "status": "complete",
+        "status": (
+            "complete_with_warnings" if tag_reports_failed else "complete"
+        ),
         "base_document": str(base_result.output_path.resolve()),
         "customizations_document": str(custom_result.output_path.resolve()),
         "rendered_customization_modules": list(custom_result.rendered_modules),
         "omitted_customization_modules": list(custom_result.omitted_modules),
         "publication_manifest": str(publication_manifest.resolve()),
+        "tag_reports_requested": requested_tag_reports,
+        "tag_reports_generated": tag_reports_generated,
+        "tag_reports_failed": tag_reports_failed,
+        "tag_documents": tag_documents,
+        "warnings": tag_warnings,
         "external_distribution_performed": False,
         "cleanup": cleanup_payload,
     })

@@ -116,6 +116,52 @@ def _docx_text(path: Path) -> str:
 
 
 class OrchestrationTests(unittest.TestCase):
+    def test_orchestration_forwards_tag_progress_and_preserves_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = json.loads(EXAMPLE_CONFIG.read_text(encoding="utf-8"))
+            payload["defaults"]["output_root"] = str(Path(directory) / "data")
+            payload["clients"] = payload["clients"][:1]
+            config_path = ROOT / "orchestration" / "clients.test-tag-progress.json"
+            progress_events: list[dict] = []
+
+            def runner(command, _, progress_callback=None):
+                progress_callback({
+                    "event": "TAG_REPORT_PROGRESS",
+                    "current": 1,
+                    "total": 2,
+                    "tag_uuid": "tag-a",
+                    "tag_label": "Equipe: Infra",
+                })
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({
+                        "status": "complete_with_warnings",
+                        "client_id": "cliente-a-exemplo",
+                        "tag_reports_generated": 1,
+                        "tag_reports_failed": 1,
+                        "warnings": [{"tag_uuid": "tag-b"}],
+                    }) + "\n",
+                    stderr="",
+                )
+
+            try:
+                config_path.write_text(json.dumps(payload), encoding="utf-8")
+                result = run_orchestration(
+                    config=load_orchestration_config(config_path),
+                    request=OrchestrationRequest(mode="manual", days=30),
+                    runner=runner,
+                    progress_callback=progress_events.append,
+                    now=datetime(2026, 8, 21, 12, tzinfo=timezone.utc),
+                )
+            finally:
+                config_path.unlink(missing_ok=True)
+
+        self.assertEqual(result.clients[0].status, "COMPLETE")
+        self.assertEqual(result.clients[0].payload["status"], "complete_with_warnings")
+        self.assertEqual(progress_events[0]["client_id"], "cliente-a-exemplo")
+        self.assertEqual(progress_events[0]["tag_uuid"], "tag-a")
+
     def test_example_uses_ephemeral_storage_defaults(self) -> None:
         config = load_orchestration_config(EXAMPLE_CONFIG)
 

@@ -4,6 +4,8 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from tenable_reports.application.retention import (
     RetentionPolicy,
     apply_cleanup_plan,
@@ -144,6 +146,38 @@ def test_published_cleanup_requires_document_and_history_confirmation(tmp_path: 
             assert "confirmad" in str(exc).lower()
         else:
             raise AssertionError("A limpeza não pode ignorar as confirmações.")
+
+
+def test_tag_datasets_follow_the_same_publication_and_history_cleanup_gates(
+    tmp_path: Path,
+) -> None:
+    tag_dataset = (
+        tmp_path / "report-datasets" / "cliente-a" / "run-a"
+        / "2026-07" / "tags" / "tag-a" / "report-dataset.json"
+    )
+    tag_dataset.parent.mkdir(parents=True)
+    tag_dataset.write_text("{}", encoding="utf-8")
+
+    for publication, history in ((False, True), (True, False)):
+        with pytest.raises(ValueError):
+            plan_published_run_cleanup(
+                scoped_output_root=tmp_path,
+                client_id="cliente-a",
+                run_id="run-a",
+                publication_confirmed=publication,
+                history_confirmed=history,
+            )
+        assert tag_dataset.is_file()
+
+    plan = plan_published_run_cleanup(
+        scoped_output_root=tmp_path,
+        client_id="cliente-a",
+        run_id="run-a",
+        publication_confirmed=True,
+        history_confirmed=True,
+    )
+    apply_cleanup_plan(scoped_output_root=tmp_path, candidates=plan.candidates)
+    assert not tag_dataset.exists()
 
 
 def test_failed_staging_is_retained_for_seven_days_then_becomes_eligible(
