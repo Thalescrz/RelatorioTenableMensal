@@ -26,6 +26,8 @@ from tenable_reports.domain.history import (
     previous_period_overview,
     snapshots_compatible,
     summary_from_dataset,
+    tag_snapshot_from_dataset,
+    tag_year_history,
     vulnerability_evolution,
 )
 from tenable_reports.domain.report_reference import (
@@ -61,6 +63,7 @@ class HistoryPreparation:
     repository_backend: str
     repository_location: str
     enriched_dataset_path: Path
+    tag_enriched_dataset_paths: Mapping[str, Path]
     csv_path: Path | None
     history_status: str
 
@@ -323,6 +326,7 @@ def _history_snapshot(
     dataset: Mapping[str, Any],
     dataset_path: Path,
     normalized_findings_path: Path,
+    tag_datasets: Iterable[Mapping[str, Any]] = (),
 ) -> HistorySnapshot:
     period = dataset.get("period")
     if not isinstance(period, Mapping):
@@ -351,6 +355,19 @@ def _history_snapshot(
     snapshot_id = hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+    legacy_tag_rows = tuple(
+        dict(item)
+        for item in customizations.get("network_tag_snapshots") or ()
+        if isinstance(item, Mapping)
+    )
+    tag_rows_by_uuid = {
+        str(item.get("tag_uuid") or ""): item
+        for item in legacy_tag_rows
+        if str(item.get("tag_uuid") or "")
+    }
+    for tag_dataset in tag_datasets:
+        compact = tag_snapshot_from_dataset(tag_dataset)
+        tag_rows_by_uuid[compact["tag_uuid"]] = compact
     return HistorySnapshot(
         snapshot_id=snapshot_id,
         run_id=str(dataset.get("run_id") or ""),
@@ -363,11 +380,7 @@ def _history_snapshot(
         open_finding_keys=open_keys,
         fixed_finding_keys=fixed_keys,
         resurfaced_finding_keys=resurfaced_keys,
-        network_tag_snapshots=tuple(
-            dict(item)
-            for item in customizations.get("network_tag_snapshots") or ()
-            if isinstance(item, Mapping)
-        ),
+        tag_snapshots=tuple(tag_rows_by_uuid[key] for key in sorted(tag_rows_by_uuid)),
         open_plugin_counts=open_plugin_counts,
         source_dataset_path=str(dataset_path.resolve()),
         source_dataset_sha256=hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
@@ -446,6 +459,7 @@ def _export_csv(path: Path, snapshots: Iterable[HistorySnapshot]) -> None:
         "snapshot_id", "client_id", "tenant_id", "execution_type", "period_mode",
         "timezone", "period_id", "period_start_at", "period_end_at", "run_id",
         "generated_at", "metric_definition_version", "scope_hash", "summary_json",
+        "tag_snapshots_json",
     )
     rows: list[dict[str, Any]] = []
     for snapshot in snapshots:
@@ -464,6 +478,9 @@ def _export_csv(path: Path, snapshots: Iterable[HistorySnapshot]) -> None:
             "metric_definition_version": snapshot.compatibility.metric_definition_version,
             "scope_hash": snapshot.compatibility.scope_hash,
             "summary_json": json.dumps(snapshot.summary, ensure_ascii=False, sort_keys=True),
+            "tag_snapshots_json": json.dumps(
+                list(snapshot.tag_snapshots), ensure_ascii=False, sort_keys=True
+            ),
         })
     from io import StringIO
 
@@ -507,6 +524,22 @@ def import_history_csv(
                 raise ValueError(
                     f"summary_json precisa ser objeto na linha {line_number}."
                 )
+            raw_tag_snapshots = str(row.get("tag_snapshots_json") or "").strip()
+            if raw_tag_snapshots:
+                try:
+                    tag_snapshots = json.loads(raw_tag_snapshots)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"tag_snapshots_json invalido no CSV historico, linha {line_number}."
+                    ) from exc
+                if not isinstance(tag_snapshots, list) or any(
+                    not isinstance(item, Mapping) for item in tag_snapshots
+                ):
+                    raise ValueError(
+                        f"tag_snapshots_json precisa ser lista na linha {line_number}."
+                    )
+            else:
+                tag_snapshots = []
             compatibility = SnapshotCompatibility(
                 client_id=str(row.get("client_id") or ""),
                 tenant_id=str(row.get("tenant_id") or ""),
@@ -542,7 +575,7 @@ def import_history_csv(
                 open_finding_keys=(),
                 fixed_finding_keys=(),
                 resurfaced_finding_keys=(),
-                network_tag_snapshots=(),
+                tag_snapshots=tuple(dict(item) for item in tag_snapshots),
                 source_dataset_path=f"csv:{source.resolve()}",
             )
             store.publish(snapshot)
@@ -609,12 +642,78 @@ def _write_enriched_dataset(path: Path, data: Mapping[str, Any]) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def _read_tag_datasets(
+    paths: Mapping[str, str | Path] | None,
+    *,
+    profile: ClientProfile,
+    run_id: str,
+) -> dict[str, tuple[Path, dict[str, Any]]]:
+    datasets: dict[str, tuple[Path, dict[str, Any]]] = {}
+    for expected_uuid, raw_path in (paths or {}).items():
+        path = Path(raw_path)
+        data = _read_dataset(path)
+        tag = data.get("tag")
+        if not isinstance(tag, Mapping):
+            raise ValueError(f"Dataset por TAG sem identificacao valida: {path}")
+        tag_uuid = str(tag.get("tag_uuid") or "").strip()
+        if tag_uuid != str(expected_uuid):
+            raise ValueError("O UUID informado nao corresponde ao dataset por TAG.")
+        if data.get("client_id") != profile.client_id:
+            raise ValueError("O dataset por TAG nao pertence ao cliente selecionado.")
+        if str(data.get("run_id") or "") != run_id:
+            raise ValueError("O dataset por TAG nao pertence ao run_id selecionado.")
+        datasets[tag_uuid] = (path, data)
+    return datasets
+
+
+def _enrich_tag_datasets(
+    datasets: Mapping[str, tuple[Path, Mapping[str, Any]]],
+    *,
+    snapshots: Iterable[HistorySnapshot],
+    current: HistorySnapshot,
+) -> dict[str, Path]:
+    outputs: dict[str, Path] = {}
+    compatible_monthly = (
+        current.compatibility.period_mode == "PREVIOUS_CALENDAR_MONTH"
+        and len(current.period_id) == 7
+        and current.period_id[4:5] == "-"
+    )
+    for tag_uuid, (source_path, data) in datasets.items():
+        enriched = dict(data)
+        tag = data.get("tag")
+        comparison_enabled = bool(
+            tag.get("include_temporal_comparison", False)
+            if isinstance(tag, Mapping)
+            else False
+        )
+        if not comparison_enabled:
+            enriched["tag_history_status"] = "DISABLED"
+            enriched["tag_history"] = []
+        elif not compatible_monthly:
+            enriched["tag_history_status"] = "INCOMPATIBLE_PERIOD"
+            enriched["tag_history"] = []
+        else:
+            enriched["tag_history_status"] = "AVAILABLE"
+            enriched["tag_history"] = list(
+                tag_year_history(
+                    snapshots,
+                    current=current,
+                    tag_uuid=tag_uuid,
+                )
+            )
+        output = source_path.parent / "report-dataset-with-history.json"
+        _write_enriched_dataset(output, enriched)
+        outputs[tag_uuid] = output
+    return outputs
+
+
 def prepare_dataset_history(
     *,
     profile: ClientProfile,
     dataset_path: str | Path,
     normalized_findings_path: str | Path,
     output_path: str | Path,
+    tag_dataset_paths: Mapping[str, str | Path] | None = None,
     registry: ReportRegistry,
     repository: SnapshotRepository | None = None,
     database_path: str | Path | None = None,
@@ -625,11 +724,18 @@ def prepare_dataset_history(
     data = _read_dataset(dataset_file)
     if data.get("client_id") != profile.client_id:
         raise ValueError("O dataset nao pertence ao cliente selecionado.")
+    run_id = str(data.get("run_id") or "")
+    tag_datasets = _read_tag_datasets(
+        tag_dataset_paths,
+        profile=profile,
+        run_id=run_id,
+    )
     current = _history_snapshot(
         profile=profile,
         dataset=data,
         dataset_path=dataset_file,
         normalized_findings_path=Path(normalized_findings_path),
+        tag_datasets=(value for _, value in tag_datasets.values()),
     )
     candidate = _candidate_for_snapshot(current, data, origin_override=origin)
     reference_key = reference_key_for_candidate(candidate)
@@ -652,6 +758,11 @@ def prepare_dataset_history(
     )
     output = Path(output_path)
     _write_enriched_dataset(output, enriched)
+    tag_enriched_paths = _enrich_tag_datasets(
+        tag_datasets,
+        snapshots=main_snapshots,
+        current=current,
+    )
     backend, location, local_database = _repository_metadata(repository, database_path)
     return HistoryPreparation(
         current=current,
@@ -663,6 +774,7 @@ def prepare_dataset_history(
         repository_backend=backend,
         repository_location=location,
         enriched_dataset_path=output,
+        tag_enriched_dataset_paths=tag_enriched_paths,
         csv_path=Path(csv_path) if csv_path else None,
         history_status=history_status,
     )

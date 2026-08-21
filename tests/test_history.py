@@ -19,6 +19,11 @@ from tenable_reports.application.report_registry import InMemoryReportRegistry
 from tenable_reports.config.profile import load_client_profile
 from tenable_reports.infrastructure.jsonl_io import write_jsonl_gzip_exclusive
 from tenable_reports.domain.fingerprints import fingerprint_finding_key
+from tenable_reports.domain.history import (
+    HistorySnapshot,
+    SnapshotCompatibility,
+    tag_year_history,
+)
 from tenable_reports.application.retention import (
     apply_cleanup_plan,
     plan_published_run_cleanup,
@@ -112,6 +117,158 @@ def _write_period(directory: Path, value: dict, keys: list[dict]) -> tuple[Path,
         "".join(json.dumps(item) + "\n" for item in keys), encoding="utf-8"
     )
     return dataset, normalized
+
+
+def _tag_history_snapshot(
+    period_id: str,
+    *,
+    total: int,
+    tag_uuid: str = "tag-a",
+) -> HistorySnapshot:
+    year, month = (int(value) for value in period_id.split("-"))
+    next_year = year + (1 if month == 12 else 0)
+    next_month = 1 if month == 12 else month + 1
+    compatibility = SnapshotCompatibility(
+        client_id="cliente-exemplo",
+        tenant_id="tenable-cloud-global",
+        execution_type="AUTOMATIC_MONTHLY",
+        period_mode="PREVIOUS_CALENDAR_MONTH",
+        timezone="America/Fortaleza",
+        metric_definition_version="report-definition-v1.2",
+        scope_hash="scope-a",
+    )
+    return HistorySnapshot(
+        snapshot_id=f"snapshot-{period_id}-{tag_uuid}",
+        run_id=f"run-{period_id}",
+        period_id=period_id,
+        period_start_at=f"{year:04d}-{month:02d}-01T03:00:00Z",
+        period_end_at=f"{next_year:04d}-{next_month:02d}-01T03:00:00Z",
+        generated_at=f"{next_year:04d}-{next_month:02d}-01T03:00:00Z",
+        compatibility=compatibility,
+        summary={"non_mitigated": total},
+        open_finding_keys=(),
+        fixed_finding_keys=(),
+        resurfaced_finding_keys=(),
+        tag_snapshots=(
+            {
+                "tag_uuid": tag_uuid,
+                "category_name": "Equipe",
+                "value": "Infra",
+                "summary": {
+                    "non_mitigated": total,
+                    "non_mitigated_by_severity": {
+                        "critical": total,
+                        "high": 0,
+                        "medium": 0,
+                        "low": 0,
+                    },
+                    "mitigated": 1,
+                    "mitigated_by_severity": {
+                        "critical": 0,
+                        "high": 1,
+                        "medium": 0,
+                        "low": 0,
+                    },
+                    "new": 2,
+                    "new_by_severity": {
+                        "critical": 0,
+                        "high": 1,
+                        "medium": 1,
+                        "low": 0,
+                    },
+                },
+                "top_assets": [],
+            },
+        ),
+    )
+
+
+def test_legacy_network_tag_snapshots_load_as_generic_tag_snapshots() -> None:
+    original = _tag_history_snapshot("2026-01", total=10)
+    payload = original.to_dict()
+    payload["network_tag_snapshots"] = payload.pop("tag_snapshots")
+
+    snapshot = HistorySnapshot.from_dict(payload)
+
+    assert snapshot.tag_snapshots[0]["tag_uuid"] == "tag-a"
+    stored = snapshot.to_dict()
+    assert "tag_snapshots" in stored
+    assert "network_tag_snapshots" not in stored
+
+
+def test_tag_year_history_marks_missing_month_without_zero() -> None:
+    rows = tag_year_history(
+        (
+            _tag_history_snapshot("2025-12", total=99),
+            _tag_history_snapshot("2026-01", total=10),
+            _tag_history_snapshot("2026-03", total=8),
+            _tag_history_snapshot("2026-03", total=70, tag_uuid="tag-b"),
+        ),
+        current=_tag_history_snapshot("2026-04", total=7),
+        tag_uuid="tag-a",
+    )
+
+    assert [row["period_id"] for row in rows] == [
+        "2026-01",
+        "2026-02",
+        "2026-03",
+        "2026-04",
+    ]
+    assert rows[1] == {
+        "period_id": "2026-02",
+        "label": "Fevereiro/2026",
+        "availability": "UNAVAILABLE",
+    }
+    assert rows[2]["non_mitigated"] == 8
+    assert rows[3]["non_mitigated"] == 7
+
+
+def test_prepare_history_enriches_each_tag_dataset_and_compacts_current_snapshot(
+    tmp_path: Path,
+) -> None:
+    profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+    data = _dataset(
+        "2026-07",
+        "2026-07-01T03:00:00Z",
+        "2026-08-01T03:00:00Z",
+        total=12,
+    )
+    dataset_path, findings_path = _write_period(
+        tmp_path,
+        data,
+        [{"finding_key": "finding-july", "state": "OPEN", "last_found_at": "2026-07-15T12:00:00Z"}],
+    )
+    tag_data = deepcopy(data)
+    tag_data["document_kind"] = "tag"
+    tag_data["tag"] = {
+        "tag_uuid": "tag-a",
+        "category_uuid": "category-team",
+        "category_name": "Equipe",
+        "value": "Infra",
+        "include_temporal_comparison": True,
+    }
+    tag_data["metrics"]["non_mitigated"]["total"] = 4
+    tag_data["top_assets"] = [{"source_asset_id": "asset-a", "total": 4}]
+    tag_path = tmp_path / "tag-a" / "report-dataset.json"
+    tag_path.parent.mkdir()
+    tag_path.write_text(json.dumps(tag_data), encoding="utf-8")
+
+    prepared = prepare_dataset_history(
+        profile=profile,
+        dataset_path=dataset_path,
+        normalized_findings_path=findings_path,
+        output_path=tmp_path / "report-dataset-with-history.json",
+        tag_dataset_paths={"tag-a": tag_path},
+        registry=InMemoryReportRegistry(),
+        repository=_RecordingSnapshotRepository(),
+    )
+
+    assert prepared.current.tag_snapshots[0]["summary"]["non_mitigated"] == 4
+    enriched_path = prepared.tag_enriched_dataset_paths["tag-a"]
+    enriched = json.loads(enriched_path.read_text(encoding="utf-8"))
+    assert enriched["tag_history_status"] == "AVAILABLE"
+    assert enriched["tag_history"][-1]["period_id"] == "2026-07"
+    assert enriched["tag_history"][-1]["non_mitigated"] == 4
 
 
 def test_two_compatible_months_publish_trends_and_same_tag_comparison() -> None:
@@ -282,6 +439,7 @@ def test_csv_round_trip_preserves_aggregated_history() -> None:
         )
         assert len(imported) == 1
         assert imported[0].snapshot_id == publication.snapshot.snapshot_id
+        assert imported[0].tag_snapshots == publication.snapshot.tag_snapshots
         repository = SQLiteSnapshotRepository(directory / "target.sqlite")
         rows = repository.compatible_snapshots(
             publication.snapshot.compatibility,

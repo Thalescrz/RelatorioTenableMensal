@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from tenable_reports.domain.fingerprints import (
     FINGERPRINT_SIZE,
@@ -10,7 +10,7 @@ from tenable_reports.domain.fingerprints import (
 )
 
 
-HISTORY_SCHEMA_VERSION = 2
+HISTORY_SCHEMA_VERSION = 3
 HISTORY_DEFINITION_VERSION = "history-definition-v1.0"
 ACTIONABLE_SEVERITIES = ("critical", "high", "medium", "low")
 
@@ -50,7 +50,7 @@ class HistorySnapshot:
     open_finding_keys: tuple[bytes, ...]
     fixed_finding_keys: tuple[bytes, ...]
     resurfaced_finding_keys: tuple[bytes, ...]
-    network_tag_snapshots: tuple[dict[str, Any], ...]
+    tag_snapshots: tuple[dict[str, Any], ...]
     open_plugin_counts: tuple[dict[str, Any], ...] = ()
     source_dataset_path: str | None = None
     source_dataset_sha256: str | None = None
@@ -93,7 +93,7 @@ class HistorySnapshot:
             "resurfaced_finding_keys": [
                 value.hex() for value in self.resurfaced_finding_keys
             ],
-            "network_tag_snapshots": list(self.network_tag_snapshots),
+            "tag_snapshots": list(self.tag_snapshots),
             "open_plugin_counts": list(self.open_plugin_counts),
             "source_dataset_path": self.source_dataset_path,
             "source_dataset_sha256": self.source_dataset_sha256,
@@ -156,9 +156,13 @@ class HistorySnapshot:
             open_finding_keys=fingerprints("open_finding_keys"),
             fixed_finding_keys=fingerprints("fixed_finding_keys"),
             resurfaced_finding_keys=fingerprints("resurfaced_finding_keys"),
-            network_tag_snapshots=tuple(
+            tag_snapshots=tuple(
                 dict(value)
-                for value in data.get("network_tag_snapshots") or ()
+                for value in (
+                    data.get("tag_snapshots")
+                    if "tag_snapshots" in data
+                    else data.get("network_tag_snapshots")
+                ) or ()
                 if isinstance(value, Mapping)
             ),
             open_plugin_counts=tuple(
@@ -283,6 +287,114 @@ def monthly_history_row(snapshot: HistorySnapshot, *, label: str) -> dict[str, A
     return row
 
 
+def tag_snapshot_from_dataset(dataset: Mapping[str, Any]) -> dict[str, Any]:
+    tag = dataset.get("tag")
+    if not isinstance(tag, Mapping):
+        raise ValueError("Dataset por TAG sem identificacao valida.")
+    tag_uuid = str(tag.get("tag_uuid") or "").strip()
+    category_name = str(tag.get("category_name") or "").strip()
+    value = str(tag.get("value") or "").strip()
+    if not tag_uuid or not category_name or not value:
+        raise ValueError("Dataset por TAG possui identificacao incompleta.")
+    return {
+        "tag_uuid": tag_uuid,
+        "category_uuid": str(tag.get("category_uuid") or ""),
+        "category_name": category_name,
+        "value": value,
+        "summary": summary_from_dataset(dataset),
+        "top_assets": [
+            dict(item)
+            for item in dataset.get("top_assets") or ()
+            if isinstance(item, Mapping)
+        ],
+    }
+
+
+_MONTH_LABELS = (
+    "",
+    "Janeiro",
+    "Fevereiro",
+    "Março",
+    "Abril",
+    "Maio",
+    "Junho",
+    "Julho",
+    "Agosto",
+    "Setembro",
+    "Outubro",
+    "Novembro",
+    "Dezembro",
+)
+
+
+def tag_year_history(
+    snapshots: Iterable[HistorySnapshot],
+    *,
+    current: HistorySnapshot,
+    tag_uuid: str,
+) -> tuple[dict[str, Any], ...]:
+    """Monta janeiro-competencia mantendo meses ausentes como lacunas."""
+    try:
+        current_year, current_month = (
+            int(value) for value in current.period_id.split("-", 1)
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("A serie anual por TAG exige period_id no formato YYYY-MM.") from exc
+    if not 1 <= current_month <= 12:
+        raise ValueError("A serie anual por TAG exige um mes valido.")
+
+    by_period: dict[str, dict[str, Any]] = {}
+    for snapshot in (*tuple(snapshots), current):
+        if snapshot.compatibility != current.compatibility:
+            continue
+        try:
+            year_text, month_text = snapshot.period_id.split("-", 1)
+            year, month = int(year_text), int(month_text)
+        except (TypeError, ValueError):
+            continue
+        if year != current_year or not 1 <= month <= current_month:
+            continue
+        tag_row = next(
+            (
+                item
+                for item in snapshot.tag_snapshots
+                if str(item.get("tag_uuid") or "") == tag_uuid
+            ),
+            None,
+        )
+        if tag_row is None:
+            continue
+        summary = tag_row.get("summary")
+        row: dict[str, Any] = {
+            "period_id": snapshot.period_id,
+            "label": f"{_MONTH_LABELS[month]}/{year}",
+            "availability": "AVAILABLE",
+        }
+        if isinstance(summary, Mapping):
+            row.update(dict(summary))
+        top_assets = tag_row.get("top_assets")
+        if top_assets is None:
+            top_assets = tag_row.get("assets")
+        if isinstance(top_assets, (list, tuple)):
+            row["top_assets"] = [
+                dict(item) for item in top_assets if isinstance(item, Mapping)
+            ]
+        by_period[snapshot.period_id] = row
+
+    rows: list[dict[str, Any]] = []
+    for month in range(1, current_month + 1):
+        period_id = f"{current_year:04d}-{month:02d}"
+        rows.append(
+            by_period.get(period_id)
+            or {
+                "period_id": period_id,
+                "label": f"{_MONTH_LABELS[month]}/{current_year}",
+                "availability": "UNAVAILABLE",
+            }
+        )
+    return tuple(rows)
+
+
 def previous_period_overview(snapshot: HistorySnapshot, *, label: str) -> dict[str, Any]:
     summary = snapshot.summary
     mitigated_by_severity = summary.get("mitigated_by_severity") or {}
@@ -320,11 +432,11 @@ def network_comparisons(
 ) -> list[dict[str, Any]]:
     previous_by_tag = {
         str(item.get("tag_uuid")): item
-        for item in predecessor.network_tag_snapshots
+        for item in predecessor.tag_snapshots
         if item.get("tag_uuid")
     }
     comparisons: list[dict[str, Any]] = []
-    for item in current.network_tag_snapshots:
+    for item in current.tag_snapshots:
         tag_uuid = str(item.get("tag_uuid") or "")
         previous = previous_by_tag.get(tag_uuid)
         if not tag_uuid or previous is None:

@@ -120,7 +120,7 @@ class PostgreSqlTests(unittest.TestCase):
             open_finding_keys=(fingerprint_finding_key("finding-1"),),
             fixed_finding_keys=(fingerprint_finding_key("finding-2"),),
             resurfaced_finding_keys=(),
-            network_tag_snapshots=(),
+            tag_snapshots=(),
         )
 
         payload, version, open_blob, fixed_blob, resurfaced_blob = (
@@ -211,7 +211,7 @@ class PostgreSqlTests(unittest.TestCase):
                 open_finding_keys=("finding-1",),
                 fixed_finding_keys=(),
                 resurfaced_finding_keys=(),
-                network_tag_snapshots=(),
+                tag_snapshots=(),
             ))
             audit_path = directory / "audit.sqlite"
             connection = sqlite3.connect(audit_path)
