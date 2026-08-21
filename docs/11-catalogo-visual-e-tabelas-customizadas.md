@@ -29,9 +29,9 @@ Campos vazios de IP, hostname, pessoa, cliente e e-mail continuam classificados 
 Os quatro primeiros gráficos formam um conjunto. A ausência da distribuição por severidade não deve ser substituída por zeros: nesse caso o renderer gera somente a linha de volume cuja série esteja disponível.
 
 `monthly_views` permite repetir o conjunto por vistas analíticas previamente definidas,
-como `Geral` e `Servidores`, sem código específico por cliente. Essas vistas são
-independentes das tags escolhidas para o comparativo temporal por rede: selecionar uma
-tag no terminal não altera os demais gráficos nem o relatório-base.
+como `Geral` e `Servidores`, sem código específico por cliente. Essas vistas gerais
+continuam no relatório customizado e são independentes dos relatórios por TAG.
+Selecionar uma TAG não altera esses gráficos nem o relatório-base.
 
 ## 3. Tabelas customizadas observadas
 
@@ -39,9 +39,9 @@ tag no terminal não altera os demais gráficos nem o relatório-base.
 |---|---|---|---|---|
 | `T01` | Comparativo do overview com relatório anterior | Severidade × Mitigado, Não Mitigado, Explorável, Patch >30d | `vm_previous_period_delta` | Snapshot anterior compatível |
 | `T02` | Integridade/autenticação de scan corrente e anterior | Status de autenticação × total | `scan_auth_health` | Metadado validado no tenant + histórico |
-| `T03` | Ranking corrente de ativos da rede/tag | Nº, IP, Asset Name, severidades, Total, `Exploitable` | `vm_network_comparison` | Tag selecionada; sensíveis mascaráveis |
-| `T04` | Ranking anterior da mesma rede/tag | Mesmas colunas e mesmo UUID de tag de `T03` | `vm_network_comparison` | Predecessor temporal compatível |
-| `T05` | Movimentação do ranking dentro da mesma rede | Posição atual/anterior, entrada, permanência, aumento e redução | `vm_asset_movement` | Mesma tag e identidade estável do ativo |
+| `T03` | Ranking corrente de ativos da TAG | Nº, IP, Asset Name, severidades, Total, `Exploitable` | Relatório por TAG | TAG selecionada; sensíveis mascaráveis |
+| `T04` | Ranking anterior da mesma TAG | Mesmas colunas e mesmo UUID de TAG de `T03` | Relatório por TAG | Predecessor temporal compatível |
+| `T05` | Movimentação do ranking dentro da mesma TAG | Posição atual/anterior, entrada, permanência, aumento e redução | Relatório por TAG | Mesma TAG e identidade estável do ativo |
 | `T06` | Vulnerabilidades corrigidas por família de plugin | Família de Plugin, Total | `vm_plugin_family` | Findings corrigidos do período |
 | `T07` | Família de plugin corrente e anterior | Família, Total atual, Total anterior, delta | `vm_previous_period_delta` | Snapshot anterior compatível |
 | `T08` | Sistemas operacionais mais comuns corrente e anterior | Família/SO, Total | `vm_os_distribution` | Inventário de ativos + histórico opcional |
@@ -66,7 +66,7 @@ Uma tabela ou gráfico corrente × anterior só pode ser publicado quando coinci
 
 - cliente e tenant;
 - produto e módulo;
-- escopo de tags/redes/aplicações;
+- escopo da mesma TAG/aplicação;
 - timezone e regra de fechamento;
 - severidades incluídas;
 - estados coletados;
@@ -75,9 +75,9 @@ Uma tabela ou gráfico corrente × anterior só pode ser publicado quando coinci
 
 Na falta de predecessor compatível, o bloco comparativo é omitido. Não se compara contra zero, não se reutiliza o último arquivo encontrado e não se mistura relatório automático mensal com execução pontual de outro período.
 
-As tags selecionadas para `T03` a `T05` nunca filtram a população geral. Se duas
-tags forem escolhidas, o resultado correto são dois comparativos temporais separados;
-não existe comparação `Rede A × Rede B`.
+As TAGs selecionadas para `T03` a `T05` nunca filtram a população geral. Se duas
+TAGs forem escolhidas, o resultado correto são dois documentos e, quando autorizado,
+dois comparativos temporais separados. Não existe comparação `TAG A × TAG B`.
 
 ## 5. Contrato mínimo dos dados mensais
 
@@ -124,7 +124,6 @@ Os zeros acima documentam o tipo do campo, não a política de ausência. Em pro
 
 1. Implementar `G07` com eixo bidirecional, itens `NEW` e regras determinísticas de cor.
 2. Implementar `G08` e `T08` a partir do inventário de ativos.
-3. Implementar `T04` e `T05` com identidade estável do ativo e histórico da mesma tag.
-4. Expandir `vm_previous_period_delta` para `T02`, `T07` e `T11` a `T17`.
-5. Decidir por perfil se `G11` entra como evidência visual; tabelas `T18` e `T19` permanecem obrigatórias quando o módulo for ativado.
-6. Validar no tenant as fontes de autenticação de scan, EOL, WAS e Cloud Security antes de habilitar os módulos automaticamente.
+3. Expandir `vm_previous_period_delta` para `T02`, `T07` e `T11` a `T17`.
+4. Decidir por perfil se `G11` entra como evidência visual; tabelas `T18` e `T19` permanecem obrigatórias quando o módulo for ativado.
+5. Validar no tenant as fontes de autenticação de scan, EOL, WAS e Cloud Security antes de habilitar os módulos automaticamente.

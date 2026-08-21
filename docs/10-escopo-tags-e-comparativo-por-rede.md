@@ -1,64 +1,113 @@
-# Tags e comparativo temporal por rede
+# Relatórios operacionais e comparativo temporal por TAG
 
-## Objetivo
+## Conceito
 
-A seleção de tags existe exclusivamente para produzir o comparativo customizado dos
-principais ativos vulneráveis de uma rede. Ela nunca restringe a população do
-relatório-base: todos os ativos e findings gerais elegíveis no período continuam
-participando das métricas, rankings e Top 5 padrão.
+“Rede” não é um escopo técnico separado no gerador. É apenas um possível nome de
+categoria ou valor de TAG na Tenable. O mesmo fluxo funciona para qualquer categoria,
+como `Equipe`, `Local`, `Departamento` ou `Rede`, e cada valor é identificado pelo
+UUID estável da TAG.
 
-O comparativo também não coloca uma rede contra outra. Cada bloco compara a mesma
-tag/rede em dois momentos compatíveis, normalmente o mês atual contra o mês anterior.
+O relatório geral nunca é filtrado pelas TAGs. Uma única coleta VM traz todos os
+ativos e findings elegíveis no período; depois da normalização, o gerador cruza os
+UUIDs de ativos de cada TAG e cria recortes efêmeros independentes. Assim, habilitar,
+desabilitar ou trocar uma TAG não altera métricas, rankings, textos ou Top 5 do
+relatório-base e do relatório customizado geral.
 
-## Fluxo
+## Documentos produzidos
 
-1. `GET /tags/values` lista os valores de tag visíveis para a credencial.
-2. No modo interativo, o terminal solicita uma categoria e um ou mais valores.
-3. `GET /workbenches/assets` resolve os UUIDs associados a cada tag selecionada.
-4. `POST /vulns/export` coleta a população geral do período, sem filtros `tag.*`.
-5. `POST /assets/v2/export` coleta a população geral de ativos, também sem ser
-   reduzida à união das tags.
-6. A normalização e o dataset-base usam integralmente essas populações gerais.
-7. Em paralelo, os UUIDs resolvidos em 3 delimitam somente um
-   `network_tag_snapshot` corrente para cada tag.
-8. A camada histórica procura o predecessor da mesma tag, cliente, tenant, regra de
-   período e definição métrica.
-9. Havendo predecessor compatível, o segundo DOCX recebe um
-   `network_comparison` com dois períodos da mesma rede. Sem predecessor, o comparativo
-   é omitido; nunca se compara contra zero nem contra outra rede.
+Além dos documentos geral e customizado, o cliente pode habilitar um relatório
+operacional compacto para cada TAG selecionada. Cada documento por TAG contém:
 
-Selecionar mais de uma tag significa solicitar vários comparativos independentes:
-`Rede A atual × Rede A anterior`, depois `Rede B atual × Rede B anterior`. Não significa
-`Rede A × Rede B` e não altera os resultados gerais.
+- identificação da categoria e do valor na capa e no nome do arquivo;
+- principais ativos vulneráveis, com `Exploitable` na última coluna;
+- Top 5 de vulnerabilidades VM não mitigadas;
+- detalhamento de cada vulnerabilidade com a tabela de hosts padrão;
+- tabelas e gráficos mensais da própria TAG, quando o comparativo estiver habilitado.
 
-## Modos de seleção
+O relatório por TAG contém somente VM. Ele não repete WAS nem Cloud Security. O nome
+segue o padrão:
 
-- Manual interativo: `--select-tags`.
-- Manual ou automático não interativo: repetir `--tag` com UUID ou
-  `Categoria: Valor`.
-- Agendamento por cliente: preencher `report.network_comparison_tags` no perfil.
+`[Cliente] Relatório de Vulnerabilidades Tenable TAG Categoria - Valor JUL26.docx`
 
-`--select-tags` não pode ser combinado com `--tag` nem com seletores já configurados
-no perfil. `scope.vm.tags` não é aceito para essa finalidade, pois o nome indicaria
-indevidamente um filtro global.
+## Seleção pela interface
 
-## Guardas de escopo
+No cadastro do cliente, a área **Relatórios por TAG** possui uma chave de ativação e
+o botão **Buscar TAGs da Tenable**. A consulta usa a credencial local do cliente e
+agrupa o resultado por categoria; chaves de API nunca retornam ao navegador.
 
-- arquivos passados por `--finding-filters` ou `--asset-filters` não podem conter
-  `tag.*` no fluxo do relatório mensal;
+Cada TAG possui duas decisões independentes:
+
+1. **Gerar relatório**: cria o documento operacional daquele recorte.
+2. **Comparativo temporal**: inclui, dentro desse mesmo documento, as tabelas e os
+   gráficos históricos da TAG.
+
+O comparativo só pode ser marcado quando o relatório estiver marcado. É possível
+gerar documentos para várias TAGs e habilitar o comparativo em apenas uma delas.
+Uma TAG salva que deixe de aparecer na API continua visível como indisponível, para
+que o analista decida se deve removê-la.
+
+## Fluxo da coleta única
+
+1. `GET /tags/values` lista os valores de TAG visíveis para a credencial.
+2. `GET /workbenches/assets` resolve separadamente os UUIDs de ativos de cada TAG.
+3. `POST /vulns/export` coleta a população geral do período, sem filtro `tag.*`.
+4. `POST /assets/v2/export` coleta a população geral de ativos, também sem filtro.
+5. A normalização e os datasets geral/customizado usam a população integral.
+6. O cruzamento por UUID cria um dataset efêmero para cada TAG selecionada.
+7. Os DOCX geral e customizado são gerados sem depender dos recortes.
+8. Cada DOCX por TAG é gerado isoladamente; uma falha específica vira alerta e não
+   invalida os documentos gerais nem as outras TAGs.
+
+As TAGs nunca são combinadas em uma união semântica. Dois valores selecionados
+produzem dois recortes e dois documentos distintos.
+
+## Comparação temporal
+
+O comparativo é sempre da mesma TAG em momentos diferentes: `TAG A atual × TAG A
+anterior`. Nunca é `TAG A × TAG B`. A referência precisa ser uma execução `MAIN`
+compatível do mesmo cliente, tenant, UUID de TAG, definição métrica, regra de período,
+timezone, severidades e estados.
+
+No primeiro mês, ou quando não existe predecessor compatível, o relatório corrente
+continua sendo gerado. A área temporal informa a indisponibilidade de histórico; não
+usa zero como substituto, não escolhe um arquivo arbitrário e não mistura períodos
+automáticos com períodos pontuais incompatíveis.
+
+As séries anuais vão de janeiro ao mês analisado no mesmo ano civil. Lacunas aparecem
+como indisponíveis e não são plotadas como zero.
+
+## Dados retidos e limpeza
+
+Durante a geração existem datasets segmentados em `report-datasets/.../tags`. Eles
+são temporários e entram na mesma limpeza segura dos dados pesados gerais somente
+depois que os DOCX foram validados, o manifesto foi registrado e o histórico foi
+confirmado.
+
+Após uma publicação bem-sucedida, permanecem apenas:
+
+- os DOCX publicados;
+- o manifesto e os metadados de publicação;
+- o resumo histórico compacto necessário para comparações futuras, indexado pelo
+  UUID da TAG.
+
+Raw, snapshots, normalizados e datasets segmentados elegíveis são descartados. Uma
+falha preserva o staging pelo prazo configurado para diagnóstico.
+
+## Compatibilidade legada
+
+Os parâmetros `--select-tags`, `--tag` e `report.network_comparison_tags` continuam
+aceitos para perfis antigos. Eles são entradas legadas somente para leitura; novos
+clientes devem usar `report.tag_reports`, preferencialmente pela interface web.
+`scope.vm.tags` não é aceito, pois indicaria incorretamente um filtro global.
+
+## Guardas e limitação da API
+
+- filtros passados ao fluxo mensal não podem conter `tag.*`;
 - o manifesto declara `general_collection_filtered_by_tags=false`;
-- o dataset guarda os recortes correntes como `network_tag_snapshots`, separados das
-  métricas gerais;
-- somente a montagem histórica cria `network_comparisons` publicáveis;
-- a identidade da rede é o UUID estável da tag, e não apenas seu texto de exibição.
-
-## Limitação conhecida
-
-O export de ativos v2 não aceita `tag.<categoria>`. Por isso, a associação entre tag
-e ativos é resolvida pelo Workbench, mas usada somente no recorte customizado. A
-listagem do Workbench é limitada a 5.000 registros; se uma tag exceder esse limite,
-o comparativo dessa tag deve falhar explicitamente em vez de publicar um recorte
-incompleto. Essa falha não autoriza reduzir silenciosamente o relatório geral.
+- cada recorte usa o UUID da TAG, nunca somente o texto exibido;
+- falha em uma TAG é isolada e registrada com etapa, UUID e mensagem;
+- a listagem de ativos do Workbench é limitada a 5.000 registros; uma TAG que exceda
+  esse limite falha explicitamente, sem publicar um recorte incompleto.
 
 Referências oficiais:
 

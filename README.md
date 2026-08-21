@@ -4,7 +4,10 @@ Discovery e arquitetura de uma solução evolutiva para automatizar relatórios 
 
 ## Estado atual
 
-A fase de análise foi concluída para os scripts existentes, a documentação oficial e quatro relatórios DOCX representativos. A geração Word produz dois arquivos: um relatório-base fiel ao texto e às tabelas comuns dos modelos e um segundo DOCX de inteligência/customizações habilitadas por perfil.
+A fase de análise foi concluída para os scripts existentes, a documentação oficial e
+quatro relatórios DOCX representativos. A geração Word produz o relatório-base, o
+DOCX de inteligência/customizações e, quando configurado, relatórios operacionais
+compactos por TAG.
 
 - [Análise e arquitetura da solução](docs/01-analise-e-arquitetura.md)
 - [Catálogo das APIs Tenable](docs/02-catalogo-apis-tenable.md)
@@ -15,6 +18,7 @@ A fase de análise foi concluída para os scripts existentes, a documentação o
 - [Contrato e validação do dataset mensal da Fase 4](docs/07-dataset-mensal-fase4.md)
 - [Template Word mínimo e prova da Fase 5](docs/08-template-word-fase5.md)
 - [Primeiro relatório-base completo da Fase 6](docs/09-relatorio-base-completo-fase6.md)
+- [Relatórios operacionais e comparativo temporal por TAG](docs/10-escopo-tags-e-comparativo-por-rede.md)
 - [Perfis declarativos e variações da Fase 7](docs/12-perfis-e-variacoes-fase7.md)
 - [Coleta e relatório Web App Scanning da Fase 8](docs/13-was-fase8.md)
 - [Histórico e tendências da Fase 9](docs/14-historico-e-tendencias-fase9.md)
@@ -24,10 +28,12 @@ A fase de análise foi concluída para os scripts existentes, a documentação o
 
 ## Decisão central
 
-Cada execução publicará dois documentos gerados a partir do mesmo snapshot imutável:
+Cada execução publica dois documentos gerais a partir do mesmo snapshot imutável e,
+quando configurado, documentos operacionais adicionais por TAG:
 
 1. `01-relatorio-base-<cliente>-<periodo>.docx`: núcleo estável e comum, incluindo o Top 5 detalhado de vulnerabilidades VM não mitigadas com seus hosts e, por decisão de produto, o Top 5 detalhado de vulnerabilidades WEB com suas instâncias/URIs.
 2. `02-inteligencia-e-customizacoes-<cliente>-<periodo>.docx`: união modular das análises adicionais encontradas nos clientes, ativadas por perfil/capacidade e com comparativos somente quando houver snapshot anterior compatível.
+3. `[cliente] Relatório de Vulnerabilidades Tenable TAG <categoria> - <valor> <periodo>.docx`: recorte VM compacto e independente para cada TAG marcada, com comparativo temporal opcional dentro do próprio documento.
 
 Os campos em branco dos documentos de referência foram tratados como anonimização intencional. Hostname, IP, pessoa, cliente e e-mail são dados dinâmicos sensíveis; nenhum valor foi reconstruído.
 
@@ -150,8 +156,18 @@ python -m tenable_reports collect-manual `
   --confirm-live-api
 ```
 
-Para gerar também o comparativo dos principais ativos vulneráveis por rede, o analista
-pode listar e selecionar vários valores de uma categoria de tag antes da coleta:
+O fluxo recomendado para relatórios por TAG fica no cadastro do cliente na interface
+web. Ative **Relatórios por TAG**, clique em **Buscar TAGs da Tenable** e escolha, em
+cada linha, se deseja **Gerar relatório** e se aquele documento deve incluir o
+**Comparativo temporal**. É possível selecionar TAGs de categorias diferentes e
+habilitar o comparativo em apenas parte delas.
+
+O relatório geral continua usando todos os ativos e findings do período. A mesma
+coleta VM é normalizada uma vez e só então recortada localmente pelos UUIDs de ativos
+de cada TAG. Cada documento compara a mesma TAG em dois momentos, nunca uma TAG com
+outra. “Rede” é apenas um possível nome de categoria ou valor de TAG.
+
+Os seletores do terminal permanecem disponíveis para perfis legados:
 
 ```powershell
 python -m tenable_reports collect-manual `
@@ -161,10 +177,10 @@ python -m tenable_reports collect-manual `
   --confirm-live-api
 ```
 
-O terminal primeiro apresenta as categorias e depois aceita valores como `1,3-5` ou
-`todos`. Para uma execução agendada e não interativa, repita `--tag` usando o UUID ou
-`Categoria: Valor`, ou grave os mesmos seletores em
-`report.network_comparison_tags` no perfil:
+O terminal apresenta as categorias e aceita valores como `1,3-5` ou `todos`. Para
+uma execução não interativa legada, repita `--tag` usando o UUID ou
+`Categoria: Valor`, ou use `report.network_comparison_tags`. Novas configurações devem usar
+`report.tag_reports`, preferencialmente pela interface.
 
 ```powershell
 python -m tenable_reports collect-monthly `
@@ -174,11 +190,9 @@ python -m tenable_reports collect-monthly `
   --confirm-live-api
 ```
 
-Uma execução aceita vários valores da mesma categoria. A seleção não filtra o
-relatório-base nem suas métricas: ela serve somente para criar os snapshots das redes
-usados no segundo DOCX. Cada rede selecionada é comparada com ela mesma no período
-anterior (`Matriz atual × Matriz anterior`, por exemplo), nunca com outra rede. Cada
-tabela termina com `Exploitable`.
+Uma execução aceita vários valores e categorias. Cada TAG gera um documento próprio;
+falha em uma TAG é registrada como alerta e não interrompe os documentos gerais nem
+as outras TAGs. As tabelas de ativos terminam com `Exploitable`.
 
 O analista pode substituir o padrão manual por `--days N` ou por um intervalo específico. O fim é exclusivo:
 
@@ -217,8 +231,8 @@ A severidade informativa permanece desativada em todos os perfis conhecidos (`in
 
 Quando o perfil declara a capacidade `was`, os mesmos comandos coletam o export
 WAS em paralelo lógico ao VM, mas em snapshots e normalizadores próprios. A coleta
-geral de VM e WAS continua independente das tags selecionadas para o comparativo por
-rede; essas tags afetam somente os snapshots customizados de rede.
+geral de VM e WAS continua independente das TAGs selecionadas. Os recortes afetam
+somente os datasets efêmeros e os documentos operacionais por TAG.
 
 ### Geração do Word mínimo — Fase 5
 
@@ -258,7 +272,11 @@ python -m tenable_reports generate-report-pair `
 
 O primeiro DOCX preserva os parágrafos comuns dos quatro exemplos, as três tabelas de controle, os dois Top 5 detalhados, `Exploitable` na última coluna de ativos e as matrizes correntes. Se WAS não tiver dados, permanecem os textos e cabeçalhos originais, sem frases artificiais e sem zeros inventados.
 
-O segundo DOCX recebe comparativos e módulos adicionais somente quando eles estão habilitados em `report.intelligence_modules` e possuem dados. Comparações históricas nunca usam zero como substituto de um predecessor ausente. Quando `vm_network_comparison` está habilitado, o dataset guarda um snapshot corrente para cada tag selecionada; o bloco só é publicado depois de parear esse snapshot com o período anterior da mesma tag.
+O segundo DOCX recebe comparativos gerais e módulos adicionais somente quando eles
+estão habilitados em `report.intelligence_modules` e possuem dados. As análises
+mensais gerais continuam nele. A comparação específica de uma TAG fica no relatório
+daquela TAG. Comparações históricas nunca usam zero como substituto de um predecessor
+ausente.
 
 Os perfis da Fase 7 mantêm `report.base_modules` como núcleo obrigatório e
 validam os IDs permitidos em `report.intelligence_modules`. Módulos WAS e Cloud
@@ -270,6 +288,15 @@ demonstram dois perfis contrastantes sobre o mesmo dataset.
 O inventário dos gráficos e das tabelas customizadas observadas nos quatro modelos está em [`docs/11-catalogo-visual-e-tabelas-customizadas.md`](docs/11-catalogo-visual-e-tabelas-customizadas.md). O conjunto mensal aceita vistas configuráveis, como `Geral` e `Servidores`, sem regras condicionais por nome de cliente.
 
 `Output` só aparece quando `vm_top5_include_output` ou `was_top5_include_output` está habilitado no perfil e o campo foi coletado. A geração falha explicitamente se o perfil pedir essa coluna sem a cobertura correspondente no dataset. O pipeline de apresentação também possui um ponto de integração para traduzir descrição e solução por blocos, preservando a ordem e sem enviar `Plugin Output` ao tradutor.
+
+Para uma validação local sem API e sem dados reais, a fixture abaixo gera exatamente
+quatro DOCX em `.tmp/e2e-tag-reports`: geral, customizado, uma TAG com comparativo e
+uma TAG sem comparativo. O manifesto também registra a prova de que habilitar TAGs não
+alterou o conteúdo dos dois documentos gerais.
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\render_tag_report_fixture.py
+```
 
 ### Execução completa e multi-cliente - Fase 10
 
@@ -314,10 +341,11 @@ nunca entram no JSON da carteira: cada entrada referencia seu próprio arquivo e
 ### Armazenamento e reciclagem
 
 As coletas VM e WEB e os arquivos normalizados são gravados compactados durante a
-execução. Depois que os dois DOCX passam pela validação e o snapshot histórico é
-confirmado no PostgreSQL, as pastas pesadas `raw`, `snapshots`, `normalized` e
-`report-datasets` daquele `run_id` são removidas automaticamente. Permanecem os
-DOCX publicados e o histórico compacto necessário para comparar os próximos meses.
+execução. Depois que todos os DOCX solicitados passam pela validação, o manifesto é
+registrado e o snapshot histórico é confirmado no PostgreSQL, as pastas pesadas
+`raw`, `snapshots`, `normalized` e `report-datasets` — inclusive os datasets por TAG
+— são removidas automaticamente. Permanecem os DOCX publicados e o histórico
+compacto geral e por UUID de TAG necessário para comparar os próximos meses.
 
 Uma execução que falhou preserva o staging compactado por sete dias, permitindo
 diagnóstico e nova tentativa; depois desse prazo ele pode aparecer como elegível na
@@ -331,8 +359,9 @@ tamanho; somente a confirmação seguinte remove os candidatos que passaram pela
 proteções do PostgreSQL. Os padrões ficam em `orchestration/clients.json`:
 `cleanup_after_publish=true`, `failed_staging_days=7` e `logs_days=90`.
 
-O painel local iniciado por `.\scripts\run_web.ps1` permite acompanhar a fila,
-testar APIs, editar clientes, consultar documentos agrupados por execução, definir
+O painel local iniciado por `.\scripts\run_web.ps1` permite acompanhar a fila e o
+progresso de cada TAG, testar APIs, editar clientes, buscar TAGs disponíveis, consultar
+documentos agrupados em **Geral**, **Customizado** e **Por TAG**, definir
 a geração `MAIN`, excluir/restaurar logicamente relatórios e repetir trabalhos com
 falha. A área **Admin** analisa e aplica o backfill seguro das referências históricas,
 sem substituir um `MAIN` existente; ambiguidades continuam sob decisão do analista.
