@@ -16,6 +16,7 @@ htmlcov/
 .test-cache-*/
 .venv/
 .tmp/
+.worktrees/
 *.log
 *.sqlite
 *.sqlite3
