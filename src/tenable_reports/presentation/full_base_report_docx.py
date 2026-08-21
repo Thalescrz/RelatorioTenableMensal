@@ -527,6 +527,8 @@ def _vulnerability_details(
     mask_sensitive: bool,
     include_output: bool,
     translator: TextTranslator | None = None,
+    protocol_header: str = "PORTA",
+    source_extra_filters: Mapping[str, Any] | None = None,
 ) -> int:
     if not isinstance(items, list):
         return 0
@@ -543,7 +545,7 @@ def _vulnerability_details(
         for url in item.get("reference_urls") or []:
             _paragraph(document, str(url))
         _heading(document, "Host(s) Afetado(s):", 4)
-        headers: tuple[str, ...] = ("ASSET NAME", "IP", "PORTA", "PORTA")
+        headers: tuple[str, ...] = ("ASSET NAME", "IP", "PORTA", protocol_header)
         widths: tuple[int, ...] = (2850, 2200, 1200, 1450)
         if include_output:
             headers += ("Output",)
@@ -560,7 +562,10 @@ def _vulnerability_details(
             dataset,
             source_table_id,
             enabled=show_source_filters,
-            extra_filters={"Plugin ID": item.get("plugin_id")},
+            extra_filters={
+                **dict(source_extra_filters or {}),
+                "Plugin ID": item.get("plugin_id"),
+            },
         )
     return rendered
 

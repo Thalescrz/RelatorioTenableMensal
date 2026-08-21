@@ -35,6 +35,11 @@ def _safe_windows_filename(value: str) -> str:
     return sanitized or "Relatório Tenable"
 
 
+def _safe_filename_component(value: str) -> str:
+    sanitized = WINDOWS_INVALID.sub("", str(value or ""))
+    return " ".join(sanitized.split()).strip(" .")
+
+
 def report_filename(
     display_name: str, period: ReportingPeriod, kind: str
 ) -> str:
@@ -46,4 +51,26 @@ def report_filename(
         raise ValueError("kind deve ser base ou custom.")
     return _safe_windows_filename(
         f"[{display_name}] {titles[kind]} {period_suffix(period)}.docx"
+    )
+
+
+def tag_report_filename(
+    display_name: str,
+    period: ReportingPeriod,
+    category: str,
+    value: str,
+    tag_uuid: str,
+) -> str:
+    safe_category = _safe_filename_component(category)
+    safe_value = _safe_filename_component(value)
+    if safe_category and safe_value:
+        label = f"{safe_category} - {safe_value}"
+    else:
+        label = safe_category or safe_value
+    if not label:
+        safe_uuid = _safe_filename_component(tag_uuid).replace(" ", "")
+        label = (safe_uuid[:8] or "TAG")
+    return _safe_windows_filename(
+        f"[{display_name}] Relatório de Vulnerabilidades Tenable "
+        f"TAG {label} {period_suffix(period)}.docx"
     )
