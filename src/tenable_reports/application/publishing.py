@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -14,6 +15,29 @@ REQUIRED_DOCX_MEMBERS = {
     "word/document.xml",
     "word/styles.xml",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationDocument:
+    path: str | Path
+    document_kind: str
+    tag_uuid: str | None = None
+    tag_category: str | None = None
+    tag_value: str | None = None
+
+    def metadata(self) -> dict[str, str | None]:
+        document_kind = str(self.document_kind or "").strip().lower()
+        if document_kind not in {"base", "custom", "tag"}:
+            raise ValueError(f"Tipo de documento de publicacao invalido: {self.document_kind}")
+        tag_uuid = str(self.tag_uuid or "").strip() or None
+        if document_kind == "tag" and tag_uuid is None:
+            raise ValueError("Documento por TAG sem tag_uuid.")
+        return {
+            "document_kind": document_kind,
+            "tag_uuid": tag_uuid,
+            "tag_category": str(self.tag_category or "").strip() or None,
+            "tag_value": str(self.tag_value or "").strip() or None,
+        }
 
 
 def sha256_file(path: str | Path) -> str:
@@ -91,7 +115,7 @@ def create_publication_manifest(
     execution_type: str,
     period: Mapping[str, Any],
     dataset_path: str | Path,
-    documents: Sequence[str | Path],
+    documents: Sequence[str | Path | PublicationDocument],
     history_database: str | Path | None,
     history_store: Mapping[str, Any] | None = None,
     origin: str | None = None,
@@ -101,7 +125,20 @@ def create_publication_manifest(
     dataset = Path(dataset_path)
     if not dataset.is_file():
         raise ValueError(f"Dataset de publicacao nao encontrado: {dataset}")
-    validated_documents = [validate_docx_package(path) for path in documents]
+    validated_documents = []
+    for document in documents:
+        if isinstance(document, PublicationDocument):
+            validated = validate_docx_package(document.path)
+            validated.update(document.metadata())
+        else:
+            validated = validate_docx_package(document)
+            validated.update({
+                "document_kind": None,
+                "tag_uuid": None,
+                "tag_category": None,
+                "tag_value": None,
+            })
+        validated_documents.append(validated)
     payload = {
         "schema_version": 1,
         "status": "READY_FOR_CONTROLLED_DISTRIBUTION",

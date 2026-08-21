@@ -19,11 +19,44 @@ from tenable_reports.domain.report_reference import READY_STATUS, ReportCandidat
 from tenable_reports.webapp.server import (
     DashboardApplication,
     DashboardConfigStore,
+    DashboardDatabase,
     DashboardHTTPServer,
     JobQueue,
     slugify_client_id,
     _safe_error,
 )
+
+
+class _RowsCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+
+class _RowsConnection:
+    def __init__(self, rows):
+        self.rows = rows
+        self.query = ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, query, _parameters):
+        self.query = query
+        return _RowsCursor(self.rows)
+
+
+class _RowsDatabase:
+    def __init__(self, rows):
+        self.connection_value = _RowsConnection(rows)
+
+    def connection(self):
+        return self.connection_value
 
 
 def valid_run(run_id: str, *, client_id: str = "cliente-a") -> ReportCandidate:
@@ -224,6 +257,23 @@ class WebDashboardTests(unittest.TestCase):
                 self.assertIsNone(registry.get_main(reference_key_for_candidate(valid_run("run-a"))))
             finally:
                 client.close()
+
+    def test_dashboard_database_reports_exposes_tag_document_metadata(self) -> None:
+        ended_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        created_at = datetime(2026, 8, 2, tzinfo=timezone.utc)
+        database = DashboardDatabase.__new__(DashboardDatabase)
+        database.database = _RowsDatabase([(
+            7, "C:/reports/tag.docx", 1234, "VALID", "run-a", "2026-07",
+            "MANUAL", ended_at, created_at, "tag", "tag-a", "Equipe", "Infra",
+        )])
+
+        report = database.reports("cliente-a")[0]
+
+        self.assertEqual(report["document_kind"], "tag")
+        self.assertEqual(report["tag_uuid"], "tag-a")
+        self.assertEqual(report["tag_category"], "Equipe")
+        self.assertEqual(report["tag_value"], "Infra")
+        self.assertIn("d.document_kind", database.database.connection_value.query)
 
     def test_storage_endpoint_reports_free_space_and_queue_reservation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

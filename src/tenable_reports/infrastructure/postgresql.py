@@ -664,12 +664,17 @@ class PostgresOperationsRepository:
                 connection.execute(
                     f"""
                     insert into {SCHEMA_NAME}.published_documents (
-                        publication_id, path, sha256, size_bytes, package_status
-                    ) values (%s, %s, %s, %s, %s)
+                        publication_id, path, sha256, size_bytes, package_status,
+                        document_kind, tag_uuid, tag_category, tag_value
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     on conflict (publication_id, path) do update set
                         sha256 = excluded.sha256,
                         size_bytes = excluded.size_bytes,
-                        package_status = excluded.package_status
+                        package_status = excluded.package_status,
+                        document_kind = excluded.document_kind,
+                        tag_uuid = excluded.tag_uuid,
+                        tag_category = excluded.tag_category,
+                        tag_value = excluded.tag_value
                     """,
                     (
                         publication_id,
@@ -677,6 +682,10 @@ class PostgresOperationsRepository:
                         document.get("sha256"),
                         int(document.get("size_bytes") or 0),
                         document.get("package_status"),
+                        document.get("document_kind"),
+                        document.get("tag_uuid"),
+                        document.get("tag_category"),
+                        document.get("tag_value"),
                     ),
                 )
         records = [

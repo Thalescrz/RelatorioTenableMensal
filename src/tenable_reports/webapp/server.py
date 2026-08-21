@@ -522,7 +522,8 @@ class DashboardDatabase:
     def reports(self, client_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
         query = f"""
             select d.document_id, d.path, d.size_bytes, d.package_status,
-                   r.run_id, r.period_id, r.execution_type, r.ended_at, p.created_at
+                   r.run_id, r.period_id, r.execution_type, r.ended_at, p.created_at,
+                   d.document_kind, d.tag_uuid, d.tag_category, d.tag_value
             from {SCHEMA_NAME}.published_documents d
             join {SCHEMA_NAME}.publications p on p.publication_id = d.publication_id
             join {SCHEMA_NAME}.report_runs r on r.run_id = p.run_id
@@ -543,6 +544,10 @@ class DashboardDatabase:
             "execution_type": row[6],
             "ended_at": row[7].isoformat() if row[7] else None,
             "created_at": row[8].isoformat() if row[8] else None,
+            "document_kind": row[9],
+            "tag_uuid": row[10],
+            "tag_category": row[11],
+            "tag_value": row[12],
         } for row in rows]
 
     def alerts(self, *, limit: int = 50) -> list[dict[str, Any]]:

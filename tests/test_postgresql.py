@@ -99,6 +99,18 @@ class PostgreSqlTests(unittest.TestCase):
         self.assertIn("cleanup_status", sql)
         self.assertIn("cleanup_bytes", sql)
 
+    def test_tag_report_document_migration_adds_optional_metadata(self) -> None:
+        sql = (
+            ROOT
+            / "src/tenable_reports/infrastructure/postgresql_migrations/0004_tag_report_documents.sql"
+        ).read_text(encoding="utf-8")
+        self.assertIn("document_kind text", sql)
+        self.assertIn("tag_uuid text", sql)
+        self.assertIn("tag_category text", sql)
+        self.assertIn("tag_value text", sql)
+        self.assertIn("published_documents_kind_check", sql)
+        self.assertIn("published_documents_tag_idx", sql)
+
     def test_postgresql_history_payload_excludes_fingerprint_lists_and_round_trips(self) -> None:
         snapshot = HistorySnapshot(
             snapshot_id="snapshot-compact",

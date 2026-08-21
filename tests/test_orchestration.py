@@ -21,6 +21,7 @@ from tenable_reports.application.orchestration import (
     run_orchestration,
 )
 from tenable_reports.application.publishing import (
+    PublicationDocument,
     create_publication_manifest,
     validate_docx_package,
 )
@@ -427,6 +428,41 @@ class OrchestrationTests(unittest.TestCase):
             self.assertTrue(all(len(item["sha256"]) == 64 for item in payload["documents"]))
             self.assertEqual(validate_docx_package(base.output_path)["package_status"], "VALID")
 
+    def test_publication_manifest_records_tag_document_metadata(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            tag_document = generate_full_base_report(
+                template_path=ROOT / "templates/corporate/base-v1.docx",
+                dataset_path=ROOT / "tests/fixtures/report-dataset-phase5.json",
+                profile=profile,
+                output_path=output / "tag.docx",
+                assets_dir=ROOT / "templates/corporate/assets",
+                mask_sensitive=True,
+            )
+            manifest = create_publication_manifest(
+                output_path=output / "publication.json",
+                client_id=profile.client_id,
+                tenant_id=profile.tenant_id,
+                run_id="tag-proof",
+                execution_type="MANUAL",
+                period={"period_id": "2026-07"},
+                dataset_path=ROOT / "tests/fixtures/report-dataset-phase5.json",
+                documents=(PublicationDocument(
+                    path=tag_document.output_path,
+                    document_kind="tag",
+                    tag_uuid="tag-a",
+                    tag_category="Equipe",
+                    tag_value="Infra",
+                ),),
+                history_database=None,
+            )
+            document = json.loads(manifest.read_text(encoding="utf-8"))["documents"][0]
+            self.assertEqual(document["document_kind"], "tag")
+            self.assertEqual(document["tag_uuid"], "tag-a")
+            self.assertEqual(document["tag_category"], "Equipe")
+            self.assertEqual(document["tag_value"], "Infra")
+
     def test_publication_rejects_structurally_empty_docx_before_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             document = Path(directory) / "empty.docx"
@@ -506,7 +542,7 @@ class OrchestrationTests(unittest.TestCase):
                 mask_sensitive=True,
             )
             first_text = _docx_text(first_docx.output_path)
-            self.assertIn("Baseline do período atual", first_text)
+            self.assertNotIn("Baseline do período atual", first_text)
             self.assertIn(
                 "Não há histórico do período imediatamente anterior para comparação.",
                 first_text,
