@@ -27,10 +27,26 @@ class VmTag:
 
 
 @dataclass(frozen=True, slots=True)
-class TagScopeArtifact:
-    path: Path
-    tags: tuple[VmTag, ...]
+class TagAssetScope:
+    tag: VmTag
     asset_ids: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class TagScopeCollection:
+    path: Path
+    scopes: tuple[TagAssetScope, ...]
+    warnings: tuple[dict[str, Any], ...] = ()
+
+    @property
+    def tags(self) -> tuple[VmTag, ...]:
+        return tuple(scope.tag for scope in self.scopes)
+
+    @property
+    def asset_ids(self) -> frozenset[str]:
+        return frozenset(
+            asset_id for scope in self.scopes for asset_id in scope.asset_ids
+        )
 
 
 def _text(value: Any) -> str:
@@ -77,7 +93,7 @@ def resolve_tag_selectors(
         if tag.uuid not in seen:
             selected.append(tag)
             seen.add(tag.uuid)
-    return validate_single_category(selected)
+    return tuple(selected)
 
 
 def validate_single_category(tags: Iterable[VmTag]) -> tuple[VmTag, ...]:
@@ -190,36 +206,49 @@ def collect_tag_scope_snapshot(
     tags: Sequence[VmTag],
     output_root: str | Path,
     run_id: str,
-) -> TagScopeArtifact:
-    selected = validate_single_category(tags)
+) -> TagScopeCollection:
+    selected = tuple(tags)
     if not selected:
         raise ValueError("A coleta de escopo exige ao menos uma tag selecionada.")
     selected_rows: list[dict[str, Any]] = []
-    all_asset_ids: set[str] = set()
+    scopes: list[TagAssetScope] = []
+    warnings: list[dict[str, Any]] = []
     for tag in selected:
-        assets = client.list_assets_for_tag(tag.category_name, tag.value)
+        try:
+            assets = client.list_assets_for_tag(tag.category_name, tag.value)
+        except Exception as exc:
+            warnings.append({
+                "code": "TAG_SCOPE_UNAVAILABLE",
+                "tag_uuid": tag.uuid,
+                "tag_label": tag.label,
+                "stage": "tag_asset_scope",
+                "message": str(exc)[:500],
+            })
+            continue
         asset_ids = sorted({
             _text(item.get("id") or item.get("uuid") or item.get("asset_uuid"))
             for item in assets
             if _text(item.get("id") or item.get("uuid") or item.get("asset_uuid"))
         })
-        all_asset_ids.update(asset_ids)
+        scopes.append(TagAssetScope(tag=tag, asset_ids=frozenset(asset_ids)))
         selected_rows.append({
             **tag.to_dict(),
             "asset_count": len(asset_ids),
             "asset_ids": asset_ids,
         })
     data = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source": "tenable_vm_tags",
         "run_id": run_id,
         "client_id": profile.client_id,
         "tenant_id": profile.tenant_id,
         "collected_at": utc_now_iso(),
-        "match_operator": "OR_WITHIN_CATEGORY",
-        "category_name": selected[0].category_name,
-        "selected_asset_count": len(all_asset_ids),
+        "match_operator": "INDEPENDENT_TAG_SCOPES",
+        "selected_asset_count": len({
+            asset_id for scope in scopes for asset_id in scope.asset_ids
+        }),
         "selected_tags": selected_rows,
+        "warnings": warnings,
     }
     path = (
         Path(output_root)
@@ -232,7 +261,11 @@ def collect_tag_scope_snapshot(
         path,
         (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
     )
-    return TagScopeArtifact(path=path, tags=selected, asset_ids=frozenset(all_asset_ids))
+    return TagScopeCollection(
+        path=path,
+        scopes=tuple(scopes),
+        warnings=tuple(warnings),
+    )
 
 
 def read_tag_scope_snapshot(path: str | Path) -> dict[str, Any]:

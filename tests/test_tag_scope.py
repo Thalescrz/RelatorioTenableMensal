@@ -1,15 +1,43 @@
 from __future__ import annotations
 
+import json
+import tempfile
 import unittest
+from pathlib import Path
 
 from tenable_reports.application.normalize import filter_records_to_asset_scope
 from tenable_reports.application.tag_scope import (
     VmTag,
+    collect_tag_scope_snapshot,
     parse_number_selection,
     parse_tag_values,
     prompt_tag_selection,
     resolve_tag_selectors,
 )
+from tenable_reports.config.profile import ClientProfile
+
+
+class FakeVmClient:
+    def __init__(self, values, failures=None) -> None:
+        self.values = values
+        self.failures = failures or {}
+
+    def list_assets_for_tag(self, category_name, value):
+        key = (category_name, value)
+        if key in self.failures:
+            raise self.failures[key]
+        return list(self.values.get(key, ()))
+
+
+def profile() -> ClientProfile:
+    return ClientProfile.from_dict(
+        {
+            "schema_version": 1,
+            "client_id": "client-001",
+            "display_name": "Cliente",
+            "tenant_id": "tenant",
+        }
+    )
 
 
 class TagScopeTests(unittest.TestCase):
@@ -43,9 +71,62 @@ class TagScopeTests(unittest.TestCase):
         self.assertEqual({item.uuid for item in selected}, {"tag-a", "tag-b"})
         self.assertTrue(any("Categorias" in line for line in output))
 
-    def test_selectors_reject_categories_that_would_be_combined_with_and(self) -> None:
-        with self.assertRaisesRegex(ValueError, "AND"):
-            resolve_tag_selectors(self.tags, ["tag-a", "tag-c"])
+    def test_selectors_accept_different_categories_as_independent_scopes(self) -> None:
+        selected = resolve_tag_selectors(self.tags, ["tag-a", "tag-c"])
+
+        self.assertEqual([item.uuid for item in selected], ["tag-a", "tag-c"])
+
+    def test_scope_snapshot_keeps_each_tag_asset_set_separate(self) -> None:
+        client = FakeVmClient(
+            {
+                ("Rede", "Matriz"): [
+                    {"id": "asset-a"},
+                    {"id": "asset-shared"},
+                ],
+                ("Sistema", "Linux"): [
+                    {"id": "asset-b"},
+                    {"id": "asset-shared"},
+                ],
+            }
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = collect_tag_scope_snapshot(
+                client=client,
+                profile=profile(),
+                tags=(self.tags[0], self.tags[2]),
+                output_root=directory,
+                run_id="run-1",
+            )
+            payload = json.loads(Path(result.path).read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            result.scopes[0].asset_ids,
+            frozenset({"asset-a", "asset-shared"}),
+        )
+        self.assertEqual(
+            result.scopes[1].asset_ids,
+            frozenset({"asset-b", "asset-shared"}),
+        )
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["match_operator"], "INDEPENDENT_TAG_SCOPES")
+
+    def test_one_tag_failure_becomes_warning_without_erasing_other_scopes(self) -> None:
+        client = FakeVmClient(
+            {("Rede", "Matriz"): [{"id": "asset-a"}]},
+            failures={("Sistema", "Linux"): RuntimeError("limit")},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = collect_tag_scope_snapshot(
+                client=client,
+                profile=profile(),
+                tags=(self.tags[0], self.tags[2]),
+                output_root=directory,
+                run_id="run-1",
+            )
+
+        self.assertEqual([scope.tag.uuid for scope in result.scopes], ["tag-a"])
+        self.assertEqual(result.warnings[0]["tag_uuid"], "tag-c")
+        self.assertEqual(result.warnings[0]["code"], "TAG_SCOPE_UNAVAILABLE")
 
     def test_asset_and_finding_records_are_restricted_to_the_same_union(self) -> None:
         assets, findings = filter_records_to_asset_scope(
