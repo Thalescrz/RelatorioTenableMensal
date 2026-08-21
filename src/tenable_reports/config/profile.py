@@ -94,11 +94,32 @@ class CloudSecurityScope:
 
 
 @dataclass(frozen=True, slots=True)
+class TagReportSelection:
+    tag_uuid: str
+    category_uuid: str
+    category_name: str
+    value: str
+    generate_report: bool = True
+    include_temporal_comparison: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TagReportsConfig:
+    enabled: bool = False
+    tags: tuple[TagReportSelection, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ReportConfig:
     type: str = "vulnerabilities"
     base_modules: tuple[str, ...] = REQUIRED_BASE_MODULES
     intelligence_modules: tuple[str, ...] = ()
-    network_comparison_tags: tuple[str, ...] = ()
+    tag_reports: TagReportsConfig = field(default_factory=TagReportsConfig)
+    legacy_network_comparison_tags: tuple[str, ...] = ()
+
+    @property
+    def network_comparison_tags(self) -> tuple[str, ...]:
+        return self.legacy_network_comparison_tags
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +153,62 @@ class ClientProfile:
     cloud_security_scope: CloudSecurityScope = field(default_factory=CloudSecurityScope)
     presentation: PresentationConfig = field(default_factory=PresentationConfig)
     reporting: ReportingConfig = field(default_factory=ReportingConfig)
+
+    @staticmethod
+    def _tag_reports(value: Any) -> TagReportsConfig:
+        if value is None:
+            return TagReportsConfig()
+        if not isinstance(value, dict):
+            raise ProfileError("report.tag_reports deve ser um objeto JSON.")
+        enabled = _as_bool(
+            value.get("enabled"),
+            "report.tag_reports.enabled",
+        )
+        raw_tags = value.get("tags")
+        if raw_tags is None:
+            raw_tags = []
+        if not isinstance(raw_tags, list) or any(
+            not isinstance(item, dict) for item in raw_tags
+        ):
+            raise ProfileError("report.tag_reports.tags deve ser uma lista de objetos.")
+        tags: list[TagReportSelection] = []
+        seen: set[str] = set()
+        for index, item in enumerate(raw_tags):
+            tag_uuid = str(item.get("tag_uuid") or "").strip()
+            category_uuid = str(item.get("category_uuid") or "").strip()
+            category_name = str(item.get("category_name") or "").strip()
+            tag_value = str(item.get("value") or "").strip()
+            if not tag_uuid or not category_name or not tag_value:
+                raise ProfileError(
+                    "Cada TAG requer tag_uuid, category_name e value preenchidos."
+                )
+            if tag_uuid in seen:
+                raise ProfileError(f"UUID de TAG duplicado: {tag_uuid}.")
+            seen.add(tag_uuid)
+            generate_report = _as_bool(
+                item.get("generate_report"),
+                f"report.tag_reports.tags[{index}].generate_report",
+                default=True,
+            )
+            include_comparison = _as_bool(
+                item.get("include_temporal_comparison"),
+                f"report.tag_reports.tags[{index}].include_temporal_comparison",
+            )
+            if include_comparison and not generate_report:
+                raise ProfileError(
+                    "O comparativo temporal da TAG requer o relatorio da TAG habilitado."
+                )
+            tags.append(
+                TagReportSelection(
+                    tag_uuid=tag_uuid,
+                    category_uuid=category_uuid,
+                    category_name=category_name,
+                    value=tag_value,
+                    generate_report=generate_report,
+                    include_temporal_comparison=include_comparison,
+                )
+            )
+        return TagReportsConfig(enabled=enabled, tags=tuple(tags))
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ClientProfile":
@@ -270,7 +347,8 @@ class ClientProfile:
                 type=report_type,
                 base_modules=REQUIRED_BASE_MODULES,
                 intelligence_modules=intelligence_modules,
-                network_comparison_tags=_as_string_list(
+                tag_reports=cls._tag_reports(report_data.get("tag_reports")),
+                legacy_network_comparison_tags=_as_string_list(
                     report_data.get("network_comparison_tags"),
                     "report.network_comparison_tags",
                 ),

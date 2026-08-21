@@ -109,6 +109,114 @@ class ProfileTests(unittest.TestCase):
                 }
             )
 
+    def test_profile_accepts_tag_reports_from_different_categories(self) -> None:
+        profile = ClientProfile.from_dict(
+            {
+                "schema_version": 1,
+                "client_id": "client-001",
+                "display_name": "Cliente",
+                "tenant_id": "tenant",
+                "report": {
+                    "tag_reports": {
+                        "enabled": True,
+                        "tags": [
+                            {
+                                "tag_uuid": "tag-a",
+                                "category_uuid": "cat-a",
+                                "category_name": "Equipe",
+                                "value": "Infraestrutura",
+                                "generate_report": True,
+                                "include_temporal_comparison": True,
+                            },
+                            {
+                                "tag_uuid": "tag-b",
+                                "category_uuid": "cat-b",
+                                "category_name": "Local",
+                                "value": "Fortaleza",
+                                "generate_report": True,
+                                "include_temporal_comparison": False,
+                            },
+                        ],
+                    }
+                },
+            }
+        )
+
+        self.assertTrue(profile.report.tag_reports.enabled)
+        self.assertEqual(
+            [item.tag_uuid for item in profile.report.tag_reports.tags],
+            ["tag-a", "tag-b"],
+        )
+        self.assertTrue(
+            profile.report.tag_reports.tags[0].include_temporal_comparison
+        )
+
+    def test_profile_rejects_tag_comparison_without_tag_report(self) -> None:
+        with self.assertRaisesRegex(ProfileError, "comparativo.*relatorio"):
+            ClientProfile.from_dict(
+                {
+                    "schema_version": 1,
+                    "client_id": "client-001",
+                    "display_name": "Cliente",
+                    "tenant_id": "tenant",
+                    "report": {
+                        "tag_reports": {
+                            "enabled": True,
+                            "tags": [
+                                {
+                                    "tag_uuid": "tag-a",
+                                    "category_name": "Equipe",
+                                    "value": "Infraestrutura",
+                                    "generate_report": False,
+                                    "include_temporal_comparison": True,
+                                }
+                            ],
+                        }
+                    },
+                }
+            )
+
+    def test_profile_rejects_duplicate_tag_report_uuid(self) -> None:
+        tag = {
+            "tag_uuid": "tag-a",
+            "category_name": "Equipe",
+            "value": "Infraestrutura",
+            "generate_report": True,
+            "include_temporal_comparison": False,
+        }
+        with self.assertRaisesRegex(ProfileError, "UUID.*duplicado"):
+            ClientProfile.from_dict(
+                {
+                    "schema_version": 1,
+                    "client_id": "client-001",
+                    "display_name": "Cliente",
+                    "tenant_id": "tenant",
+                    "report": {
+                        "tag_reports": {
+                            "enabled": True,
+                            "tags": [tag, dict(tag)],
+                        }
+                    },
+                }
+            )
+
+    def test_legacy_network_selectors_remain_available(self) -> None:
+        profile = ClientProfile.from_dict(
+            {
+                "schema_version": 1,
+                "client_id": "client-001",
+                "display_name": "Cliente",
+                "tenant_id": "tenant",
+                "report": {"network_comparison_tags": ["Rede: Matriz"]},
+            }
+        )
+
+        self.assertEqual(
+            profile.report.legacy_network_comparison_tags,
+            ("Rede: Matriz",),
+        )
+        self.assertEqual(profile.report.network_comparison_tags, ("Rede: Matriz",))
+
     def test_profile_rejects_embedded_secret(self) -> None:
         with self.assertRaisesRegex(ProfileError, "nao podem conter segredos"):
             ClientProfile.from_dict(
