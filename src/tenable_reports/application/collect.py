@@ -308,6 +308,53 @@ def _load_resume_chunks(
     return str(payload.get("export_uuid") or "") or None, reusable
 
 
+def find_resumable_vm_manifest(
+    output_root: str | Path,
+    *,
+    profile: ClientProfile,
+    request: VulnerabilityExportRequest,
+    logical_job_id: str | None,
+) -> Path | None:
+    if not logical_job_id:
+        return None
+    query = request.to_api_query()
+    expected_query_sha256 = hashlib.sha256(
+        json.dumps(
+            query, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    search_root = Path(output_root) / "raw" / profile.client_id
+    if not search_root.is_dir():
+        return None
+    candidates = sorted(
+        search_root.rglob("manifest.partial.json"),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            payload.get("source") != "tenable_vm_vulnerabilities"
+            or payload.get("client_id") != profile.client_id
+            or payload.get("tenant_id") != profile.tenant_id
+            or payload.get("logical_job_id") != logical_job_id
+            or payload.get("query_sha256") != expected_query_sha256
+        ):
+            continue
+        export_uuid, reusable = _load_resume_chunks(
+            candidate,
+            source="tenable_vm_vulnerabilities",
+            client_id=profile.client_id,
+            tenant_id=profile.tenant_id,
+        )
+        if export_uuid and reusable:
+            return candidate
+    return None
+
+
 def _download_blocks(
     client: Any,
     *,
@@ -351,6 +398,7 @@ def collect_vm_snapshot(
     run_id: str | None = None,
     export_uuid: str | None = None,
     resume_from: str | Path | None = None,
+    logical_job_id: str | None = None,
     minimum_free_gb: int = 10,
     last_success_bytes: int | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
@@ -359,6 +407,11 @@ def collect_vm_snapshot(
     actual_run_id = run_id or str(uuid.uuid4())
     started_at = utc_now_iso()
     query = request.to_api_query()
+    query_sha256 = hashlib.sha256(
+        json.dumps(
+            query, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
     resumed_export_uuid, resumed_chunks = _load_resume_chunks(
         resume_from,
         source="tenable_vm_vulnerabilities",
@@ -398,6 +451,30 @@ def collect_vm_snapshot(
         / actual_export_uuid
     )
     state_path = raw_directory / "export-state.json"
+    partial_manifest_path = raw_directory / "manifest.partial.json"
+    manifest_path = raw_directory / "manifest.json"
+    stored_chunks: dict[int, StoredChunk] = {}
+
+    def manifest_payload(*, status: str) -> dict[str, Any]:
+        return {
+            "schema_version": 3,
+            "run_id": actual_run_id,
+            "logical_job_id": logical_job_id,
+            "client_id": profile.client_id,
+            "tenant_id": profile.tenant_id,
+            "source": "tenable_vm_vulnerabilities",
+            "strategy": "combined",
+            "export_uuid": actual_export_uuid,
+            "origin": job.origin,
+            "status": status,
+            "query": sanitized_mapping(query),
+            "query_sha256": query_sha256,
+            "updated_at": utc_now_iso(),
+            "chunks": [
+                stored_chunks[chunk_id].to_manifest()
+                for chunk_id in sorted(stored_chunks)
+            ],
+        }
 
     def emit_progress(status: str, **details: Any) -> None:
         payload = {
@@ -407,11 +484,46 @@ def collect_vm_snapshot(
             "origin": job.origin,
             "status": status,
             "started_at": started_at,
+            "persisted_chunks": sorted(stored_chunks),
+            "partial_manifest": (
+                str(partial_manifest_path.resolve())
+                if partial_manifest_path.exists() else None
+            ),
             **details,
         }
         _write_json_replace(state_path, payload)
         if progress_callback is not None:
             progress_callback(payload)
+
+    def persist_chunk(chunk_id: int) -> None:
+        actual_chunk_id = int(chunk_id)
+        if actual_chunk_id in stored_chunks:
+            return
+        storage_preflight(
+            raw_directory,
+            last_success_bytes=last_success_bytes,
+            minimum_free_gb=minimum_free_gb,
+        )
+        reused = resumed_chunks.get(actual_chunk_id)
+        stored = (
+            _localize_reused_chunk(reused, raw_directory=raw_directory)
+            if reused is not None
+            else store_chunk_atomic(
+                raw_directory,
+                _download_blocks(
+                    client,
+                    export_uuid=actual_export_uuid,
+                    chunk_id=actual_chunk_id,
+                    asset=False,
+                ),
+                chunk_id=actual_chunk_id,
+            )
+        )
+        stored_chunks[actual_chunk_id] = stored
+        _write_json_replace(
+            partial_manifest_path,
+            manifest_payload(status="PROCESSING"),
+        )
 
     emit_progress(
         "STARTED",
@@ -427,23 +539,35 @@ def collect_vm_snapshot(
         details = {
             str(key): value
             for key, value in status.items()
-            if key not in {"event", "source", "export_uuid", "origin", "status"}
+            if key not in {
+                "event", "source", "export_uuid", "origin", "status",
+                "persisted_chunks", "partial_manifest",
+            }
         }
         emit_progress(remote_status, **details)
 
     try:
         wait_method = client.wait_for_completion
         parameters = inspect.signature(wait_method).parameters
+        wait_arguments: dict[str, Any] = {}
         if "progress_callback" in parameters:
-            _, chunk_ids = wait_method(
-                actual_export_uuid,
-                progress_callback=update_progress,
-            )
-        else:
-            _, chunk_ids = wait_method(actual_export_uuid)
+            wait_arguments["progress_callback"] = update_progress
+        if "chunk_callback" in parameters:
+            wait_arguments["chunk_callback"] = persist_chunk
+        _, chunk_ids = wait_method(actual_export_uuid, **wait_arguments)
     except ExportTimeoutError as exc:
         exc.export_uuid = actual_export_uuid
         exc.origin = job.origin
+        exc.last_status = {
+            **exc.last_status,
+            "persisted_chunks": sorted(stored_chunks),
+            "partial_manifest": (
+                str(partial_manifest_path.resolve())
+                if partial_manifest_path.exists() else None
+            ),
+        }
+        local_progress = bool(stored_chunks)
+        exc.progress_made = bool(exc.progress_made or local_progress)
         auto_cancelled = False
         cancellation_error: str | None = None
         if job.created_by_current_run and not exc.progress_made:
@@ -460,65 +584,46 @@ def collect_vm_snapshot(
             if key not in {
                 "event", "source", "export_uuid", "origin", "status",
                 "auto_cancelled", "cancellation_error", "progress_made",
+                "persisted_chunks", "partial_manifest", "completed_chunks",
             }
         }
         emit_progress(
             "TIMED_OUT",
             **timeout_details,
+            completed_chunks=max(
+                len(stored_chunks),
+                int(exc.last_status.get("completed_chunks") or 0),
+            ),
+            persisted_chunks=sorted(stored_chunks),
+            partial_manifest=(
+                str(partial_manifest_path.resolve())
+                if partial_manifest_path.exists() else None
+            ),
             auto_cancelled=auto_cancelled,
             cancellation_error=cancellation_error,
             progress_made=exc.progress_made,
         )
         raise
+
+    for chunk_id in chunk_ids:
+        persist_chunk(chunk_id)
+
     emit_progress(
         "FINISHED",
-        completed_chunks=len(chunk_ids),
+        completed_chunks=len(stored_chunks),
         total_chunks=len(chunk_ids),
-        progress_made=bool(chunk_ids),
+        progress_made=bool(stored_chunks),
         auto_cancelled=False,
     )
-
-    stored_chunks: list[StoredChunk] = []
-    for chunk_id in chunk_ids:
-        storage_preflight(
-            raw_directory,
-            last_success_bytes=last_success_bytes,
-            minimum_free_gb=minimum_free_gb,
-        )
-        reused = resumed_chunks.get(chunk_id)
-        stored = (
-            _localize_reused_chunk(reused, raw_directory=raw_directory)
-            if reused is not None
-            else store_chunk_atomic(
-                raw_directory,
-                _download_blocks(
-                    client,
-                    export_uuid=actual_export_uuid,
-                    chunk_id=chunk_id,
-                    asset=False,
-                ),
-                chunk_id=chunk_id,
-            )
-        )
-        stored_chunks.append(stored)
-
-    manifest = {
-        "schema_version": 2,
-        "run_id": actual_run_id,
-        "client_id": profile.client_id,
-        "tenant_id": profile.tenant_id,
-        "source": "tenable_vm_vulnerabilities",
-        "export_uuid": actual_export_uuid,
-        "query": sanitized_mapping(query),
-        "chunks": [item.to_manifest() for item in stored_chunks],
-    }
-    manifest_path = raw_directory / "manifest.json"
+    stored_in_order = [stored_chunks[chunk_id] for chunk_id in sorted(stored_chunks)]
+    manifest = manifest_payload(status="FINISHED")
     _write_exclusive(
         manifest_path,
         (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
     )
+    partial_manifest_path.unlink(missing_ok=True)
 
-    record_count = sum(item.record_count for item in stored_chunks)
+    record_count = sum(item.record_count for item in stored_in_order)
     snapshot = build_source_snapshot_from_chunk_hashes(
         run_id=actual_run_id,
         client_id=profile.client_id,
@@ -527,7 +632,7 @@ def collect_vm_snapshot(
         export_uuid=actual_export_uuid,
         query=query,
         chunk_hashes=(
-            (item.chunk_id, item.content_sha256) for item in stored_chunks
+            (item.chunk_id, item.content_sha256) for item in stored_in_order
         ),
         record_count=record_count,
         started_at=started_at,
@@ -561,11 +666,17 @@ def collect_vm_snapshot_by_state(
     output_root: str | Path,
     run_id: str | None = None,
     export_uuid: str | None = None,
+    resume_from: str | Path | None = None,
+    logical_job_id: str | None = None,
+    strategy: str = "combined",
     minimum_free_gb: int = 10,
     last_success_bytes: int | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
+    normalized_strategy = str(strategy).strip().lower()
+    if normalized_strategy not in {"combined", "split"}:
+        raise ValueError("strategy deve ser combined ou split.")
     raw_states = request.filters.get("state")
     values = [raw_states] if isinstance(raw_states, str) else list(raw_states or ())
     states = tuple(str(value).strip().upper() for value in values if str(value).strip())
@@ -573,7 +684,8 @@ def collect_vm_snapshot_by_state(
         state for state in states if state in {"OPEN", "REOPENED"}
     )
     should_split = (
-        export_uuid is None
+        normalized_strategy == "split"
+        and export_uuid is None
         and bool(active_states)
         and "FIXED" in states
         and set(states).issubset({"OPEN", "REOPENED", "FIXED"})
@@ -586,6 +698,8 @@ def collect_vm_snapshot_by_state(
             output_root=output_root,
             run_id=actual_run_id,
             export_uuid=export_uuid,
+            resume_from=resume_from,
+            logical_job_id=logical_job_id,
             minimum_free_gb=minimum_free_gb,
             last_success_bytes=last_success_bytes,
             progress_callback=progress_callback,
@@ -623,6 +737,9 @@ def collect_vm_snapshot_by_state(
             request=segment_request,
             output_root=output_root,
             run_id=actual_run_id,
+            logical_job_id=(
+                f"{logical_job_id}:{segment_name}" if logical_job_id else None
+            ),
             minimum_free_gb=minimum_free_gb,
             last_success_bytes=last_success_bytes,
             progress_callback=forward_progress,

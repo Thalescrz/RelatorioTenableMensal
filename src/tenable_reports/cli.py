@@ -16,6 +16,7 @@ from tenable_reports.application.collect import (
     collect_asset_snapshot,
     collect_vm_snapshot,
     collect_vm_snapshot_by_state,
+    find_resumable_vm_manifest,
 )
 from tenable_reports.application.collect_was import (
     WasExportRequest,
@@ -950,6 +951,31 @@ def command_import_history_csv(args: argparse.Namespace) -> int:
     return 0
 
 
+def _effective_vm_export_settings(
+    args: argparse.Namespace,
+    profile: Any,
+) -> tuple[str, int, str]:
+    configured = profile.reporting.vm_export
+    strategy = (
+        str(getattr(args, "vm_export_strategy", None) or configured.strategy)
+        .strip()
+        .lower()
+    )
+    num_assets = int(
+        getattr(args, "num_assets", None)
+        or configured.num_assets_per_chunk
+    )
+    selective_mode = (
+        str(
+            getattr(args, "vm_selective_mode", None)
+            or configured.selective_properties
+        )
+        .strip()
+        .lower()
+    )
+    return strategy, num_assets, selective_mode
+
+
 def _execute_period(
     args: argparse.Namespace,
     *,
@@ -958,6 +984,9 @@ def _execute_period(
 ) -> _CollectedPeriodExecution:
     credentials = _load_credentials(args.env_file)
     profile = load_client_profile(args.profile)
+    vm_strategy, vm_num_assets, vm_selective_mode = (
+        _effective_vm_export_settings(args, profile)
+    )
     output_root = _scoped_output_root(args.output_root, execution_type)
     client = _client_from_environment(credentials)
     was_client = _was_client_from_environment(credentials)
@@ -989,19 +1018,32 @@ def _execute_period(
         run_id=actual_run_id,
         export_uuid=args.asset_export_uuid,
     )
+    finding_request = VulnerabilityExportRequest(
+        filters=finding_filters,
+        num_assets=vm_num_assets,
+        include_unlicensed=profile.vm_scope.include_unlicensed,
+        include_software_vulns=args.include_software_vulns,
+        include_plugin_output=args.include_output,
+    )
+    logical_job_id = getattr(args, "logical_job_id", None)
+    resume_manifest = getattr(args, "vm_resume_manifest", None)
+    if not resume_manifest and vm_strategy == "combined":
+        resume_manifest = find_resumable_vm_manifest(
+            output_root,
+            profile=profile,
+            request=finding_request,
+            logical_job_id=logical_job_id,
+        )
     findings = collect_vm_snapshot_by_state(
         client=client,
         profile=profile,
-        request=VulnerabilityExportRequest(
-            filters=finding_filters,
-            num_assets=args.num_assets,
-            include_unlicensed=profile.vm_scope.include_unlicensed,
-            include_software_vulns=args.include_software_vulns,
-            include_plugin_output=args.include_output,
-        ),
+        request=finding_request,
         output_root=output_root,
         run_id=actual_run_id,
         export_uuid=args.vm_export_uuid,
+        resume_from=resume_manifest,
+        logical_job_id=logical_job_id,
+        strategy=vm_strategy,
         progress_callback=_emit_progress_event,
     )
     was_collection = None
@@ -1693,7 +1735,17 @@ def _add_complete_collection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--asset-filters")
     parser.add_argument("--finding-filters")
     parser.add_argument("--asset-chunk-size", type=int, default=1000)
-    parser.add_argument("--num-assets", type=int, default=1000)
+    parser.add_argument("--num-assets", type=int)
+    parser.add_argument(
+        "--vm-export-strategy",
+        choices=("combined", "split"),
+        help="Sobrescreve a estratégia VM do perfil somente nesta execução.",
+    )
+    parser.add_argument(
+        "--vm-selective-mode",
+        choices=("disabled", "validation", "enabled"),
+        help="Sobrescreve o modo de properties VM somente nesta execução.",
+    )
     parser.add_argument("--asset-export-uuid")
     parser.add_argument("--vm-export-uuid")
     parser.add_argument("--asset-resume-manifest")

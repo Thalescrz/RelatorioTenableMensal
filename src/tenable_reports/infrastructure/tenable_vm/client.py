@@ -607,9 +607,11 @@ class TenableVmClient:
         *,
         label: str,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+        chunk_callback: Callable[[int], None] | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         started = self.monotonic()
         seen: list[int] = []
+        notified: set[int] = set()
         progress_made = False
         while True:
             status = status_loader(export_uuid)
@@ -618,6 +620,12 @@ class TenableVmClient:
             if current:
                 seen = current
                 progress_made = True
+            if chunk_callback is not None:
+                for chunk_id in current:
+                    if chunk_id in notified:
+                        continue
+                    chunk_callback(chunk_id)
+                    notified.add(chunk_id)
             elapsed = max(0.0, self.monotonic() - started)
             progress = {
                 **status,
@@ -661,12 +669,14 @@ class TenableVmClient:
         export_uuid: str,
         *,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+        chunk_callback: Callable[[int], None] | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         return self._wait_for_completion(
             export_uuid,
             self.get_export_status,
             label="VM",
             progress_callback=progress_callback,
+            chunk_callback=chunk_callback,
         )
 
     def wait_for_asset_completion(self, export_uuid: str) -> tuple[dict[str, Any], list[int]]:

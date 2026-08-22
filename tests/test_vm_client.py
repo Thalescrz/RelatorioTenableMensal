@@ -249,6 +249,44 @@ class TenableVmClientTests(unittest.TestCase):
         _, chunks = client.wait_for_completion("job")
         self.assertEqual(chunks, [1, 2, 3])
 
+    def test_wait_notifies_each_available_chunk_only_once_before_finish(self) -> None:
+        client, _ = client_with(
+            [
+                response(
+                    200,
+                    {
+                        "status": "PROCESSING",
+                        "chunks_available": [2],
+                        "total_chunks": 3,
+                    },
+                ),
+                response(
+                    200,
+                    {
+                        "status": "PROCESSING",
+                        "chunks_available": [2, 3],
+                        "total_chunks": 3,
+                    },
+                ),
+                response(
+                    200,
+                    {
+                        "status": "FINISHED",
+                        "chunks_available": [2, 3],
+                        "total_chunks": 2,
+                    },
+                ),
+            ]
+        )
+        received: list[int] = []
+
+        _, chunks = client.wait_for_completion(
+            "job", chunk_callback=received.append
+        )
+
+        self.assertEqual(received, [2, 3])
+        self.assertEqual(chunks, [2, 3])
+
     def test_error_message_never_contains_credentials_or_response_body(self) -> None:
         client, _ = client_with([response(403, {"debug": "secret-fixture access-fixture"})])
         with self.assertRaises(ApiError) as caught:

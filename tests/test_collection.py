@@ -14,6 +14,7 @@ from tenable_reports.application.collect import (
     collect_asset_snapshot,
     collect_vm_snapshot,
     collect_vm_snapshot_by_state,
+    find_resumable_vm_manifest,
     reusable_chunk,
     store_chunk_atomic,
 )
@@ -125,6 +126,42 @@ class TimedOutCollectionClient:
         return {"status": "CANCELLED"}
 
 
+class IncrementalTimeoutCollectionClient(TimedOutCollectionClient):
+    def __init__(self, *, origin: str = "created") -> None:
+        super().__init__(origin=origin)
+        self.download_calls: list[int] = []
+
+    def wait_for_completion(
+        self,
+        export_uuid: str,
+        *,
+        progress_callback=None,
+        chunk_callback=None,
+    ):
+        status = {
+            "export_uuid": export_uuid,
+            "status": "PROCESSING",
+            "chunks_available": [2],
+            "completed_chunks": 1,
+            "total_chunks": 2,
+            "progress_made": True,
+        }
+        if chunk_callback is not None:
+            chunk_callback(2)
+        if progress_callback is not None:
+            progress_callback(status)
+        raise ExportTimeoutError(
+            "Tempo maximo excedido aguardando o export VM.",
+            export_uuid=export_uuid,
+            last_status=status,
+            progress_made=True,
+        )
+
+    def download_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:
+        self.download_calls.append(chunk_id)
+        return b'{"id":"finding-partial","state":"OPEN"}\n'
+
+
 class FakeWasCollectionClient:
     def __init__(self, chunks: dict[int, bytes]) -> None:
         self.chunks = chunks
@@ -147,6 +184,32 @@ class UnavailableWasCollectionClient(FakeWasCollectionClient):
 
 
 class CollectionTests(unittest.TestCase):
+    def test_vm_states_use_one_combined_export_by_default(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = SegmentedCollectionClient()
+        with tempfile.TemporaryDirectory() as directory:
+            result = collect_vm_snapshot_by_state(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={
+                    "since": 1782860400,
+                    "state": ["OPEN", "REOPENED", "FIXED"],
+                    "severity": ["low", "medium", "high", "critical"],
+                }),
+                output_root=directory,
+                run_id="run-combined",
+            )
+            manifest = json.loads(
+                result.raw_manifest_path.read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(
+            [filters["state"] for filters in client.started_filters],
+            [["OPEN", "REOPENED", "FIXED"]],
+        )
+        self.assertEqual(manifest["strategy"], "combined")
+        self.assertNotIn("segments", manifest)
+
     def test_vm_states_are_exported_separately_and_merged_into_one_snapshot(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
         client = SegmentedCollectionClient()
@@ -163,6 +226,7 @@ class CollectionTests(unittest.TestCase):
                 output_root=directory,
                 run_id="run-segmented",
                 progress_callback=progress.append,
+                strategy="split",
             )
             records = list(_collection_records(result))
             manifest = json.loads(
@@ -232,6 +296,119 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(client.cancelled, [])
         self.assertFalse(caught.exception.auto_cancelled)
         self.assertEqual(caught.exception.origin, "reused")
+
+    def test_available_chunk_is_persisted_before_timeout(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = IncrementalTimeoutCollectionClient()
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExportTimeoutError) as caught:
+                collect_vm_snapshot(
+                    client=client,  # type: ignore[arg-type]
+                    profile=profile,
+                    request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                    output_root=directory,
+                    run_id="run-partial",
+                    logical_job_id="logical-july",
+                )
+            partial_path = next(Path(directory).rglob("manifest.partial.json"))
+            manifest = json.loads(partial_path.read_text(encoding="utf-8"))
+            chunk_path = partial_path.parent / "chunk-000002.jsonl.gz"
+
+            self.assertEqual(client.download_calls, [2])
+            self.assertEqual(client.cancelled, [])
+            self.assertEqual([item["chunk_id"] for item in manifest["chunks"]], [2])
+            self.assertEqual(manifest["logical_job_id"], "logical-july")
+            self.assertEqual(manifest["origin"], "created")
+            self.assertTrue(chunk_path.is_file())
+            self.assertEqual(
+                list(iter_chunk_records(chunk_path))[0]["id"],
+                "finding-partial",
+            )
+            self.assertEqual(
+                caught.exception.last_status["persisted_chunks"],
+                [2],
+            )
+            self.assertEqual(
+                Path(caught.exception.last_status["partial_manifest"]),
+                partial_path,
+            )
+
+    def test_partial_manifest_reuses_downloaded_chunk_on_retry(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        first_client = IncrementalTimeoutCollectionClient()
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExportTimeoutError):
+                collect_vm_snapshot(
+                    client=first_client,  # type: ignore[arg-type]
+                    profile=profile,
+                    request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                    output_root=directory,
+                    run_id="run-partial",
+                    logical_job_id="logical-july",
+                )
+            partial_path = next(Path(directory).rglob("manifest.partial.json"))
+            retry_client = FakeCollectionClient(
+                {2: b'{"id":"must-not-download"}\n'}
+            )
+
+            result = collect_vm_snapshot(
+                client=retry_client,  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                output_root=Path(directory) / "retry",
+                run_id="run-retry",
+                logical_job_id="logical-july",
+                resume_from=partial_path,
+            )
+
+            self.assertEqual(retry_client.download_calls, [])
+            self.assertEqual(result.snapshot.record_count, 1)
+            manifest = json.loads(result.raw_manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["chunks"][0]["chunk_id"], 2)
+            self.assertEqual(manifest["origin"], "resumed")
+
+    def test_resume_discovery_requires_same_logical_job_and_query(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        request = VulnerabilityExportRequest(filters={"state": ["OPEN"]})
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExportTimeoutError):
+                collect_vm_snapshot(
+                    client=IncrementalTimeoutCollectionClient(),  # type: ignore[arg-type]
+                    profile=profile,
+                    request=request,
+                    output_root=directory,
+                    run_id="run-partial",
+                    logical_job_id="logical-july",
+                )
+            expected = next(Path(directory).rglob("manifest.partial.json"))
+
+            self.assertEqual(
+                find_resumable_vm_manifest(
+                    directory,
+                    profile=profile,
+                    request=request,
+                    logical_job_id="logical-july",
+                ),
+                expected,
+            )
+            self.assertIsNone(
+                find_resumable_vm_manifest(
+                    directory,
+                    profile=profile,
+                    request=VulnerabilityExportRequest(
+                        filters={"state": ["FIXED"]}
+                    ),
+                    logical_job_id="logical-july",
+                )
+            )
+            self.assertIsNone(
+                find_resumable_vm_manifest(
+                    directory,
+                    profile=profile,
+                    request=request,
+                    logical_job_id="logical-august",
+                )
+            )
 
     def test_plain_jsonl_is_persisted_as_valid_gzip_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:

@@ -229,6 +229,66 @@ class ProfileTests(unittest.TestCase):
                 }
             )
 
+    def test_vm_export_defaults_preserve_legacy_profiles(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+
+        self.assertEqual(profile.reporting.vm_export.strategy, "combined")
+        self.assertEqual(profile.reporting.vm_export.num_assets_per_chunk, 250)
+        self.assertEqual(profile.reporting.vm_export.selective_properties, "disabled")
+
+    def test_vm_export_accepts_explicit_configuration(self) -> None:
+        profile = ClientProfile.from_dict(
+            {
+                "schema_version": 1,
+                "client_id": "client-001",
+                "display_name": "Cliente",
+                "tenant_id": "tenant",
+                "reporting": {
+                    "vm_export": {
+                        "strategy": "split",
+                        "num_assets_per_chunk": 500,
+                        "selective_properties": "validation",
+                    }
+                },
+            }
+        )
+
+        self.assertEqual(profile.reporting.vm_export.strategy, "split")
+        self.assertEqual(profile.reporting.vm_export.num_assets_per_chunk, 500)
+        self.assertEqual(profile.reporting.vm_export.selective_properties, "validation")
+
+    def test_vm_export_rejects_invalid_configuration(self) -> None:
+        base = {
+            "schema_version": 1,
+            "client_id": "client-001",
+            "display_name": "Cliente",
+            "tenant_id": "tenant",
+        }
+        cases = (
+            ({"strategy": "automatic"}, "strategy"),
+            ({"num_assets_per_chunk": 49}, "num_assets_per_chunk"),
+            ({"num_assets_per_chunk": 5001}, "num_assets_per_chunk"),
+            ({"selective_properties": "always"}, "selective_properties"),
+        )
+        for vm_export, message in cases:
+            with self.subTest(vm_export=vm_export):
+                with self.assertRaisesRegex(ProfileError, message):
+                    ClientProfile.from_dict(
+                        {**base, "reporting": {"vm_export": vm_export}}
+                    )
+
+    def test_vm_export_requires_an_object(self) -> None:
+        with self.assertRaisesRegex(ProfileError, "reporting.vm_export"):
+            ClientProfile.from_dict(
+                {
+                    "schema_version": 1,
+                    "client_id": "client-001",
+                    "display_name": "Cliente",
+                    "tenant_id": "tenant",
+                    "reporting": {"vm_export": "combined"},
+                }
+            )
+
     def test_dotenv_empty_values_override_stale_process_credentials(self) -> None:
         original_access = os.environ.get("TENABLE_ACCESS")
         original_secret = os.environ.get("TENABLE_SECRET")
