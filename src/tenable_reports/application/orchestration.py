@@ -86,6 +86,7 @@ class OrchestrationRequest:
     max_parallel: int | None = None
     dry_run: bool = False
     apply_retention_policy: bool = True
+    vm_selective_mode: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -449,6 +450,10 @@ def _validate_request(request: OrchestrationRequest) -> None:
         raise ValueError("--days/--start-at/--end-at pertencem ao modo manual.")
     if request.days is not None and has_start:
         raise ValueError("--days nao pode ser combinado com --start-at/--end-at.")
+    if request.vm_selective_mode not in {None, "disabled", "validation", "enabled"}:
+        raise ValueError(
+            "vm_selective_mode deve ser disabled, validation ou enabled."
+        )
 
 
 def _select_clients(
@@ -510,6 +515,8 @@ def build_client_command(
         str(config.minimum_free_gb),
         "--confirm-live-api",
     ]
+    if request.vm_selective_mode:
+        command.extend(("--vm-selective-mode", request.vm_selective_mode))
     if request.reference_at:
         command.extend(("--reference-at", request.reference_at))
     if request.days is not None:

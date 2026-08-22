@@ -437,6 +437,20 @@ class OrchestrationTests(unittest.TestCase):
         self.assertNotIn("--select-tags", command)
         self.assertNotIn("TENABLE_ACCESS", command_text)
 
+    def test_client_command_propagates_selective_validation_override(self) -> None:
+        config = load_orchestration_config(EXAMPLE_CONFIG)
+        command = build_client_command(
+            config=config,
+            client=config.clients[0],
+            request=OrchestrationRequest(
+                mode="manual",
+                vm_selective_mode="validation",
+            ),
+            client_run_id="run-validation",
+        )
+
+        index = command.index("--vm-selective-mode")
+        self.assertEqual(command[index + 1], "validation")
     def test_cli_orchestration_requires_confirmation_except_dry_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             payload = json.loads(EXAMPLE_CONFIG.read_text(encoding="utf-8"))

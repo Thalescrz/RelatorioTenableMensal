@@ -96,12 +96,18 @@ function render() {
     const report = client.latest_report;
     const connectionCheck = state.connectionChecks[client.client_id];
     const warning = client.alert || job?.error || job?.warnings?.length || !client.credentials_ready || client.profile_error || connectionCheck?.ok === false;
-    const runningCopy = tagProgressCopy(job) || "Coletando e gerando documentos";
+    const runningCopy = job?.vm_selective_mode === "validation"
+      ? "Validando export completo x otimizado"
+      : tagProgressCopy(job) || "Coletando e gerando documentos";
+    const validation = job?.vm_export_validation;
+    const completedCopy = validation
+      ? `Validação do export: ${validation.outcome === "PASSED" ? "aprovada" : "revisar"}`
+      : report ? `${report.document_count} documento(s)` : "Aguardando primeira execução";
     return `<article class="client-card" data-client="${escapeHtml(client.client_id)}" style="animation-delay:${Math.min(index * 45, 300)}ms" tabindex="0">
       <div class="card-top"><span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? '<span class="warning-badge" title="Há um alerta">!</span>' : ""}</div>
       <h3>${escapeHtml(client.display_name)}</h3><p class="client-meta">${escapeHtml(client.client_id)}<br>${escapeHtml(client.tenant_id || "tenant não informado")}</p>
       <div class="card-report"><span>Último relatório</span><strong>${report ? escapeHtml(report.period_id || formatDate(report.ended_at)) : "Ainda não gerado"}</strong></div>
-      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(runningCopy) : job?.status === "QUEUED" ? "Aguardando execução" : job?.status === "FAILED" ? "Execução interrompida" : report ? `${report.document_count} documento(s)` : "Aguardando primeira execução"}</span><span>${progress}%</span></div><div class="progress-track"><div class="progress-bar ${job?.status === "RUNNING" && !job?.tag_progress ? "running" : ""}" style="width:${progress}%"></div></div></div>
+      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(runningCopy) : job?.status === "QUEUED" ? "Aguardando execução" : job?.status === "FAILED" ? "Execução interrompida" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><div class="progress-bar ${job?.status === "RUNNING" && !job?.tag_progress ? "running" : ""}" style="width:${progress}%"></div></div></div>
     </article>`;
   }).join("");
   document.querySelectorAll(".client-card").forEach(card => {
@@ -393,6 +399,10 @@ function resetClientForm() {
   clientForm.elements.intelligence_enabled.checked = true;
   clientForm.elements.was_enabled.checked = true;
   clientForm.elements.tag_reports_enabled.checked = false;
+  clientForm.elements.vm_export_strategy.value = "combined";
+  clientForm.elements.vm_num_assets_per_chunk.value = "250";
+  clientForm.elements.vm_selective_properties.value = "disabled";
+  $("#validate-vm-export-button").disabled = true;
   state.availableTags = [];
   state.tagSearch = "";
   $("#tag-search-input").value = "";
@@ -432,6 +442,10 @@ function editClient(clientId) {
   clientForm.elements.cloud_enabled.checked = Boolean(client.cloud_enabled);
   clientForm.elements.include_output.checked = Boolean(client.include_output);
   clientForm.elements.show_source_filters.checked = Boolean(client.show_source_filters);
+  clientForm.elements.vm_export_strategy.value = client.vm_export_strategy || "combined";
+  clientForm.elements.vm_num_assets_per_chunk.value = String(client.vm_num_assets_per_chunk || 250);
+  clientForm.elements.vm_selective_properties.value = client.vm_selective_properties || "disabled";
+  $("#validate-vm-export-button").disabled = !client.credentials_ready || !client.enabled;
   $("#client-form-mode").textContent = "EDITANDO";
   $("#client-form-title").textContent = client.display_name;
   $("#client-form-note").textContent = "Deixe as chaves vazias para manter as credenciais atuais. O ID interno não pode ser alterado.";
@@ -450,6 +464,27 @@ tenantField.addEventListener("input", event => { event.target.dataset.manual = e
 
 $("#cancel-edit-button").addEventListener("click", resetClientForm);
 $("#fetch-tags-button").addEventListener("click", fetchClientTags);
+$("#validate-vm-export-button").addEventListener("click", async event => {
+  if (!state.editingClientId) return;
+  const message = "A validação inicia duas exportações reais na Tenable: uma completa e uma otimizada. O relatório continuará usando a coleta completa. Deseja continuar?";
+  if (!window.confirm(message)) return;
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.textContent = "Validando…";
+  try {
+    await api(`/api/clients/${encodeURIComponent(state.editingClientId)}/vm-export/validate`, {
+      method: "POST", body: {},
+    });
+    await refresh();
+    toast("Validação A/B adicionada à fila. Acompanhe o progresso no card do cliente.");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    const client = state.data?.clients.find(item => item.client_id === state.editingClientId);
+    button.disabled = !client?.credentials_ready || !client?.enabled;
+    button.textContent = "Validar export otimizado";
+  }
+});
 $("#tag-search-input").addEventListener("input", event => {
   state.tagSearch = event.target.value.trim(); renderTagSelector();
 });

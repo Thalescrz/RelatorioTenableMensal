@@ -1602,6 +1602,7 @@ def command_orchestrate(args: argparse.Namespace) -> int:
             max_parallel=args.max_parallel,
             dry_run=args.dry_run,
             apply_retention_policy=args.apply_retention,
+            vm_selective_mode=args.vm_selective_mode,
         ),
         run_status=retention_state.get("run_status"),
         history_confirmed_run_ids=retention_state.get(
@@ -2170,6 +2171,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Executa somente este client_id; pode ser repetido.",
     )
     orchestrate.add_argument("--max-parallel", type=int)
+    orchestrate.add_argument(
+        "--vm-selective-mode",
+        choices=("disabled", "validation", "enabled"),
+        help="Sobrescreve o modo de properties VM dos clientes selecionados.",
+    )
     orchestrate.add_argument(
         "--dry-run",
         action="store_true",
