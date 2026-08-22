@@ -94,6 +94,67 @@ class NormalizationTests(unittest.TestCase):
             ("Canvas", "Metasploit"),
         )
 
+    def test_selective_definition_schema_preserves_report_semantics(self) -> None:
+        record = {
+            "id": "finding-selective",
+            "asset": {"id": "asset-fixture-1"},
+            "definition": {
+                "id": 100001,
+                "name": "Selective plugin",
+                "family": "General",
+                "cve": ["CVE-2026-0001"],
+                "see_also": ["https://example.invalid/see-also"],
+                "references": ["CWE-79"],
+                "description": "Selective description",
+                "synopsis": "Selective synopsis",
+                "solution": "Selective solution",
+                "cvss2": {"base_score": 5.0},
+                "cvss3": {
+                    "base_score": 9.8,
+                    "base_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+                },
+                "vpr": {"score": 9.4},
+                "canvas": True,
+                "core": False,
+                "elliot": False,
+                "exploithub": False,
+                "metasploit": True,
+                "exploitability_ease": "Exploits are available",
+                "patch_published": "2026-07-10T00:00:00Z",
+            },
+            "port": 443,
+            "protocol": "TCP",
+            "service": "https",
+            "source": "NESSUS",
+            "state": "OPEN",
+            "severity": "CRITICAL",
+            "first_observed": "2026-07-01T10:00:00Z",
+            "last_seen": "2026-07-31T10:00:00Z",
+            "last_fixed": None,
+            "resurfaced_date": None,
+        }
+
+        result = normalize_and_link(
+            asset_records=fixture_assets(),
+            finding_records=[record],
+            client_id="client-fixture",
+        )
+        finding = result.findings[0]
+
+        self.assertEqual(finding.plugin_name, "Selective plugin")
+        self.assertEqual(finding.plugin_family, "General")
+        self.assertEqual(finding.cvss2_base_score, 5.0)
+        self.assertEqual(finding.cvss3_base_score, 9.8)
+        self.assertEqual(finding.cvss_attack_vector, "NETWORK")
+        self.assertEqual(finding.vpr_score, 9.4)
+        self.assertTrue(finding.exploitable)
+        self.assertEqual(finding.exploit_frameworks, ("Canvas", "Metasploit"))
+        self.assertTrue(finding.has_patch)
+        self.assertIn("https://example.invalid/see-also", finding.references)
+        self.assertIn("CWE-79", finding.references)
+        self.assertEqual(finding.first_found_at, "2026-07-01T10:00:00Z")
+        self.assertEqual(finding.last_found_at, "2026-07-31T10:00:00Z")
+
     def test_links_only_by_tenable_uuid_and_tracks_orphans(self) -> None:
         result = normalize_and_link(
             asset_records=fixture_assets(),

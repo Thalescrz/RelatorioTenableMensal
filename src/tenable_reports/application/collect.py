@@ -672,6 +672,7 @@ def collect_vm_snapshot_by_state(
     minimum_free_gb: int = 10,
     last_success_bytes: int | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    snapshot_suffix: str | None = None,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
     normalized_strategy = str(strategy).strip().lower()
@@ -703,6 +704,7 @@ def collect_vm_snapshot_by_state(
             minimum_free_gb=minimum_free_gb,
             last_success_bytes=last_success_bytes,
             progress_callback=progress_callback,
+            snapshot_suffix=snapshot_suffix,
         )
 
     segments = (
@@ -743,7 +745,7 @@ def collect_vm_snapshot_by_state(
             minimum_free_gb=minimum_free_gb,
             last_success_bytes=last_success_bytes,
             progress_callback=forward_progress,
-            snapshot_suffix=segment_name,
+            snapshot_suffix=(f"{snapshot_suffix}-{segment_name}" if snapshot_suffix else segment_name),
         )
         collected.append((segment_name, date_field, result))
 
@@ -818,7 +820,10 @@ def collect_vm_snapshot_by_state(
     )
     snapshot_path = (
         Path(output_root) / "snapshots" / profile.client_id / actual_run_id
-        / "tenable_vm_vulnerabilities.snapshot.json"
+        / (
+            f"tenable_vm_vulnerabilities-{snapshot_suffix}.snapshot.json"
+            if snapshot_suffix else "tenable_vm_vulnerabilities.snapshot.json"
+        )
     )
     snapshot.write_json(snapshot_path)
     return CollectionResult(

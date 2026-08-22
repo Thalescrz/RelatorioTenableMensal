@@ -6,7 +6,7 @@ import logging
 import re
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -29,6 +29,10 @@ from tenable_reports.application.failures import (
     classify_failure,
 )
 from tenable_reports.application.normalize import normalize_collections
+from tenable_reports.application.vm_export_policy import (
+    collect_vm_snapshot_with_policy,
+    selective_vm_properties,
+)
 from tenable_reports.application.normalize_was import normalize_was_collection
 from tenable_reports.application.report_dataset import build_report_dataset_from_snapshot
 from tenable_reports.application.tag_report_dataset import (
@@ -113,26 +117,6 @@ from tenable_reports.presentation.customizations_report_docx import (
 from tenable_reports.presentation.tag_report_docx import generate_tag_report
 
 
-SELECTIVE_PROPERTIES = (
-    "source",
-    "severity",
-    "state",
-    "first_observed",
-    "last_seen",
-    "last_fixed",
-    "resurfaced_date",
-    "port",
-    "protocol",
-    "service",
-    "asset.id",
-    "asset.name",
-    "asset.ipv4_addresses",
-    "definition.id",
-    "definition.name",
-    "definition.cve",
-    "definition.vpr.score",
-)
-
 
 def _emit_progress_event(event: Mapping[str, Any]) -> None:
     print(json.dumps(dict(event), ensure_ascii=False), flush=True)
@@ -149,6 +133,9 @@ class _CollectedPeriodExecution:
     history_publication: Any
     selected_tag_count: int
     was_collection_status: str
+    vm_export_mode: str = "disabled"
+    vm_export_outcome: str = "FULL"
+    vm_export_comparison_path: Path | None = None
     tag_artifacts: tuple[Any, ...] = ()
     tag_enriched_dataset_paths: Mapping[str, Path] | None = None
     tag_reports_requested: int = 0
@@ -213,6 +200,12 @@ class _CollectedPeriodExecution:
             "was_findings_in_period": dataset.populations["was_findings"]["included"],
             "was_top5": len(dataset.top_web_vulnerabilities),
             "was_collection_status": self.was_collection_status,
+            "vm_export_mode": self.vm_export_mode,
+            "vm_export_outcome": self.vm_export_outcome,
+            "vm_export_comparison": (
+                str(self.vm_export_comparison_path.resolve())
+                if self.vm_export_comparison_path is not None else None
+            ),
             "warnings": [dict(item) for item in self.warnings],
             "quality_issue_codes": [item.code for item in dataset.quality_issues],
         }
@@ -571,7 +564,7 @@ def command_contract_check(args: argparse.Namespace) -> int:
             include_unlicensed=profile.vm_scope.include_unlicensed,
             include_software_vulns=False,
             include_plugin_output=False,
-            properties=list(SELECTIVE_PROPERTIES) if args.select_properties else None,
+            properties=list(selective_vm_properties(include_output=False)) if args.select_properties else None,
         )
     status, chunks = client.wait_for_completion(export_uuid)
     result: dict[str, object] = {
@@ -731,7 +724,7 @@ def command_collect_vm(args: argparse.Namespace) -> int:
             include_unlicensed=profile.vm_scope.include_unlicensed,
             include_software_vulns=args.include_software_vulns,
             include_plugin_output=args.include_output,
-            properties=SELECTIVE_PROPERTIES if args.select_properties else (),
+            properties=selective_vm_properties(include_output=args.include_output) if args.select_properties else (),
         ),
         output_root=args.output_root,
         run_id=args.run_id,
@@ -1027,14 +1020,23 @@ def _execute_period(
     )
     logical_job_id = getattr(args, "logical_job_id", None)
     resume_manifest = getattr(args, "vm_resume_manifest", None)
+    resume_request = (
+        replace(
+            finding_request,
+            properties=selective_vm_properties(
+                include_output=finding_request.include_plugin_output
+            ),
+        )
+        if vm_selective_mode == "enabled" else finding_request
+    )
     if not resume_manifest and vm_strategy == "combined":
         resume_manifest = find_resumable_vm_manifest(
             output_root,
             profile=profile,
-            request=finding_request,
+            request=resume_request,
             logical_job_id=logical_job_id,
         )
-    findings = collect_vm_snapshot_by_state(
+    vm_policy = collect_vm_snapshot_with_policy(
         client=client,
         profile=profile,
         request=finding_request,
@@ -1043,12 +1045,25 @@ def _execute_period(
         export_uuid=args.vm_export_uuid,
         resume_from=resume_manifest,
         logical_job_id=logical_job_id,
+        mode=vm_selective_mode,
         strategy=vm_strategy,
         progress_callback=_emit_progress_event,
     )
+    findings = vm_policy.collection
     was_collection = None
     was_collection_status = "DISABLED"
-    collection_warnings: tuple[Mapping[str, Any], ...] = ()
+    vm_warnings: tuple[Mapping[str, Any], ...] = ()
+    if vm_policy.outcome == "FALLBACK_FULL":
+        vm_warnings = ({
+            "code": "VM_SELECTIVE_FALLBACK",
+            "reason": vm_policy.fallback_reason,
+        },)
+    elif vm_policy.mode == "validation" and vm_policy.outcome == "FAILED":
+        vm_warnings = ({
+            "code": "VM_SELECTIVE_VALIDATION_FAILED",
+            "comparison": str(vm_policy.comparison_path),
+        },)
+    collection_warnings: tuple[Mapping[str, Any], ...] = vm_warnings
     if profile.was_scope.enabled:
         was_attempt = collect_optional_was_snapshot(
             client=was_client,
@@ -1064,7 +1079,7 @@ def _execute_period(
         )
         was_collection = was_attempt.result
         was_collection_status = was_attempt.status
-        collection_warnings = was_attempt.warnings
+        collection_warnings = tuple((*collection_warnings, *was_attempt.warnings))
     normalized = normalize_collections(
         profile=profile,
         asset_collection=assets,
@@ -1130,6 +1145,9 @@ def _execute_period(
         history_publication=history_publication,
         selected_tag_count=len(selected_tags),
         was_collection_status=was_collection_status,
+        vm_export_mode=vm_policy.mode,
+        vm_export_outcome=vm_policy.outcome,
+        vm_export_comparison_path=vm_policy.comparison_path,
         tag_artifacts=tag_dataset_bundle.artifacts,
         tag_enriched_dataset_paths=tag_enriched_dataset_paths,
         tag_reports_requested=requested_tag_reports,

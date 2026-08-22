@@ -210,6 +210,23 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(manifest["strategy"], "combined")
         self.assertNotIn("segments", manifest)
 
+    def test_vm_state_wrapper_propagates_snapshot_suffix(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = SegmentedCollectionClient()
+        with tempfile.TemporaryDirectory() as directory:
+            result = collect_vm_snapshot_by_state(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                output_root=directory,
+                run_id="run-selective",
+                snapshot_suffix="selective",
+            )
+
+        self.assertEqual(
+            result.snapshot_path.name,
+            "tenable_vm_vulnerabilities-selective.snapshot.json",
+        )
     def test_vm_states_are_exported_separately_and_merged_into_one_snapshot(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
         client = SegmentedCollectionClient()
