@@ -212,13 +212,34 @@ async function testConnections(clientIds, button) {
 
 function renderAlerts() {
   if (!state.data) return; const alerts = [...(state.data.alerts || [])];
-  const failedJobs = (state.data.jobs || []).filter(j => j.status === "FAILED").map(j => ({client_id:j.client_id, message:j.error, at:j.ended_at, run_id:j.run_id, job_id:j.job_id}));
+  const failedJobs = (state.data.jobs || []).filter(j => j.status === "FAILED").map(j => ({client_id:j.client_id, message:j.error, at:j.ended_at, run_id:j.run_id, job_id:j.job_id, export:j.export_progress}));
   const tagWarnings = (state.data.jobs || []).flatMap(job => (job.warnings || []).map(warning => ({client_id:job.client_id, message:`${warning.tag_label || warning.tag_uuid || "TAG"}: ${warning.message || "Falha no relatório por TAG."}`, at:job.ended_at, run_id:job.run_id})));
   if (state.data.database_error) alerts.unshift({client_id:"Sistema", message:state.data.database_error, at:state.data.server_time});
-  $("#alerts-list").innerHTML = [...failedJobs, ...tagWarnings, ...alerts].length ? [...failedJobs, ...tagWarnings, ...alerts].map(a => `<div class="alert-row"><span class="alert-sign">!</span><div><strong>${escapeHtml(a.client_id || "Sistema")}</strong><p>${escapeHtml(a.message || "Falha sem detalhes.")}</p><small>${formatDate(a.at)}${a.run_id ? ` · ${escapeHtml(a.run_id)}` : ""}</small>${a.job_id ? `<p><button class="mini-button" data-retry-job="${escapeHtml(a.job_id)}" type="button">Tentar novamente</button></p>` : ""}</div></div>`).join("") : '<div class="loading">Nenhum alerta registrado.</div>';
+  const items = [...failedJobs, ...tagWarnings, ...alerts];
+  $("#alerts-list").innerHTML = items.length ? items.map(a => {
+    const stuck = a.export?.status === "TIMED_OUT" && !a.export?.auto_cancelled;
+    const segmentCopy = a.export?.segment ? ` · segmento ${a.export.segment === "fixed" ? "corrigidas / last_fixed" : "ativas e reabertas / last_found"}` : "";
+    const exportCopy = a.export?.export_uuid ? `<p><small>Export VM: ${escapeHtml(a.export.export_uuid)} · ${Number(a.export.completed_chunks || 0)}/${Number(a.export.total_chunks || 0)} chunks · origem ${escapeHtml(a.export.origin || "desconhecida")}${segmentCopy}</small></p>` : "";
+    const action = !a.job_id ? "" : stuck
+      ? `<p><button class="mini-button danger" data-cancel-export-job="${escapeHtml(a.job_id)}" data-export-uuid="${escapeHtml(a.export.export_uuid)}" type="button">Cancelar export e tentar novamente</button></p>`
+      : `<p><button class="mini-button" data-retry-job="${escapeHtml(a.job_id)}" type="button">Tentar novamente</button></p>`;
+    return `<div class="alert-row"><span class="alert-sign">!</span><div><strong>${escapeHtml(a.client_id || "Sistema")}</strong><p>${escapeHtml(a.message || "Falha sem detalhes.")}</p>${exportCopy}<small>${formatDate(a.at)}${a.run_id ? ` · ${escapeHtml(a.run_id)}` : ""}</small>${action}</div></div>`;
+  }).join("") : '<div class="loading">Nenhum alerta registrado.</div>';
   document.querySelectorAll("[data-retry-job]").forEach(button => button.addEventListener("click", async () => {
     try { await api(`/api/jobs/${encodeURIComponent(button.dataset.retryJob)}/retry`, { method: "POST", body: {} }); await refresh(); toast("Nova tentativa adicionada à fila."); }
     catch (error) { toast(error.message, "error"); }
+  }));
+  document.querySelectorAll("[data-cancel-export-job]").forEach(button => button.addEventListener("click", async () => {
+    const exportUuid = button.dataset.exportUuid;
+    const message = `O export VM será cancelado na Tenable e uma nova tentativa entrará na fila.\n\nUUID: ${exportUuid}\n\nDeseja continuar?`;
+    if (!window.confirm(message)) return;
+    button.disabled = true;
+    try {
+      await api(`/api/jobs/${encodeURIComponent(button.dataset.cancelExportJob)}/cancel-export-and-retry`, {
+        method: "POST", body: { export_uuid: exportUuid, confirmation: `CANCELAR ${exportUuid}` },
+      });
+      await refresh(); toast("Export cancelado e nova tentativa adicionada à fila.");
+    } catch (error) { toast(error.message, "error"); button.disabled = false; }
   }));
 }
 

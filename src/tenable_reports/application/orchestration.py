@@ -564,7 +564,9 @@ def _default_runner(
                 continue
             if (
                 isinstance(event, Mapping)
-                and event.get("event") == "TAG_REPORT_PROGRESS"
+                and event.get("event") in {
+                    "TAG_REPORT_PROGRESS", "TENABLE_EXPORT_PROGRESS",
+                }
             ):
                 try:
                     progress_callback(event)
@@ -680,10 +682,14 @@ def _execute_client(
     retryable = False
     try:
         def forward_progress(event: Mapping[str, Any]) -> None:
-            if progress_callback is None:
-                return
             payload = dict(event)
             payload.setdefault("client_id", client.client_id)
+            events.append({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                **payload,
+            })
+            if progress_callback is None:
+                return
             try:
                 progress_callback(payload)
             except Exception:
@@ -693,7 +699,7 @@ def _execute_client(
             runner,
             command,
             working_directory,
-            forward_progress if progress_callback is not None else None,
+            forward_progress,
         )
         ended = datetime.now(timezone.utc)
         duration = round(time.monotonic() - monotonic_started, 3)

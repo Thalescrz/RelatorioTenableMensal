@@ -7,7 +7,9 @@ from typing import Any, Mapping
 
 from tenable_reports.infrastructure.tenable_vm.client import (
     ApiError,
+    ExportJob,
     ExportFailedError,
+    ExportTimeoutError,
     TenableVmClient,
     TenableVmConfig,
     TransportResponse,
@@ -84,6 +86,34 @@ class TenableVmClientTests(unittest.TestCase):
         self.assertEqual(
             client.start_vulnerability_export(filters={"state": ["OPEN"]}),
             "job-existing",
+        )
+
+    def test_start_job_distinguishes_created_and_reused_exports(self) -> None:
+        created, _ = client_with([response(200, {"export_uuid": "job-new"})])
+        reused, _ = client_with([
+            response(409, {"error": {"active_job_id": "job-existing"}})
+        ])
+
+        self.assertEqual(
+            created.start_vulnerability_export_job(filters={"state": ["OPEN"]}),
+            ExportJob(export_uuid="job-new", origin="created"),
+        )
+        self.assertEqual(
+            reused.start_vulnerability_export_job(filters={"state": ["OPEN"]}),
+            ExportJob(export_uuid="job-existing", origin="reused"),
+        )
+
+    def test_cancel_vulnerability_export_uses_exact_vm_job_uuid(self) -> None:
+        client, transport = client_with([response(200, {"status": "CANCELLED"})])
+
+        result = client.cancel_vulnerability_export("job-to-cancel")
+
+        self.assertEqual(result["status"], "CANCELLED")
+        self.assertEqual(transport.calls[0]["method"], "POST")
+        self.assertTrue(
+            transport.calls[0]["url"].endswith(
+                "/vulns/export/job-to-cancel/cancel"
+            )
         )
 
     def test_start_asset_export_v2_uses_documented_path_and_payload(self) -> None:
@@ -179,6 +209,40 @@ class TenableVmClientTests(unittest.TestCase):
         )
         with self.assertRaises(ExportFailedError):
             client.wait_for_completion("job")
+
+    def test_timeout_contains_last_progress_and_notifies_each_poll(self) -> None:
+        transport = FakeTransport([
+            response(200, {
+                "status": "PROCESSING",
+                "chunks_available": [],
+                "total_chunks": 1,
+            })
+        ])
+        times = iter((0.0, 11.0))
+        client = TenableVmClient(
+            TenableVmConfig(
+                access_key="access-fixture",
+                secret_key="secret-fixture",
+                poll_seconds=0,
+                max_wait_seconds=10,
+            ),
+            transport=transport,
+            sleep=lambda _: None,
+            monotonic=lambda: next(times),
+        )
+        progress: list[dict[str, Any]] = []
+
+        with self.assertRaises(ExportTimeoutError) as caught:
+            client.wait_for_completion(
+                "job-stuck", progress_callback=progress.append
+            )
+
+        self.assertEqual(caught.exception.export_uuid, "job-stuck")
+        self.assertFalse(caught.exception.progress_made)
+        self.assertEqual(caught.exception.last_status["total_chunks"], 1)
+        self.assertEqual(progress[0]["export_uuid"], "job-stuck")
+        self.assertEqual(progress[0]["completed_chunks"], 0)
+        self.assertEqual(progress[0]["total_chunks"], 1)
 
     def test_chunk_ids_are_sorted_and_deduplicated(self) -> None:
         client, _ = client_with([response(200, {"status": "FINISHED", "chunks_available": [3, 1, 3, 2]})])

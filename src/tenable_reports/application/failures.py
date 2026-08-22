@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Mapping
 
+from tenable_reports.infrastructure.tenable_vm.client import ExportTimeoutError
+
 
 class FailureCode(StrEnum):
     TENABLE_RATE_LIMIT = "TENABLE_RATE_LIMIT"
@@ -75,6 +77,12 @@ def _code_from_text(value: str) -> FailureCode:
 
 
 def classify_failure(value: Any) -> OperationalFailure:
+    if isinstance(value, ExportTimeoutError):
+        return OperationalFailure(
+            code=FailureCode.TENABLE_TEMPORARY,
+            message=sanitize_failure_message(value),
+            retryable=True,
+        )
     if isinstance(value, OperationalFailure):
         return value
     if isinstance(value, Mapping):

@@ -209,6 +209,27 @@ def list_tenable_tags(path: Path) -> list[dict[str, str]]:
     } for item in parse_tag_values(client.list_tag_values())]
 
 
+def cancel_tenable_export(path: Path, export_uuid: str) -> dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,127}", export_uuid):
+        raise ValueError("UUID de export VM invalido.")
+    credentials = CredentialConfig.from_environment(_read_env_values(path))
+    if not credentials.is_complete:
+        raise ValueError("Credenciais Tenable incompletas.")
+    client = TenableVmClient(TenableVmConfig(
+        access_key=credentials.access_key,
+        secret_key=credentials.secret_key,
+        base_url=credentials.base_url,
+        timeout_seconds=credentials.timeout_seconds,
+        ca_bundle=credentials.ca_bundle,
+        validate_tls=credentials.validate_tls,
+    ))
+    result = client.cancel_vulnerability_export(export_uuid)
+    return {
+        "export_uuid": export_uuid,
+        "status": str(result.get("status") or "CANCELLED"),
+    }
+
+
 class DashboardConfigStore:
     """Gerencia a carteira sem expor o conteudo dos arquivos de credenciais."""
 
@@ -725,7 +746,9 @@ def _default_runner(
                 continue
             if (
                 isinstance(event, Mapping)
-                and event.get("event") == "TAG_REPORT_PROGRESS"
+                and event.get("event") in {
+                    "TAG_REPORT_PROGRESS", "TENABLE_EXPORT_PROGRESS",
+                }
             ):
                 try:
                     progress_callback(event)
@@ -829,6 +852,7 @@ class JobQueue:
                     "error": None,
                     "run_id": None,
                     "tag_progress": None,
+                    "export_progress": None,
                     "warnings": [],
                 }
                 self._jobs[job_id] = job
@@ -848,6 +872,26 @@ class JobQueue:
                 row["queue_position"] = positions.get(item["job_id"])
                 result.append(row)
             return result
+
+    def export_for_cancellation(
+        self, job_id: str, export_uuid: str
+    ) -> tuple[str, dict[str, Any]]:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                raise KeyError("Trabalho nao encontrado.")
+            if job["status"] != "FAILED":
+                raise ValueError("O cancelamento exige um trabalho com falha.")
+            export = job.get("export_progress")
+            if not isinstance(export, Mapping):
+                raise ValueError("O trabalho nao possui um export VM travado.")
+            if str(export.get("export_uuid") or "") != export_uuid:
+                raise ValueError("O UUID informado nao corresponde ao export do trabalho.")
+            if str(export.get("status") or "").upper() != "TIMED_OUT":
+                raise ValueError("O export VM nao esta marcado como travado.")
+            if bool(export.get("auto_cancelled")):
+                raise ValueError("O export VM ja foi cancelado automaticamente.")
+            return str(job["client_id"]), dict(export)
 
     def retry(self, job_id: str) -> dict[str, Any]:
         with self._lock:
@@ -915,13 +959,34 @@ class JobQueue:
             if job["start_at"]:
                 command.extend(("--start-at", job["start_at"], "--end-at", job["end_at"]))
         try:
-            def update_tag_progress(event: Mapping[str, Any]) -> None:
-                current = int(event.get("current") or 0)
-                total = max(1, int(event.get("total") or 0))
+            def update_progress(event: Mapping[str, Any]) -> None:
                 with self._lock:
                     current_job = self._jobs.get(job_id)
                     if current_job is None:
                         return
+                    if event.get("event") == "TENABLE_EXPORT_PROGRESS":
+                        current_job["export_progress"] = {
+                            key: event.get(key)
+                            for key in (
+                                "export_uuid",
+                                "origin",
+                                "segment",
+                                "date_field",
+                                "status",
+                                "completed_chunks",
+                                "total_chunks",
+                                "elapsed_seconds",
+                                "progress_made",
+                                "auto_cancelled",
+                                "cancellation_error",
+                            )
+                        }
+                        current_job["progress"] = max(
+                            int(current_job.get("progress") or 0), 35
+                        )
+                        return
+                    current = int(event.get("current") or 0)
+                    total = max(1, int(event.get("total") or 0))
                     current_job["tag_progress"] = {
                         "current": current,
                         "total": total,
@@ -933,7 +998,7 @@ class JobQueue:
                     )
 
             completed = _run_web_command(
-                self.runner, command, self.project_root, update_tag_progress
+                self.runner, command, self.project_root, update_progress
             )
             payload: dict[str, Any] = {}
             for line in reversed((completed.stdout or "").splitlines()):
@@ -984,6 +1049,9 @@ class DashboardApplication:
         runner: Runner = _default_runner,
         connection_checker: Callable[[Path], dict[str, Any]] = check_tenable_connection,
         tag_lister: Callable[[Path], Sequence[Mapping[str, Any]]] = list_tenable_tags,
+        export_canceller: Callable[
+            [Path, str], Mapping[str, Any]
+        ] = cancel_tenable_export,
         report_registry: ReportRegistry | None = None,
         backfill_state_provider: Callable[[], MainBackfillSourceState] | None = None,
         retention_state_provider: Callable[[], Mapping[str, Any]] | None = None,
@@ -994,6 +1062,7 @@ class DashboardApplication:
         self.jobs = JobQueue(self.project_root, self.config.config_path, runner)
         self.connection_checker = connection_checker
         self.tag_lister = tag_lister
+        self.export_canceller = export_canceller
         self.database_error: str | None = None
         try:
             self.database: DashboardDatabase | None = DashboardDatabase(
@@ -1290,6 +1359,29 @@ class DashboardApplication:
             "skipped": skipped,
         }
 
+    def cancel_export_and_retry(
+        self,
+        *,
+        job_id: str,
+        export_uuid: str,
+        confirmation: str,
+    ) -> dict[str, Any]:
+        normalized_uuid = export_uuid.strip()
+        expected = f"CANCELAR {normalized_uuid}"
+        if confirmation.strip() != expected:
+            raise ValueError(f'Digite exatamente "{expected}" para confirmar.')
+        client_id, export = self.jobs.export_for_cancellation(
+            job_id, normalized_uuid
+        )
+        cancelled = dict(self.export_canceller(
+            self.config.client_env_path(client_id), normalized_uuid
+        ))
+        retried = self.jobs.retry(job_id)
+        return {
+            "cancelled_export": {**export, **cancelled},
+            "job": retried,
+        }
+
     def check_connections(self, client_ids: Sequence[str]) -> list[dict[str, Any]]:
         clients = {item["client_id"]: item for item in self.config.list_clients()}
         unknown = [client_id for client_id in client_ids if client_id not in clients]
@@ -1566,6 +1658,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     reason=str(payload.get("reason") or ""),
                 )
                 self._json(HTTPStatus.OK, {"run_id": run_id, "restored": True, "is_main": False})
+                return
+            match = re.fullmatch(
+                r"/api/jobs/([^/]+)/cancel-export-and-retry", parsed.path
+            )
+            if match:
+                result = self.app.cancel_export_and_retry(
+                    job_id=unquote(match.group(1)),
+                    export_uuid=str(payload.get("export_uuid") or ""),
+                    confirmation=str(payload.get("confirmation") or ""),
+                )
+                self._json(HTTPStatus.ACCEPTED, result)
                 return
             match = re.fullmatch(r"/api/jobs/([^/]+)/retry", parsed.path)
             if match:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import gzip
+import inspect
 import json
 import os
 import uuid
@@ -9,7 +10,7 @@ import zlib
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 from urllib.parse import unquote, urlparse
 from urllib.request import url2pathname
 
@@ -22,7 +23,11 @@ from tenable_reports.domain.models import (
     utc_now_iso,
 )
 from tenable_reports.application.storage_guard import storage_preflight
-from tenable_reports.infrastructure.tenable_vm.client import TenableVmClient
+from tenable_reports.infrastructure.tenable_vm.client import (
+    ExportJob,
+    ExportTimeoutError,
+    TenableVmClient,
+)
 from tenable_reports.infrastructure.tenable_vm.parser import iter_chunk_records
 
 
@@ -109,6 +114,16 @@ def _write_exclusive(path: Path, content: bytes) -> None:
     except Exception:
         path.unlink(missing_ok=True)
         raise
+
+
+def _write_json_replace(path: Path, payload: Mapping[str, Any]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.unlink(missing_ok=True)
+    _write_exclusive(
+        temporary,
+        (json.dumps(dict(payload), ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+    os.replace(temporary, path)
 
 
 def _sha256_file(path: Path) -> str:
@@ -338,6 +353,8 @@ def collect_vm_snapshot(
     resume_from: str | Path | None = None,
     minimum_free_gb: int = 10,
     last_success_bytes: int | None = None,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    snapshot_suffix: str | None = None,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
     started_at = utc_now_iso()
@@ -348,15 +365,29 @@ def collect_vm_snapshot(
         client_id=profile.client_id,
         tenant_id=profile.tenant_id,
     )
-    actual_export_uuid = export_uuid or resumed_export_uuid or client.start_vulnerability_export(
-        filters=request.filters,
-        num_assets=request.num_assets,
-        include_unlicensed=request.include_unlicensed,
-        include_software_vulns=request.include_software_vulns,
-        include_plugin_output=request.include_plugin_output,
-        properties=list(request.properties) or None,
-    )
-    _, chunk_ids = client.wait_for_completion(actual_export_uuid)
+    start_arguments = {
+        "filters": request.filters,
+        "num_assets": request.num_assets,
+        "include_unlicensed": request.include_unlicensed,
+        "include_software_vulns": request.include_software_vulns,
+        "include_plugin_output": request.include_plugin_output,
+        "properties": list(request.properties) or None,
+    }
+    if export_uuid:
+        job = ExportJob(export_uuid=export_uuid, origin="provided")
+    elif resumed_export_uuid:
+        job = ExportJob(export_uuid=resumed_export_uuid, origin="resumed")
+    else:
+        starter = getattr(client, "start_vulnerability_export_job", None)
+        job = (
+            starter(**start_arguments)
+            if callable(starter)
+            else ExportJob(
+                export_uuid=client.start_vulnerability_export(**start_arguments),
+                origin="created",
+            )
+        )
+    actual_export_uuid = job.export_uuid
 
     raw_directory = (
         Path(output_root)
@@ -366,6 +397,87 @@ def collect_vm_snapshot(
         / "tenable_vm_vulnerabilities"
         / actual_export_uuid
     )
+    state_path = raw_directory / "export-state.json"
+
+    def emit_progress(status: str, **details: Any) -> None:
+        payload = {
+            "event": "TENABLE_EXPORT_PROGRESS",
+            "source": "tenable_vm_vulnerabilities",
+            "export_uuid": actual_export_uuid,
+            "origin": job.origin,
+            "status": status,
+            "started_at": started_at,
+            **details,
+        }
+        _write_json_replace(state_path, payload)
+        if progress_callback is not None:
+            progress_callback(payload)
+
+    emit_progress(
+        "STARTED",
+        completed_chunks=0,
+        total_chunks=0,
+        progress_made=False,
+        auto_cancelled=False,
+        query=sanitized_mapping(query),
+    )
+
+    def update_progress(status: Mapping[str, Any]) -> None:
+        remote_status = str(status.get("status") or "PROCESSING").upper()
+        details = {
+            str(key): value
+            for key, value in status.items()
+            if key not in {"event", "source", "export_uuid", "origin", "status"}
+        }
+        emit_progress(remote_status, **details)
+
+    try:
+        wait_method = client.wait_for_completion
+        parameters = inspect.signature(wait_method).parameters
+        if "progress_callback" in parameters:
+            _, chunk_ids = wait_method(
+                actual_export_uuid,
+                progress_callback=update_progress,
+            )
+        else:
+            _, chunk_ids = wait_method(actual_export_uuid)
+    except ExportTimeoutError as exc:
+        exc.export_uuid = actual_export_uuid
+        exc.origin = job.origin
+        auto_cancelled = False
+        cancellation_error: str | None = None
+        if job.created_by_current_run and not exc.progress_made:
+            try:
+                client.cancel_vulnerability_export(actual_export_uuid)
+                auto_cancelled = True
+            except Exception as cancel_exc:
+                cancellation_error = str(cancel_exc).strip()[-500:]
+        exc.auto_cancelled = auto_cancelled
+        exc.cancellation_error = cancellation_error
+        timeout_details = {
+            str(key): value
+            for key, value in exc.last_status.items()
+            if key not in {
+                "event", "source", "export_uuid", "origin", "status",
+                "auto_cancelled", "cancellation_error", "progress_made",
+            }
+        }
+        emit_progress(
+            "TIMED_OUT",
+            **timeout_details,
+            auto_cancelled=auto_cancelled,
+            cancellation_error=cancellation_error,
+            progress_made=exc.progress_made,
+        )
+        raise
+    emit_progress(
+        "FINISHED",
+        completed_chunks=len(chunk_ids),
+        total_chunks=len(chunk_ids),
+        progress_made=bool(chunk_ids),
+        auto_cancelled=False,
+    )
+
     stored_chunks: list[StoredChunk] = []
     for chunk_id in chunk_ids:
         storage_preflight(
@@ -427,6 +539,168 @@ def collect_vm_snapshot(
         / "snapshots"
         / profile.client_id
         / actual_run_id
+        / (
+            f"tenable_vm_vulnerabilities-{snapshot_suffix}.snapshot.json"
+            if snapshot_suffix else "tenable_vm_vulnerabilities.snapshot.json"
+        )
+    )
+    snapshot.write_json(snapshot_path)
+    return CollectionResult(
+        snapshot=snapshot,
+        snapshot_path=snapshot_path,
+        raw_manifest_path=manifest_path,
+        records=(),
+    )
+
+
+def collect_vm_snapshot_by_state(
+    *,
+    client: TenableVmClient,
+    profile: ClientProfile,
+    request: VulnerabilityExportRequest,
+    output_root: str | Path,
+    run_id: str | None = None,
+    export_uuid: str | None = None,
+    minimum_free_gb: int = 10,
+    last_success_bytes: int | None = None,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+) -> CollectionResult:
+    actual_run_id = run_id or str(uuid.uuid4())
+    raw_states = request.filters.get("state")
+    values = [raw_states] if isinstance(raw_states, str) else list(raw_states or ())
+    states = tuple(str(value).strip().upper() for value in values if str(value).strip())
+    active_states = tuple(
+        state for state in states if state in {"OPEN", "REOPENED"}
+    )
+    should_split = (
+        export_uuid is None
+        and bool(active_states)
+        and "FIXED" in states
+        and set(states).issubset({"OPEN", "REOPENED", "FIXED"})
+    )
+    if not should_split:
+        return collect_vm_snapshot(
+            client=client,
+            profile=profile,
+            request=request,
+            output_root=output_root,
+            run_id=actual_run_id,
+            export_uuid=export_uuid,
+            minimum_free_gb=minimum_free_gb,
+            last_success_bytes=last_success_bytes,
+            progress_callback=progress_callback,
+        )
+
+    segments = (
+        ("active", "last_found", active_states),
+        ("fixed", "last_fixed", ("FIXED",)),
+    )
+    collected: list[tuple[str, str, CollectionResult]] = []
+    for segment_name, date_field, segment_states in segments:
+        filters = dict(request.filters)
+        filters["state"] = list(segment_states)
+        segment_request = VulnerabilityExportRequest(
+            filters=filters,
+            num_assets=request.num_assets,
+            include_unlicensed=request.include_unlicensed,
+            include_software_vulns=request.include_software_vulns,
+            include_plugin_output=request.include_plugin_output,
+            properties=request.properties,
+        )
+
+        def forward_progress(
+            event: Mapping[str, Any],
+            *,
+            name: str = segment_name,
+            field: str = date_field,
+        ) -> None:
+            if progress_callback is not None:
+                progress_callback({**event, "segment": name, "date_field": field})
+
+        result = collect_vm_snapshot(
+            client=client,
+            profile=profile,
+            request=segment_request,
+            output_root=output_root,
+            run_id=actual_run_id,
+            minimum_free_gb=minimum_free_gb,
+            last_success_bytes=last_success_bytes,
+            progress_callback=forward_progress,
+            snapshot_suffix=segment_name,
+        )
+        collected.append((segment_name, date_field, result))
+
+    aggregate_chunks: list[dict[str, Any]] = []
+    segment_metadata: list[dict[str, Any]] = []
+    for segment_name, date_field, result in collected:
+        child_manifest = json.loads(
+            result.raw_manifest_path.read_text(encoding="utf-8")
+        )
+        child_chunks = child_manifest.get("chunks")
+        if not isinstance(child_chunks, list):
+            raise ValueError("Manifesto de segmento VM nao contem chunks validos.")
+        segment_metadata.append({
+            "name": segment_name,
+            "date_field": date_field,
+            "export_uuid": result.snapshot.export_uuid,
+            "record_count": result.snapshot.record_count,
+            "query": result.snapshot.query,
+            "manifest_uri": result.raw_manifest_path.resolve().as_uri(),
+        })
+        for child in child_chunks:
+            if not isinstance(child, Mapping):
+                continue
+            aggregate_chunks.append({
+                **dict(child),
+                "chunk_id": len(aggregate_chunks) + 1,
+                "source_chunk_id": int(child.get("chunk_id") or 0),
+                "segment": segment_name,
+                "date_field": date_field,
+            })
+
+    aggregate_query = {
+        "strategy": "state_temporal_split_v1",
+        "segments": segment_metadata,
+    }
+    raw_directory = (
+        Path(output_root) / "raw" / profile.client_id / actual_run_id
+        / "tenable_vm_vulnerabilities"
+    )
+    manifest = {
+        "schema_version": 3,
+        "run_id": actual_run_id,
+        "client_id": profile.client_id,
+        "tenant_id": profile.tenant_id,
+        "source": "tenable_vm_vulnerabilities",
+        "strategy": "state_temporal_split_v1",
+        "segments": segment_metadata,
+        "chunks": aggregate_chunks,
+    }
+    manifest_path = raw_directory / "manifest.json"
+    _write_exclusive(
+        manifest_path,
+        (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+    record_count = sum(item.snapshot.record_count for _, _, item in collected)
+    export_uuids = "+".join(item.snapshot.export_uuid for _, _, item in collected)
+    snapshot = build_source_snapshot_from_chunk_hashes(
+        run_id=actual_run_id,
+        client_id=profile.client_id,
+        tenant_id=profile.tenant_id,
+        source="tenable_vm_vulnerabilities",
+        export_uuid=export_uuids,
+        query=aggregate_query,
+        chunk_hashes=(
+            (int(item["chunk_id"]), str(item.get("content_sha256") or ""))
+            for item in aggregate_chunks
+        ),
+        record_count=record_count,
+        started_at=min(item.snapshot.started_at for _, _, item in collected),
+        collector_version=__version__,
+        raw_manifest_uri=manifest_path.resolve().as_uri(),
+    )
+    snapshot_path = (
+        Path(output_root) / "snapshots" / profile.client_id / actual_run_id
         / "tenable_vm_vulnerabilities.snapshot.json"
     )
     snapshot.write_json(snapshot_path)

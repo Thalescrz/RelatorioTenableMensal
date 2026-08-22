@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from zipfile import ZipFile
@@ -15,6 +16,7 @@ from tenable_reports.application.history import (
     prepare_dataset_history,
 )
 from tenable_reports.application.orchestration import (
+    _default_runner,
     OrchestrationRequest,
     build_client_command,
     load_orchestration_config,
@@ -116,6 +118,24 @@ def _docx_text(path: Path) -> str:
 
 
 class OrchestrationTests(unittest.TestCase):
+    def test_default_runner_forwards_vm_export_progress(self) -> None:
+        events: list[dict] = []
+        script = (
+            "import json; "
+            "print(json.dumps({'event':'TENABLE_EXPORT_PROGRESS',"
+            "'export_uuid':'job-stuck','origin':'reused','status':'PROCESSING'}))"
+        )
+
+        completed = _default_runner(
+            (sys.executable, "-c", script),
+            ROOT,
+            events.append,
+        )
+
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(events[0]["event"], "TENABLE_EXPORT_PROGRESS")
+        self.assertEqual(events[0]["export_uuid"], "job-stuck")
+
     def test_orchestration_forwards_tag_progress_and_preserves_warnings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             payload = json.loads(EXAMPLE_CONFIG.read_text(encoding="utf-8"))

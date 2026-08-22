@@ -13,6 +13,7 @@ from tenable_reports.application.collect import (
     VulnerabilityExportRequest,
     collect_asset_snapshot,
     collect_vm_snapshot,
+    collect_vm_snapshot_by_state,
     reusable_chunk,
     store_chunk_atomic,
 )
@@ -21,8 +22,13 @@ from tenable_reports.application.collect_was import (
     collect_optional_was_snapshot,
     collect_was_snapshot,
 )
+from tenable_reports.application.normalize import _collection_records
 from tenable_reports.config.profile import load_client_profile
-from tenable_reports.infrastructure.tenable_vm.client import ApiError
+from tenable_reports.infrastructure.tenable_vm.client import (
+    ApiError,
+    ExportJob,
+    ExportTimeoutError,
+)
 from tenable_reports.infrastructure.tenable_vm.parser import iter_chunk_records
 
 
@@ -63,6 +69,62 @@ class FakeAssetCollectionClient:
         return self.chunks[chunk_id]
 
 
+class SegmentedCollectionClient:
+    def __init__(self) -> None:
+        self.started_filters: list[dict[str, Any]] = []
+
+    def start_vulnerability_export_job(self, **kwargs: Any) -> ExportJob:
+        filters = dict(kwargs["filters"])
+        self.started_filters.append(filters)
+        suffix = "fixed" if filters["state"] == ["FIXED"] else "active"
+        return ExportJob(export_uuid=f"job-{suffix}", origin="created")
+
+    def wait_for_completion(self, export_uuid: str, *, progress_callback=None):
+        if progress_callback is not None:
+            progress_callback({
+                "export_uuid": export_uuid,
+                "status": "FINISHED",
+                "completed_chunks": 1,
+                "total_chunks": 1,
+                "progress_made": True,
+            })
+        return {"status": "FINISHED"}, [1]
+
+    def download_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:
+        state = "FIXED" if export_uuid.endswith("fixed") else "OPEN"
+        return (json.dumps({"id": export_uuid, "state": state}) + "\n").encode()
+
+
+class TimedOutCollectionClient:
+    def __init__(self, *, origin: str) -> None:
+        self.origin = origin
+        self.cancelled: list[str] = []
+
+    def start_vulnerability_export_job(self, **kwargs: Any) -> ExportJob:
+        return ExportJob(export_uuid="fixture-stuck-export", origin=self.origin)
+
+    def wait_for_completion(self, export_uuid: str, *, progress_callback=None):
+        status = {
+            "export_uuid": export_uuid,
+            "status": "PROCESSING",
+            "completed_chunks": 0,
+            "total_chunks": 1,
+            "progress_made": False,
+        }
+        if progress_callback is not None:
+            progress_callback(status)
+        raise ExportTimeoutError(
+            "Tempo maximo excedido aguardando o export VM.",
+            export_uuid=export_uuid,
+            last_status=status,
+            progress_made=False,
+        )
+
+    def cancel_vulnerability_export(self, export_uuid: str) -> dict[str, Any]:
+        self.cancelled.append(export_uuid)
+        return {"status": "CANCELLED"}
+
+
 class FakeWasCollectionClient:
     def __init__(self, chunks: dict[int, bytes]) -> None:
         self.chunks = chunks
@@ -85,6 +147,92 @@ class UnavailableWasCollectionClient(FakeWasCollectionClient):
 
 
 class CollectionTests(unittest.TestCase):
+    def test_vm_states_are_exported_separately_and_merged_into_one_snapshot(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = SegmentedCollectionClient()
+        progress: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            result = collect_vm_snapshot_by_state(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={
+                    "since": 1782860400,
+                    "state": ["OPEN", "REOPENED", "FIXED"],
+                    "severity": ["low", "medium", "high", "critical"],
+                }),
+                output_root=directory,
+                run_id="run-segmented",
+                progress_callback=progress.append,
+            )
+            records = list(_collection_records(result))
+            manifest = json.loads(
+                result.raw_manifest_path.read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(
+            [filters["state"] for filters in client.started_filters],
+            [["OPEN", "REOPENED"], ["FIXED"]],
+        )
+        self.assertEqual(result.snapshot.record_count, 2)
+        self.assertEqual({record["state"] for record in records}, {"OPEN", "FIXED"})
+        self.assertEqual(
+            result.snapshot_path.name,
+            "tenable_vm_vulnerabilities.snapshot.json",
+        )
+        self.assertEqual(manifest["strategy"], "state_temporal_split_v1")
+        self.assertEqual(
+            [segment["date_field"] for segment in manifest["segments"]],
+            ["last_found", "last_fixed"],
+        )
+        self.assertEqual(
+            {chunk["segment"] for chunk in manifest["chunks"]},
+            {"active", "fixed"},
+        )
+        self.assertEqual({event["segment"] for event in progress}, {"active", "fixed"})
+
+    def test_current_run_stuck_export_is_recorded_and_auto_cancelled(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = TimedOutCollectionClient(origin="created")
+        progress: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExportTimeoutError) as caught:
+                collect_vm_snapshot(
+                    client=client,  # type: ignore[arg-type]
+                    profile=profile,
+                    request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                    output_root=directory,
+                    run_id="run-stuck-created",
+                    progress_callback=progress.append,
+                )
+
+            state_path = next(Path(directory).rglob("export-state.json"))
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(client.cancelled, ["fixture-stuck-export"])
+        self.assertTrue(caught.exception.auto_cancelled)
+        self.assertEqual(state["export_uuid"], "fixture-stuck-export")
+        self.assertEqual(state["origin"], "created")
+        self.assertEqual(state["status"], "TIMED_OUT")
+        self.assertTrue(state["auto_cancelled"])
+        self.assertEqual(progress[-1]["event"], "TENABLE_EXPORT_PROGRESS")
+
+    def test_reused_stuck_export_is_never_auto_cancelled(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = TimedOutCollectionClient(origin="reused")
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExportTimeoutError) as caught:
+                collect_vm_snapshot(
+                    client=client,  # type: ignore[arg-type]
+                    profile=profile,
+                    request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                    output_root=directory,
+                    run_id="run-stuck-reused",
+                )
+
+        self.assertEqual(client.cancelled, [])
+        self.assertFalse(caught.exception.auto_cancelled)
+        self.assertEqual(caught.exception.origin, "reused")
+
     def test_plain_jsonl_is_persisted_as_valid_gzip_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)

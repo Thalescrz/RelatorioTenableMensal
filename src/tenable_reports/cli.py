@@ -15,6 +15,7 @@ from tenable_reports.application.collect import (
     VulnerabilityExportRequest,
     collect_asset_snapshot,
     collect_vm_snapshot,
+    collect_vm_snapshot_by_state,
 )
 from tenable_reports.application.collect_was import (
     WasExportRequest,
@@ -130,6 +131,10 @@ SELECTIVE_PROPERTIES = (
     "definition.cve",
     "definition.vpr.score",
 )
+
+
+def _emit_progress_event(event: Mapping[str, Any]) -> None:
+    print(json.dumps(dict(event), ensure_ascii=False), flush=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -984,7 +989,7 @@ def _execute_period(
         run_id=actual_run_id,
         export_uuid=args.asset_export_uuid,
     )
-    findings = collect_vm_snapshot(
+    findings = collect_vm_snapshot_by_state(
         client=client,
         profile=profile,
         request=VulnerabilityExportRequest(
@@ -997,6 +1002,7 @@ def _execute_period(
         output_root=output_root,
         run_id=actual_run_id,
         export_uuid=args.vm_export_uuid,
+        progress_callback=_emit_progress_event,
     )
     was_collection = None
     was_collection_status = "DISABLED"

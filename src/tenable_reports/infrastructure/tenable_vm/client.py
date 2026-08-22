@@ -45,7 +45,34 @@ class ExportFailedError(ApiError):
 
 
 class ExportTimeoutError(TimeoutError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        export_uuid: str | None = None,
+        last_status: Mapping[str, Any] | None = None,
+        progress_made: bool = False,
+        origin: str | None = None,
+        auto_cancelled: bool = False,
+        cancellation_error: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.export_uuid = export_uuid
+        self.last_status = dict(last_status or {})
+        self.progress_made = bool(progress_made)
+        self.origin = origin
+        self.auto_cancelled = bool(auto_cancelled)
+        self.cancellation_error = cancellation_error
+
+
+@dataclass(frozen=True, slots=True)
+class ExportJob:
+    export_uuid: str
+    origin: str
+
+    @property
+    def created_by_current_run(self) -> bool:
+        return self.origin == "created"
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,7 +298,7 @@ class TenableVmClient:
             endpoint=endpoint,
         )
 
-    def start_vulnerability_export(
+    def start_vulnerability_export_job(
         self,
         *,
         filters: Mapping[str, Any],
@@ -280,7 +307,7 @@ class TenableVmClient:
         include_software_vulns: bool = False,
         include_plugin_output: bool = False,
         properties: list[str] | None = None,
-    ) -> str:
+    ) -> ExportJob:
         payload: dict[str, Any] = {
             "num_assets": max(50, min(int(num_assets), 5000)),
             "include_unlicensed": bool(include_unlicensed),
@@ -302,13 +329,38 @@ class TenableVmClient:
         except ApiError as exc:
             if exc.status_code == 409 and exc.active_job_id:
                 LOGGER.info("Export equivalente ja estava em andamento; reutilizando o job.")
-                return exc.active_job_id
+                return ExportJob(exc.active_job_id, "reused")
             raise
         data = response.json()
         export_uuid = data.get("export_uuid") or data.get("uuid") if isinstance(data, dict) else None
         if not isinstance(export_uuid, str) or not export_uuid.strip():
             raise ApiError("Resposta de inicio do export nao contem export_uuid.")
-        return export_uuid.strip()
+        return ExportJob(export_uuid.strip(), "created")
+
+    def start_vulnerability_export(
+        self,
+        *,
+        filters: Mapping[str, Any],
+        num_assets: int = 1000,
+        include_unlicensed: bool = False,
+        include_software_vulns: bool = False,
+        include_plugin_output: bool = False,
+        properties: list[str] | None = None,
+    ) -> str:
+        return self.start_vulnerability_export_job(
+            filters=filters,
+            num_assets=num_assets,
+            include_unlicensed=include_unlicensed,
+            include_software_vulns=include_software_vulns,
+            include_plugin_output=include_plugin_output,
+            properties=properties,
+        ).export_uuid
+
+    def cancel_vulnerability_export(self, export_uuid: str) -> dict[str, Any]:
+        data = self.request(
+            "POST", f"/vulns/export/{export_uuid}/cancel"
+        ).json()
+        return dict(data) if isinstance(data, dict) else {"status": "CANCELLED"}
 
     def get_export_status(self, export_uuid: str) -> dict[str, Any]:
         data = self.request("GET", f"/vulns/export/{export_uuid}/status").json()
@@ -554,15 +606,35 @@ class TenableVmClient:
         status_loader: Callable[[str], dict[str, Any]],
         *,
         label: str,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         started = self.monotonic()
         seen: list[int] = []
+        progress_made = False
         while True:
             status = status_loader(export_uuid)
             state = str(status.get("status") or status.get("state") or "").strip().lower()
             current = self.completed_chunk_ids(status)
             if current:
                 seen = current
+                progress_made = True
+            elapsed = max(0.0, self.monotonic() - started)
+            progress = {
+                **status,
+                "export_uuid": export_uuid,
+                "status": state.upper() or "UNKNOWN",
+                "completed_chunks": len(seen),
+                "total_chunks": self.chunk_count(status, "total_chunks"),
+                "failed_chunks": self.chunk_count(status, "chunks_failed"),
+                "cancelled_chunks": self.chunk_count(status, "chunks_cancelled"),
+                "elapsed_seconds": round(elapsed, 3),
+                "progress_made": progress_made,
+            }
+            if progress_callback is not None:
+                try:
+                    progress_callback(progress)
+                except Exception:
+                    LOGGER.exception("Falha ignorada no callback de progresso do export.")
             if state in SUCCESS_STATES:
                 failed = self.chunk_count(status, "chunks_failed")
                 cancelled = self.chunk_count(status, "chunks_cancelled")
@@ -575,15 +647,26 @@ class TenableVmClient:
                 return status, seen
             if state in FAILURE_STATES:
                 raise ExportFailedError(f"Export {label} terminou com estado {state}.")
-            if self.monotonic() - started >= self.config.max_wait_seconds:
-                raise ExportTimeoutError(f"Tempo maximo excedido aguardando o export {label}.")
+            if elapsed >= self.config.max_wait_seconds:
+                raise ExportTimeoutError(
+                    f"Tempo maximo excedido aguardando o export {label}.",
+                    export_uuid=export_uuid,
+                    last_status=progress,
+                    progress_made=progress_made,
+                )
             self.sleep(self.config.poll_seconds)
 
-    def wait_for_completion(self, export_uuid: str) -> tuple[dict[str, Any], list[int]]:
+    def wait_for_completion(
+        self,
+        export_uuid: str,
+        *,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> tuple[dict[str, Any], list[int]]:
         return self._wait_for_completion(
             export_uuid,
             self.get_export_status,
             label="VM",
+            progress_callback=progress_callback,
         )
 
     def wait_for_asset_completion(self, export_uuid: str) -> tuple[dict[str, Any], list[int]]:
