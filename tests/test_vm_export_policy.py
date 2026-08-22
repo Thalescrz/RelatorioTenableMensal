@@ -59,6 +59,20 @@ class VmExportPolicyTests(unittest.TestCase):
         self.assertFalse(invalid.passed)
         self.assertIn("definition.description", invalid.missing_properties)
 
+    def test_selective_contract_allows_absent_non_applicable_optional_fields(self) -> None:
+        record = selective_record()
+        del record["service"]
+        del record["last_fixed"]
+        del record["resurfaced_date"]
+        del record["definition"]["cve"]
+        del record["definition"]["see_also"]
+        del record["definition"]["references"]
+        del record["definition"]["cvss2"]
+
+        result = validate_selective_records([record])
+
+        self.assertTrue(result.passed)
+
     def test_comparison_accepts_legacy_and_selective_equivalent_records(self) -> None:
         comparison = compare_vm_exports(
             [full_record()],
@@ -68,6 +82,15 @@ class VmExportPolicyTests(unittest.TestCase):
         self.assertTrue(comparison.passed)
         self.assertEqual(comparison.status, "PASSED")
         self.assertEqual(comparison.differences, ())
+
+    def test_comparison_detects_identity_divergence(self) -> None:
+        selective = selective_record()
+        selective["asset"]["id"] = "different-asset"
+
+        comparison = compare_vm_exports([full_record()], [selective])
+
+        self.assertFalse(comparison.passed)
+        self.assertIn("identity_digest", comparison.differences)
 
     def test_comparison_detects_numerical_divergence_without_sensitive_values(self) -> None:
         selective = selective_record()
@@ -136,24 +159,59 @@ class VmExportPolicyTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(result.fallback_reason, "CONTRACT_INVALID")
 
-    def test_enabled_mode_does_not_mask_rate_limit(self) -> None:
+    def test_enabled_mode_does_not_mask_non_contract_api_failures(self) -> None:
+        for status_code in (401, 403, 429, 500):
+            calls = 0
+
+            def collector(**kwargs):
+                nonlocal calls
+                calls += 1
+                raise ApiError("api failure", status_code=status_code)
+
+            with self.subTest(status_code=status_code):
+                with tempfile.TemporaryDirectory() as directory:
+                    with self.assertRaises(ApiError) as caught:
+                        collect_vm_snapshot_with_policy(
+                            collector=collector,
+                            client=object(),
+                            profile=SimpleNamespace(client_id="cliente-a"),
+                            request=VulnerabilityExportRequest(
+                                filters={"state": ["OPEN"]}
+                            ),
+                            output_root=directory,
+                            run_id=f"run-no-fallback-{status_code}",
+                            mode="enabled",
+                            strategy="combined",
+                        )
+                self.assertEqual(caught.exception.status_code, status_code)
+                self.assertEqual(calls, 1)
+
+    def test_validation_http_400_preserves_full_collection_and_records_failure(self) -> None:
+        full_collection = SimpleNamespace(records=(full_record(),))
+
         def collector(**kwargs):
-            raise ApiError("rate limited", status_code=429)
+            if kwargs["request"].properties:
+                raise ApiError("properties invalidas", status_code=400)
+            return full_collection
 
         with tempfile.TemporaryDirectory() as directory:
-            with self.assertRaises(ApiError) as caught:
-                collect_vm_snapshot_with_policy(
-                    collector=collector,
-                    client=object(),
-                    profile=SimpleNamespace(client_id="cliente-a"),
-                    request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
-                    output_root=directory,
-                    run_id="run-no-fallback",
-                    mode="enabled",
-                    strategy="combined",
-                )
+            result = collect_vm_snapshot_with_policy(
+                collector=collector,
+                client=object(),
+                profile=SimpleNamespace(client_id="cliente-a"),
+                request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                output_root=directory,
+                run_id="run-validation-http-400",
+                mode="validation",
+                strategy="combined",
+            )
+            payload = json.loads(
+                Path(result.comparison_path).read_text(encoding="utf-8")
+            )
 
-        self.assertEqual(caught.exception.status_code, 429)
+        self.assertIs(result.collection, full_collection)
+        self.assertEqual(result.outcome, "FAILED")
+        self.assertIn("selective_http_400", payload["differences"])
 
     def test_validation_mode_keeps_full_collection_and_writes_sanitized_result(self) -> None:
         full_collection = SimpleNamespace(records=(full_record(),))

@@ -79,6 +79,21 @@ O navegador abre em `http://127.0.0.1:8765`. O botão **Gerar todos** adiciona o
 clientes habilitados a uma fila sequencial, enquanto cada card permite iniciar
 uma geração pontual individual e acessar os documentos já registrados.
 
+Em **Gerenciar clientes → Coleta VM**, cada cliente possui três ajustes: estratégia
+`combined` ou `split`, ativos por chunk e uso de propriedades seletivas. O padrão
+seguro é **Combinada**, **250 ativos por chunk** e **propriedades desativadas**. A
+estratégia separada continua experimental e só deve ser usada para diagnóstico.
+
+O botão **Validar export otimizado** exige confirmação porque inicia duas
+exportações reais para o mesmo período: uma completa e outra seletiva. O relatório
+da validação continua usando a coleta completa. O card apresenta **validação
+aprovada** quando contagens, identidades anonimizadas, severidades, estados, Top 5,
+datas, cobertura e indicadores de exploração são equivalentes; **revisar** mantém
+as propriedades seletivas desativadas. A ativação por cliente também possui fallback
+único para payload completo quando a API rejeita `properties` com HTTP 400 ou quando
+o contrato retornado está incompleto. Autenticação, limite de taxa e timeout não são
+mascarados por esse fallback.
+
 ### Validação autenticada do contrato
 
 O comando abaixo inicia um export real pequeno e inspeciona somente o primeiro chunk. Ele permanece bloqueado sem `--confirm-live-api`:
@@ -101,7 +116,17 @@ python -m tenable_reports collect-vm `
 
 `Plugin Output` é enviado como `false` por padrão. A opção `--include-output` precisa ser deliberada; `data/` permanece fora do Git.
 
-O tenant validado aceita sintaticamente `properties`, mas os jobs seletivos testados terminaram com todos os chunks falhos. Assim, a coleta usa o payload completo por padrão, ainda com `include_plugin_output=false`. `--select-properties` permanece experimental e não deve ser usado em publicação sem novo teste de contrato.
+A coleta de relatórios usa um único export combinado por padrão, com 250 ativos por
+chunk e payload completo. Cada chunk disponibilizado pela Tenable é baixado e
+persistido imediatamente; se o export atingir o timeout, o manifesto parcial fica
+disponível para a tentativa automática seguinte do mesmo cliente, consulta e
+trabalho lógico. Chunks íntegros já armazenados não são baixados novamente.
+
+Um export só é cancelado automaticamente quando foi criado pela execução atual e
+chegou ao limite sem qualquer progresso remoto ou local. Jobs fornecidos,
+preexistentes ou retomados nunca são cancelados automaticamente. `Plugin Output`
+continua estritamente opcional e só entra na lista seletiva quando a coluna Output
+está habilitada.
 
 ### Validação do contrato de ativos v2
 

@@ -58,25 +58,21 @@ VM_REPORT_PROPERTIES = (
 )
 
 REQUIRED_SELECTIVE_PROPERTIES = (
+    "id",
+    "asset.id",
+    "definition.id",
     "source",
     "port",
     "protocol",
-    "service",
     "severity",
     "first_observed",
-    "last_fixed",
     "last_seen",
     "state",
-    "resurfaced_date",
-    "definition.cve",
     "definition.description",
     "definition.family",
     "definition.name",
-    "definition.see_also",
     "definition.solution",
     "definition.synopsis",
-    "definition.references",
-    "definition.cvss2.base_score",
     "definition.cvss3.base_score",
     "definition.cvss3.base_vector",
     "definition.vpr.score",
@@ -298,6 +294,7 @@ def collect_vm_snapshot_with_policy(
         if resume_from is not None:
             kwargs["resume_from"] = resume_from
         return collector(**kwargs)
+
     if normalized_mode == "disabled":
         return VmExportPolicyResult(
             collection=collect(
@@ -352,7 +349,29 @@ def collect_vm_snapshot_with_policy(
         "full",
         resume_from=primary_resume,
     )
-    selective = collect(selective_request, "selective")
+    try:
+        selective = collect(selective_request, "selective")
+    except ApiError as exc:
+        if exc.status_code != 400:
+            raise
+        comparison = VmExportComparison(
+            status="FAILED",
+            differences=("selective_http_400",),
+            full_metrics=_comparison_metrics(_records(full)),
+            selective_metrics=_comparison_metrics(()),
+        )
+        comparison_path = _write_comparison(
+            output_root=output_root,
+            client_id=profile.client_id,
+            run_id=run_id,
+            comparison=comparison,
+        )
+        return VmExportPolicyResult(
+            collection=full,
+            mode=normalized_mode,
+            outcome="FAILED",
+            comparison_path=comparison_path,
+        )
     contract = validate_selective_records(_records(selective))
     comparison = compare_vm_exports(_records(full), _records(selective))
     if not contract.passed:
