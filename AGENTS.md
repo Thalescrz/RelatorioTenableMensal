@@ -1,5 +1,8 @@
 # Instruções para agentes
 
+Tudo que você conseguir fazer sozinho, por favor faça. Isso inclui iniciar a
+aplicação e realizar verificações.
+
 ## Escopo
 
 Este arquivo vale para todo o repositório. Um `AGENTS.md` mais próximo do arquivo
