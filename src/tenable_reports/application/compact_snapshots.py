@@ -14,6 +14,7 @@ from tenable_reports.domain.normalization import (
     QualitySeverity,
 )
 
+from tenable_reports.domain.was import NormalizedWasFinding
 
 COMPACT_SNAPSHOT_SCHEMA_VERSION = 1
 
@@ -42,6 +43,8 @@ class ReplayedCompactSnapshot:
     findings: tuple[NormalizedFinding, ...]
     quality_issues: tuple[DataQualityIssue, ...]
     tag_asset_ids: Mapping[str, tuple[str, ...]]
+    was_findings: tuple[NormalizedWasFinding, ...]
+    tag_scope: Mapping[str, Any] | None
     document_references: Mapping[str, str]
 
 
@@ -133,6 +136,8 @@ def build_compact_snapshot(
     tag_asset_ids: Mapping[str, Sequence[str]],
     document_references: Mapping[str, str],
     created_at: str | None = None,
+    was_findings: Sequence[NormalizedWasFinding] = (),
+    tag_scope: Mapping[str, Any] | None = None,
 ) -> CompactFindingSnapshot:
     documents = {
         str(key): str(value)
@@ -150,6 +155,8 @@ def build_compact_snapshot(
         "quality_issues": [item.to_dict() for item in quality_issues],
         "tag_asset_ids": tags,
         "document_references": documents,
+        "was_findings": [item.to_dict() for item in was_findings],
+        "tag_scope": dict(tag_scope) if tag_scope is not None else None,
     }
     logical = _canonical_json(payload)
     timestamp = created_at or datetime.now(timezone.utc).isoformat()
@@ -157,6 +164,7 @@ def build_compact_snapshot(
         "assets": len(assets),
         "findings": len(findings),
         "quality_issues": len(quality_issues),
+        "was_findings": len(was_findings),
     }
     return CompactFindingSnapshot(
         snapshot_id=_snapshot_id(
@@ -226,6 +234,11 @@ def replay_compact_snapshot(
         for item in payload.get("quality_issues") or ()
         if isinstance(item, Mapping)
     )
+    was_findings = tuple(
+        NormalizedWasFinding.from_dict(item)
+        for item in payload.get("was_findings") or ()
+        if isinstance(item, Mapping)
+    )
     tags = {
         str(tag): tuple(str(value) for value in values)
         for tag, values in (payload.get("tag_asset_ids") or {}).items()
@@ -235,10 +248,16 @@ def replay_compact_snapshot(
         str(key): str(value)
         for key, value in (payload.get("document_references") or {}).items()
     }
+    tag_scope = (
+        dict(payload["tag_scope"])
+        if isinstance(payload.get("tag_scope"), Mapping)
+        else None
+    )
     expected = {
         "assets": len(assets),
         "findings": len(findings),
         "quality_issues": len(issues),
+        "was_findings": len(was_findings),
     }
     if dict(snapshot.record_counts) != expected:
         raise ValueError("Contagens do snapshot compacto divergem do payload.")
@@ -250,4 +269,6 @@ def replay_compact_snapshot(
         quality_issues=issues,
         tag_asset_ids=tags,
         document_references=documents,
+        was_findings=was_findings,
+        tag_scope=tag_scope,
     )

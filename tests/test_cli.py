@@ -327,6 +327,12 @@ class CliTests(unittest.TestCase):
                     ),
                 ),
                 patch.object(cli_module, "_postgres_operations", return_value=operations),
+                patch.object(cli_module, "_compact_snapshot_repository", return_value=object()),
+                patch.object(
+                    cli_module,
+                    "publish_compact_run_snapshot",
+                    side_effect=lambda **kwargs: events.append("compact_snapshot"),
+                ),
                 patch.object(
                     cli_module,
                     "finalize_history_publication",
@@ -342,6 +348,7 @@ class CliTests(unittest.TestCase):
             "custom_docx",
             "validate_and_manifest",
             "finalize_history",
+            "compact_snapshot",
             "record_manifest",
             "cleanup_pending",
             "cleanup_complete",
@@ -391,6 +398,162 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(defaults, ("combined", 1000, "disabled"))
         self.assertEqual(overridden, ("split", 500, "validation"))
+
+    def test_execute_period_initializes_empty_tag_datasets_when_tags_are_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            period = previous_calendar_month(
+                reference_at="2026-08-12T10:00:00-03:00",
+                timezone_name="America/Fortaleza",
+            )
+            profile = SimpleNamespace(
+                client_id="cliente-sem-tags",
+                reporting=SimpleNamespace(
+                    vm_export=SimpleNamespace(
+                        strategy="combined",
+                        num_assets_per_chunk=1000,
+                        selective_properties="disabled",
+                    ),
+                ),
+                vm_scope=SimpleNamespace(include_unlicensed=False),
+                was_scope=SimpleNamespace(enabled=False),
+                report=SimpleNamespace(
+                    tag_reports=SimpleNamespace(enabled=False, tags=()),
+                ),
+            )
+            args = SimpleNamespace(
+                env_file=directory / "cliente.env",
+                profile=directory / "cliente.json",
+                output_root=directory,
+                run_id="run-sem-tags",
+                num_assets=None,
+                vm_export_strategy=None,
+                asset_filters=None,
+                finding_filters=None,
+                vm_selective_mode=None,
+                asset_filters_path=None,
+                finding_filters_path=None,
+                asset_chunk_size=1000,
+                asset_export_uuid=None,
+                include_software_vulns=False,
+                include_output=False,
+                vm_export_uuid=None,
+                vm_resume_manifest=None,
+                logical_job_id=None,
+                skip_history=True,
+            )
+            assets = SimpleNamespace()
+            findings = SimpleNamespace()
+            normalized = SimpleNamespace(findings_path=directory / "findings.jsonl.gz")
+            artifact = SimpleNamespace(dataset_path=directory / "dataset.json")
+            tag_bundle = SimpleNamespace(artifacts=(), warnings=())
+            vm_policy = SimpleNamespace(
+                collection=findings,
+                outcome="FULL",
+                mode="disabled",
+                comparison_path=None,
+            )
+            external = SimpleNamespace(
+                normalized=normalized,
+                was_collection_status="DISABLED",
+                vm_export_mode="disabled",
+                vm_export_outcome="FULL",
+                vm_export_comparison_path=None,
+                warnings=(),
+                collection_route="legacy_vm",
+                reconstruction_status="HISTORICAL_RECONSTRUCTION",
+                collection_sources=("tenable_vm_vulnerabilities",),
+            )
+
+            with (
+                patch.object(cli_module, "_load_credentials", return_value=object()),
+                patch.object(cli_module, "load_client_profile", return_value=profile),
+                patch.object(cli_module, "_compact_snapshot_repository", return_value=None),
+                patch.object(cli_module, "_inventory_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_plugin_catalog_repository", return_value=None),
+                patch.object(cli_module, "_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_was_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_selected_tags", return_value=()),
+                patch.object(cli_module, "_period_filters", return_value=({}, {})),
+                patch.object(cli_module, "collect_asset_snapshot", return_value=assets),
+                patch.object(cli_module, "collect_vm_snapshot_with_policy", return_value=vm_policy),
+                patch.object(cli_module, "normalize_collections", return_value=normalized),
+                patch.object(cli_module, "build_report_dataset_from_snapshot", return_value=artifact),
+                patch.object(cli_module, "collect_external_period", return_value=external),
+                patch.object(
+                    cli_module,
+                    "build_tag_report_datasets_from_snapshot",
+                    return_value=tag_bundle,
+                ) as build_tag_datasets,
+            ):
+                result = cli_module._execute_period(
+                    args,
+                    execution_type="MANUAL",
+                    period=period,
+                )
+
+            build_tag_datasets.assert_called_once_with(
+                profile=profile,
+                run_id="run-sem-tags",
+                period=period,
+                output_root=directory / "manual",
+                include_output=False,
+                execution_type="MANUAL",
+            )
+            self.assertEqual(result.tag_artifacts, ())
+            self.assertEqual(result.tag_enriched_dataset_paths, {})
+
+    def test_build_report_dataset_command_uses_requested_run_id_for_tag_datasets(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            period = previous_calendar_month(
+                reference_at="2026-08-12T10:00:00-03:00",
+                timezone_name="America/Fortaleza",
+            )
+            profile = SimpleNamespace(client_id="cliente-a")
+            dataset = SimpleNamespace(
+                populations={"assets": 0, "findings": 0},
+                metrics={"non_mitigated": 0, "mitigated": 0},
+                collection_timing={},
+                quality_issues=(),
+            )
+            artifact = SimpleNamespace(
+                dataset_path=directory / "dataset.json",
+                manifest_path=directory / "manifest.json",
+                directory=directory,
+                result=SimpleNamespace(dataset=dataset),
+            )
+            tag_bundle = SimpleNamespace(artifacts=(), warnings=())
+            args = SimpleNamespace(
+                profile=directory / "cliente.json",
+                mode="manual",
+                output_root=directory,
+                run_id="run-solicitado",
+                include_output=False,
+                skip_history=True,
+            )
+
+            with (
+                patch.object(cli_module, "load_client_profile", return_value=profile),
+                patch.object(cli_module, "_period_for_mode", return_value=period),
+                patch.object(
+                    cli_module,
+                    "build_report_dataset_from_snapshot",
+                    return_value=artifact,
+                ),
+                patch.object(
+                    cli_module,
+                    "build_tag_report_datasets_from_snapshot",
+                    return_value=tag_bundle,
+                ) as build_tag_datasets,
+                patch("builtins.print"),
+            ):
+                self.assertEqual(cli_module.command_build_report_dataset(args), 0)
+
+            self.assertEqual(
+                build_tag_datasets.call_args.kwargs["run_id"],
+                "run-solicitado",
+            )
 
     def test_run_client_parser_leaves_vm_tuning_to_profile_by_default(self) -> None:
         args = cli_module.build_parser().parse_args(

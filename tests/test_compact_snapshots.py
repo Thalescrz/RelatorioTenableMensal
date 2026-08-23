@@ -96,7 +96,12 @@ class CompactSnapshotTests(unittest.TestCase):
         self.assertEqual(replay.quality_issues[-1], issue)
         self.assertEqual(replay.tag_asset_ids, {"tag-a": ("asset-a",)})
         self.assertEqual(replay.document_references["base"], "C:/reports/base.docx")
-        self.assertEqual(snapshot.record_counts, {"assets": 1, "findings": 1, "quality_issues": 1})
+        self.assertEqual(snapshot.record_counts, {
+            "assets": 1,
+            "findings": 1,
+            "quality_issues": 1,
+            "was_findings": 0,
+        })
         self.assertEqual(len(snapshot.content_sha256), 64)
         self.assertTrue(snapshot.payload_gzip.startswith(b"\x1f\x8b"))
 

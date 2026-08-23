@@ -77,6 +77,7 @@ class ReportDataset:
     top_web_vulnerabilities: tuple[dict[str, Any], ...] = ()
     customizations: dict[str, Any] | None = None
     table_provenance: dict[str, Any] | None = None
+    collection_provenance: dict[str, Any] | None = None
     schema_version: int = 1
     metric_definition_version: str = METRIC_DEFINITION_VERSION
 
@@ -106,6 +107,7 @@ class ReportDataset:
             "top_web_vulnerabilities": list(self.top_web_vulnerabilities),
             "quality_issues": [item.to_dict() for item in self.quality_issues],
             **({"table_provenance": self.table_provenance} if self.table_provenance else {}),
+            **({"collection_provenance": self.collection_provenance} if self.collection_provenance else {}),
             **({"customizations": self.customizations} if self.customizations else {}),
         }
 

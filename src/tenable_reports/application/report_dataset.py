@@ -49,6 +49,7 @@ class ReportDatasetInputs:
     collection_completed_at: datetime
     tag_scope_path: Path
     tag_scope: dict[str, Any] | None
+    collection_provenance: Mapping[str, Any]
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -166,6 +167,15 @@ def load_report_dataset_inputs(
         collection_completed_at=max(completed_dates),
         tag_scope_path=tag_scope_path,
         tag_scope=tag_scope,
+        collection_provenance=(
+            dict(normalized_manifest["collection_provenance"])
+            if isinstance(normalized_manifest.get("collection_provenance"), Mapping)
+            else {
+                "collection_route": "legacy_vm",
+                "reconstruction_status": "CURRENT_WINDOW",
+                "sources": ["tenable_vm_assets_v2", "tenable_vm_vulnerabilities"],
+            }
+        ),
     )
 
 
@@ -223,7 +233,11 @@ def build_report_dataset_from_snapshot(
     customizations["customization_provenance"] = intelligence.provenance
     result = replace(
         result,
-        dataset=replace(result.dataset, customizations=customizations),
+        dataset=replace(
+            result.dataset,
+            customizations=customizations,
+            collection_provenance=dict(inputs.collection_provenance),
+        ),
     )
 
     directory = root / "report-datasets" / profile.client_id / run_id / period.period_id
@@ -274,6 +288,7 @@ def build_report_dataset_from_snapshot(
         ),
         "population_reconciliation": result.dataset.populations,
         "collection_timing": result.dataset.collection_timing,
+        "collection_provenance": dict(inputs.collection_provenance),
         "artifact": _artifact(dataset_path, dataset_content),
     }
     _write_exclusive(

@@ -18,6 +18,26 @@ from tenable_reports.application.collect import (
     collect_vm_snapshot_by_state,
     find_resumable_vm_manifest,
 )
+from tenable_reports.application.collection_execution import (
+    materialize_compact_snapshot_run,
+    resolve_execution_collection_route,
+)
+from tenable_reports.application.collection_resources import (
+    compact_snapshot_repository as _compact_snapshot_repository,
+    inventory_client as _inventory_client_from_environment,
+    plugin_catalog_callback as _plugin_catalog_callback,
+    plugin_catalog_repository as _plugin_catalog_repository,
+)
+
+from tenable_reports.application.collect_inventory import collect_bounded_historical_findings
+from tenable_reports.application.period_collection import collect_external_period
+from tenable_reports.application.compact_publication import publish_compact_run_snapshot
+from tenable_reports.application.historical_materialization import (
+    materialize_historical_collection_run,
+)
+from tenable_reports.application.plugin_catalog import build_plugin_catalog_entries
+
+
 from tenable_reports.application.collect_was import (
     WasExportRequest,
     collect_optional_was_snapshot,
@@ -34,7 +54,10 @@ from tenable_reports.application.vm_export_policy import (
     selective_vm_properties,
 )
 from tenable_reports.application.normalize_was import normalize_was_collection
-from tenable_reports.application.report_dataset import build_report_dataset_from_snapshot
+from tenable_reports.application.report_dataset import (
+    build_report_dataset_from_snapshot,
+    load_report_dataset_inputs,
+)
 from tenable_reports.application.tag_report_dataset import (
     build_tag_report_datasets_from_snapshot,
 )
@@ -74,7 +97,10 @@ from tenable_reports.application.tag_scope import (
 from tenable_reports.config.environment import CredentialConfig, EnvironmentError, load_dotenv_file
 from tenable_reports.config.database import DatabaseAdminConfig, DatabaseConfig
 from tenable_reports.config.profile import ClientProfile, ProfileError, load_client_profile
-from tenable_reports.domain.normalization import normalize_and_link
+from tenable_reports.domain.normalization import (
+    normalize_and_link,
+    normalize_assets,
+)
 from tenable_reports.domain.reporting import (
     previous_calendar_month,
     resolve_manual_period,
@@ -87,6 +113,13 @@ from tenable_reports.infrastructure.tenable_vm.client import (
     TenableVmConfig,
 )
 from tenable_reports.infrastructure.tenable_was.client import TenableWasClient
+from tenable_reports.infrastructure.tenable_inventory.client import InventoryFindingsClient
+from tenable_reports.infrastructure.compact_snapshots_postgresql import (
+    PostgresCompactSnapshotRepository,
+)
+from tenable_reports.infrastructure.plugin_catalog_postgresql import (
+    PostgresPluginCatalogRepository,
+)
 from tenable_reports.infrastructure.postgresql import (
     PostgresDatabase,
     PostgresOperationsRepository,
@@ -139,6 +172,9 @@ class _CollectedPeriodExecution:
     tag_artifacts: tuple[Any, ...] = ()
     tag_enriched_dataset_paths: Mapping[str, Path] | None = None
     tag_reports_requested: int = 0
+    collection_route: str = "legacy_vm"
+    reconstruction_status: str = "CURRENT_WINDOW"
+    collection_sources: tuple[str, ...] = ("tenable_vm_vulnerabilities",)
     warnings: tuple[Mapping[str, Any], ...] = ()
     snapshot_repository: Any = None
     report_registry: Any = None
@@ -207,6 +243,9 @@ class _CollectedPeriodExecution:
                 if self.vm_export_comparison_path is not None else None
             ),
             "warnings": [dict(item) for item in self.warnings],
+            "collection_route": self.collection_route,
+            "reconstruction_status": self.reconstruction_status,
+            "collection_sources": list(self.collection_sources),
             "quality_issue_codes": [item.code for item in dataset.quality_issues],
         }
 
@@ -839,7 +878,7 @@ def command_build_report_dataset(args: argparse.Namespace) -> int:
     )
     tag_dataset_bundle = build_tag_report_datasets_from_snapshot(
         profile=profile,
-        run_id=actual_run_id,
+        run_id=args.run_id,
         period=period,
         output_root=output_root,
         include_output=args.include_output,
@@ -993,125 +1032,101 @@ def _execute_period(
     execution_type: str,
     period: Any,
 ) -> _CollectedPeriodExecution:
-    credentials = _load_credentials(args.env_file)
     profile = load_client_profile(args.profile)
     vm_strategy, vm_num_assets, vm_selective_mode = (
         _effective_vm_export_settings(args, profile)
     )
     output_root = _scoped_output_root(args.output_root, execution_type)
-    client = _client_from_environment(credentials)
-    was_client = _was_client_from_environment(credentials)
-    selected_tags = _selected_tags(client, profile, args)
-    asset_filters, finding_filters = _period_filters(
-        period=period,
-        asset_filters_path=args.asset_filters,
-        finding_filters_path=args.finding_filters,
-    )
     actual_run_id = args.run_id or str(uuid.uuid4())
-    tag_scope = (
-        collect_tag_scope_snapshot(
-            client=client,
-            profile=profile,
-            tags=selected_tags,
-            output_root=output_root,
-            run_id=actual_run_id,
-        )
-        if selected_tags else None
-    )
-    assets = collect_asset_snapshot(
-        client=client,
+    compact_repository = _compact_snapshot_repository(args)
+    route, compact_snapshot = resolve_execution_collection_route(
         profile=profile,
-        request=AssetExportRequest(
-            filters=asset_filters,
-            chunk_size=args.asset_chunk_size,
+        period=period,
+        execution_mode=(
+            "automatic" if execution_type == "AUTOMATIC_MONTHLY" else "manual"
         ),
-        output_root=output_root,
-        run_id=actual_run_id,
-        export_uuid=args.asset_export_uuid,
+        historical_source_override=getattr(args, "historical_source", None),
+        compact_repository=compact_repository,
     )
-    finding_request = VulnerabilityExportRequest(
-        filters=finding_filters,
-        num_assets=vm_num_assets,
-        include_unlicensed=profile.vm_scope.include_unlicensed,
-        include_software_vulns=args.include_software_vulns,
-        include_plugin_output=args.include_output,
-    )
-    logical_job_id = getattr(args, "logical_job_id", None)
-    resume_manifest = getattr(args, "vm_resume_manifest", None)
-    resume_request = (
-        replace(
-            finding_request,
-            properties=selective_vm_properties(
-                include_output=finding_request.include_plugin_output
-            ),
-        )
-        if vm_selective_mode == "enabled" else finding_request
-    )
-    if not resume_manifest and vm_strategy == "combined":
-        resume_manifest = find_resumable_vm_manifest(
-            output_root,
+
+    if route.source.value == "snapshot_replay":
+        if compact_snapshot is None:
+            raise RuntimeError("Rota de replay selecionada sem snapshot compacto.")
+        normalized = materialize_compact_snapshot_run(
+            snapshot=compact_snapshot,
             profile=profile,
-            request=resume_request,
-            logical_job_id=logical_job_id,
+            run_id=actual_run_id,
+            output_root=output_root,
         )
-    vm_policy = collect_vm_snapshot_with_policy(
-        client=client,
-        profile=profile,
-        request=finding_request,
-        output_root=output_root,
-        run_id=actual_run_id,
-        export_uuid=args.vm_export_uuid,
-        resume_from=resume_manifest,
-        logical_job_id=logical_job_id,
-        mode=vm_selective_mode,
-        strategy=vm_strategy,
-        progress_callback=_emit_progress_event,
-    )
-    findings = vm_policy.collection
-    was_collection = None
-    was_collection_status = "DISABLED"
-    vm_warnings: tuple[Mapping[str, Any], ...] = ()
-    if vm_policy.outcome == "FALLBACK_FULL":
-        vm_warnings = ({
-            "code": "VM_SELECTIVE_FALLBACK",
-            "reason": vm_policy.fallback_reason,
-        },)
-    elif vm_policy.mode == "validation" and vm_policy.outcome == "FAILED":
-        vm_warnings = ({
-            "code": "VM_SELECTIVE_VALIDATION_FAILED",
-            "comparison": str(vm_policy.comparison_path),
-        },)
-    collection_warnings: tuple[Mapping[str, Any], ...] = vm_warnings
-    if profile.was_scope.enabled:
-        was_attempt = collect_optional_was_snapshot(
-            client=was_client,
+        replay_inputs = load_report_dataset_inputs(
             profile=profile,
-            request=WasExportRequest(
-                filters=_was_period_filters(period=period, profile=profile),
-                num_assets=args.was_num_assets,
-                include_unlicensed=False,
-            ),
+            run_id=actual_run_id,
+            output_root=output_root,
+        )
+        selected_tag_count = len(
+            (replay_inputs.tag_scope or {}).get("selected_tags") or ()
+        )
+        was_collection_status = (
+            "REPLAYED" if replay_inputs.was_snapshot is not None else "DISABLED"
+        )
+        vm_export_mode = "snapshot_replay"
+        vm_export_outcome = "REPLAYED"
+        vm_export_comparison_path = None
+        collection_warnings = tuple(
+            ({"code": "COLLECTION_ROUTE_WARNING", "message": route.warning},)
+            if route.warning
+            else ()
+        )
+        collection_route = "snapshot_replay"
+        reconstruction_status = route.accuracy.value.upper()
+        collection_sources = tuple(
+            replay_inputs.collection_provenance.get("sources")
+            or ("compact_finding_snapshot",)
+        )
+    else:
+        credentials = _load_credentials(args.env_file)
+        client = _client_from_environment(credentials)
+        was_client = _was_client_from_environment(credentials)
+        inventory_client = _inventory_client_from_environment(credentials)
+        selected_tags = _selected_tags(client, profile, args)
+        selected_tag_count = len(selected_tags)
+        asset_filters, finding_filters = _period_filters(
+            period=period,
+            asset_filters_path=getattr(args, "asset_filters", None),
+            finding_filters_path=getattr(args, "finding_filters", None),
+        )
+        plugin_catalog = _plugin_catalog_repository(args)
+        external = collect_external_period(
+            args=args,
+            profile=profile,
+            period=period,
             output_root=output_root,
             run_id=actual_run_id,
-            export_uuid=args.was_export_uuid,
+            client=client,
+            was_client=was_client,
+            inventory_client=inventory_client,
+            selected_tags=selected_tags,
+            asset_filters=asset_filters,
+            finding_filters=finding_filters,
+            vm_strategy=vm_strategy,
+            vm_num_assets=vm_num_assets,
+            vm_selective_mode=vm_selective_mode,
+            route=route,
+            plugin_catalog=plugin_catalog,
+            plugin_catalog_callback=_plugin_catalog_callback(
+                plugin_catalog, profile
+            ),
             progress_callback=_emit_progress_event,
         )
-        was_collection = was_attempt.result
-        was_collection_status = was_attempt.status
-        collection_warnings = tuple((*collection_warnings, *was_attempt.warnings))
-    normalized = normalize_collections(
-        profile=profile,
-        asset_collection=assets,
-        finding_collection=findings,
-        output_root=output_root,
-        allowed_asset_ids=None,
-    )
-    if was_collection is not None:
-        normalize_was_collection(
-            profile=profile,
-            collection=was_collection,
-            output_root=output_root,
-        )
+        normalized = external.normalized
+        was_collection_status = external.was_collection_status
+        vm_export_mode = external.vm_export_mode
+        vm_export_outcome = external.vm_export_outcome
+        vm_export_comparison_path = external.vm_export_comparison_path
+        collection_warnings = external.warnings
+        collection_route = external.collection_route
+        reconstruction_status = external.reconstruction_status
+        collection_sources = external.collection_sources
     artifact = build_report_dataset_from_snapshot(
         profile=profile,
         run_id=actual_run_id,
@@ -1120,6 +1135,17 @@ def _execute_period(
         include_output=args.include_output,
         execution_type=execution_type,
     )
+    tag_dataset_bundle = build_tag_report_datasets_from_snapshot(
+        profile=profile,
+        run_id=actual_run_id,
+        period=period,
+        output_root=output_root,
+        include_output=args.include_output,
+        execution_type=execution_type,
+    )
+    tag_dataset_paths = {
+        item.tag.uuid: item.dataset_path for item in tag_dataset_bundle.artifacts
+    }
     history_publication = None
     if not getattr(args, "skip_history", False):
         repository, history_database = _history_repository(
@@ -1162,11 +1188,14 @@ def _execute_period(
         execution_type=execution_type,
         artifact=artifact,
         history_publication=history_publication,
-        selected_tag_count=len(selected_tags),
+        selected_tag_count=selected_tag_count,
         was_collection_status=was_collection_status,
-        vm_export_mode=vm_policy.mode,
-        vm_export_outcome=vm_policy.outcome,
-        vm_export_comparison_path=vm_policy.comparison_path,
+        vm_export_mode=vm_export_mode,
+        vm_export_outcome=vm_export_outcome,
+        vm_export_comparison_path=vm_export_comparison_path,
+        collection_route=collection_route,
+        reconstruction_status=reconstruction_status,
+        collection_sources=tuple(collection_sources),
         tag_artifacts=tag_dataset_bundle.artifacts,
         tag_enriched_dataset_paths=tag_enriched_dataset_paths,
         tag_reports_requested=requested_tag_reports,
@@ -1487,6 +1516,31 @@ def command_run_client(args: argparse.Namespace) -> int:
             publication_validated=True,
             auto_promote=True,
         )
+    compact_repository = _compact_snapshot_repository(args)
+    compact_snapshot_confirmed = False
+    compact_snapshot_id = None
+    if compact_repository is not None:
+        document_references = {
+            (
+                f"tag:{document.tag_uuid}"
+                if document.document_kind == "tag"
+                else document.document_kind
+            ): str(Path(document.path).resolve())
+            for document in publication_documents
+        }
+        compact_snapshot = publish_compact_run_snapshot(
+            repository=compact_repository,
+            profile=profile,
+            run_id=collected.run_id,
+            execution_type=execution_type,
+            period=period,
+            output_root=collected.output_root,
+            document_references=document_references,
+            publication_validated=True,
+            documents_validated=True,
+        )
+        compact_snapshot_confirmed = True
+        compact_snapshot_id = getattr(compact_snapshot, "snapshot_id", None)
     if operations is not None:
         operations.record_publication_manifest(publication_manifest)
     cleanup_payload: dict[str, Any] = {
@@ -1501,6 +1555,7 @@ def command_run_client(args: argparse.Namespace) -> int:
     if (
         operations is not None
         and history_confirmed
+        and compact_snapshot_confirmed
         and getattr(args, "cleanup_after_publish", True)
     ):
         operations.record_cleanup_status(collected.run_id, "PENDING")
@@ -1511,6 +1566,7 @@ def command_run_client(args: argparse.Namespace) -> int:
                 run_id=collected.run_id,
                 publication_confirmed=True,
                 history_confirmed=True,
+                compact_snapshot_confirmed=compact_snapshot_confirmed,
             )
             cleanup_result = apply_cleanup_plan(
                 scoped_output_root=collected.output_root,
@@ -1557,6 +1613,7 @@ def command_run_client(args: argparse.Namespace) -> int:
         "warnings": tag_warnings,
         "external_distribution_performed": False,
         "cleanup": cleanup_payload,
+        "compact_snapshot_id": compact_snapshot_id,
     })
     print(json.dumps(payload, ensure_ascii=False))
     return 0
@@ -1622,6 +1679,7 @@ def command_orchestrate(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             apply_retention_policy=args.apply_retention,
             vm_selective_mode=args.vm_selective_mode,
+            historical_source=args.historical_source,
         ),
         run_status=retention_state.get("run_status"),
         history_confirmed_run_ids=retention_state.get(
@@ -1783,6 +1841,11 @@ def _add_complete_collection_arguments(parser: argparse.ArgumentParser) -> None:
         "--vm-selective-mode",
         choices=("disabled", "validation", "enabled"),
         help="Sobrescreve o modo de properties VM somente nesta execução.",
+    )
+    parser.add_argument(
+        "--historical-source",
+        choices=("legacy", "inventory-beta"),
+        help="Sobrescreve a fonte historica do perfil somente nesta execucao.",
     )
     parser.add_argument("--asset-export-uuid")
     parser.add_argument("--vm-export-uuid")
@@ -2194,6 +2257,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--vm-selective-mode",
         choices=("disabled", "validation", "enabled"),
         help="Sobrescreve o modo de properties VM dos clientes selecionados.",
+    )
+    orchestrate.add_argument(
+        "--historical-source",
+        choices=("legacy", "inventory-beta"),
+        help="Sobrescreve a fonte historica dos clientes selecionados.",
     )
     orchestrate.add_argument(
         "--dry-run",
