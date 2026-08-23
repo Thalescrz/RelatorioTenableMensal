@@ -58,6 +58,8 @@ class OperationalFailure(Exception):
 
 def _code_from_text(value: str) -> FailureCode:
     upper = value.upper()
+    if "EXPORT" in upper and "TERMINOU COM ESTADO CANCEL" in upper:
+        return FailureCode.TENABLE_TEMPORARY
     for code in FailureCode:
         if code.value in upper:
             return code

@@ -33,3 +33,12 @@ def test_portuguese_export_timeout_is_a_retryable_tenable_failure() -> None:
 
     assert failure.code is FailureCode.TENABLE_TEMPORARY
     assert failure.retryable is True
+
+
+def test_remote_cancelled_export_is_a_retryable_tenable_failure() -> None:
+    failure = classify_failure(
+        "Export VM terminou com estado cancelled."
+    )
+
+    assert failure.code is FailureCode.TENABLE_TEMPORARY
+    assert failure.retryable is True

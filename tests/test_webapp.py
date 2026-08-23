@@ -284,6 +284,52 @@ class WebDashboardTests(unittest.TestCase):
         self.assertEqual(export["status"], "TIMED_OUT")
         self.assertEqual(export["segment"], "fixed")
 
+    def test_job_queue_uses_clean_client_error_from_final_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def runner(command, cwd, progress_callback=None):
+                progress = {
+                    "event": "TENABLE_EXPORT_PROGRESS",
+                    "source": "tenable_vm_vulnerabilities",
+                    "export_uuid": "job-cancelled",
+                    "origin": "created",
+                    "status": "CANCELLED",
+                    "completed_chunks": 1,
+                    "total_chunks": 2,
+                    "chunks_cancelled": [2],
+                }
+                progress_callback(progress)
+                final = {
+                    "status": "PARTIAL_FAILURE",
+                    "run_id": "run-cancelled",
+                    "clients": [{
+                        "client_id": "cliente-a",
+                        "status": "FAILED",
+                        "error": "Export VM terminou com estado cancelled.",
+                        "attempts": [{
+                            "error_code": "TENABLE_TEMPORARY",
+                            "retryable": True,
+                            "error": "Export VM terminou com estado cancelled.",
+                        }],
+                    }],
+                }
+                return subprocess.CompletedProcess(
+                    command,
+                    2,
+                    stdout=json.dumps(progress) + "\n" + json.dumps(final) + "\n",
+                    stderr="",
+                )
+
+            jobs = JobQueue(root, root / "orchestration" / "clients.json", runner)
+            jobs.enqueue(["cliente-a"], {"mode": "manual", "days": 30})
+            jobs._pending.join()
+            job = jobs.snapshot()[0]
+
+        self.assertEqual(job["status"], "FAILED")
+        self.assertEqual(job["error"], "Export VM terminou com estado cancelled.")
+        self.assertEqual(job["export_progress"]["status"], "CANCELLED")
+
     def test_job_queue_keeps_vm_and_was_export_progress_separate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

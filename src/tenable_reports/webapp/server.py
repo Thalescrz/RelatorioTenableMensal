@@ -120,6 +120,35 @@ def _safe_error(value: str, *, limit: int = 3000) -> str:
     return sanitized[-limit:] or "Falha sem mensagem detalhada."
 
 
+def _job_error_from_result(
+    payload: Mapping[str, Any],
+    completed: subprocess.CompletedProcess[str],
+) -> str:
+    candidates: list[Any] = []
+    for client in payload.get("clients") or ():
+        if not isinstance(client, Mapping):
+            continue
+        candidates.append(client.get("error"))
+        attempts = client.get("attempts") or ()
+        if attempts and isinstance(attempts[-1], Mapping):
+            candidates.append(attempts[-1].get("error"))
+    candidates.extend((
+        payload.get("message"),
+        payload.get("error"),
+        completed.stderr,
+        completed.stdout,
+    ))
+    selected = next(
+        (
+            str(candidate)
+            for candidate in candidates
+            if candidate is not None and str(candidate).strip()
+        ),
+        "Falha sem mensagem detalhada.",
+    )
+    return _safe_error(selected)
+
+
 def _relative_path(path: Path, base: Path) -> str:
     return Path(os.path.relpath(path, base)).as_posix()
 
@@ -1133,7 +1162,7 @@ class JobQueue:
                     job["status"] = "COMPLETE"
                 else:
                     job["status"] = "FAILED"
-                    job["error"] = _safe_error(completed.stderr or completed.stdout)
+                    job["error"] = _job_error_from_result(payload, completed)
         except Exception as exc:  # A fila nao pode morrer por causa de um cliente.
             with self._lock:
                 job = self._jobs[job_id]
