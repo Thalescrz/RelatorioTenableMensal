@@ -527,7 +527,7 @@ def _vulnerability_details(
     mask_sensitive: bool,
     include_output: bool,
     translator: TextTranslator | None = None,
-    protocol_header: str = "PORTA",
+    protocol_header: str = "PROTOCOLO",
     source_extra_filters: Mapping[str, Any] | None = None,
 ) -> int:
     if not isinstance(items, list):

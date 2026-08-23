@@ -136,6 +136,48 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(events[0]["event"], "TENABLE_EXPORT_PROGRESS")
         self.assertEqual(events[0]["export_uuid"], "job-stuck")
 
+    def test_failure_preserves_stderr_when_stdout_only_contains_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = json.loads(EXAMPLE_CONFIG.read_text(encoding="utf-8"))
+            payload["defaults"]["output_root"] = str(Path(directory) / "data")
+            payload["clients"] = payload["clients"][:1]
+            config_path = ROOT / "orchestration" / "clients.test-stderr-priority.json"
+
+            def runner(command, _, progress_callback=None):
+                return subprocess.CompletedProcess(
+                    command,
+                    1,
+                    stdout=json.dumps({
+                        "event": "TENABLE_EXPORT_PROGRESS",
+                        "export_uuid": "job-finished",
+                        "status": "FINISHED",
+                        "completed_chunks": 2,
+                        "total_chunks": 2,
+                    }) + "\n",
+                    stderr=(
+                        "Traceback (most recent call last):\n"
+                        "psycopg.OperationalError: PostgreSQL connection refused\n"
+                    ),
+                )
+
+            try:
+                config_path.write_text(json.dumps(payload), encoding="utf-8")
+                result = run_orchestration(
+                    config=load_orchestration_config(config_path),
+                    request=OrchestrationRequest(mode="manual", days=30),
+                    runner=runner,
+                    sleeper=lambda _: None,
+                    now=datetime(2026, 8, 22, 19, 16, tzinfo=timezone.utc),
+                )
+            finally:
+                config_path.unlink(missing_ok=True)
+
+        attempt = result.clients[0].attempts[-1]
+        self.assertEqual(attempt.error_code, "DATABASE_UNAVAILABLE")
+        self.assertTrue(attempt.retryable)
+        self.assertIn("PostgreSQL connection refused", attempt.error)
+        self.assertNotIn("sem mensagem detalhada", attempt.error)
+
     def test_orchestration_forwards_tag_progress_and_preserves_warnings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             payload = json.loads(EXAMPLE_CONFIG.read_text(encoding="utf-8"))
@@ -437,6 +479,20 @@ class OrchestrationTests(unittest.TestCase):
         self.assertNotIn("--select-tags", command)
         self.assertNotIn("TENABLE_ACCESS", command_text)
 
+    def test_client_command_propagates_selective_validation_override(self) -> None:
+        config = load_orchestration_config(EXAMPLE_CONFIG)
+        command = build_client_command(
+            config=config,
+            client=config.clients[0],
+            request=OrchestrationRequest(
+                mode="manual",
+                vm_selective_mode="validation",
+            ),
+            client_run_id="run-validation",
+        )
+
+        index = command.index("--vm-selective-mode")
+        self.assertEqual(command[index + 1], "validation")
     def test_cli_orchestration_requires_confirmation_except_dry_run(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             payload = json.loads(EXAMPLE_CONFIG.read_text(encoding="utf-8"))

@@ -368,6 +368,39 @@ class CliTests(unittest.TestCase):
             ["low", "medium", "high", "critical"],
         )
 
+    def test_vm_export_settings_use_profile_defaults_and_cli_overrides(self) -> None:
+        profile = cli_module.load_client_profile(
+            ROOT / "clients/examples/client-profile.json"
+        )
+        defaults = cli_module._effective_vm_export_settings(
+            SimpleNamespace(
+                num_assets=None,
+                vm_export_strategy=None,
+                vm_selective_mode=None,
+            ),
+            profile,
+        )
+        overridden = cli_module._effective_vm_export_settings(
+            SimpleNamespace(
+                num_assets=500,
+                vm_export_strategy="split",
+                vm_selective_mode="validation",
+            ),
+            profile,
+        )
+
+        self.assertEqual(defaults, ("combined", 1000, "disabled"))
+        self.assertEqual(overridden, ("split", 500, "validation"))
+
+    def test_run_client_parser_leaves_vm_tuning_to_profile_by_default(self) -> None:
+        args = cli_module.build_parser().parse_args(
+            ["run-client", "--profile", "profile.json"]
+        )
+
+        self.assertIsNone(args.num_assets)
+        self.assertIsNone(args.vm_export_strategy)
+        self.assertIsNone(args.vm_selective_mode)
+
     def test_period_filters_reject_tag_filters_for_the_general_report(self) -> None:
         period = previous_calendar_month(
             reference_at="2026-08-12T10:00:00-03:00",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 from urllib.parse import urlsplit
 
 
@@ -59,6 +60,18 @@ def _validated_https_url(raw: str) -> str:
     return value
 
 
+def _positive_float(
+    values: Mapping[str, str], name: str, default: float
+) -> float:
+    try:
+        value = float(values.get(name, str(default)))
+    except ValueError as exc:
+        raise EnvironmentError(f"{name} deve ser numerico.") from exc
+    if value <= 0:
+        raise EnvironmentError(f"{name} deve ser maior que zero.")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class CredentialConfig:
     access_key: str
@@ -67,6 +80,11 @@ class CredentialConfig:
     ca_bundle: str | None = None
     timeout_seconds: float = 30.0
     validate_tls: bool = True
+    export_poll_seconds: float = 10.0
+    export_max_poll_seconds: float = 30.0
+    export_queue_timeout_seconds: float = 1800.0
+    export_processing_timeout_seconds: float = 7200.0
+    export_stall_warning_seconds: float = 1800.0
 
     @property
     def is_complete(self) -> bool:
@@ -81,6 +99,18 @@ class CredentialConfig:
             raise EnvironmentError("TENABLE_HTTP_TIMEOUT_SECONDS deve ser numerico.") from exc
         if timeout <= 0:
             raise EnvironmentError("TENABLE_HTTP_TIMEOUT_SECONDS deve ser maior que zero.")
+
+        export_poll_seconds = _positive_float(
+            values, "TENABLE_EXPORT_POLL_SECONDS", 10.0
+        )
+        export_max_poll_seconds = _positive_float(
+            values, "TENABLE_EXPORT_MAX_POLL_SECONDS", 30.0
+        )
+        if export_max_poll_seconds < export_poll_seconds:
+            raise EnvironmentError(
+                "TENABLE_EXPORT_MAX_POLL_SECONDS deve ser maior ou igual a "
+                "TENABLE_EXPORT_POLL_SECONDS."
+            )
 
         ca_bundle = values.get("TENABLE_CA_BUNDLE", "").strip() or None
         if ca_bundle and not Path(ca_bundle).expanduser().is_file():
@@ -98,5 +128,16 @@ class CredentialConfig:
                 "TENABLE_VALIDATE_TLS",
                 values.get("TENABLE_VALIDATE_TLS", "true"),
                 default=True,
+            ),
+            export_poll_seconds=export_poll_seconds,
+            export_max_poll_seconds=export_max_poll_seconds,
+            export_queue_timeout_seconds=_positive_float(
+                values, "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS", 1800.0
+            ),
+            export_processing_timeout_seconds=_positive_float(
+                values, "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS", 7200.0
+            ),
+            export_stall_warning_seconds=_positive_float(
+                values, "TENABLE_EXPORT_STALL_WARNING_SECONDS", 1800.0
             ),
         )

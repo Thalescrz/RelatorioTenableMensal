@@ -52,6 +52,7 @@ class ExportTimeoutError(TimeoutError):
         export_uuid: str | None = None,
         last_status: Mapping[str, Any] | None = None,
         progress_made: bool = False,
+        timeout_phase: str | None = None,
         origin: str | None = None,
         auto_cancelled: bool = False,
         cancellation_error: str | None = None,
@@ -60,6 +61,7 @@ class ExportTimeoutError(TimeoutError):
         self.export_uuid = export_uuid
         self.last_status = dict(last_status or {})
         self.progress_made = bool(progress_made)
+        self.timeout_phase = timeout_phase
         self.origin = origin
         self.auto_cancelled = bool(auto_cancelled)
         self.cancellation_error = cancellation_error
@@ -82,8 +84,11 @@ class TenableVmConfig:
     base_url: str = "https://cloud.tenable.com"
     user_agent: str = "Integration/1.0 (SuaEmpresa; RelatorioTenableMensal; Build/0.1.0)"
     timeout_seconds: float = 30.0
-    poll_seconds: float = 5.0
+    poll_seconds: float = 10.0
+    max_poll_seconds: float = 30.0
     max_wait_seconds: float = 1800.0
+    max_processing_wait_seconds: float = 7200.0
+    stall_warning_seconds: float = 1800.0
     max_attempts: int = 5
     ca_bundle: str | None = None
     validate_tls: bool = True
@@ -94,8 +99,19 @@ class TenableVmConfig:
         parsed = urlsplit(self.base_url)
         if parsed.scheme.lower() != "https" or not parsed.netloc:
             raise ValueError("base_url deve ser uma URL HTTPS completa.")
-        if self.timeout_seconds <= 0 or self.poll_seconds < 0 or self.max_wait_seconds <= 0:
-            raise ValueError("Timeouts devem ser positivos e poll_seconds nao pode ser negativo.")
+        if (
+            self.timeout_seconds <= 0
+            or self.poll_seconds < 0
+            or self.max_poll_seconds <= 0
+            or self.max_wait_seconds <= 0
+            or self.max_processing_wait_seconds <= 0
+            or self.stall_warning_seconds <= 0
+        ):
+            raise ValueError(
+                "Timeouts devem ser positivos e poll_seconds nao pode ser negativo."
+            )
+        if self.max_poll_seconds < self.poll_seconds:
+            raise ValueError("max_poll_seconds deve ser maior ou igual a poll_seconds.")
         if self.max_attempts < 1:
             raise ValueError("max_attempts deve ser maior que zero.")
 
@@ -607,27 +623,92 @@ class TenableVmClient:
         *,
         label: str,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+        chunk_callback: Callable[[int], None] | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         started = self.monotonic()
         seen: list[int] = []
+        notified: set[int] = set()
         progress_made = False
+        processing_started_at: float | None = None
+        last_progress_at = started
+        last_state = ""
+        last_finished_chunks = 0
+        last_empty_chunks = 0
+        idle_polls = 0
         while True:
             status = status_loader(export_uuid)
             state = str(status.get("status") or status.get("state") or "").strip().lower()
             current = self.completed_chunk_ids(status)
-            if current:
-                seen = current
+            now = self.monotonic()
+            elapsed = max(0.0, now - started)
+            state_changed = state != last_state
+
+            if processing_started_at is None and state not in {"", "queued"}:
+                processing_started_at = now
+                last_progress_at = now
+
+            new_chunks = sorted(set(current).difference(seen))
+            finished_chunks = max(
+                len(current), self.chunk_count(status, "finished_chunks")
+            )
+            empty_chunks = max(
+                self.chunk_count(status, "empty_chunks_count"),
+                self.chunk_count(status, "chunks_empty"),
+            )
+            remote_progress = bool(
+                new_chunks
+                or finished_chunks > last_finished_chunks
+                or empty_chunks > last_empty_chunks
+            )
+            if remote_progress:
                 progress_made = True
-            elapsed = max(0.0, self.monotonic() - started)
+                last_progress_at = now
+                idle_polls = 0
+            elif state_changed:
+                last_progress_at = now
+                idle_polls = 0
+            else:
+                idle_polls += 1
+
+            if current:
+                seen = sorted(set(seen).union(current))
+            if chunk_callback is not None:
+                for chunk_id in current:
+                    if chunk_id in notified:
+                        continue
+                    chunk_callback(chunk_id)
+                    notified.add(chunk_id)
+
+            processing_elapsed = (
+                max(0.0, now - processing_started_at)
+                if processing_started_at is not None
+                else 0.0
+            )
+            idle_seconds = max(0.0, now - last_progress_at)
+            failed_chunks = max(
+                self.chunk_count(status, "chunks_failed"),
+                self.chunk_count(status, "failed_chunks"),
+            )
+            cancelled_chunks = max(
+                self.chunk_count(status, "chunks_cancelled"),
+                self.chunk_count(status, "cancelled_chunks"),
+            )
             progress = {
                 **status,
                 "export_uuid": export_uuid,
                 "status": state.upper() or "UNKNOWN",
-                "completed_chunks": len(seen),
+                "completed_chunks": max(len(seen), finished_chunks),
                 "total_chunks": self.chunk_count(status, "total_chunks"),
-                "failed_chunks": self.chunk_count(status, "chunks_failed"),
-                "cancelled_chunks": self.chunk_count(status, "chunks_cancelled"),
+                "failed_chunks": failed_chunks,
+                "cancelled_chunks": cancelled_chunks,
                 "elapsed_seconds": round(elapsed, 3),
+                "processing_elapsed_seconds": round(processing_elapsed, 3),
+                "idle_seconds": round(idle_seconds, 3),
+                "stalled": bool(
+                    processing_started_at is not None
+                    and state not in SUCCESS_STATES
+                    and idle_seconds >= self.config.stall_warning_seconds
+                ),
                 "progress_made": progress_made,
             }
             if progress_callback is not None:
@@ -636,37 +717,58 @@ class TenableVmClient:
                 except Exception:
                     LOGGER.exception("Falha ignorada no callback de progresso do export.")
             if state in SUCCESS_STATES:
-                failed = self.chunk_count(status, "chunks_failed")
-                cancelled = self.chunk_count(status, "chunks_cancelled")
                 total = self.chunk_count(status, "total_chunks")
-                if failed or cancelled:
+                if failed_chunks or cancelled_chunks:
                     raise ExportFailedError(
                         f"Export {label} terminou com chunks falhos ou cancelados. "
-                        f"failed={failed} cancelled={cancelled} total={total}."
+                        f"failed={failed_chunks} cancelled={cancelled_chunks} total={total}."
                     )
                 return status, seen
             if state in FAILURE_STATES:
                 raise ExportFailedError(f"Export {label} terminou com estado {state}.")
-            if elapsed >= self.config.max_wait_seconds:
+            if processing_started_at is None and elapsed >= self.config.max_wait_seconds:
                 raise ExportTimeoutError(
-                    f"Tempo maximo excedido aguardando o export {label}.",
+                    f"Tempo maximo excedido na fila do export {label}.",
                     export_uuid=export_uuid,
-                    last_status=progress,
+                    last_status={**progress, "timeout_phase": "queue"},
                     progress_made=progress_made,
+                    timeout_phase="queue",
                 )
-            self.sleep(self.config.poll_seconds)
+            if (
+                processing_started_at is not None
+                and processing_elapsed >= self.config.max_processing_wait_seconds
+            ):
+                raise ExportTimeoutError(
+                    f"Tempo maximo excedido durante o processamento do export {label}.",
+                    export_uuid=export_uuid,
+                    last_status={**progress, "timeout_phase": "processing"},
+                    progress_made=progress_made,
+                    timeout_phase="processing",
+                )
+
+            last_state = state
+            last_finished_chunks = max(last_finished_chunks, finished_chunks)
+            last_empty_chunks = max(last_empty_chunks, empty_chunks)
+            poll_multiplier = idle_polls + 1
+            delay = min(
+                self.config.max_poll_seconds,
+                self.config.poll_seconds * poll_multiplier,
+            )
+            self.sleep(delay)
 
     def wait_for_completion(
         self,
         export_uuid: str,
         *,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+        chunk_callback: Callable[[int], None] | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         return self._wait_for_completion(
             export_uuid,
             self.get_export_status,
             label="VM",
             progress_callback=progress_callback,
+            chunk_callback=chunk_callback,
         )
 
     def wait_for_asset_completion(self, export_uuid: str) -> tuple[dict[str, Any], list[int]]:

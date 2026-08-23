@@ -202,6 +202,16 @@ def _string_tuple(value: Any) -> tuple[str, ...]:
     return tuple(sorted(normalized, key=str.casefold))
 
 
+def _combined_string_tuple(
+    record: Mapping[str, Any],
+    paths: Sequence[str],
+) -> tuple[str, ...]:
+    values: set[str] = set()
+    for path in paths:
+        values.update(_string_tuple(_path(record, path)))
+    return tuple(sorted(values, key=str.casefold))
+
+
 def _source_names(value: Any) -> tuple[str, ...]:
     if isinstance(value, Mapping):
         return _string_tuple(value.keys())
@@ -252,18 +262,30 @@ def _bool_or_none(value: Any) -> bool | None:
 
 
 def _exploitability(record: Mapping[str, Any]) -> bool | None:
-    return _bool_or_none(_first(
+    direct = _bool_or_none(_first(
         record,
         ("plugin.exploit_available", "definition.exploit_available"),
     ))
+    if direct is not None:
+        return direct
+    ease = (_text(_first(record, (
+        "plugin.exploitability_ease",
+        "definition.exploitability_ease",
+    ))) or "").casefold()
+    if ease == "exploits are available":
+        return True
+    if ease == "no known exploits are available":
+        return False
+    frameworks = _exploit_frameworks(record)
+    return True if frameworks else None
 
 
 EXPLOIT_FRAMEWORK_FIELDS = (
-    ("Canvas", "exploit_framework_canvas"),
-    ("Core Impact", "exploit_framework_core"),
-    ("D2 Elliot", "exploit_framework_d2_elliot"),
-    ("ExploitHub", "exploit_framework_exploithub"),
-    ("Metasploit", "exploit_framework_metasploit"),
+    ("Canvas", "exploit_framework_canvas", "canvas"),
+    ("Core Impact", "exploit_framework_core", "core"),
+    ("D2 Elliot", "exploit_framework_d2_elliot", "elliot"),
+    ("ExploitHub", "exploit_framework_exploithub", "exploithub"),
+    ("Metasploit", "exploit_framework_metasploit", "metasploit"),
 )
 
 
@@ -271,8 +293,12 @@ def _exploit_frameworks(record: Mapping[str, Any]) -> tuple[str, ...]:
     names = set(_string_tuple(_first(record, (
         "plugin.exploit_frameworks", "definition.exploit_frameworks"
     ))))
-    for label, field in EXPLOIT_FRAMEWORK_FIELDS:
-        value = _first(record, (f"plugin.{field}", f"definition.{field}"))
+    for label, legacy_field, official_field in EXPLOIT_FRAMEWORK_FIELDS:
+        value = _first(record, (
+            f"plugin.{legacy_field}",
+            f"definition.{legacy_field}",
+            f"definition.{official_field}",
+        ))
         if _bool_or_none(value) is True:
             names.add(label)
     return tuple(sorted(names, key=str.casefold))
@@ -289,7 +315,9 @@ CVSS_ATTACK_VECTORS = {
 def _cvss_attack_vector(record: Mapping[str, Any]) -> str | None:
     vector = _text(_first(record, (
         "plugin.cvss4_vector", "definition.cvss4_vector",
+        "definition.cvss4.base_vector",
         "plugin.cvss3_vector", "definition.cvss3_vector",
+        "definition.cvss3.base_vector",
     )))
     if not vector:
         return None
@@ -486,19 +514,41 @@ def normalize_findings(
             plugin_name=_text(_first(record, ("plugin.name", "definition.name"))),
             plugin_family=_text(_first(record, ("plugin.family", "definition.family"))),
             cves=_string_tuple(_first(record, ("plugin.cve", "definition.cve"))),
-            references=_string_tuple(_first(record, (
-                "plugin.see_also", "definition.see_also"
-            ))),
+            references=_combined_string_tuple(record, (
+                "plugin.see_also",
+                "plugin.xrefs",
+                "definition.see_also",
+                "definition.references",
+            )),
             synopsis=_text(_first(record, ("plugin.synopsis", "definition.synopsis"))),
             description=_text(_first(record, ("plugin.description", "definition.description"))),
             solution=_text(_first(record, ("plugin.solution", "definition.solution"))),
             cvss2_base_score=_number(_first(record, (
-                "plugin.cvss_base_score", "definition.cvss_base_score"
+                "plugin.cvss_base_score",
+                "definition.cvss_base_score",
+                "definition.cvss2.base_score",
             ))),
             cvss3_base_score=_number(_first(record, (
-                "plugin.cvss3_base_score", "definition.cvss3_base_score"
+                "plugin.cvss3_base_score",
+                "definition.cvss3_base_score",
+                "definition.cvss3.base_score",
             ))),
-            has_patch=_bool_or_none(_first(record, ("plugin.has_patch", "definition.has_patch"))),
+            has_patch=(
+                _bool_or_none(_first(
+                    record, ("plugin.has_patch", "definition.has_patch")
+                ))
+                if _first(record, ("plugin.has_patch", "definition.has_patch"))
+                is not None
+                else (
+                    True
+                    if _first(record, (
+                        "plugin.patch_publication_date",
+                        "definition.patch_published",
+                    ))
+                    is not None
+                    else None
+                )
+            ),
             plugin_output=_text(_first(record, ("output", "plugin_output"))),
             port=port,
             protocol=protocol,

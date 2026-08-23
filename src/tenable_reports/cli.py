@@ -6,7 +6,7 @@ import logging
 import re
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -16,6 +16,7 @@ from tenable_reports.application.collect import (
     collect_asset_snapshot,
     collect_vm_snapshot,
     collect_vm_snapshot_by_state,
+    find_resumable_vm_manifest,
 )
 from tenable_reports.application.collect_was import (
     WasExportRequest,
@@ -28,6 +29,10 @@ from tenable_reports.application.failures import (
     classify_failure,
 )
 from tenable_reports.application.normalize import normalize_collections
+from tenable_reports.application.vm_export_policy import (
+    collect_vm_snapshot_with_policy,
+    selective_vm_properties,
+)
 from tenable_reports.application.normalize_was import normalize_was_collection
 from tenable_reports.application.report_dataset import build_report_dataset_from_snapshot
 from tenable_reports.application.tag_report_dataset import (
@@ -112,26 +117,6 @@ from tenable_reports.presentation.customizations_report_docx import (
 from tenable_reports.presentation.tag_report_docx import generate_tag_report
 
 
-SELECTIVE_PROPERTIES = (
-    "source",
-    "severity",
-    "state",
-    "first_observed",
-    "last_seen",
-    "last_fixed",
-    "resurfaced_date",
-    "port",
-    "protocol",
-    "service",
-    "asset.id",
-    "asset.name",
-    "asset.ipv4_addresses",
-    "definition.id",
-    "definition.name",
-    "definition.cve",
-    "definition.vpr.score",
-)
-
 
 def _emit_progress_event(event: Mapping[str, Any]) -> None:
     print(json.dumps(dict(event), ensure_ascii=False), flush=True)
@@ -148,6 +133,9 @@ class _CollectedPeriodExecution:
     history_publication: Any
     selected_tag_count: int
     was_collection_status: str
+    vm_export_mode: str = "disabled"
+    vm_export_outcome: str = "FULL"
+    vm_export_comparison_path: Path | None = None
     tag_artifacts: tuple[Any, ...] = ()
     tag_enriched_dataset_paths: Mapping[str, Path] | None = None
     tag_reports_requested: int = 0
@@ -212,6 +200,12 @@ class _CollectedPeriodExecution:
             "was_findings_in_period": dataset.populations["was_findings"]["included"],
             "was_top5": len(dataset.top_web_vulnerabilities),
             "was_collection_status": self.was_collection_status,
+            "vm_export_mode": self.vm_export_mode,
+            "vm_export_outcome": self.vm_export_outcome,
+            "vm_export_comparison": (
+                str(self.vm_export_comparison_path.resolve())
+                if self.vm_export_comparison_path is not None else None
+            ),
             "warnings": [dict(item) for item in self.warnings],
             "quality_issue_codes": [item.code for item in dataset.quality_issues],
         }
@@ -272,6 +266,11 @@ def _client_from_environment(credentials: CredentialConfig) -> TenableVmClient:
             secret_key=credentials.secret_key,
             base_url=credentials.base_url,
             timeout_seconds=credentials.timeout_seconds,
+            poll_seconds=credentials.export_poll_seconds,
+            max_poll_seconds=credentials.export_max_poll_seconds,
+            max_wait_seconds=credentials.export_queue_timeout_seconds,
+            max_processing_wait_seconds=credentials.export_processing_timeout_seconds,
+            stall_warning_seconds=credentials.export_stall_warning_seconds,
             ca_bundle=credentials.ca_bundle,
             validate_tls=credentials.validate_tls,
         )
@@ -285,6 +284,19 @@ def _was_client_from_environment(credentials: CredentialConfig) -> TenableWasCli
             secret_key=credentials.secret_key,
             base_url=credentials.base_url,
             timeout_seconds=credentials.timeout_seconds,
+            poll_seconds=credentials.export_poll_seconds,
+            max_poll_seconds=credentials.export_max_poll_seconds,
+            # WAS e opcional: limites menores impedem que ele bloqueie por horas
+            # um relatorio VM que ja foi coletado com sucesso.
+            max_wait_seconds=min(
+                credentials.export_queue_timeout_seconds, 300.0
+            ),
+            max_processing_wait_seconds=min(
+                credentials.export_processing_timeout_seconds, 900.0
+            ),
+            stall_warning_seconds=min(
+                credentials.export_stall_warning_seconds, 300.0
+            ),
             ca_bundle=credentials.ca_bundle,
             validate_tls=credentials.validate_tls,
         )
@@ -570,7 +582,7 @@ def command_contract_check(args: argparse.Namespace) -> int:
             include_unlicensed=profile.vm_scope.include_unlicensed,
             include_software_vulns=False,
             include_plugin_output=False,
-            properties=list(SELECTIVE_PROPERTIES) if args.select_properties else None,
+            properties=list(selective_vm_properties(include_output=False)) if args.select_properties else None,
         )
     status, chunks = client.wait_for_completion(export_uuid)
     result: dict[str, object] = {
@@ -730,7 +742,7 @@ def command_collect_vm(args: argparse.Namespace) -> int:
             include_unlicensed=profile.vm_scope.include_unlicensed,
             include_software_vulns=args.include_software_vulns,
             include_plugin_output=args.include_output,
-            properties=SELECTIVE_PROPERTIES if args.select_properties else (),
+            properties=selective_vm_properties(include_output=args.include_output) if args.select_properties else (),
         ),
         output_root=args.output_root,
         run_id=args.run_id,
@@ -950,6 +962,31 @@ def command_import_history_csv(args: argparse.Namespace) -> int:
     return 0
 
 
+def _effective_vm_export_settings(
+    args: argparse.Namespace,
+    profile: Any,
+) -> tuple[str, int, str]:
+    configured = profile.reporting.vm_export
+    strategy = (
+        str(getattr(args, "vm_export_strategy", None) or configured.strategy)
+        .strip()
+        .lower()
+    )
+    num_assets = int(
+        getattr(args, "num_assets", None)
+        or configured.num_assets_per_chunk
+    )
+    selective_mode = (
+        str(
+            getattr(args, "vm_selective_mode", None)
+            or configured.selective_properties
+        )
+        .strip()
+        .lower()
+    )
+    return strategy, num_assets, selective_mode
+
+
 def _execute_period(
     args: argparse.Namespace,
     *,
@@ -958,6 +995,9 @@ def _execute_period(
 ) -> _CollectedPeriodExecution:
     credentials = _load_credentials(args.env_file)
     profile = load_client_profile(args.profile)
+    vm_strategy, vm_num_assets, vm_selective_mode = (
+        _effective_vm_export_settings(args, profile)
+    )
     output_root = _scoped_output_root(args.output_root, execution_type)
     client = _client_from_environment(credentials)
     was_client = _was_client_from_environment(credentials)
@@ -989,24 +1029,59 @@ def _execute_period(
         run_id=actual_run_id,
         export_uuid=args.asset_export_uuid,
     )
-    findings = collect_vm_snapshot_by_state(
+    finding_request = VulnerabilityExportRequest(
+        filters=finding_filters,
+        num_assets=vm_num_assets,
+        include_unlicensed=profile.vm_scope.include_unlicensed,
+        include_software_vulns=args.include_software_vulns,
+        include_plugin_output=args.include_output,
+    )
+    logical_job_id = getattr(args, "logical_job_id", None)
+    resume_manifest = getattr(args, "vm_resume_manifest", None)
+    resume_request = (
+        replace(
+            finding_request,
+            properties=selective_vm_properties(
+                include_output=finding_request.include_plugin_output
+            ),
+        )
+        if vm_selective_mode == "enabled" else finding_request
+    )
+    if not resume_manifest and vm_strategy == "combined":
+        resume_manifest = find_resumable_vm_manifest(
+            output_root,
+            profile=profile,
+            request=resume_request,
+            logical_job_id=logical_job_id,
+        )
+    vm_policy = collect_vm_snapshot_with_policy(
         client=client,
         profile=profile,
-        request=VulnerabilityExportRequest(
-            filters=finding_filters,
-            num_assets=args.num_assets,
-            include_unlicensed=profile.vm_scope.include_unlicensed,
-            include_software_vulns=args.include_software_vulns,
-            include_plugin_output=args.include_output,
-        ),
+        request=finding_request,
         output_root=output_root,
         run_id=actual_run_id,
         export_uuid=args.vm_export_uuid,
+        resume_from=resume_manifest,
+        logical_job_id=logical_job_id,
+        mode=vm_selective_mode,
+        strategy=vm_strategy,
         progress_callback=_emit_progress_event,
     )
+    findings = vm_policy.collection
     was_collection = None
     was_collection_status = "DISABLED"
-    collection_warnings: tuple[Mapping[str, Any], ...] = ()
+    vm_warnings: tuple[Mapping[str, Any], ...] = ()
+    if vm_policy.outcome == "FALLBACK_FULL":
+        vm_warnings = ({
+            "code": "VM_SELECTIVE_FALLBACK",
+            "reason": vm_policy.fallback_reason,
+        },)
+    elif vm_policy.mode == "validation" and vm_policy.outcome == "FAILED":
+        vm_warnings = ({
+            "code": "VM_SELECTIVE_VALIDATION_FAILED",
+            "comparison": str(vm_policy.comparison_path),
+        },)
+    collection_warnings: tuple[Mapping[str, Any], ...] = vm_warnings
     if profile.was_scope.enabled:
         was_attempt = collect_optional_was_snapshot(
             client=was_client,
@@ -1019,10 +1094,11 @@ def _execute_period(
             output_root=output_root,
             run_id=actual_run_id,
             export_uuid=args.was_export_uuid,
+            progress_callback=_emit_progress_event,
         )
         was_collection = was_attempt.result
         was_collection_status = was_attempt.status
-        collection_warnings = was_attempt.warnings
+        collection_warnings = tuple((*collection_warnings, *was_attempt.warnings))
     normalized = normalize_collections(
         profile=profile,
         asset_collection=assets,
@@ -1088,6 +1164,9 @@ def _execute_period(
         history_publication=history_publication,
         selected_tag_count=len(selected_tags),
         was_collection_status=was_collection_status,
+        vm_export_mode=vm_policy.mode,
+        vm_export_outcome=vm_policy.outcome,
+        vm_export_comparison_path=vm_policy.comparison_path,
         tag_artifacts=tag_dataset_bundle.artifacts,
         tag_enriched_dataset_paths=tag_enriched_dataset_paths,
         tag_reports_requested=requested_tag_reports,
@@ -1542,6 +1621,7 @@ def command_orchestrate(args: argparse.Namespace) -> int:
             max_parallel=args.max_parallel,
             dry_run=args.dry_run,
             apply_retention_policy=args.apply_retention,
+            vm_selective_mode=args.vm_selective_mode,
         ),
         run_status=retention_state.get("run_status"),
         history_confirmed_run_ids=retention_state.get(
@@ -1693,7 +1773,17 @@ def _add_complete_collection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--asset-filters")
     parser.add_argument("--finding-filters")
     parser.add_argument("--asset-chunk-size", type=int, default=1000)
-    parser.add_argument("--num-assets", type=int, default=1000)
+    parser.add_argument("--num-assets", type=int)
+    parser.add_argument(
+        "--vm-export-strategy",
+        choices=("combined", "split"),
+        help="Sobrescreve a estratégia VM do perfil somente nesta execução.",
+    )
+    parser.add_argument(
+        "--vm-selective-mode",
+        choices=("disabled", "validation", "enabled"),
+        help="Sobrescreve o modo de properties VM somente nesta execução.",
+    )
     parser.add_argument("--asset-export-uuid")
     parser.add_argument("--vm-export-uuid")
     parser.add_argument("--asset-resume-manifest")
@@ -2100,6 +2190,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Executa somente este client_id; pode ser repetido.",
     )
     orchestrate.add_argument("--max-parallel", type=int)
+    orchestrate.add_argument(
+        "--vm-selective-mode",
+        choices=("disabled", "validation", "enabled"),
+        help="Sobrescreve o modo de properties VM dos clientes selecionados.",
+    )
     orchestrate.add_argument(
         "--dry-run",
         action="store_true",

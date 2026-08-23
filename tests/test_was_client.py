@@ -47,6 +47,16 @@ def client_with(responses: list[TransportResponse]) -> tuple[TenableWasClient, F
 
 
 class TenableWasClientTests(unittest.TestCase):
+    def test_export_job_reports_created_and_reused_origin(self) -> None:
+        created_client, _ = client_with([response(200, {"export_uuid": "was-created"})])
+        reused_client, _ = client_with([response(409, {"active_job_id": "was-reused"})])
+
+        created = created_client.start_findings_export_job(filters={"severity": ["HIGH"]})
+        reused = reused_client.start_findings_export_job(filters={"severity": ["HIGH"]})
+
+        self.assertEqual((created.export_uuid, created.origin), ("was-created", "created"))
+        self.assertEqual((reused.export_uuid, reused.origin), ("was-reused", "reused"))
+
     def test_starts_dedicated_was_export_with_explicit_filters(self) -> None:
         client, transport = client_with([response(200, {"export_uuid": "was-job"})])
         export_uuid = client.start_findings_export(
@@ -74,6 +84,38 @@ class TenableWasClientTests(unittest.TestCase):
         self.assertEqual(records[0]["finding_id"], "finding-1")
         self.assertTrue(transport.calls[0]["url"].endswith("/was/v1/export/vulns/was-job/status"))
         self.assertTrue(transport.calls[1]["url"].endswith("/was/v1/export/vulns/was-job/chunks/2"))
+
+    def test_wait_forwards_progress_and_available_chunks(self) -> None:
+        client, _ = client_with([
+            response(
+                200,
+                {
+                    "status": "PROCESSING",
+                    "chunks_available": [1],
+                    "num_total_chunks": 2,
+                },
+            ),
+            response(
+                200,
+                {
+                    "status": "FINISHED",
+                    "chunks_available": [1, 2],
+                    "num_total_chunks": 2,
+                },
+            ),
+        ])
+        progress: list[dict[str, Any]] = []
+        chunks: list[int] = []
+
+        _, finished = client.wait_for_findings_completion(
+            "was-job",
+            progress_callback=progress.append,
+            chunk_callback=chunks.append,
+        )
+
+        self.assertEqual(finished, [1, 2])
+        self.assertEqual(chunks, [1, 2])
+        self.assertEqual(progress[-1]["status"], "FINISHED")
 
     def test_lists_v2_filter_metadata_without_exposing_findings(self) -> None:
         client, _ = client_with([response(200, {"filters": [{"field": "severity"}]})])

@@ -149,6 +149,14 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
 .tag-config-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .tag-config-head > div span, .tag-config-head > div strong { display: block; }.tag-config-head > div span { color: var(--blue); font: 700 8px var(--display); letter-spacing: .13em; }.tag-config-head > div strong { margin-top: 3px; font: 600 13px var(--display); }
 .tag-config > p { margin: 8px 0 13px; color: var(--muted); font-size: 10px; }
+.vm-export-config { margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.018); }
+.vm-export-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.vm-export-head > div span, .vm-export-head > div strong { display: block; }.vm-export-head > div span { color: var(--blue); font: 700 8px var(--display); letter-spacing: .13em; }.vm-export-head > div strong { margin-top: 3px; font: 600 13px var(--display); }
+.vm-export-head .button { min-height: 34px; padding: 0 11px; font-size: 8px; }
+.vm-export-grid { display: grid; grid-template-columns: 1fr 1fr 1.25fr; gap: 9px; margin-top: 13px; }
+.vm-export-grid input, .vm-export-grid select { display: block; width: 100%; height: 38px; margin-top: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 0 9px; color: var(--ink); background: #0f1418; outline: none; }
+.vm-export-grid input:focus, .vm-export-grid select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,.08); }
+.vm-export-config > p { margin: 10px 0 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
 .switch-row { display: flex; align-items: center; gap: 7px; cursor: pointer; }.switch-row input { position: absolute; width: 0; height: 0; margin: 0; opacity: 0; pointer-events: none; }.switch-row em { color: var(--muted); font: normal 700 9px var(--display); text-transform: uppercase; letter-spacing: .08em; }
 .switch-control { position: relative; width: 36px; height: 20px; border-radius: 20px; background: #313941; transition: .2s; }.switch-control::after { content: ""; position: absolute; width: 14px; height: 14px; left: 3px; top: 3px; border-radius: 50%; background: #8c959d; transition: .2s; }.switch-row input:checked + .switch-control { background: rgba(94,213,154,.25); }.switch-row input:checked + .switch-control::after { transform: translateX(16px); background: var(--green); }
 .tag-toolbar { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }.tag-toolbar .button { min-height: 36px; font-size: 9px; }
@@ -187,7 +195,7 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
   main { width: min(100% - 28px, 1420px); }.hero { min-height: 260px; padding-top: 45px; flex-direction: column; align-items: stretch; }.summary { width: 100%; }.summary div { min-width: 0; flex: 1; padding: 13px; }
   .section-head { align-items: stretch; flex-direction: column; gap: 15px; }.search { width: 100%; }.client-grid { grid-template-columns: 1fr; }
   .manager-layout { grid-template-columns: 1fr; }.client-form { border-left: 0; border-top: 1px solid var(--line); padding: 25px 0 0; }.period-options { grid-template-columns: 1fr; }.field-row { grid-template-columns: 1fr; }.check-grid { grid-template-columns: 1fr; }
-  .tag-toolbar { grid-template-columns: 1fr; }.tag-row { grid-template-columns: 1fr 1fr; }.tag-row > div { grid-column: 1 / -1; }.report-document { align-items: flex-start; flex-direction: column; }
+  .tag-toolbar { grid-template-columns: 1fr; }.tag-row { grid-template-columns: 1fr 1fr; }.vm-export-head { align-items: flex-start; flex-direction: column; }.vm-export-grid { grid-template-columns: 1fr; }.tag-row > div { grid-column: 1 / -1; }.report-document { align-items: flex-start; flex-direction: column; }
   .dialog > * { margin-left: 18px; margin-right: 18px; }
   .storage-strip { align-items: stretch; flex-direction: column; gap: 8px; }.storage-strip button { margin-left: 0; }
   .backfill-intro { grid-template-columns: auto 1fr; }.backfill-intro .button { grid-column: 1 / -1; }.backfill-summary { grid-template-columns: 1fr 1fr; }.backfill-actions { align-items: stretch; flex-direction: column; }.backfill-actions .button { width: 100%; }

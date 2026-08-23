@@ -213,9 +213,9 @@ class TenableVmClientTests(unittest.TestCase):
     def test_timeout_contains_last_progress_and_notifies_each_poll(self) -> None:
         transport = FakeTransport([
             response(200, {
-                "status": "PROCESSING",
+                "status": "QUEUED",
                 "chunks_available": [],
-                "total_chunks": 1,
+                "total_chunks": 0,
             })
         ])
         times = iter((0.0, 11.0))
@@ -239,15 +239,163 @@ class TenableVmClientTests(unittest.TestCase):
 
         self.assertEqual(caught.exception.export_uuid, "job-stuck")
         self.assertFalse(caught.exception.progress_made)
-        self.assertEqual(caught.exception.last_status["total_chunks"], 1)
+        self.assertEqual(caught.exception.timeout_phase, "queue")
+        self.assertEqual(caught.exception.last_status["total_chunks"], 0)
         self.assertEqual(progress[0]["export_uuid"], "job-stuck")
         self.assertEqual(progress[0]["completed_chunks"], 0)
-        self.assertEqual(progress[0]["total_chunks"], 1)
+        self.assertEqual(progress[0]["total_chunks"], 0)
+
+    def test_processing_is_not_cut_off_by_queue_timeout(self) -> None:
+        transport = FakeTransport([
+            response(200, {
+                "status": "PROCESSING",
+                "chunks_available": [8],
+                "finished_chunks": 1,
+                "total_chunks": 8,
+            }),
+            response(200, {
+                "status": "FINISHED",
+                "chunks_available": [8],
+                "finished_chunks": 8,
+                "total_chunks": 8,
+            }),
+        ])
+        times = iter((0.0, 11.0, 12.0))
+        client = TenableVmClient(
+            TenableVmConfig(
+                access_key="access-fixture",
+                secret_key="secret-fixture",
+                poll_seconds=0,
+                max_wait_seconds=10,
+                max_processing_wait_seconds=60,
+            ),
+            transport=transport,
+            sleep=lambda _: None,
+            monotonic=lambda: next(times),
+        )
+
+        status, chunks = client.wait_for_completion("job-processing")
+
+        self.assertEqual(status["status"], "FINISHED")
+        self.assertEqual(chunks, [8])
+
+    def test_processing_timeout_reports_remote_progress_and_stall(self) -> None:
+        transport = FakeTransport([
+            response(200, {
+                "status": "PROCESSING",
+                "chunks_available": [],
+                "finished_chunks": 1,
+                "empty_chunks_count": 1,
+                "total_chunks": 8,
+            }),
+            response(200, {
+                "status": "PROCESSING",
+                "chunks_available": [],
+                "finished_chunks": 1,
+                "empty_chunks_count": 1,
+                "total_chunks": 8,
+            }),
+        ])
+        times = iter((0.0, 1.0, 22.0))
+        client = TenableVmClient(
+            TenableVmConfig(
+                access_key="access-fixture",
+                secret_key="secret-fixture",
+                poll_seconds=0,
+                max_wait_seconds=10,
+                max_processing_wait_seconds=20,
+                stall_warning_seconds=5,
+            ),
+            transport=transport,
+            sleep=lambda _: None,
+            monotonic=lambda: next(times),
+        )
+
+        with self.assertRaises(ExportTimeoutError) as caught:
+            client.wait_for_completion("job-processing-stalled")
+
+        self.assertEqual(caught.exception.timeout_phase, "processing")
+        self.assertTrue(caught.exception.progress_made)
+        self.assertTrue(caught.exception.last_status["stalled"])
+        self.assertGreaterEqual(caught.exception.last_status["idle_seconds"], 20)
+
+    def test_processing_polling_backs_off_until_new_progress(self) -> None:
+        sleeps: list[float] = []
+        transport = FakeTransport([
+            response(200, {
+                "status": "PROCESSING", "chunks_available": [], "total_chunks": 8,
+            }),
+            response(200, {
+                "status": "PROCESSING", "chunks_available": [], "total_chunks": 8,
+            }),
+            response(200, {
+                "status": "PROCESSING", "chunks_available": [], "total_chunks": 8,
+            }),
+            response(200, {
+                "status": "FINISHED", "chunks_available": [], "total_chunks": 8,
+            }),
+        ])
+        times = iter((0.0, 1.0, 2.0, 3.0, 4.0))
+        client = TenableVmClient(
+            TenableVmConfig(
+                access_key="access-fixture",
+                secret_key="secret-fixture",
+                poll_seconds=10,
+                max_poll_seconds=30,
+                max_wait_seconds=10,
+                max_processing_wait_seconds=60,
+            ),
+            transport=transport,
+            sleep=sleeps.append,
+            monotonic=lambda: next(times),
+        )
+
+        client.wait_for_completion("job-adaptive-poll")
+
+        self.assertEqual(sleeps, [10, 20, 30])
 
     def test_chunk_ids_are_sorted_and_deduplicated(self) -> None:
         client, _ = client_with([response(200, {"status": "FINISHED", "chunks_available": [3, 1, 3, 2]})])
         _, chunks = client.wait_for_completion("job")
         self.assertEqual(chunks, [1, 2, 3])
+
+    def test_wait_notifies_each_available_chunk_only_once_before_finish(self) -> None:
+        client, _ = client_with(
+            [
+                response(
+                    200,
+                    {
+                        "status": "PROCESSING",
+                        "chunks_available": [2],
+                        "total_chunks": 3,
+                    },
+                ),
+                response(
+                    200,
+                    {
+                        "status": "PROCESSING",
+                        "chunks_available": [2, 3],
+                        "total_chunks": 3,
+                    },
+                ),
+                response(
+                    200,
+                    {
+                        "status": "FINISHED",
+                        "chunks_available": [2, 3],
+                        "total_chunks": 2,
+                    },
+                ),
+            ]
+        )
+        received: list[int] = []
+
+        _, chunks = client.wait_for_completion(
+            "job", chunk_callback=received.append
+        )
+
+        self.assertEqual(received, [2, 3])
+        self.assertEqual(chunks, [2, 3])
 
     def test_error_message_never_contains_credentials_or_response_body(self) -> None:
         client, _ = client_with([response(403, {"debug": "secret-fixture access-fixture"})])

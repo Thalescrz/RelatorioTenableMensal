@@ -123,6 +123,30 @@
           <label class="check"><input name="include_output" type="checkbox"><span>Coluna Output</span></label>
           <label class="check"><input name="show_source_filters" type="checkbox"><span>Exibir filtros de origem</span></label>
         </div>
+        <section class="vm-export-config" aria-labelledby="vm-export-title">
+          <div class="vm-export-head">
+            <div><span>COLETA VM</span><strong id="vm-export-title">Desempenho do export</strong></div>
+            <button class="button ghost" id="validate-vm-export-button" type="button" disabled>Validar export otimizado</button>
+          </div>
+          <div class="vm-export-grid">
+            <label>Estratégia
+              <select name="vm_export_strategy">
+                <option value="combined" selected>Combinada · padrão</option>
+                <option value="split">Separada · experimental</option>
+              </select>
+            </label>
+            <label>Ativos por chunk
+              <input name="vm_num_assets_per_chunk" type="number" min="50" max="5000" value="1000" required>
+            </label>
+            <label>Propriedades seletivas
+              <select name="vm_selective_properties">
+                <option value="disabled" selected>Desativadas · seguro</option>
+                <option value="enabled">Ativadas após validação</option>
+              </select>
+            </label>
+          </div>
+          <p>A validação compara duas exportações reais e mantém a coleta completa como fonte do relatório.</p>
+        </section>
         <p class="form-note" id="client-form-note">As chaves ficam apenas no arquivo local ignorado pelo Git e nunca retornam à tela.</p>
         <div class="form-actions">
           <button class="button ghost hidden" id="cancel-edit-button" type="button">Cancelar edição</button>

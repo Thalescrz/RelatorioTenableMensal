@@ -284,6 +284,80 @@ class WebDashboardTests(unittest.TestCase):
         self.assertEqual(export["status"], "TIMED_OUT")
         self.assertEqual(export["segment"], "fixed")
 
+    def test_job_queue_keeps_vm_and_was_export_progress_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def runner(command, cwd, progress_callback=None):
+                progress_callback({
+                    "event": "TENABLE_EXPORT_PROGRESS",
+                    "source": "tenable_vm_vulnerabilities",
+                    "export_uuid": "vm-job",
+                    "origin": "created",
+                    "status": "FINISHED",
+                    "completed_chunks": 2,
+                    "total_chunks": 2,
+                })
+                progress_callback({
+                    "event": "TENABLE_EXPORT_PROGRESS",
+                    "source": "tenable_was_findings",
+                    "export_uuid": "was-job",
+                    "origin": "created",
+                    "status": "PROCESSING",
+                    "completed_chunks": 1,
+                    "total_chunks": 2,
+                })
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({
+                        "status": "COMPLETE",
+                        "run_id": "run-vm-was",
+                    }) + "\n",
+                    stderr="",
+                )
+
+            jobs = JobQueue(root, root / "orchestration" / "clients.json", runner)
+            jobs.enqueue(["cliente-a"], {"mode": "manual", "days": 30})
+            jobs._pending.join()
+            job = jobs.snapshot()[0]
+
+        self.assertEqual(job["export_progress"]["export_uuid"], "vm-job")
+        self.assertEqual(
+            job["was_export_progress"]["export_uuid"],
+            "was-job",
+        )
+        self.assertEqual(job["was_export_progress"]["status"], "PROCESSING")
+    def test_job_queue_exposes_running_vm_export_stall_warning(self) -> None:
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def runner(command, cwd, progress_callback=None):
+                progress_callback({
+                    "event": "TENABLE_EXPORT_PROGRESS",
+                    "export_uuid": "job-processing",
+                    "origin": "created",
+                    "status": "PROCESSING",
+                    "completed_chunks": 3,
+                    "total_chunks": 8,
+                    "idle_seconds": 1900,
+                    "stalled": True,
+                })
+                return subprocess.CompletedProcess(
+                    command, 0,
+                    stdout=json.dumps({"status": "COMPLETE", "run_id": "run-ok"}) + "\n",
+                    stderr="",
+                )
+
+            jobs = JobQueue(root, root / "orchestration" / "clients.json", runner)
+            jobs.enqueue(["cliente-a"], {"mode": "manual", "days": 30})
+            jobs._pending.join()
+            export = jobs.snapshot()[0]["export_progress"]
+
+        self.assertTrue(export["stalled"])
+        self.assertEqual(export["idle_seconds"], 1900)
+
     def test_stuck_export_can_be_cancelled_and_retried_with_exact_uuid(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -359,6 +433,28 @@ class WebDashboardTests(unittest.TestCase):
         self.assertEqual(cancelled, [("cliente-a.env", "job-stuck")])
         self.assertEqual(payload["cancelled_export"]["export_uuid"], "job-stuck")
         self.assertEqual(payload["job"]["retry_of_job_id"], original["job_id"])
+
+    def test_frontend_exposes_compact_vm_export_controls_and_confirmed_validation(self) -> None:
+        static_root = (
+            Path(__file__).resolve().parents[1]
+            / "src/tenable_reports/webapp/static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        javascript = (static_root / "app.js").read_text(encoding="utf-8")
+
+        for field in (
+            "vm_export_strategy",
+            "vm_num_assets_per_chunk",
+            "vm_selective_properties",
+        ):
+            self.assertIn(f'name="{field}"', html)
+        self.assertIn('id="validate-vm-export-button"', html)
+        self.assertIn("/vm-export/validate", javascript)
+        self.assertIn("duas exportações", javascript)
+        self.assertIn("window.confirm", javascript)
+        self.assertIn("vm_export_validation", javascript)
+        self.assertIn('value="1000"', html)
+        self.assertIn("sem novos chunks", javascript)
 
     def test_frontend_offers_confirmed_cancel_and_retry_for_stuck_export(self) -> None:
         source = (
@@ -664,6 +760,111 @@ class WebDashboardTests(unittest.TestCase):
             self.assertEqual(recorded[-1][0:2], ("run-pending", "COMPLETE"))
             self.assertGreater(recorded[-1][2], 0)
 
+    def test_vm_export_settings_round_trip_and_reject_invalid_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DashboardConfigStore(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+            created = store.add_client({
+                "client_id": "cliente-vm",
+                "display_name": "Cliente VM",
+                "vm_export_strategy": "split",
+                "vm_num_assets_per_chunk": 400,
+                "vm_selective_properties": "enabled",
+            })
+            self.assertEqual(created["vm_export_strategy"], "split")
+            self.assertEqual(created["vm_num_assets_per_chunk"], 400)
+            self.assertEqual(created["vm_selective_properties"], "enabled")
+
+            updated = store.update_client("cliente-vm", {
+                "vm_export_strategy": "combined",
+                "vm_num_assets_per_chunk": 250,
+                "vm_selective_properties": "validation",
+            })
+            self.assertEqual(updated["vm_export_strategy"], "combined")
+            self.assertEqual(updated["vm_num_assets_per_chunk"], 250)
+            self.assertEqual(updated["vm_selective_properties"], "validation")
+            load_client_profile(root / "clients" / "managed" / "cliente-vm.json")
+
+            invalid = (
+                ({"vm_export_strategy": "automatic"}, "strategy"),
+                ({"vm_num_assets_per_chunk": 49}, "num_assets_per_chunk"),
+                ({"vm_selective_properties": "always"}, "selective_properties"),
+            )
+            for values, message in invalid:
+                with self.subTest(values=values):
+                    with self.assertRaisesRegex(ValueError, message):
+                        store.update_client("cliente-vm", values)
+
+    def test_new_client_uses_recommended_vm_chunk_size(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DashboardConfigStore(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+
+            created = store.add_client({
+                "client_id": "cliente-recomendado",
+                "display_name": "Cliente Recomendado",
+            })
+
+            self.assertEqual(created["vm_num_assets_per_chunk"], 1000)
+
+    def test_vm_export_validation_route_enqueues_explicit_ab_job(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            observed: list[list[str]] = []
+
+            def runner(command, cwd):
+                observed.append(list(command))
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({
+                        "status": "complete",
+                        "run_id": "run-validation",
+                        "clients": [{"payload": {
+                            "vm_export_mode": "validation",
+                            "vm_export_outcome": "PASSED",
+                            "vm_export_comparison": "comparison.json",
+                        }}],
+                    }) + "\n",
+                    stderr="",
+                )
+
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                runner=runner,
+            )
+            app.config.add_client({
+                "client_id": "cliente-validacao",
+                "display_name": "Cliente Validação",
+                "access_key": "access",
+                "secret_key": "secret",
+            })
+            client = LocalClient(app)
+            try:
+                status, payload = client.request(
+                    "POST",
+                    "/api/clients/cliente-validacao/vm-export/validate",
+                    {},
+                )
+                self.assertEqual(status, 202)
+                self.assertEqual(payload["job"]["vm_selective_mode"], "validation")
+                app.jobs._pending.join()
+                completed = app.jobs.snapshot()[0]
+                self.assertEqual(
+                    completed["vm_export_validation"]["outcome"], "PASSED"
+                )
+            finally:
+                client.close()
+
+            self.assertIn("--vm-selective-mode", observed[0])
+            self.assertIn("validation", observed[0])
     def test_show_source_filters_is_created_and_edited_without_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

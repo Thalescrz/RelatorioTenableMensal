@@ -131,6 +131,13 @@ class PresentationConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class VmExportConfig:
+    strategy: str = "combined"
+    num_assets_per_chunk: int = 1000
+    selective_properties: str = "disabled"
+
+
+@dataclass(frozen=True, slots=True)
 class ReportingConfig:
     timezone: str = "America/Fortaleza"
     default_period: str = "previous_calendar_month"
@@ -139,6 +146,7 @@ class ReportingConfig:
     top_assets_limit: int = 10
     top_vulnerabilities_limit: int = 5
     late_collection_grace_days: int = 1
+    vm_export: VmExportConfig = field(default_factory=VmExportConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +238,11 @@ class ClientProfile:
         cloud_security_data = scope_data.get("cloud_security") or {}
         presentation_data = data.get("presentation") or {}
         reporting_data = data.get("reporting") or {}
+        vm_export_data = reporting_data.get("vm_export")
+        if vm_export_data is None:
+            vm_export_data = {}
+        if not isinstance(vm_export_data, dict):
+            raise ProfileError("reporting.vm_export deve ser um objeto JSON.")
         if not all(isinstance(item, dict) for item in (
             report_data,
             scope_data,
@@ -238,6 +251,7 @@ class ClientProfile:
             cloud_security_data,
             presentation_data,
             reporting_data,
+            vm_export_data,
         )):
             raise ProfileError("report, scope e presentation devem ser objetos JSON.")
 
@@ -331,6 +345,33 @@ class ClientProfile:
         top_assets_limit = int(reporting_data.get("top_assets_limit", 10))
         top_vulnerabilities_limit = int(reporting_data.get("top_vulnerabilities_limit", 5))
         late_collection_grace_days = int(reporting_data.get("late_collection_grace_days", 1))
+        vm_export_strategy = str(
+            vm_export_data.get("strategy", "combined")
+        ).strip().lower()
+        if vm_export_strategy not in {"combined", "split"}:
+            raise ProfileError(
+                "reporting.vm_export.strategy deve ser combined ou split."
+            )
+        try:
+            vm_num_assets_per_chunk = int(
+                vm_export_data.get("num_assets_per_chunk", 1000)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ProfileError(
+                "reporting.vm_export.num_assets_per_chunk deve ser inteiro."
+            ) from exc
+        if not 50 <= vm_num_assets_per_chunk <= 5000:
+            raise ProfileError(
+                "reporting.vm_export.num_assets_per_chunk deve estar entre 50 e 5000."
+            )
+        vm_selective_properties = str(
+            vm_export_data.get("selective_properties", "disabled")
+        ).strip().lower()
+        if vm_selective_properties not in {"disabled", "validation", "enabled"}:
+            raise ProfileError(
+                "reporting.vm_export.selective_properties deve ser "
+                "disabled, validation ou enabled."
+            )
         if not 1 <= top_assets_limit <= 100:
             raise ProfileError("reporting.top_assets_limit deve estar entre 1 e 100.")
         if not 1 <= top_vulnerabilities_limit <= 50:
@@ -387,6 +428,11 @@ class ClientProfile:
                 top_assets_limit=top_assets_limit,
                 top_vulnerabilities_limit=top_vulnerabilities_limit,
                 late_collection_grace_days=late_collection_grace_days,
+                vm_export=VmExportConfig(
+                    strategy=vm_export_strategy,
+                    num_assets_per_chunk=vm_num_assets_per_chunk,
+                    selective_properties=vm_selective_properties,
+                ),
             ),
         )
 

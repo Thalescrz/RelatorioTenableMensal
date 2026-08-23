@@ -51,6 +51,7 @@ from tenable_reports.application.retention import (
 )
 from tenable_reports.config.database import DatabaseConfig
 from tenable_reports.config.environment import CredentialConfig, load_dotenv_file
+from tenable_reports.config.profile import ClientProfile
 from tenable_reports.infrastructure.postgresql import (
     PostgresDatabase,
     PostgresOperationsRepository,
@@ -320,6 +321,14 @@ class DashboardConfigStore:
                 profile.get("presentation")
                 if isinstance(profile.get("presentation"), Mapping) else {}
             )
+            reporting = (
+                profile.get("reporting")
+                if isinstance(profile.get("reporting"), Mapping) else {}
+            )
+            vm_export = (
+                reporting.get("vm_export")
+                if isinstance(reporting.get("vm_export"), Mapping) else {}
+            )
             result.append({
                 "client_id": client_id,
                 "display_name": str(
@@ -339,6 +348,13 @@ class DashboardConfigStore:
                 "intelligence_enabled": bool(report.get("intelligence_modules") or []),
                 "include_output": bool(raw.get("include_output", False)),
                 "show_source_filters": bool(presentation.get("show_source_filters", False)),
+                "vm_export_strategy": str(vm_export.get("strategy") or "combined"),
+                "vm_num_assets_per_chunk": int(
+                    vm_export.get("num_assets_per_chunk") or 1000
+                ),
+                "vm_selective_properties": str(
+                    vm_export.get("selective_properties") or "disabled"
+                ),
                 "tag_reports_enabled": bool(tag_reports.get("enabled", False)),
                 "tag_reports": self._tag_reports(tag_reports.get("tags")),
             })
@@ -414,8 +430,20 @@ class DashboardConfigStore:
                     "top_assets_limit": 10,
                     "top_vulnerabilities_limit": 5,
                     "late_collection_grace_days": 1,
+                    "vm_export": {
+                        "strategy": str(
+                            values.get("vm_export_strategy") or "combined"
+                        ).strip().lower(),
+                        "num_assets_per_chunk": int(
+                            values.get("vm_num_assets_per_chunk") or 1000
+                        ),
+                        "selective_properties": str(
+                            values.get("vm_selective_properties") or "disabled"
+                        ).strip().lower(),
+                    },
                 },
             }
+            ClientProfile.from_dict(profile)
             write_json_atomic(profile_path, profile)
             env_path.write_text(
                 "\n".join((
@@ -424,6 +452,11 @@ class DashboardConfigStore:
                     f"TENABLE_SECRET={secret_key}",
                     "TENABLE_HTTP_TIMEOUT_SECONDS=30",
                     "TENABLE_VALIDATE_TLS=true",
+                    "TENABLE_EXPORT_POLL_SECONDS=10",
+                    "TENABLE_EXPORT_MAX_POLL_SECONDS=30",
+                    "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS=1800",
+                    "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS=7200",
+                    "TENABLE_EXPORT_STALL_WARNING_SECONDS=1800",
                     "",
                 )),
                 encoding="utf-8",
@@ -483,6 +516,28 @@ class DashboardConfigStore:
                     values["show_source_filters"]
                 )
                 profile_changed = True
+            vm_fields = {
+                "vm_export_strategy",
+                "vm_num_assets_per_chunk",
+                "vm_selective_properties",
+            }
+            if vm_fields.intersection(values):
+                reporting = profile.setdefault("reporting", {})
+                vm_export = reporting.setdefault("vm_export", {})
+                if "vm_export_strategy" in values:
+                    vm_export["strategy"] = str(
+                        values["vm_export_strategy"]
+                    ).strip().lower()
+                if "vm_num_assets_per_chunk" in values:
+                    vm_export["num_assets_per_chunk"] = int(
+                        values["vm_num_assets_per_chunk"]
+                    )
+                if "vm_selective_properties" in values:
+                    vm_export["selective_properties"] = str(
+                        values["vm_selective_properties"]
+                    ).strip().lower()
+                ClientProfile.from_dict(profile)
+                profile_changed = True
             if "tag_reports_enabled" in values or "tag_reports" in values:
                 current = profile.setdefault("report", {}).get("tag_reports")
                 current = current if isinstance(current, Mapping) else {}
@@ -535,6 +590,11 @@ class DashboardConfigStore:
                         f"TENABLE_SECRET={secret_key}",
                         "TENABLE_HTTP_TIMEOUT_SECONDS=30",
                         "TENABLE_VALIDATE_TLS=true",
+                        "TENABLE_EXPORT_POLL_SECONDS=10",
+                        "TENABLE_EXPORT_MAX_POLL_SECONDS=30",
+                        "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS=1800",
+                        "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS=7200",
+                        "TENABLE_EXPORT_STALL_WARNING_SECONDS=1800",
                         "",
                     )),
                     encoding="utf-8",
@@ -812,6 +872,11 @@ class JobQueue:
         mode = str(request.get("mode") or "manual")
         if mode not in {"manual", "automatic"}:
             raise ValueError("Modo de execucao invalido.")
+        vm_selective_mode = (
+            str(request.get("vm_selective_mode") or "").strip().lower() or None
+        )
+        if vm_selective_mode not in {None, "disabled", "validation", "enabled"}:
+            raise ValueError("Modo seletivo VM invalido.")
         days = request.get("days")
         start_at = str(request.get("start_at") or "").strip() or None
         end_at = str(request.get("end_at") or "").strip() or None
@@ -844,6 +909,7 @@ class JobQueue:
                     "days": days,
                     "start_at": start_at,
                     "end_at": end_at,
+                    "vm_selective_mode": vm_selective_mode,
                     "status": "QUEUED",
                     "progress": 8,
                     "created_at": _utc_now(),
@@ -853,7 +919,9 @@ class JobQueue:
                     "run_id": None,
                     "tag_progress": None,
                     "export_progress": None,
+                    "was_export_progress": None,
                     "warnings": [],
+                    "vm_export_validation": None,
                 }
                 self._jobs[job_id] = job
                 self._pending.put(job_id)
@@ -905,6 +973,7 @@ class JobQueue:
                 "days": original["days"],
                 "start_at": original["start_at"],
                 "end_at": original["end_at"],
+                "vm_selective_mode": original.get("vm_selective_mode"),
             }
             client_id = original["client_id"]
         created = self.enqueue([client_id], request)
@@ -954,6 +1023,10 @@ class JobQueue:
                 "1",
                 "--confirm-live-api",
             ]
+            if job.get("vm_selective_mode"):
+                command.extend((
+                    "--vm-selective-mode", job["vm_selective_mode"]
+                ))
             if job["days"] is not None:
                 command.extend(("--days", str(job["days"])))
             if job["start_at"]:
@@ -965,9 +1038,16 @@ class JobQueue:
                     if current_job is None:
                         return
                     if event.get("event") == "TENABLE_EXPORT_PROGRESS":
-                        current_job["export_progress"] = {
+                        source = str(event.get("source") or "")
+                        progress_key = (
+                            "was_export_progress"
+                            if source == "tenable_was_findings"
+                            else "export_progress"
+                        )
+                        current_job[progress_key] = {
                             key: event.get(key)
                             for key in (
+                                "source",
                                 "export_uuid",
                                 "origin",
                                 "segment",
@@ -976,13 +1056,18 @@ class JobQueue:
                                 "completed_chunks",
                                 "total_chunks",
                                 "elapsed_seconds",
+                                "processing_elapsed_seconds",
+                                "idle_seconds",
+                                "stalled",
+                                "timeout_phase",
                                 "progress_made",
                                 "auto_cancelled",
                                 "cancellation_error",
                             )
                         }
                         current_job["progress"] = max(
-                            int(current_job.get("progress") or 0), 35
+                            int(current_job.get("progress") or 0),
+                            45 if progress_key == "was_export_progress" else 35,
                         )
                         return
                     current = int(event.get("current") or 0)
@@ -1026,6 +1111,24 @@ class JobQueue:
                     for warning in client_payload.get("warnings") or ()
                     if isinstance(warning, Mapping)
                 ]
+                validation_payload = next(
+                    (
+                        client_payload for client_payload in client_payloads
+                        if client_payload.get("vm_export_mode") == "validation"
+                    ),
+                    None,
+                )
+                job["vm_export_validation"] = (
+                    {
+                        "outcome": str(
+                            validation_payload.get("vm_export_outcome") or "UNKNOWN"
+                        ),
+                        "comparison": validation_payload.get(
+                            "vm_export_comparison"
+                        ),
+                    }
+                    if validation_payload is not None else None
+                )
                 if completed.returncode == 0:
                     job["status"] = "COMPLETE"
                 else:
@@ -1600,6 +1703,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/clients":
                 client = self.app.config.add_client(payload)
                 self._json(HTTPStatus.CREATED, {"client": client})
+                return
+            match = re.fullmatch(
+                r"/api/clients/([^/]+)/vm-export/validate", parsed.path
+            )
+            if match:
+                client_id = unquote(match.group(1))
+                client = next(
+                    (
+                        item for item in self.app.config.list_clients()
+                        if item["client_id"] == client_id
+                    ),
+                    None,
+                )
+                if client is None:
+                    raise KeyError("Cliente nao encontrado.")
+                if not client["enabled"]:
+                    raise ValueError("O cliente esta desabilitado.")
+                if not client["credentials_ready"]:
+                    raise ValueError("O cliente nao possui credenciais prontas.")
+                jobs = self.app.jobs.enqueue([client_id], {
+                    "mode": "manual",
+                    "vm_selective_mode": "validation",
+                })
+                if not jobs:
+                    raise ValueError("O cliente ja esta na fila ou em execucao.")
+                self._json(HTTPStatus.ACCEPTED, {"job": jobs[0]})
                 return
             if parsed.path == "/api/jobs":
                 known = {
