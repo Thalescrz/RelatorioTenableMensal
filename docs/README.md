@@ -6,6 +6,7 @@ uma descrição de fase antiga.
 
 ## Guias vigentes
 
+- [Design da solução](../DESIGN.md): decisões estruturais e invariantes.
 - [Visão geral e objetivos](19-visao-geral-e-objetivos.md): finalidade, escopo,
   entregáveis e limites atuais.
 - [Arquitetura e fluxo de dados](20-arquitetura-e-fluxo-de-dados.md): componentes,

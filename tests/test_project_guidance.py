@@ -9,6 +9,7 @@ from tools.validate_project_guidance import validate_guidance
 
 REQUIRED_FILES = (
     "README.md",
+    "DESIGN.md",
     "docs/README.md",
     "docs/19-visao-geral-e-objetivos.md",
     "docs/20-arquitetura-e-fluxo-de-dados.md",

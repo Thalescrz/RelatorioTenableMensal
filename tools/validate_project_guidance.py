@@ -10,6 +10,7 @@ from urllib.parse import unquote
 
 REQUIRED_GUIDANCE_FILES = (
     "README.md",
+    "DESIGN.md",
     "docs/README.md",
     "docs/19-visao-geral-e-objetivos.md",
     "docs/20-arquitetura-e-fluxo-de-dados.md",

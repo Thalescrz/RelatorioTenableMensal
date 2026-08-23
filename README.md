@@ -68,7 +68,7 @@ e com a confirmação explícita exigida pelo comando.
 
 ## Documentação
 
-Comece pelo [índice da documentação](docs/README.md). Os guias principais são:
+Comece pelo [índice da documentação](docs/README.md) e pelo [design da solução](DESIGN.md). Os guias principais são:
 
 - [visão geral e objetivos](docs/19-visao-geral-e-objetivos.md);
 - [arquitetura e fluxo de dados](docs/20-arquitetura-e-fluxo-de-dados.md);
