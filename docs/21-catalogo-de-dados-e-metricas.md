@@ -1,0 +1,148 @@
+# Catálogo de dados e métricas
+
+## Fontes
+
+O projeto usa Tenable Vulnerability Management para ativos, findings VM, TAGs e
+metadados de plugins. Tenable Web App Scanning fornece aplicações e findings WEB
+quando o produto e as permissões estão disponíveis. Consulte o
+[catálogo detalhado de APIs](02-catalogo-apis-tenable.md) para endpoints e contratos.
+
+O PostgreSQL não substitui a Tenable como origem dos findings. Ele mantém estado
+operacional, histórico compacto, tentativas, documentos e a referência `MAIN`.
+
+## Ativo normalizado
+
+Um ativo é identificado internamente por `asset_key`, derivada da origem e do UUID.
+O modelo conserva:
+
+- identificadores de origem, cliente e ciclo de vida;
+- nome exibido, tipos e nomes de fontes;
+- hostnames, FQDNs, IPv4, IPv6 e endereços MAC;
+- sistemas operacionais, rede e identificador de rede;
+- primeira e última varredura, última varredura autenticada;
+- criação, atualização, exclusão e encerramento;
+- ACR e AES quando fornecidos.
+
+Hostname e IP podem mudar ou ser reutilizados. Eles servem para apresentação, nunca
+para reconciliar a identidade entre ativo e finding.
+
+## Finding VM normalizado
+
+O modelo conserva:
+
+- identificadores do finding, ativo, cliente e origem;
+- plugin: ID, nome e família;
+- CVEs e referências;
+- sinopse, descrição, solução e `Plugin Output` opcional;
+- porta, protocolo e serviço;
+- estado e severidade;
+- primeira identificação, última identificação, correção e ressurgimento;
+- CVSS v2/v3, VPR e vetor de ataque;
+- patch disponível;
+- indicador geral `exploitable`;
+- indicadores segregados por framework de exploração.
+
+`Plugin Output` pode conter dados sensíveis e aumentar bastante o payload. Ele só é
+coletado e exibido quando o perfil autoriza a coluna opcional.
+
+## Finding WAS normalizado
+
+O modelo WEB conserva:
+
+- aplicação, URI afetada e identificadores de origem;
+- plugin, CVEs, referências e classificação OWASP;
+- sinopse, descrição e solução;
+- output, prova e payload quando disponibilizados e autorizados;
+- método HTTP, parâmetro de entrada e dados de serviço;
+- estado, severidade e datas de identificação/correção;
+- CVSS v3 e VPR.
+
+Ausência de licença, permissão ou achados WAS não deve invalidar o dataset VM.
+
+## Janela temporal
+
+Todos os cálculos usam intervalo semiaberto `[início, fim)`: o início pertence ao
+relatório e o instante final pertence ao período seguinte.
+
+| Conjunto | Estados | Campo temporal |
+|---|---|---|
+| Não mitigadas | `OPEN`, `REOPENED` | `last_found` |
+| Mitigadas | `FIXED` | `last_fixed` |
+| Novas | ativas cuja primeira ocorrência está no período | `first_found` |
+| Ressurgidas | `REOPENED` | `resurfaced_at` |
+
+O filtro inferior enviado à API é seguido por validação local das duas fronteiras.
+`Informational` é excluída; as severidades consideradas são Critical, High, Medium
+e Low.
+
+## Métricas principais
+
+- Vulnerabilidades não mitigadas: quantidade de findings ativos no período.
+- Vulnerabilidades mitigadas: quantidade de findings corrigidos no período.
+- Vulnerabilidades novas: findings cuja primeira identificação ocorreu no período.
+- Vulnerabilidades ressurgidas: findings reabertos com data de ressurgimento no
+  período.
+- Ativos vulneráveis: ativos distintos associados aos findings do conjunto.
+- Principais ativos vulneráveis: ranking por contagem de findings e severidade,
+  mantendo IP e nome somente como atributos de exibição.
+- `Exploitable` por ativo: quantidade de findings do ativo com
+  `plugin.exploit_available` verdadeiro.
+- Exploráveis por framework: contagens separadas pelos indicadores de cada
+  framework; não devem ser inferidas apenas do indicador geral.
+- Top 5 VM: ranking local de findings não mitigados usando VPR, severidade e ativos
+  afetados, seguido do detalhamento e conjunto de hosts.
+- Top 5 WAS: ranking equivalente no conjunto WEB suportado.
+- OWASP Top 10: distribuição apenas dos achados que possuem classificação mapeável;
+  categorias sem ocorrências podem permanecer zeradas, acompanhadas de texto quando
+  todo o quadro estiver vazio.
+
+## TAGs
+
+As TAGs são descobertas no ambiente e associadas aos UUIDs de ativos. Há duas
+seleções independentes no perfil:
+
+- TAGs que geram relatório operacional;
+- TAGs cujo relatório inclui comparativo temporal.
+
+O recorte acontece depois da coleta e normalização gerais. Os números gerais não
+mudam. O histórico de uma TAG só é comparado com a mesma categoria e valor em
+período anterior compatível.
+
+## Séries históricas
+
+O histórico compacto conserva as agregações necessárias para tabelas e gráficos,
+incluindo totais por severidade/estado, ativos, novas, mitigadas e não mitigadas.
+Ele não depende de reter permanentemente todos os chunks e findings raw.
+
+Se não houver referência anterior, os módulos correntes ainda são gerados e o
+comparativo informa que não existe base compatível. Uma ausência não pode resultar
+em documento customizado visualmente vazio.
+
+## Conferência na Tenable
+
+Quando habilitados, os filtros de validação aparecem discretamente abaixo de cada
+tabela. Eles descrevem caminho, estados, severidades, campo de data e período; não
+pretendem ser uma consulta automática nem substituir a regra local de ranking.
+
+Exemplos:
+
+- Não mitigadas: `Explore > Findings > Vulnerabilities`; estados Active, New e
+  Resurfaced; severidades Critical a Low; `Last Seen` no período.
+- Mitigadas: estados Fixed; severidades Critical a Low; `Last Fixed` no período.
+- Ressurgidas: estado Resurfaced/Reopened; `Resurfaced Date` no período.
+- Exploráveis gerais: indicador `Exploit Available = true` dentro do conjunto e do
+  período da própria tabela.
+
+Os nomes visíveis dos filtros podem variar na plataforma. A regra temporal do
+dataset é a autoridade para explicar uma diferença.
+
+## Qualidade e reconciliação
+
+O manifesto da execução registra hashes, contagens de entrada/saída, duplicatas,
+rejeições, vínculos e órfãos. A publicação deve preservar:
+
+- identidade por UUID;
+- soma coerente das severidades e totais;
+- ausência de findings fora do período;
+- módulos opcionais sem impacto sobre os obrigatórios;
+- rastreabilidade entre dataset, documento e execução.

@@ -1,5 +1,14 @@
 # Operação de main, retentativas e inteligência
 
+## Estado atual — 2026-08-23
+
+A referência `MAIN` também cobre a identidade dos documentos por TAG, garantindo
+comparação da mesma TAG no tempo. Retentativas VM preservam chunks íntegros e
+distinguem job criado, retomado ou fornecido. Cancelamento automático é restrito a
+job criado pela execução atual e sem progresso. A retenção atual mantém DOCX e
+histórico compacto; raw, snapshots, normalizados e datasets pesados de uma execução
+bem-sucedida são removidos, enquanto falhas permanecem por prazo curto.
+
 Este guia descreve as ações disponíveis na interface web e os cuidados para manter
 comparativos mensais determinísticos.
 

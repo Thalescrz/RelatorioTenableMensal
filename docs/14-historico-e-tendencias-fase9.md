@@ -1,5 +1,13 @@
 # Histórico e tendências — Fase 9
 
+## Estado atual — 2026-08-23
+
+O relatório customizado geral mantém as tabelas e séries mensais aplicáveis ao
+cliente. O comparativo de uma TAG selecionada passou a integrar o respectivo
+relatório operacional por TAG. Categoria, valor e versão do escopo fazem parte da
+compatibilidade, impedindo comparação entre TAGs diferentes. O histórico persistido
+é compacto e não depende da retenção permanente dos findings raw.
+
 **Concluída em:** 2026-08-20
 
 ## Contrato implementado

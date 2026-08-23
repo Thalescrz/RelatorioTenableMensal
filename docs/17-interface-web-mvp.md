@@ -1,5 +1,14 @@
 # Interface web local — MVP
 
+## Estado atual — 2026-08-23
+
+Além da fila e dos downloads, o painel permite editar clientes, testar uma API ou
+todas, buscar e selecionar TAGs, configurar relatórios/comparativos por TAG,
+acompanhar exports e cancelar com confirmação, validar propriedades seletivas,
+excluir documentos e promover a referência `MAIN`. A área administrativa analisa
+e aplica backfill e limpeza. WAS é opcional e não paralisa VM. A interface continua
+local e não possui autenticação multiusuário.
+
 O painel web é uma camada operacional simples sobre a carteira de clientes, a
 orquestração existente e o PostgreSQL. Ele concentra a operação normal sem exigir
 linha de comando e preserva as regras de período, histórico e geração dos DOCX.

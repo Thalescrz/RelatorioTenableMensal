@@ -1,5 +1,13 @@
 # Coleta e relatório Web App Scanning — Fase 8
 
+## Estado atual — 2026-08-23
+
+WAS continua geral, opcional e independente de VM; ausência de produto, permissão
+ou achados não bloqueia os documentos VM. TAGs não filtram VM ou WAS gerais. As
+TAGs selecionadas agora podem gerar relatórios operacionais VM próprios, e o
+comparativo temporal opcional fica dentro do documento da mesma TAG. Relatório WEB
+por TAG não faz parte do escopo atual.
+
 ## Resultado
 
 A Fase 8 integra o Tenable Web App Scanning ao mesmo ciclo mensal do relatório sem

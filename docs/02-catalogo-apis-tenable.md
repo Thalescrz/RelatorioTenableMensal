@@ -1,5 +1,14 @@
 # Catálogo preliminar das APIs Tenable
 
+## Estado atual — 2026-08-23
+
+O export VM combinado é o padrão, com 1000 ativos por chunk, persistência imediata
+e retomada dos chunks válidos. A conclusão exige estado remoto `FINISHED`; a mera
+existência de `total_chunks` não encerra o job. Propriedades seletivas são opcionais
+por cliente, exigem validação de equivalência no tenant e possuem fallback único
+para payload completo apenas em rejeição HTTP 400 ou contrato incompleto. Timeout é
+classificado como falha temporária. WAS permanece uma coleta separada e opcional.
+
 **Última revisão documental:** 2026-08-12  
 **Escopo:** endpoints relevantes identificados, clientes de export VM e ativos v2 implementados com fixtures offline e contratos autenticados validados em 2026-08-12.
 
@@ -88,6 +97,70 @@ mas o estado atual retornado pela plataforma pode não representar exatamente o
 estado no fechamento daquele mês. Falha de contrato, permissão ou paginação segue
 `historical_fallback`: `warn_legacy` usa o export tradicional com aviso e `fail`
 interrompe a execução sem publicar um histórico silenciosamente aproximado.
+
+### Base técnica legada — consultas projetadas do `RelatorioTenableITP`
+
+Esta seção é uma referência histórica, não uma recomendação para substituir a
+coleta canônica atual. A implementação examinada em 2026-08-23, principalmente em
+`api/tenable.py` e `api/rest.py` do projeto legado, seguia uma estratégia diferente
+do export em volume:
+
+- enviava requisições síncronas a endpoints de pesquisa e análise em `/api/v3`,
+  como `assets/search`, `findings/vulnerabilities/host/analysis` e os equivalentes
+  de `webapp`;
+- aplicava filtros temporais, de estado, severidade e atributos diretamente no
+  servidor;
+- usava `template: group`, `group_by` e estatísticas como `count`, `dist`, `first`,
+  `max` e `select` para receber resultados já agregados por ativo ou plugin;
+- em buscas de detalhe, limitava a resposta a campos declarados em `fields` e a
+  páginas de até 200 registros;
+- consultava o endpoint de contagem e percorria o cursor `next` para juntar páginas;
+- em um caminho alternativo de ativos, usava `TenableIO.assets.list()` da
+  biblioteca pyTenable.
+
+Essa abordagem era mais rápida porque transferia para a Tenable parte relevante da
+filtragem e agregação. Ela não criava um job completo em `/vulns/export`, não
+aguardava a produção assíncrona de chunks e, em muitas consultas, não baixava cada
+finding individual necessário a uma fotografia integral do período.
+
+> **Distinção importante:** projeção em endpoints de análise/pesquisa e
+> `properties` seletivas em `/vulns/export` são mecanismos diferentes. O primeiro
+> devolve uma visão agregada ou recortada; o segundo continua sendo um export em
+> volume, apenas com menos propriedades por finding.
+
+#### Vantagens observadas
+
+- baixa latência para métricas, rankings e prévias específicas;
+- volume de rede e staging muito menores;
+- filtros e agregações executados no serviço, próximos da origem dos dados;
+- resposta já próxima do formato de algumas tabelas, reduzindo processamento local;
+- utilidade como consulta auxiliar de validação ou diagnóstico rápido.
+
+#### Limitações e riscos
+
+- não produz, por si só, um snapshot completo e reprocessável de findings;
+- cada tabela possuía uma consulta própria, aumentando o risco de filtros e
+  populações divergirem entre indicadores;
+- agregações como `first(...)` escolhem um valor representativo e podem ocultar
+  relações um-para-muitos necessárias para hosts, portas, evidências ou outputs;
+- limites de 200 registros exigem paginação correta. O próprio histórico do projeto
+  registra uma correção para um caso em que somente a primeira página era salva;
+- endpoints `/api/v3/.../analysis` e seus campos não são tratados neste projeto
+  como contrato público estável até que sejam novamente validados no tenant e na
+  documentação oficial vigente;
+- várias consultas especializadas podem ser rápidas isoladamente, mas duplicam
+  regras de negócio e tornam reconciliação, auditoria e manutenção mais difíceis;
+- uma resposta agregada não é suficiente para reconstruir Top 5 detalhado, lista
+  completa de hosts, comparativos exatos ou histórico compacto canônico.
+
+#### Uso futuro aceitável
+
+O padrão legado pode inspirar um **modelo de leitura opcional** para prévias,
+validação cruzada ou aceleração de tabelas estritamente agregadas. Antes disso, cada
+consulta deve ter teste de contrato e prova de equivalência contra o dataset
+canônico do mesmo cliente e período, incluindo paginação e casos com mais de 200
+resultados. Em caso de diferença, o snapshot derivado dos exports em volume e das
+regras locais permanece a fonte de verdade.
 
 ### Evidência autenticada da Fase 2 — 2026-08-12
 
