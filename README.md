@@ -55,6 +55,12 @@ O WAS é opcional e tolerante a indisponibilidade: se o cliente não tiver o pro
 ou não houver achados, a parte VM continua sendo gerada. Cloud Security e tradução
 por provedor externo ainda não estão implementados.
 
+A estratégia rápida do projeto legado `RelatorioTenableITP`, baseada em consultas
+projetadas e agregadas da API v3, está preservada no
+[catálogo de APIs](docs/02-catalogo-apis-tenable.md#base-técnica-legada--consultas-projetadas-do-relatoriotenableitp)
+somente como base técnica. Ela pode orientar prévias ou validações futuras, mas não
+substitui o snapshot canônico sem prova de equivalência.
+
 ## Verificação local
 
 ```powershell

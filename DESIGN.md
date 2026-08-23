@@ -239,6 +239,13 @@ As otimizações preferidas são, nesta ordem:
 Concorrência entre muitos clientes deve ser limitada pela orquestração. Velocidade
 não pode sacrificar cobertura, contrato temporal ou rastreabilidade.
 
+O projeto legado `RelatorioTenableITP` obtinha respostas mais rápidas por meio de
+consultas síncronas já filtradas e agregadas no servidor. Esse padrão permanece uma
+referência para futuros modelos de leitura e validação, não uma fonte canônica: seu
+uso exige paginação comprovada e equivalência com o snapshot completo. A análise de
+vantagens e limitações está no
+[catálogo de APIs](docs/02-catalogo-apis-tenable.md#base-técnica-legada--consultas-projetadas-do-relatoriotenableitp).
+
 ## Observabilidade
 
 Eventos estruturados devem permitir responder:
