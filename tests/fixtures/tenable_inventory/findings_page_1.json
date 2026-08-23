@@ -1,0 +1,7 @@
+{
+  "findings": [
+    {"id": "finding-a", "state": "ACTIVE", "severity": "HIGH"},
+    {"id": "finding-b", "state": "RESURFACED", "severity": "MEDIUM"}
+  ],
+  "pagination": {"offset": 0, "limit": 2, "total": 3}
+}

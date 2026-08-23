@@ -1,0 +1,14 @@
+{
+  "properties": [
+    {
+      "name": "last_observed_at",
+      "operators": ["between", "gte", "lte"],
+      "type": "date"
+    },
+    {
+      "name": "state",
+      "operators": ["eq"],
+      "values": ["ACTIVE", "RESURFACED", "FIXED"]
+    }
+  ]
+}
