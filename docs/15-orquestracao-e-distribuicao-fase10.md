@@ -1,5 +1,14 @@
 # Fase 10 - Orquestração e distribuição controlada
 
+## Estado atual — 2026-08-23
+
+Uma execução pode publicar os dois DOCX gerais e documentos operacionais por TAG a
+partir da mesma coleta VM. O registro inclui tentativas, documentos por TAG e a
+referência `MAIN`. Após publicação e persistência do histórico compacto, o staging
+pesado da execução bem-sucedida é removido; falhas ficam disponíveis por janela
+curta para diagnóstico. A interface web é o caminho operacional preferencial para
+cliente individual e carteira.
+
 ## Resultado
 
 A Fase 10 encerra a linha de comando operacional do produto. Ela não altera

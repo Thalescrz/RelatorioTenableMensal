@@ -1,5 +1,14 @@
 # Histórico, regras críticas e tradução
 
+## Estado atual — 2026-08-23
+
+PostgreSQL é o backend operacional do histórico, documentos, tentativas e referência
+`MAIN`; SQLite existe apenas para fixtures e migração controlada. DOCX e histórico
+compacto são duráveis, enquanto raw, snapshots completos e datasets de montagem são
+staging removido após publicação validada. A tradução continua como fronteira de
+apresentação sem provedor automático integrado. As regras históricas abaixo devem
+ser lidas em conjunto com o [guia de arquitetura](20-arquitetura-e-fluxo-de-dados.md).
+
 **Status:** contrato funcional para orientar a implementação  
 **Princípio:** toda tabela deve declarar população, grão, filtros, definição e comportamento de ausência
 

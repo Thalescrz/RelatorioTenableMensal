@@ -1,5 +1,13 @@
 # PostgreSQL: migração e operação
 
+## Estado atual — 2026-08-23
+
+PostgreSQL é a fonte operacional do estado estruturado. DOCX publicados e histórico
+compacto são duráveis; raw, snapshots JSON/JSONL completos, datasets e imagens de
+montagem não são evidências permanentes e são descartados após sucesso validado.
+Falhas preservam staging por prazo curto. SQLite legado permanece apenas como fonte
+de migração controlada ou fixture, não como backend concorrente da operação.
+
 O PostgreSQL local passa a ser a fonte de verdade para o estado estruturado da
 solução. Os arquivos raw, snapshots JSON/JSONL, datasets, DOCX, PDF e logs
 continuam no disco como evidências imutáveis; seus caminhos, hashes e tamanhos

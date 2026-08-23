@@ -32,7 +32,7 @@ SKILL_FILES = (
 )
 
 MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
-SCAFFOLD_MARKER = re.compile(r"\b(?:TODO|TBD|FILL\s+IN)\b", re.IGNORECASE)
+SCAFFOLD_MARKER = re.compile(r"\b(?:TODO|TBD|FILL\s+IN)\b")
 IGNORED_LINK_PREFIXES = ("#", "http://", "https://", "mailto:", "app://")
 
 

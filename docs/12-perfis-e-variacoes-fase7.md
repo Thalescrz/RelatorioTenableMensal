@@ -1,5 +1,14 @@
 # Perfis declarativos e variações — Fase 7
 
+## Estado atual — 2026-08-23
+
+O perfil também controla filtros de validação, coluna `Output`, WAS tolerante a
+indisponibilidade, estratégia/chunk/propriedades da coleta VM e relatórios por TAG.
+A seleção de TAGs para gerar documentos é independente da seleção que recebe
+comparativo. Cloud Security continua previsto no contrato declarativo, mas sua
+coleta e seus módulos não estão implementados; habilitar a intenção não equivale a
+disponibilidade funcional.
+
 **Concluída em:** 2026-08-13
 
 ## Contrato implementado

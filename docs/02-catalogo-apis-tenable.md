@@ -1,5 +1,14 @@
 # Catálogo preliminar das APIs Tenable
 
+## Estado atual — 2026-08-23
+
+O export VM combinado é o padrão, com 1000 ativos por chunk, persistência imediata
+e retomada dos chunks válidos. A conclusão exige estado remoto `FINISHED`; a mera
+existência de `total_chunks` não encerra o job. Propriedades seletivas são opcionais
+por cliente, exigem validação de equivalência no tenant e possuem fallback único
+para payload completo apenas em rejeição HTTP 400 ou contrato incompleto. Timeout é
+classificado como falha temporária. WAS permanece uma coleta separada e opcional.
+
 **Última revisão documental:** 2026-08-12  
 **Escopo:** endpoints relevantes identificados, clientes de export VM e ativos v2 implementados com fixtures offline e contratos autenticados validados em 2026-08-12.
 
