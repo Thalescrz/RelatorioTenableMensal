@@ -27,6 +27,54 @@
 
 ### Task 1: Validador da documentação e das instruções
 
+> **Revisão antes da execução:** as etapas originais desta Task 1 que testam presença
+> ou conteúdo dos manuais foram substituídas pelo contrato abaixo. Prosa humana não
+> será testada por busca textual; o teste cobre o comportamento de um validador real.
+
+**Contrato de execução revisado:**
+
+- Create: `tools/validate_project_guidance.py`
+- Create: `tests/test_project_guidance.py`
+- Produces: `validate_guidance(root: Path) -> tuple[GuidanceIssue, ...]` e uma CLI
+  que retorna zero somente quando arquivos obrigatórios, links locais e frontmatter
+  são válidos.
+
+- [ ] **Step R1: Escrever testes falhando com árvores temporárias**
+
+Os testes importam `validate_guidance` e verificam quatro comportamentos: arquivo
+obrigatório ausente gera `MISSING_REQUIRED_FILE`; link local quebrado gera
+`BROKEN_LOCAL_LINK`; frontmatter inválido gera `INVALID_SKILL_FRONTMATTER`; árvore
+completa e válida retorna tupla vazia.
+
+- [ ] **Step R2: Confirmar RED**
+
+Run: `.\.venv\Scripts\python.exe -m pytest tests\test_project_guidance.py -q`
+
+Expected: erro de importação porque o validador ainda não existe.
+
+- [ ] **Step R3: Implementar o validador mínimo**
+
+`tools/validate_project_guidance.py` define `GuidanceIssue(code, path, message)`,
+aceita `--root` e valida a lista aprovada de documentos, `AGENTS.md`, skills e
+referências. Links externos, `mailto:`, imagens e âncoras puras são ignorados; links
+locais são resolvidos relativamente ao arquivo. Skills exigem `name` igual ao
+diretório e `description` iniciada por `Use when`. Marcadores `TODO`, `TBD` e
+`fill in` são recusados nos artefatos obrigatórios.
+
+- [ ] **Step R4: Confirmar GREEN e o gap do repositório**
+
+Run:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_project_guidance.py -q
+.\.venv\Scripts\python.exe tools\validate_project_guidance.py --root .
+```
+
+Expected: testes passam; a CLI retorna `1` apenas porque manuais, `AGENTS.md` e
+skills ainda serão criados nas tarefas seguintes.
+
+- [ ] **Step R5: Commit do validador testado**
+
 **Files:**
 - Create: `tests/test_project_guidance.py`
 - Test: `tests/test_project_guidance.py`
@@ -196,6 +244,14 @@ git commit -m "docs: add current project handbook"
 
 ### Task 3: Correções factuais nos documentos existentes
 
+> **Revisão antes da execução:** os Steps 1 e 2 originais desta tarefa, baseados em
+> busca de frases, não serão executados. A revisão factual será feita confrontando
+> cada afirmação com código, testes e documentação consolidada; o validador da Task 1
+> continuará cobrindo links e integridade estrutural. As contradições já observadas
+> — WAS/Interface tratados como futuros, retenção pesada permanente e comparativo de
+> TAG atribuído ao DOCX geral — constituem a baseline que esta tarefa precisa
+> eliminar.
+
 **Files:**
 - Modify: `docs/02-catalogo-apis-tenable.md`
 - Modify: `docs/05-historico-regras-criticas-e-traducao.md`
@@ -331,6 +387,14 @@ git commit -m "docs: add scoped agent instructions"
 
 ### Task 5: Skill `operating-tenable-reports`
 
+> **Revisão antes da execução:** o teste automatizado desta skill cobre frontmatter,
+> nome e referências por meio do validador; ele não procura respostas literais na
+> prosa. A baseline falhou por contradições entre os runbooks atuais sobre retenção,
+> recursos concluídos e destino do comparativo por TAG. Depois da criação, os três
+> cenários do Step 5 serão respondidos usando somente a skill e conferidos contra o
+> código/documentação atual. Um forward-test com subagente não será iniciado porque
+> esta execução não recebeu autorização para delegação.
+
 **Files:**
 - Create: `.agents/skills/operating-tenable-reports/SKILL.md`
 - Create: `.agents/skills/operating-tenable-reports/references/runbook.md`
@@ -397,6 +461,14 @@ git commit -m "docs: add Tenable report operations skill"
 ### Task 6: Skill `validating-tenable-report-data`
 
 **Files:**
+> **Revisão antes da execução:** o teste automatizado desta skill cobre frontmatter,
+> nome e referências por meio do validador; ele não fixa respostas por busca textual.
+> A baseline é a dificuldade já observada em distinguir filtros de não mitigadas,
+> mitigadas e ressurgidas e em separar `Exploitable` geral dos flags de frameworks.
+> Depois da criação, os três cenários do Step 5 serão respondidos usando somente a
+> skill e conferidos contra as regras de domínio. Um forward-test com subagente não
+> será iniciado porque esta execução não recebeu autorização para delegação.
+
 - Create: `.agents/skills/validating-tenable-report-data/SKILL.md`
 - Create: `.agents/skills/validating-tenable-report-data/references/data-contract.md`
 - Modify: `tests/test_project_guidance.py`
