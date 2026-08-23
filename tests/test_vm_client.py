@@ -319,6 +319,48 @@ class TenableVmClientTests(unittest.TestCase):
         self.assertTrue(caught.exception.last_status["stalled"])
         self.assertGreaterEqual(caught.exception.last_status["idle_seconds"], 20)
 
+    def test_no_progress_timeout_is_distinct_from_total_processing_timeout(self) -> None:
+        transport = FakeTransport([
+            response(200, {
+                "status": "PROCESSING",
+                "chunks_available": [1],
+                "finished_chunks": 1,
+                "total_chunks": 8,
+            }),
+            response(200, {
+                "status": "PROCESSING",
+                "chunks_available": [1],
+                "finished_chunks": 1,
+                "total_chunks": 8,
+            }),
+        ])
+        times = iter((0.0, 1.0, 17.0))
+        client = TenableVmClient(
+            TenableVmConfig(
+                access_key="access-fixture",
+                secret_key="secret-fixture",
+                poll_seconds=0,
+                max_wait_seconds=10,
+                max_processing_wait_seconds=60,
+                no_progress_timeout_seconds=15,
+            ),
+            transport=transport,
+            sleep=lambda _: None,
+            monotonic=lambda: next(times),
+        )
+
+        with self.assertRaises(ExportTimeoutError) as caught:
+            client.wait_for_completion("job-no-progress")
+
+        self.assertEqual(caught.exception.timeout_phase, "no_progress")
+        self.assertTrue(caught.exception.progress_made)
+        self.assertEqual(caught.exception.last_status["completed_chunks"], 1)
+        self.assertGreaterEqual(caught.exception.last_status["idle_seconds"], 16)
+        self.assertTrue(caught.exception.last_status["stalled"])
+        self.assertEqual(
+            caught.exception.last_status["no_progress_timeout_seconds"],
+            15,
+        )
     def test_processing_polling_backs_off_until_new_progress(self) -> None:
         sleeps: list[float] = []
         transport = FakeTransport([

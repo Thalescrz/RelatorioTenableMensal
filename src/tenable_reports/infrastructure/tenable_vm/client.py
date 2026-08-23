@@ -89,6 +89,7 @@ class TenableVmConfig:
     max_wait_seconds: float = 1800.0
     max_processing_wait_seconds: float = 7200.0
     stall_warning_seconds: float = 1800.0
+    no_progress_timeout_seconds: float | None = None
     max_attempts: int = 5
     ca_bundle: str | None = None
     validate_tls: bool = True
@@ -106,6 +107,8 @@ class TenableVmConfig:
             or self.max_wait_seconds <= 0
             or self.max_processing_wait_seconds <= 0
             or self.stall_warning_seconds <= 0
+            or (self.no_progress_timeout_seconds is not None
+                and self.no_progress_timeout_seconds <= 0)
         ):
             raise ValueError(
                 "Timeouts devem ser positivos e poll_seconds nao pode ser negativo."
@@ -624,6 +627,7 @@ class TenableVmClient:
         label: str,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
         chunk_callback: Callable[[int], None] | None = None,
+        no_progress_timeout_seconds: float | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         started = self.monotonic()
         seen: list[int] = []
@@ -641,7 +645,13 @@ class TenableVmClient:
             current = self.completed_chunk_ids(status)
             now = self.monotonic()
             elapsed = max(0.0, now - started)
-            state_changed = state != last_state
+            state_rank = {
+                "": -1, "queued": 0, "processing": 1,
+                "finished": 2, "completed": 2, "complete": 2, "ready": 2,
+            }
+            state_advanced = (
+                state_rank.get(state, 0) > state_rank.get(last_state, -1)
+            )
 
             if processing_started_at is None and state not in {"", "queued"}:
                 processing_started_at = now
@@ -664,7 +674,7 @@ class TenableVmClient:
                 progress_made = True
                 last_progress_at = now
                 idle_polls = 0
-            elif state_changed:
+            elif state_advanced:
                 last_progress_at = now
                 idle_polls = 0
             else:
@@ -693,6 +703,11 @@ class TenableVmClient:
                 self.chunk_count(status, "chunks_cancelled"),
                 self.chunk_count(status, "cancelled_chunks"),
             )
+            stall_threshold = self.config.stall_warning_seconds
+            if no_progress_timeout_seconds is not None:
+                stall_threshold = min(
+                    stall_threshold, no_progress_timeout_seconds
+                )
             progress = {
                 **status,
                 "export_uuid": export_uuid,
@@ -704,10 +719,14 @@ class TenableVmClient:
                 "elapsed_seconds": round(elapsed, 3),
                 "processing_elapsed_seconds": round(processing_elapsed, 3),
                 "idle_seconds": round(idle_seconds, 3),
+                "last_progress_elapsed_seconds": round(
+                    max(0.0, last_progress_at - started), 3
+                ),
+                "no_progress_timeout_seconds": no_progress_timeout_seconds,
                 "stalled": bool(
                     processing_started_at is not None
                     and state not in SUCCESS_STATES
-                    and idle_seconds >= self.config.stall_warning_seconds
+                    and idle_seconds >= stall_threshold
                 ),
                 "progress_made": progress_made,
             }
@@ -726,6 +745,20 @@ class TenableVmClient:
                 return status, seen
             if state in FAILURE_STATES:
                 raise ExportFailedError(f"Export {label} terminou com estado {state}.")
+            no_progress_limit = no_progress_timeout_seconds
+            if (
+                processing_started_at is not None
+                and no_progress_limit is not None
+                and idle_seconds >= no_progress_limit
+            ):
+                raise ExportTimeoutError(
+                    f"Export {label} ficou sem progresso por "
+                    f"{int(idle_seconds)} segundos.",
+                    export_uuid=export_uuid,
+                    last_status={**progress, "timeout_phase": "no_progress"},
+                    progress_made=progress_made,
+                    timeout_phase="no_progress",
+                )
             if processing_started_at is None and elapsed >= self.config.max_wait_seconds:
                 raise ExportTimeoutError(
                     f"Tempo maximo excedido na fila do export {label}.",
@@ -767,6 +800,7 @@ class TenableVmClient:
             export_uuid,
             self.get_export_status,
             label="VM",
+            no_progress_timeout_seconds=self.config.no_progress_timeout_seconds,
             progress_callback=progress_callback,
             chunk_callback=chunk_callback,
         )

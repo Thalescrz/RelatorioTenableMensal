@@ -119,6 +119,23 @@ class VmExportPolicyResult:
     fallback_reason: str | None = None
 
 
+def recovery_vm_strategy(
+    *,
+    current_strategy: str,
+    failure: BaseException,
+    explicit_retry: bool,
+) -> str:
+    strategy = str(current_strategy).strip().lower()
+    if strategy not in {"combined", "split"}:
+        raise ValueError("current_strategy deve ser combined ou split.")
+    if (
+        explicit_retry
+        and strategy == "combined"
+        and getattr(failure, "timeout_phase", None) == "no_progress"
+    ):
+        return "split"
+    return strategy
+
 def selective_vm_properties(*, include_output: bool) -> tuple[str, ...]:
     if include_output:
         return (*VM_REPORT_PROPERTIES, "output")

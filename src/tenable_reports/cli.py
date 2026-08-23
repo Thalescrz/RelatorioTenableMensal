@@ -298,7 +298,11 @@ def _schema_summary(records: Sequence[Mapping[str, Any]]) -> dict[str, list[str]
     return {path: sorted(types) for path, types in sorted(observed.items())}
 
 
-def _client_from_environment(credentials: CredentialConfig) -> TenableVmClient:
+def _client_from_environment(
+    credentials: CredentialConfig,
+    *,
+    no_progress_timeout_seconds: float | None = None,
+) -> TenableVmClient:
     return TenableVmClient(
         TenableVmConfig(
             access_key=credentials.access_key,
@@ -310,6 +314,7 @@ def _client_from_environment(credentials: CredentialConfig) -> TenableVmClient:
             max_wait_seconds=credentials.export_queue_timeout_seconds,
             max_processing_wait_seconds=credentials.export_processing_timeout_seconds,
             stall_warning_seconds=credentials.export_stall_warning_seconds,
+            no_progress_timeout_seconds=no_progress_timeout_seconds,
             ca_bundle=credentials.ca_bundle,
             validate_tls=credentials.validate_tls,
         )
@@ -1085,7 +1090,19 @@ def _execute_period(
         )
     else:
         credentials = _load_credentials(args.env_file)
-        client = _client_from_environment(credentials)
+        no_progress_timeout_seconds = float(getattr(
+            profile.reporting.vm_export,
+            (
+                "automatic_no_progress_seconds"
+                if execution_type == "AUTOMATIC_MONTHLY"
+                else "manual_no_progress_seconds"
+            ),
+            1800 if execution_type == "AUTOMATIC_MONTHLY" else 900,
+        ))
+        client = _client_from_environment(
+            credentials,
+            no_progress_timeout_seconds=no_progress_timeout_seconds,
+        )
         was_client = _was_client_from_environment(credentials)
         inventory_client = _inventory_client_from_environment(credentials)
         selected_tags = _selected_tags(client, profile, args)

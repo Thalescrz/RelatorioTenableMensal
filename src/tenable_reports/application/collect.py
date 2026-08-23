@@ -576,6 +576,8 @@ def collect_vm_snapshot(
         exc.origin = job.origin
         exc.last_status = {
             **exc.last_status,
+            "origin": job.origin,
+            "query": sanitized_mapping(query),
             "persisted_chunks": sorted(stored_chunks),
             "partial_manifest": (
                 str(partial_manifest_path.resolve())
@@ -586,7 +588,10 @@ def collect_vm_snapshot(
         exc.progress_made = bool(exc.progress_made or local_progress)
         auto_cancelled = False
         cancellation_error: str | None = None
-        if job.created_by_current_run and not exc.progress_made:
+        if job.created_by_current_run and (
+            not exc.progress_made
+            or exc.timeout_phase == "no_progress"
+        ):
             try:
                 client.cancel_vulnerability_export(actual_export_uuid)
                 auto_cancelled = True

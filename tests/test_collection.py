@@ -127,9 +127,10 @@ class TimedOutCollectionClient:
 
 
 class IncrementalTimeoutCollectionClient(TimedOutCollectionClient):
-    def __init__(self, *, origin: str = "created") -> None:
+    def __init__(self, *, origin: str = "created", timeout_phase: str | None = None) -> None:
         super().__init__(origin=origin)
         self.download_calls: list[int] = []
+        self.timeout_phase = timeout_phase
 
     def wait_for_completion(
         self,
@@ -155,6 +156,7 @@ class IncrementalTimeoutCollectionClient(TimedOutCollectionClient):
             export_uuid=export_uuid,
             last_status=status,
             progress_made=True,
+            timeout_phase=self.timeout_phase,
         )
 
     def download_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:
@@ -342,6 +344,23 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(state["status"], "TIMED_OUT")
         self.assertTrue(state["auto_cancelled"])
         self.assertEqual(progress[-1]["event"], "TENABLE_EXPORT_PROGRESS")
+
+    def test_current_run_no_progress_timeout_cancels_even_after_prior_chunk(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = IncrementalTimeoutCollectionClient(timeout_phase="no_progress")
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExportTimeoutError) as caught:
+                collect_vm_snapshot(
+                    client=client,  # type: ignore[arg-type]
+                    profile=profile,
+                    request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                    output_root=directory,
+                    run_id="run-stalled-after-progress",
+                )
+
+        self.assertEqual(client.cancelled, ["fixture-stuck-export"])
+        self.assertTrue(caught.exception.progress_made)
+        self.assertTrue(caught.exception.auto_cancelled)
 
     def test_reused_stuck_export_is_never_auto_cancelled(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
