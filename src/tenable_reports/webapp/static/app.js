@@ -47,11 +47,21 @@ function sourceProgressCopy(progress, label) {
   const current = Number(progress.completed_chunks || 0);
   const total = Number(progress.total_chunks || 0);
   const chunks = total > 0 ? current + "/" + total + " chunks" : current + " chunks";
+  const details = [
+    chunks,
+    progress.export_uuid ? "UUID " + progress.export_uuid : "",
+    progress.origin ? "origem " + progress.origin : "",
+    progress.date_field ? "filtro " + progress.date_field : "",
+  ].filter(Boolean).join(" · ");
   if (progress.stalled) {
     const minutes = Math.max(1, Math.floor(Number(progress.idle_seconds || 0) / 60));
-    return label + " sem novos chunks há " + minutes + " min · " + chunks;
+    const noProgressLimit = Number(progress.no_progress_timeout_seconds || 0);
+    const limit = noProgressLimit > 0
+      ? " · limite " + Math.max(1, Math.floor(noProgressLimit / 60)) + " min"
+      : "";
+    return label + " sem novos chunks há " + minutes + " min" + limit + " · " + details;
   }
-  return label + " · " + chunks;
+  return label + " · " + details;
 }
 
 function exportProgressCopy(job) {
@@ -60,6 +70,16 @@ function exportProgressCopy(job) {
 
 function wasExportProgressCopy(job) {
   return sourceProgressCopy(job?.was_export_progress, "Export WEB");
+}
+
+function collectionOutcomeCopy(job) {
+  if (job?.reconstruction_status === "HISTORICAL_RECONSTRUCTION") {
+    return "HISTÓRICO RECONSTRUÍDO · Inventory Findings";
+  }
+  if (job?.collection_route === "snapshot_replay") {
+    return "SNAPSHOT HISTÓRICO REUTILIZADO";
+  }
+  return null;
 }
 
 function documentKind(document) {
@@ -121,7 +141,7 @@ function render() {
 
   const filtered = clients.filter(c => `${c.display_name} ${c.client_id} ${c.tenant_id}`.toLowerCase().includes(state.filter));
   $("#empty-state").classList.toggle("hidden", clients.length > 0);
-  $("#client-grid").innerHTML = filtered.map((client, index) => {
+  $("#client-grid").innerHTML = filtered.map(client => {
     const status = statusFor(client); const job = client.job;
     const progress = job?.progress ?? (client.latest_report ? 100 : 0);
     const report = client.latest_report;
@@ -133,12 +153,12 @@ function render() {
     const validation = job?.vm_export_validation;
     const completedCopy = validation
       ? `Validação do export: ${validation.outcome === "PASSED" ? "aprovada" : "revisar"}`
-      : report ? `${report.document_count} documento(s)` : "Aguardando primeira execução";
-    return `<article class="client-card" data-client="${escapeHtml(client.client_id)}" style="animation-delay:${Math.min(index * 45, 300)}ms" tabindex="0">
+      : collectionOutcomeCopy(job) || (report ? `${report.document_count} documento(s)` : "Aguardando primeira execução");
+    return `<article class="client-card" data-client="${escapeHtml(client.client_id)}" tabindex="0">
       <div class="card-top"><span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? '<span class="warning-badge" title="Há um alerta">!</span>' : ""}</div>
       <h3>${escapeHtml(client.display_name)}</h3><p class="client-meta">${escapeHtml(client.client_id)}<br>${escapeHtml(client.tenant_id || "tenant não informado")}</p>
       <div class="card-report"><span>Último relatório</span><strong>${report ? escapeHtml(report.period_id || formatDate(report.ended_at)) : "Ainda não gerado"}</strong></div>
-      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(runningCopy) : job?.status === "QUEUED" ? "Aguardando execução" : job?.status === "FAILED" ? "Execução interrompida" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><div class="progress-bar ${job?.status === "RUNNING" && !job?.tag_progress ? "running" : ""}" style="width:${progress}%"></div></div></div>
+      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(runningCopy) : job?.status === "QUEUED" ? "Aguardando execução" : job?.status === "FAILED" ? "Execução interrompida" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div></div>
     </article>`;
   }).join("");
   document.querySelectorAll(".client-card").forEach(card => {
@@ -256,7 +276,10 @@ function renderAlerts() {
   $("#alerts-list").innerHTML = items.length ? items.map(a => {
     const stuck = a.export?.status === "TIMED_OUT" && !a.export?.auto_cancelled;
     const segmentCopy = a.export?.segment ? ` · segmento ${a.export.segment === "fixed" ? "corrigidas / last_fixed" : "ativas e reabertas / last_found"}` : "";
-    const exportCopy = a.export?.export_uuid ? `<p><small>Export VM: ${escapeHtml(a.export.export_uuid)} · ${Number(a.export.completed_chunks || 0)}/${Number(a.export.total_chunks || 0)} chunks · origem ${escapeHtml(a.export.origin || "desconhecida")}${segmentCopy}</small></p>` : "";
+    const idleCopy = a.export?.idle_seconds ? ` · sem progresso há ${Math.max(1, Math.floor(Number(a.export.idle_seconds) / 60))} min` : "";
+    const limitCopy = a.export?.no_progress_timeout_seconds ? ` · limite ${Math.max(1, Math.floor(Number(a.export.no_progress_timeout_seconds) / 60))} min` : "";
+    const routeCopy = a.export?.date_field ? ` · filtro ${escapeHtml(a.export.date_field)}` : "";
+    const exportCopy = a.export?.export_uuid ? `<p><small>Export VM: ${escapeHtml(a.export.export_uuid)} · ${Number(a.export.completed_chunks || 0)}/${Number(a.export.total_chunks || 0)} chunks · origem ${escapeHtml(a.export.origin || "desconhecida")}${segmentCopy}${routeCopy}${idleCopy}${limitCopy}</small></p>` : "";
     const action = !a.job_id ? "" : stuck
       ? `<p><button class="mini-button danger" data-cancel-export-job="${escapeHtml(a.job_id)}" data-export-uuid="${escapeHtml(a.export.export_uuid)}" type="button">Cancelar export e tentar novamente</button></p>`
       : `<p><button class="mini-button" data-retry-job="${escapeHtml(a.job_id)}" type="button">Tentar novamente</button></p>`;
@@ -433,6 +456,7 @@ function resetClientForm() {
   clientForm.elements.vm_export_strategy.value = "combined";
   clientForm.elements.vm_num_assets_per_chunk.value = "1000";
   clientForm.elements.vm_selective_properties.value = "disabled";
+  clientForm.elements.historical_source.value = "legacy";
   $("#validate-vm-export-button").disabled = true;
   state.availableTags = [];
   state.tagSearch = "";
@@ -476,6 +500,7 @@ function editClient(clientId) {
   clientForm.elements.vm_export_strategy.value = client.vm_export_strategy || "combined";
   clientForm.elements.vm_num_assets_per_chunk.value = String(client.vm_num_assets_per_chunk || 1000);
   clientForm.elements.vm_selective_properties.value = client.vm_selective_properties || "disabled";
+  clientForm.elements.historical_source.value = client.historical_source || "legacy";
   $("#validate-vm-export-button").disabled = !client.credentials_ready || !client.enabled;
   $("#client-form-mode").textContent = "EDITANDO";
   $("#client-form-title").textContent = client.display_name;
@@ -544,6 +569,15 @@ $("#run-form").addEventListener("submit", async event => {
   if (type === "range") {
     if (!form.get("start_at") || !form.get("end_at")) { toast("Informe o início e o fim do período.", "error"); return; }
     payload.start_at = new Date(form.get("start_at")).toISOString(); payload.end_at = new Date(form.get("end_at")).toISOString();
+    const inventoryClients = state.runClientIds
+      .map(clientId => state.data?.clients.find(client => client.client_id === clientId))
+      .filter(client => client?.historical_source === "inventory_beta");
+    if (inventoryClients.length) {
+      const names = inventoryClients.map(client => client.display_name).join(", ");
+      const message = `Se não houver snapshot compacto exato, o período será reconstruído pela Inventory Findings API para: ${names}. O resultado será identificado como histórico reconstruído. Deseja continuar?`;
+      if (!window.confirm(message)) return;
+      payload.confirm_historical_reconstruction = true;
+    }
   }
   const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
   try { const result = await api("/api/jobs", { method: "POST", body: payload }); $("#run-dialog").close(); await refresh(); toast(`${result.jobs.length} execução(ões) adicionada(s) à fila.`); }

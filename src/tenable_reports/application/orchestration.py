@@ -87,6 +87,7 @@ class OrchestrationRequest:
     dry_run: bool = False
     apply_retention_policy: bool = True
     vm_selective_mode: str | None = None
+    vm_export_strategy: str | None = None
     historical_source: str | None = None
 
 
@@ -455,6 +456,10 @@ def _validate_request(request: OrchestrationRequest) -> None:
         raise ValueError(
             "vm_selective_mode deve ser disabled, validation ou enabled."
         )
+    if request.vm_export_strategy not in {None, "combined", "split"}:
+        raise ValueError(
+            "vm_export_strategy deve ser combined ou split."
+        )
     if request.historical_source not in {None, "legacy", "inventory-beta"}:
         raise ValueError(
             "historical_source deve ser legacy ou inventory-beta."
@@ -522,6 +527,8 @@ def build_client_command(
     ]
     if request.vm_selective_mode:
         command.extend(("--vm-selective-mode", request.vm_selective_mode))
+    if request.vm_export_strategy:
+        command.extend(("--vm-export-strategy", request.vm_export_strategy))
     if request.historical_source:
         command.extend(("--historical-source", request.historical_source))
     if request.reference_at:

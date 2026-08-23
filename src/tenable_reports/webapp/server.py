@@ -38,6 +38,7 @@ from tenable_reports.application.report_registry import (
     ReportRegistry,
 )
 from tenable_reports.application.storage_guard import required_free_bytes
+from tenable_reports.application.vm_export_policy import recovery_vm_strategy
 from tenable_reports.application.tag_scope import parse_tag_values
 from tenable_reports.application.retention import (
     TRANSIENT_CATEGORIES,
@@ -59,7 +60,11 @@ from tenable_reports.infrastructure.postgresql import (
 )
 from tenable_reports.infrastructure.report_registry_postgresql import PostgresReportRegistry
 from tenable_reports.domain.report_reference import reference_key_for_candidate
-from tenable_reports.infrastructure.tenable_vm.client import TenableVmClient, TenableVmConfig
+from tenable_reports.infrastructure.tenable_vm.client import (
+    ExportTimeoutError,
+    TenableVmClient,
+    TenableVmConfig,
+)
 
 
 STATIC_DIRECTORY = Path(__file__).with_name("static")
@@ -384,6 +389,9 @@ class DashboardConfigStore:
                 "vm_selective_properties": str(
                     vm_export.get("selective_properties") or "disabled"
                 ),
+                "historical_source": str(
+                    vm_export.get("historical_source") or "legacy"
+                ),
                 "tag_reports_enabled": bool(tag_reports.get("enabled", False)),
                 "tag_reports": self._tag_reports(tag_reports.get("tags")),
             })
@@ -469,6 +477,10 @@ class DashboardConfigStore:
                         "selective_properties": str(
                             values.get("vm_selective_properties") or "disabled"
                         ).strip().lower(),
+                        "historical_source": str(
+                            values.get("historical_source") or "legacy"
+                        ).strip().lower(),
+                        "historical_fallback": "warn_legacy",
                     },
                 },
             }
@@ -549,6 +561,7 @@ class DashboardConfigStore:
                 "vm_export_strategy",
                 "vm_num_assets_per_chunk",
                 "vm_selective_properties",
+                "historical_source",
             }
             if vm_fields.intersection(values):
                 reporting = profile.setdefault("reporting", {})
@@ -565,6 +578,11 @@ class DashboardConfigStore:
                     vm_export["selective_properties"] = str(
                         values["vm_selective_properties"]
                     ).strip().lower()
+                if "historical_source" in values:
+                    vm_export["historical_source"] = str(
+                        values["historical_source"]
+                    ).strip().lower()
+                    vm_export.setdefault("historical_fallback", "warn_legacy")
                 ClientProfile.from_dict(profile)
                 profile_changed = True
             if "tag_reports_enabled" in values or "tag_reports" in values:
@@ -906,6 +924,16 @@ class JobQueue:
         )
         if vm_selective_mode not in {None, "disabled", "validation", "enabled"}:
             raise ValueError("Modo seletivo VM invalido.")
+        vm_export_strategy = (
+            str(request.get("vm_export_strategy") or "").strip().lower() or None
+        )
+        if vm_export_strategy not in {None, "combined", "split"}:
+            raise ValueError("Estrategia de export VM invalida.")
+        historical_source = (
+            str(request.get("historical_source") or "").strip().lower() or None
+        )
+        if historical_source not in {None, "legacy", "inventory-beta"}:
+            raise ValueError("Fonte historica invalida.")
         days = request.get("days")
         start_at = str(request.get("start_at") or "").strip() or None
         end_at = str(request.get("end_at") or "").strip() or None
@@ -939,6 +967,11 @@ class JobQueue:
                     "start_at": start_at,
                     "end_at": end_at,
                     "vm_selective_mode": vm_selective_mode,
+                    "vm_export_strategy": vm_export_strategy,
+                    "historical_source": historical_source,
+                    "confirm_historical_reconstruction": bool(
+                        request.get("confirm_historical_reconstruction", False)
+                    ),
                     "status": "QUEUED",
                     "progress": 8,
                     "created_at": _utc_now(),
@@ -951,6 +984,9 @@ class JobQueue:
                     "was_export_progress": None,
                     "warnings": [],
                     "vm_export_validation": None,
+                    "collection_route": None,
+                    "reconstruction_status": None,
+                    "collection_sources": [],
                 }
                 self._jobs[job_id] = job
                 self._pending.put(job_id)
@@ -990,7 +1026,12 @@ class JobQueue:
                 raise ValueError("O export VM ja foi cancelado automaticamente.")
             return str(job["client_id"]), dict(export)
 
-    def retry(self, job_id: str) -> dict[str, Any]:
+    def retry(
+        self,
+        job_id: str,
+        *,
+        explicit_export_recovery: bool = False,
+    ) -> dict[str, Any]:
         with self._lock:
             original = self._jobs.get(job_id)
             if original is None:
@@ -1003,7 +1044,29 @@ class JobQueue:
                 "start_at": original["start_at"],
                 "end_at": original["end_at"],
                 "vm_selective_mode": original.get("vm_selective_mode"),
+                "vm_export_strategy": original.get("vm_export_strategy"),
+                "historical_source": original.get("historical_source"),
+                "confirm_historical_reconstruction": original.get(
+                    "confirm_historical_reconstruction", False
+                ),
             }
+            if explicit_export_recovery:
+                export = original.get("export_progress")
+                timeout_phase = (
+                    str(export.get("timeout_phase") or "")
+                    if isinstance(export, Mapping) else ""
+                )
+                failure = ExportTimeoutError(
+                    "Recuperacao explicita de export VM.",
+                    timeout_phase=timeout_phase or None,
+                )
+                request["vm_export_strategy"] = recovery_vm_strategy(
+                    current_strategy=(
+                        str(original.get("vm_export_strategy") or "combined")
+                    ),
+                    failure=failure,
+                    explicit_retry=True,
+                )
             client_id = original["client_id"]
         created = self.enqueue([client_id], request)
         if not created:
@@ -1056,6 +1119,14 @@ class JobQueue:
                 command.extend((
                     "--vm-selective-mode", job["vm_selective_mode"]
                 ))
+            if job.get("vm_export_strategy"):
+                command.extend((
+                    "--vm-export-strategy", job["vm_export_strategy"]
+                ))
+            if job.get("historical_source"):
+                command.extend((
+                    "--historical-source", job["historical_source"]
+                ))
             if job["days"] is not None:
                 command.extend(("--days", str(job["days"])))
             if job["start_at"]:
@@ -1087,8 +1158,11 @@ class JobQueue:
                                 "elapsed_seconds",
                                 "processing_elapsed_seconds",
                                 "idle_seconds",
+                                "last_progress_elapsed_seconds",
+                                "no_progress_timeout_seconds",
                                 "stalled",
                                 "timeout_phase",
+                                "filters",
                                 "progress_made",
                                 "auto_cancelled",
                                 "cancellation_error",
@@ -1140,6 +1214,17 @@ class JobQueue:
                     for warning in client_payload.get("warnings") or ()
                     if isinstance(warning, Mapping)
                 ]
+                collection_payload = next(iter(client_payloads), None)
+                if collection_payload is not None:
+                    job["collection_route"] = collection_payload.get(
+                        "collection_route"
+                    )
+                    job["reconstruction_status"] = collection_payload.get(
+                        "reconstruction_status"
+                    )
+                    job["collection_sources"] = list(
+                        collection_payload.get("collection_sources") or ()
+                    )
                 validation_payload = next(
                     (
                         client_payload for client_payload in client_payloads
@@ -1491,6 +1576,44 @@ class DashboardApplication:
             "skipped": skipped,
         }
 
+    def enqueue_jobs(
+        self,
+        client_ids: Sequence[str],
+        request: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        clients = {item["client_id"]: item for item in self.config.list_clients()}
+        exact_period = bool(request.get("start_at") and request.get("end_at"))
+        historical_clients = [
+            client_id
+            for client_id in client_ids
+            if str(clients.get(client_id, {}).get("historical_source") or "legacy")
+            == "inventory_beta"
+        ]
+        if (
+            exact_period
+            and historical_clients
+            and not bool(request.get("confirm_historical_reconstruction", False))
+        ):
+            raise ValueError(
+                "O periodo historico pode exigir reconstrucao pela Inventory API "
+                "quando nao houver snapshot. Confirme a reconstrucao para continuar."
+            )
+
+        created: list[dict[str, Any]] = []
+        for client_id in client_ids:
+            client = clients.get(client_id)
+            if client is None:
+                raise ValueError(f"Cliente nao encontrado: {client_id}")
+            client_request = dict(request)
+            client_request["historical_source"] = str(
+                client.get("historical_source") or "legacy"
+            ).replace("_", "-")
+            client_request["vm_export_strategy"] = str(
+                client.get("vm_export_strategy") or "combined"
+            )
+            created.extend(self.jobs.enqueue([client_id], client_request))
+        return created
+
     def cancel_export_and_retry(
         self,
         *,
@@ -1508,7 +1631,7 @@ class DashboardApplication:
         cancelled = dict(self.export_canceller(
             self.config.client_env_path(client_id), normalized_uuid
         ))
-        retried = self.jobs.retry(job_id)
+        retried = self.jobs.retry(job_id, explicit_export_recovery=True)
         return {
             "cancelled_export": {**export, **cancelled},
             "job": retried,
@@ -1766,7 +1889,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 requested = payload.get("client_ids") or sorted(known)
                 if not isinstance(requested, list) or any(item not in known for item in requested):
                     raise ValueError("Ha clientes inexistentes ou desabilitados na selecao.")
-                jobs = self.app.jobs.enqueue(requested, payload)
+                jobs = self.app.enqueue_jobs(requested, payload)
                 if not jobs:
                     raise ValueError("Os clientes selecionados ja estao na fila ou em execucao.")
                 self._json(HTTPStatus.ACCEPTED, {"jobs": jobs})

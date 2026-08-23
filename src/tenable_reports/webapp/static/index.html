@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Operações · Relatórios Tenable</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -144,8 +145,14 @@
                 <option value="enabled">Ativadas após validação</option>
               </select>
             </label>
+            <label class="historical-source-field">Fonte para períodos históricos
+              <select name="historical_source">
+                <option value="legacy" selected>Export VM tradicional · estável</option>
+                <option value="inventory_beta">Inventory Findings · beta e limitada ao período</option>
+              </select>
+            </label>
           </div>
-          <p>A validação compara duas exportações reais e mantém a coleta completa como fonte do relatório.</p>
+          <p>A validação compara duas exportações reais e mantém a coleta completa como fonte do relatório. A fonte beta só é usada quando não existe um snapshot compacto exato para o período solicitado.</p>
         </section>
         <p class="form-note" id="client-form-note">As chaves ficam apenas no arquivo local ignorado pelo Git e nunca retornam à tela.</p>
         <div class="form-actions">

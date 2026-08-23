@@ -1696,6 +1696,7 @@ def command_orchestrate(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             apply_retention_policy=args.apply_retention,
             vm_selective_mode=args.vm_selective_mode,
+            vm_export_strategy=args.vm_export_strategy,
             historical_source=args.historical_source,
         ),
         run_status=retention_state.get("run_status"),
@@ -2274,6 +2275,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--vm-selective-mode",
         choices=("disabled", "validation", "enabled"),
         help="Sobrescreve o modo de properties VM dos clientes selecionados.",
+    )
+    orchestrate.add_argument(
+        "--vm-export-strategy",
+        choices=("combined", "split"),
+        help="Sobrescreve a estrategia VM dos clientes selecionados.",
     )
     orchestrate.add_argument(
         "--historical-source",
