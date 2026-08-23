@@ -415,6 +415,7 @@ def collect_vm_snapshot(
     minimum_free_gb: int = 10,
     last_success_bytes: int | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    plugin_catalog_callback: Callable[[Iterable[Mapping[str, Any]]], None] | None = None,
     snapshot_suffix: str | None = None,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
@@ -532,6 +533,8 @@ def collect_vm_snapshot(
                 chunk_id=actual_chunk_id,
             )
         )
+        if plugin_catalog_callback is not None:
+            plugin_catalog_callback(iter_chunk_records(stored.path))
         stored_chunks[actual_chunk_id] = stored
         _write_json_replace(
             partial_manifest_path,
@@ -684,6 +687,7 @@ def collect_vm_snapshot_by_state(
     strategy: str = "combined",
     minimum_free_gb: int = 10,
     last_success_bytes: int | None = None,
+    plugin_catalog_callback: Callable[[Iterable[Mapping[str, Any]]], None] | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     snapshot_suffix: str | None = None,
 ) -> CollectionResult:
@@ -716,6 +720,7 @@ def collect_vm_snapshot_by_state(
             logical_job_id=logical_job_id,
             minimum_free_gb=minimum_free_gb,
             last_success_bytes=last_success_bytes,
+            plugin_catalog_callback=plugin_catalog_callback,
             progress_callback=progress_callback,
             snapshot_suffix=snapshot_suffix,
         )
@@ -757,6 +762,7 @@ def collect_vm_snapshot_by_state(
             ),
             minimum_free_gb=minimum_free_gb,
             last_success_bytes=last_success_bytes,
+            plugin_catalog_callback=plugin_catalog_callback,
             progress_callback=forward_progress,
             snapshot_suffix=(f"{snapshot_suffix}-{segment_name}" if snapshot_suffix else segment_name),
         )

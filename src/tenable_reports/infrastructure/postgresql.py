@@ -261,6 +261,7 @@ class PostgresDatabase:
             "report_reference_events",
             "artifacts",
             "legacy_sqlite_imports",
+            "plugin_catalog",
         )
         with self.connection() as connection:
             server = connection.execute(
