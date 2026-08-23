@@ -90,7 +90,7 @@ class NormalizedFinding:
     source_finding_id: str | None
     source_asset_id: str
     asset_key: str | None
-    plugin_id: int
+    plugin_id: int | None
     plugin_name: str | None
     plugin_family: str | None
     cves: tuple[str, ...]
