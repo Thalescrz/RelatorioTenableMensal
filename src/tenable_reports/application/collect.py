@@ -336,6 +336,19 @@ def find_resumable_vm_manifest(
             payload = json.loads(candidate.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
+        state_path = candidate.with_name("export-state.json")
+        try:
+            export_state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            export_state = {}
+        remote_status = str(export_state.get("status") or "").upper()
+        if (
+            remote_status in {
+                "CANCELLED", "CANCELED", "FAILED", "ERROR", "ABORTED",
+            }
+            or bool(export_state.get("auto_cancelled"))
+        ):
+            continue
         if (
             payload.get("source") != "tenable_vm_vulnerabilities"
             or payload.get("client_id") != profile.client_id

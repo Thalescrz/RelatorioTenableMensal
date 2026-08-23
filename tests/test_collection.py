@@ -473,6 +473,38 @@ class CollectionTests(unittest.TestCase):
                 )
             )
 
+    def test_resume_discovery_skips_remote_terminal_export(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        request = VulnerabilityExportRequest(filters={"state": ["OPEN"]})
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExportTimeoutError):
+                collect_vm_snapshot(
+                    client=IncrementalTimeoutCollectionClient(),  # type: ignore[arg-type]
+                    profile=profile,
+                    request=request,
+                    output_root=directory,
+                    run_id="run-cancelled",
+                    logical_job_id="logical-july",
+                )
+            partial = next(Path(directory).rglob("manifest.partial.json"))
+            state_path = partial.parent / "export-state.json"
+            state_path.write_text(
+                json.dumps({
+                    "status": "CANCELLED",
+                    "auto_cancelled": False,
+                    "completed_chunks": 1,
+                    "total_chunks": 2,
+                }),
+                encoding="utf-8",
+            )
+
+            self.assertIsNone(find_resumable_vm_manifest(
+                directory,
+                profile=profile,
+                request=request,
+                logical_job_id="logical-july",
+            ))
+
     def test_plain_jsonl_is_persisted_as_valid_gzip_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
