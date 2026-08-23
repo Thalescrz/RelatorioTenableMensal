@@ -72,6 +72,23 @@ Os DOCX confirmaram a necessidade de identidade do finding, estado, datas, ativo
 
 O fluxo mensal não depende do default móvel da API. Ele envia `since=period_start` com `OPEN`, `REOPENED` e `FIXED` para reduzir a população. Conforme o contrato atual, `since` usa `last_found` para estados abertos/reabertos e `last_fixed` para corrigidos. Como esse filtro não estabelece `period_end`, o dataset reaplica localmente o intervalo `[period_start, period_end)`; registros posteriores ao mês são excluídos com motivo. Referências: [refinamento de requests](https://developer.tenable.com/docs/refine-vulnerability-export-requests) e [mudança do filtro `since`](https://developer.tenable.com/changelog/io-new-behavior-for-since-filter-in-vulnerability-exports).
 
+### Inventory Findings para período histórico fechado — beta
+
+A alternativa limitada usa `GET /api/v1/t1/inventory/findings/properties` para
+descobrir o catálogo e `POST /api/v1/t1/inventory/findings/search` para buscar
+páginas com `offset`, `limit` e ordenação estável. O cliente limita cada página a
+no máximo 10.000 itens, detecta paginação que não avança e reduz a página em falhas
+temporárias conforme a política da coleta.
+
+Ela não substitui o export VM mensal. A rota é usada somente quando o cliente
+habilita `reporting.vm_export.historical_source=inventory_beta`, o período já está
+fechado e não há snapshot compacto exato. O resultado recebe
+`HISTORICAL_RECONSTRUCTION`: a consulta é delimitada pelo intervalo solicitado,
+mas o estado atual retornado pela plataforma pode não representar exatamente o
+estado no fechamento daquele mês. Falha de contrato, permissão ou paginação segue
+`historical_fallback`: `warn_legacy` usa o export tradicional com aviso e `fail`
+interrompe a execução sem publicar um histórico silenciosamente aproximado.
+
 ### Evidência autenticada da Fase 2 — 2026-08-12
 
 - Export mínimo concluído com estado `FINISHED`, 37 chunks e leitura válida do primeiro chunk.
@@ -90,7 +107,7 @@ O fluxo mensal não depende do default móvel da API. Ele envia `since=period_st
 |---|---|
 | Finalidade | Consultar estado e chunks disponíveis |
 | Regra | Chunks são processados em paralelo e podem chegar fora de ordem |
-| Polling | Intervalo configurável, timeout global e sem busy-loop |
+| Polling | Intervalo configurável, timeout de fila, processamento e ausência de progresso, sem busy-loop |
 | Caso vazio | Estado concluído sem chunks deve produzir coleta completa com zero registros, não timeout |
 | Status | Confirmado, coberto por fixtures offline e validado no tenant: `FINISHED`, chunks fora de ordem normalizados e conclusão vazia tratada |
 | Referência | https://developer.tenable.com/reference/exports-vulns-export-status |

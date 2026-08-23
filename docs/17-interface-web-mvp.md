@@ -34,7 +34,10 @@ pressione `Ctrl+C`.
 - alertas gerais, falhas por cliente e avisos isolados por TAG;
 - seleção de relatórios operacionais por TAG diretamente no cliente;
 - progresso incremental `TAG atual/total` durante a montagem dos documentos;
-- documentos agrupados em **Geral**, **Customizado** e **Por TAG**.
+- documentos agrupados em **Geral**, **Customizado** e **Por TAG**;
+- fonte histórica configurável por cliente, com opção Inventory Findings beta;
+- UUID, origem, segmento, campo temporal, chunks e tempo sem progresso do export VM;
+- cancelamento confirmado de export travado e retentativa segura em estratégia separada.
 
 Novos clientes deixam **Vulnerabilidades WEB** habilitado por padrão. A coleta
 WAS é opcional e de melhor esforço: ausência de licença, autorização, endpoint
@@ -48,6 +51,23 @@ O cadastro grava o perfil em `clients/managed/<client_id>.json`, a carteira em
 `credentials/<client_id>.env`. Arquivos `.env` dessa pasta são ignorados pelo
 Git. A API da tela informa apenas se as chaves estão completas; seus valores
 nunca são retornados ao navegador.
+
+## Períodos históricos e recuperação de export
+
+Em **Gerenciar clientes → Coleta VM**, a fonte **Export VM tradicional** permanece
+padrão. **Inventory Findings · beta** só é considerada para período fechado sem
+snapshot compacto exato. O snapshot sempre tem precedência e as execuções
+automáticas do mês anterior continuam no fluxo tradicional. Para um intervalo
+exato que possa exigir a fonte beta, a tela pede confirmação e o resultado fica
+marcado como **HISTÓRICO RECONSTRUÍDO**.
+
+Quando um export VM atinge o limite sem novos chunks, o alerta mostra os dados
+necessários para conferência: UUID, origem `created` ou `reused`, segmento,
+`last_found` ou `last_fixed`, chunks concluídos, tempo sem avanço e limite. O botão
+**Cancelar export e tentar novamente** só aparece para falha elegível, confirma o
+UUID, cancela o job remoto e reenfileira a execução. Se a estratégia era
+`combined` e a fase foi `no_progress`, a nova tentativa usa `split`. Jobs
+preexistentes/reutilizados nunca são cancelados automaticamente.
 
 ## Relatórios por TAG
 
@@ -78,6 +98,6 @@ gerado e não inventa valores anteriores.
   não os relatórios ou históricos já persistidos;
 - não há acesso remoto nem autenticação, pois o servidor escuta somente o
   endereço local;
-- o progresso detalha a montagem dos relatórios por TAG, mas não expõe percentual
-  interno de cada chamada da API Tenable;
+- o progresso expõe os chunks dos exports VM/WAS e a montagem dos relatórios por
+  TAG, mas a Tenable não fornece percentual interno de processamento de um chunk;
 - esta versão não exclui clientes; eles podem ser desabilitados.

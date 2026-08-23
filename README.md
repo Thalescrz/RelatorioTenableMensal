@@ -79,10 +79,12 @@ O navegador abre em `http://127.0.0.1:8765`. O botão **Gerar todos** adiciona o
 clientes habilitados a uma fila sequencial, enquanto cada card permite iniciar
 uma geração pontual individual e acessar os documentos já registrados.
 
-Em **Gerenciar clientes → Coleta VM**, cada cliente possui três ajustes: estratégia
-`combined` ou `split`, ativos por chunk e uso de propriedades seletivas. O padrão
-seguro é **Combinada**, **1000 ativos por chunk** e **propriedades desativadas**. A
-estratégia separada continua experimental e só deve ser usada para diagnóstico.
+Em **Gerenciar clientes → Coleta VM**, cada cliente possui quatro ajustes:
+estratégia `combined` ou `split`, ativos por chunk, propriedades seletivas e fonte
+para períodos históricos. O padrão seguro é **Combinada**, **1000 ativos por
+chunk**, **propriedades desativadas** e **Export VM tradicional**. A estratégia
+separada continua experimental; a interface a seleciona automaticamente somente
+na retentativa explicitamente confirmada de um export combinado sem progresso.
 
 O botão **Validar export otimizado** exige confirmação porque inicia duas
 exportações reais para o mesmo período: uma completa e outra seletiva. O relatório
@@ -93,6 +95,14 @@ as propriedades seletivas desativadas. A ativação por cliente também possui f
 único para payload completo quando a API rejeita `properties` com HTTP 400 ou quando
 o contrato retornado está incompleto. Autenticação, limite de taxa e timeout não são
 mascarados por esse fallback.
+
+A fonte **Inventory Findings · beta** é opt-in por cliente. A ordem de decisão é:
+reutilizar primeiro um snapshot compacto exato; manter o export VM tradicional
+para a execução automática do mês anterior e para janelas que terminam no momento
+atual; e usar a Inventory API apenas para um período fechado sem snapshot. Nesse
+último caso a tela pede confirmação e identifica o resultado como **HISTÓRICO
+RECONSTRUÍDO**, pois o estado atual de um finding pode diferir do estado no
+encerramento do mês solicitado.
 
 ### Validação autenticada do contrato
 
@@ -139,13 +149,17 @@ TENABLE_EXPORT_MAX_POLL_SECONDS=30
 TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS=1800
 TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS=7200
 TENABLE_EXPORT_STALL_WARNING_SECONDS=1800
+TENABLE_EXPORT_MANUAL_NO_PROGRESS_SECONDS=900
+TENABLE_EXPORT_AUTOMATIC_NO_PROGRESS_SECONDS=1800
 ~~~
 
 Um export só é cancelado automaticamente quando foi criado pela execução atual e
-chegou ao limite sem qualquer progresso remoto ou local. Jobs fornecidos,
-preexistentes ou retomados nunca são cancelados automaticamente. `Plugin Output`
-continua estritamente opcional e só entra na lista seletiva quando a coluna Output
-está habilitada.
+permaneceu sem avanço pelo limite do modo, mesmo que chunks anteriores já tenham
+sido persistidos. Jobs fornecidos, preexistentes ou retomados nunca são cancelados
+automaticamente. A ação **Cancelar export e tentar novamente** exige confirmação
+com o UUID e, para timeout combinado por ausência de progresso, reenfileira a
+tentativa com estratégia `split`. `Plugin Output` continua estritamente opcional e
+só entra na lista seletiva quando a coluna Output está habilitada.
 
 ### Validação do contrato de ativos v2
 
@@ -407,8 +421,10 @@ O painel local iniciado por `.\scripts\run_web.ps1` permite acompanhar a fila e 
 progresso de cada TAG, testar APIs, editar clientes, buscar TAGs disponíveis, consultar
 documentos agrupados em **Geral**, **Customizado** e **Por TAG**, definir
 a geração `MAIN`, excluir/restaurar logicamente relatórios e repetir trabalhos com
-falha. A área **Admin** analisa e aplica o backfill seguro das referências históricas,
-sem substituir um `MAIN` existente; ambiguidades continuam sob decisão do analista.
+falha. Um export VM travado mostra UUID, origem, segmento, campo temporal, chunks,
+tempo ocioso e limite. A área **Admin** analisa e aplica o backfill seguro das
+referências históricas, sem substituir um `MAIN` existente; ambiguidades continuam
+sob decisão do analista.
 A opção `presentation.show_source_filters` também pode ser controlada no cadastro do
 cliente. Quando habilitada, cada tabela de dados dos relatórios base e customizado
 recebe logo abaixo uma nota discreta de **Validação rápida na Tenable**, com a tela,
