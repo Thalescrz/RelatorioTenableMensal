@@ -40,6 +40,15 @@
     "include_info_severity": false,
     "top_assets_limit": 10,
     "top_vulnerabilities_limit": 5,
-    "late_collection_grace_days": 1
+    "late_collection_grace_days": 1,
+    "vm_export": {
+      "strategy": "combined",
+      "num_assets_per_chunk": 1000,
+      "selective_properties": "disabled",
+      "historical_source": "legacy",
+      "historical_fallback": "warn_legacy",
+      "manual_no_progress_seconds": 900,
+      "automatic_no_progress_seconds": 1800
+    }
   }
 }

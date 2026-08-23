@@ -135,6 +135,10 @@ class VmExportConfig:
     strategy: str = "combined"
     num_assets_per_chunk: int = 1000
     selective_properties: str = "disabled"
+    historical_source: str = "legacy"
+    historical_fallback: str = "warn_legacy"
+    manual_no_progress_seconds: int = 900
+    automatic_no_progress_seconds: int = 1800
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,6 +376,41 @@ class ClientProfile:
                 "reporting.vm_export.selective_properties deve ser "
                 "disabled, validation ou enabled."
             )
+        vm_historical_source = str(
+            vm_export_data.get("historical_source", "legacy")
+        ).strip().lower()
+        if vm_historical_source not in {"legacy", "inventory_beta"}:
+            raise ProfileError(
+                "reporting.vm_export.historical_source deve ser "
+                "legacy ou inventory_beta."
+            )
+        vm_historical_fallback = str(
+            vm_export_data.get("historical_fallback", "warn_legacy")
+        ).strip().lower()
+        if vm_historical_fallback not in {"warn_legacy", "fail"}:
+            raise ProfileError(
+                "reporting.vm_export.historical_fallback deve ser "
+                "warn_legacy ou fail."
+            )
+        try:
+            vm_manual_no_progress_seconds = int(
+                vm_export_data.get("manual_no_progress_seconds", 900)
+            )
+            vm_automatic_no_progress_seconds = int(
+                vm_export_data.get("automatic_no_progress_seconds", 1800)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ProfileError(
+                "reporting.vm_export.*_no_progress_seconds deve ser inteiro."
+            ) from exc
+        for field_name, value in (
+            ("manual_no_progress_seconds", vm_manual_no_progress_seconds),
+            ("automatic_no_progress_seconds", vm_automatic_no_progress_seconds),
+        ):
+            if not 1 <= value <= 86400:
+                raise ProfileError(
+                    f"reporting.vm_export.{field_name} deve estar entre 1 e 86400."
+                )
         if not 1 <= top_assets_limit <= 100:
             raise ProfileError("reporting.top_assets_limit deve estar entre 1 e 100.")
         if not 1 <= top_vulnerabilities_limit <= 50:
@@ -432,6 +471,10 @@ class ClientProfile:
                     strategy=vm_export_strategy,
                     num_assets_per_chunk=vm_num_assets_per_chunk,
                     selective_properties=vm_selective_properties,
+                    historical_source=vm_historical_source,
+                    historical_fallback=vm_historical_fallback,
+                    manual_no_progress_seconds=vm_manual_no_progress_seconds,
+                    automatic_no_progress_seconds=vm_automatic_no_progress_seconds,
                 ),
             ),
         )
