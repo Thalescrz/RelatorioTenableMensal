@@ -303,9 +303,12 @@ def plan_published_run_cleanup(
     run_id: str,
     publication_confirmed: bool,
     history_confirmed: bool,
+    compact_snapshot_confirmed: bool = True,
 ) -> CleanupPlan:
     if not publication_confirmed or not history_confirmed:
         raise ValueError("Publicação e histórico precisam estar confirmados.")
+    if not compact_snapshot_confirmed:
+        raise ValueError("O snapshot compacto precisa estar confirmado antes da limpeza.")
     client = _safe_component(client_id, label="client_id")
     run = _safe_component(run_id, label="run_id")
     root = Path(scoped_output_root).resolve()

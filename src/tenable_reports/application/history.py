@@ -13,6 +13,10 @@ from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo
 from tenable_reports.infrastructure.jsonl_io import iter_jsonl_objects
 from tenable_reports.domain.fingerprints import fingerprint_finding_key
+from tenable_reports.application.compact_snapshots import (
+    CompactFindingSnapshot,
+    CompactSnapshotRepository,
+)
 
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.application.report_registry import ReportRegistry
@@ -814,6 +818,20 @@ def prepare_dataset_history(
         csv_path=Path(csv_path) if csv_path else None,
         history_status=history_status,
     )
+
+
+def finalize_compact_snapshot(
+    *,
+    repository: CompactSnapshotRepository,
+    snapshot: CompactFindingSnapshot,
+    publication_validated: bool,
+    documents_validated: bool,
+) -> None:
+    if not publication_validated or not documents_validated:
+        raise ValueError(
+            "Publicacao e documentos precisam estar confirmados antes do snapshot compacto."
+        )
+    repository.publish(snapshot)
 
 
 def finalize_history_publication(
