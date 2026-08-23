@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from tenable_reports.infrastructure.tenable_vm.client import (
     ApiError,
+    ExportJob,
     TRANSIENT_STATUS_CODES,
     TenableVmClient,
 )
@@ -17,13 +18,13 @@ LOGGER = logging.getLogger(__name__)
 class TenableWasClient(TenableVmClient):
     """Adaptador do contrato de export dedicado do Tenable WAS."""
 
-    def start_findings_export(
+    def start_findings_export_job(
         self,
         *,
         filters: Mapping[str, Any],
         num_assets: int = 1000,
         include_unlicensed: bool = False,
-    ) -> str:
+    ) -> ExportJob:
         payload = {
             "num_assets": max(50, min(int(num_assets), 5000)),
             "include_unlicensed": bool(include_unlicensed),
@@ -39,13 +40,24 @@ class TenableWasClient(TenableVmClient):
         except ApiError as exc:
             if exc.status_code == 409 and exc.active_job_id:
                 LOGGER.info("Export WAS equivalente em andamento; reutilizando o job.")
-                return exc.active_job_id
+                return ExportJob(exc.active_job_id, "reused")
             raise
         data = response.json()
         export_uuid = data.get("export_uuid") or data.get("uuid") if isinstance(data, dict) else None
         if not isinstance(export_uuid, str) or not export_uuid.strip():
             raise ApiError("Resposta de inicio do export WAS nao contem export_uuid.")
-        return export_uuid.strip()
+        return ExportJob(export_uuid.strip(), "created")
+
+    def start_findings_export(
+        self,
+        *,
+        filters: Mapping[str, Any],
+        num_assets: int = 1000,
+        include_unlicensed: bool = False,
+    ) -> str:
+        return self.start_findings_export_job(
+            filters=filters, num_assets=num_assets, include_unlicensed=include_unlicensed
+        ).export_uuid
 
     def get_findings_export_status(self, export_uuid: str) -> dict[str, Any]:
         data = self.request("GET", f"/was/v1/export/vulns/{export_uuid}/status").json()
@@ -54,12 +66,18 @@ class TenableWasClient(TenableVmClient):
         return data
 
     def wait_for_findings_completion(
-        self, export_uuid: str
+        self,
+        export_uuid: str,
+        *,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+        chunk_callback: Callable[[int], None] | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         return self._wait_for_completion(
             export_uuid,
             self.get_findings_export_status,
             label="WAS",
+            progress_callback=progress_callback,
+            chunk_callback=chunk_callback,
         )
 
     def download_findings_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:

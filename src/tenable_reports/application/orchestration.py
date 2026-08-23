@@ -714,9 +714,20 @@ def _execute_client(
             failure_input: Any = completed.stderr or completed.stdout
             if completed.stdout.strip():
                 try:
-                    failure_input = _payload_from_stdout(completed.stdout)
+                    stdout_payload = _payload_from_stdout(completed.stdout)
                 except ValueError:
                     pass
+                else:
+                    stdout_status = str(
+                        stdout_payload.get("status") or ""
+                    ).strip().lower()
+                    if (
+                        stdout_payload.get("error_code")
+                        or stdout_payload.get("error")
+                        or stdout_payload.get("message")
+                        or stdout_status in {"error", "failed", "failure"}
+                    ):
+                        failure_input = stdout_payload
             failure = classify_failure(failure_input)
             error = _safe_error(failure.message)
             error_code = failure.code.value

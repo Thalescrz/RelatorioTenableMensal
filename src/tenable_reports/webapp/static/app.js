@@ -42,6 +42,26 @@ function tagProgressCopy(job) {
   return `TAG ${tag.current}/${tag.total} · ${tag.label || tag.tag_uuid}`;
 }
 
+function sourceProgressCopy(progress, label) {
+  if (!progress) return null;
+  const current = Number(progress.completed_chunks || 0);
+  const total = Number(progress.total_chunks || 0);
+  const chunks = total > 0 ? current + "/" + total + " chunks" : current + " chunks";
+  if (progress.stalled) {
+    const minutes = Math.max(1, Math.floor(Number(progress.idle_seconds || 0) / 60));
+    return label + " sem novos chunks há " + minutes + " min · " + chunks;
+  }
+  return label + " · " + chunks;
+}
+
+function exportProgressCopy(job) {
+  return sourceProgressCopy(job?.export_progress, "Export VM");
+}
+
+function wasExportProgressCopy(job) {
+  return sourceProgressCopy(job?.was_export_progress, "Export WEB");
+}
+
 function documentKind(document) {
   if (document.document_kind) return document.document_kind;
   return /inteligência|customiza/i.test(document.name || "") ? "custom" : "base";
@@ -73,11 +93,22 @@ function render() {
   $("#metric-clients").textContent = clients.filter(c => c.enabled).length;
   $("#metric-running").textContent = activeJobs.length;
   const jobWarningCount = (state.data.jobs || []).reduce((total, job) => total + (job.warnings || []).length, 0);
-  $("#metric-alerts").textContent = (state.data.alerts || []).length + jobWarningCount + (state.data.database_error ? 1 : 0);
+  const stalledExportCount = (state.data.jobs || []).filter(
+    job => job.export_progress?.stalled || job.was_export_progress?.stalled
+  ).length;
+  $("#metric-alerts").textContent = (state.data.alerts || []).length + jobWarningCount + stalledExportCount + (state.data.database_error ? 1 : 0);
   $("#connection-label").textContent = state.data.database_error ? "banco indisponível" : "PostgreSQL online";
   $(".connection").classList.toggle("online", !state.data.database_error);
   const firstJobWarning = (state.data.jobs || []).find(job => job.warnings?.length)?.warnings?.[0];
-  const alert = state.data.database_error || state.data.alerts?.[0]?.message || firstJobWarning?.message;
+  const stalledExport = (state.data.jobs || []).find(
+    job => job.was_export_progress?.stalled || job.export_progress?.stalled
+  );
+  const stalledExportAlert = stalledExport
+    ? stalledExport.client_id + ": " + (
+        wasExportProgressCopy(stalledExport) || exportProgressCopy(stalledExport)
+      )
+    : null;
+  const alert = state.data.database_error || state.data.alerts?.[0]?.message || firstJobWarning?.message || stalledExportAlert;
   $("#global-alert").classList.toggle("hidden", !alert);
   $("#global-alert-text").textContent = alert || "";
   $("#run-all-button").disabled = !clients.some(c => c.enabled && c.credentials_ready);
@@ -95,10 +126,10 @@ function render() {
     const progress = job?.progress ?? (client.latest_report ? 100 : 0);
     const report = client.latest_report;
     const connectionCheck = state.connectionChecks[client.client_id];
-    const warning = client.alert || job?.error || job?.warnings?.length || !client.credentials_ready || client.profile_error || connectionCheck?.ok === false;
+    const warning = client.alert || job?.error || job?.warnings?.length || job?.export_progress?.stalled || job?.was_export_progress?.stalled || !client.credentials_ready || client.profile_error || connectionCheck?.ok === false;
     const runningCopy = job?.vm_selective_mode === "validation"
       ? "Validando export completo x otimizado"
-      : tagProgressCopy(job) || "Coletando e gerando documentos";
+      : tagProgressCopy(job) || wasExportProgressCopy(job) || exportProgressCopy(job) || "Coletando e gerando documentos";
     const validation = job?.vm_export_validation;
     const completedCopy = validation
       ? `Validação do export: ${validation.outcome === "PASSED" ? "aprovada" : "revisar"}`
@@ -400,7 +431,7 @@ function resetClientForm() {
   clientForm.elements.was_enabled.checked = true;
   clientForm.elements.tag_reports_enabled.checked = false;
   clientForm.elements.vm_export_strategy.value = "combined";
-  clientForm.elements.vm_num_assets_per_chunk.value = "250";
+  clientForm.elements.vm_num_assets_per_chunk.value = "1000";
   clientForm.elements.vm_selective_properties.value = "disabled";
   $("#validate-vm-export-button").disabled = true;
   state.availableTags = [];
@@ -443,7 +474,7 @@ function editClient(clientId) {
   clientForm.elements.include_output.checked = Boolean(client.include_output);
   clientForm.elements.show_source_filters.checked = Boolean(client.show_source_filters);
   clientForm.elements.vm_export_strategy.value = client.vm_export_strategy || "combined";
-  clientForm.elements.vm_num_assets_per_chunk.value = String(client.vm_num_assets_per_chunk || 250);
+  clientForm.elements.vm_num_assets_per_chunk.value = String(client.vm_num_assets_per_chunk || 1000);
   clientForm.elements.vm_selective_properties.value = client.vm_selective_properties || "disabled";
   $("#validate-vm-export-button").disabled = !client.credentials_ready || !client.enabled;
   $("#client-form-mode").textContent = "EDITANDO";

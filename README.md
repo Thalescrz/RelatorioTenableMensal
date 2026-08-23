@@ -81,7 +81,7 @@ uma geração pontual individual e acessar os documentos já registrados.
 
 Em **Gerenciar clientes → Coleta VM**, cada cliente possui três ajustes: estratégia
 `combined` ou `split`, ativos por chunk e uso de propriedades seletivas. O padrão
-seguro é **Combinada**, **250 ativos por chunk** e **propriedades desativadas**. A
+seguro é **Combinada**, **1000 ativos por chunk** e **propriedades desativadas**. A
 estratégia separada continua experimental e só deve ser usada para diagnóstico.
 
 O botão **Validar export otimizado** exige confirmação porque inicia duas
@@ -116,11 +116,30 @@ python -m tenable_reports collect-vm `
 
 `Plugin Output` é enviado como `false` por padrão. A opção `--include-output` precisa ser deliberada; `data/` permanece fora do Git.
 
-A coleta de relatórios usa um único export combinado por padrão, com 250 ativos por
+A coleta de relatórios usa um único export combinado por padrão, com 1000 ativos por
 chunk e payload completo. Cada chunk disponibilizado pela Tenable é baixado e
 persistido imediatamente; se o export atingir o timeout, o manifesto parcial fica
 disponível para a tentativa automática seguinte do mesmo cliente, consulta e
 trabalho lógico. Chunks íntegros já armazenados não são baixados novamente.
+
+O valor 1000 segue a faixa de 1000 a 3000 recomendada pela
+[documentação oficial da Tenable](https://developer.tenable.com/docs/vm-and-was-integrations)
+para exports de vulnerabilidades. Os chunks podem terminar em paralelo e fora de
+ordem; chunks vazios contam como processados, mas não aparecem para download.
+
+A espera possui duas fases independentes: até 30 minutos na fila e até 2 horas em
+processamento. Durante o processamento, a aplicação avisa após 30 minutos sem
+novos chunks, mas não interrompe o trabalho apenas por esse aviso. O polling começa
+em 10 segundos e aumenta gradualmente até 30 segundos quando não há mudança. Os
+valores podem ser ajustados por cliente no arquivo de credenciais:
+
+~~~dotenv
+TENABLE_EXPORT_POLL_SECONDS=10
+TENABLE_EXPORT_MAX_POLL_SECONDS=30
+TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS=1800
+TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS=7200
+TENABLE_EXPORT_STALL_WARNING_SECONDS=1800
+~~~
 
 Um export só é cancelado automaticamente quando foi criado pela execução atual e
 chegou ao limite sem qualquer progresso remoto ou local. Jobs fornecidos,

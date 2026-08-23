@@ -350,7 +350,7 @@ class DashboardConfigStore:
                 "show_source_filters": bool(presentation.get("show_source_filters", False)),
                 "vm_export_strategy": str(vm_export.get("strategy") or "combined"),
                 "vm_num_assets_per_chunk": int(
-                    vm_export.get("num_assets_per_chunk") or 250
+                    vm_export.get("num_assets_per_chunk") or 1000
                 ),
                 "vm_selective_properties": str(
                     vm_export.get("selective_properties") or "disabled"
@@ -435,7 +435,7 @@ class DashboardConfigStore:
                             values.get("vm_export_strategy") or "combined"
                         ).strip().lower(),
                         "num_assets_per_chunk": int(
-                            values.get("vm_num_assets_per_chunk") or 250
+                            values.get("vm_num_assets_per_chunk") or 1000
                         ),
                         "selective_properties": str(
                             values.get("vm_selective_properties") or "disabled"
@@ -452,6 +452,11 @@ class DashboardConfigStore:
                     f"TENABLE_SECRET={secret_key}",
                     "TENABLE_HTTP_TIMEOUT_SECONDS=30",
                     "TENABLE_VALIDATE_TLS=true",
+                    "TENABLE_EXPORT_POLL_SECONDS=10",
+                    "TENABLE_EXPORT_MAX_POLL_SECONDS=30",
+                    "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS=1800",
+                    "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS=7200",
+                    "TENABLE_EXPORT_STALL_WARNING_SECONDS=1800",
                     "",
                 )),
                 encoding="utf-8",
@@ -585,6 +590,11 @@ class DashboardConfigStore:
                         f"TENABLE_SECRET={secret_key}",
                         "TENABLE_HTTP_TIMEOUT_SECONDS=30",
                         "TENABLE_VALIDATE_TLS=true",
+                        "TENABLE_EXPORT_POLL_SECONDS=10",
+                        "TENABLE_EXPORT_MAX_POLL_SECONDS=30",
+                        "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS=1800",
+                        "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS=7200",
+                        "TENABLE_EXPORT_STALL_WARNING_SECONDS=1800",
                         "",
                     )),
                     encoding="utf-8",
@@ -909,6 +919,7 @@ class JobQueue:
                     "run_id": None,
                     "tag_progress": None,
                     "export_progress": None,
+                    "was_export_progress": None,
                     "warnings": [],
                     "vm_export_validation": None,
                 }
@@ -1027,9 +1038,16 @@ class JobQueue:
                     if current_job is None:
                         return
                     if event.get("event") == "TENABLE_EXPORT_PROGRESS":
-                        current_job["export_progress"] = {
+                        source = str(event.get("source") or "")
+                        progress_key = (
+                            "was_export_progress"
+                            if source == "tenable_was_findings"
+                            else "export_progress"
+                        )
+                        current_job[progress_key] = {
                             key: event.get(key)
                             for key in (
+                                "source",
                                 "export_uuid",
                                 "origin",
                                 "segment",
@@ -1038,13 +1056,18 @@ class JobQueue:
                                 "completed_chunks",
                                 "total_chunks",
                                 "elapsed_seconds",
+                                "processing_elapsed_seconds",
+                                "idle_seconds",
+                                "stalled",
+                                "timeout_phase",
                                 "progress_made",
                                 "auto_cancelled",
                                 "cancellation_error",
                             )
                         }
                         current_job["progress"] = max(
-                            int(current_job.get("progress") or 0), 35
+                            int(current_job.get("progress") or 0),
+                            45 if progress_key == "was_export_progress" else 35,
                         )
                         return
                     current = int(event.get("current") or 0)

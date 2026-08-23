@@ -284,6 +284,80 @@ class WebDashboardTests(unittest.TestCase):
         self.assertEqual(export["status"], "TIMED_OUT")
         self.assertEqual(export["segment"], "fixed")
 
+    def test_job_queue_keeps_vm_and_was_export_progress_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def runner(command, cwd, progress_callback=None):
+                progress_callback({
+                    "event": "TENABLE_EXPORT_PROGRESS",
+                    "source": "tenable_vm_vulnerabilities",
+                    "export_uuid": "vm-job",
+                    "origin": "created",
+                    "status": "FINISHED",
+                    "completed_chunks": 2,
+                    "total_chunks": 2,
+                })
+                progress_callback({
+                    "event": "TENABLE_EXPORT_PROGRESS",
+                    "source": "tenable_was_findings",
+                    "export_uuid": "was-job",
+                    "origin": "created",
+                    "status": "PROCESSING",
+                    "completed_chunks": 1,
+                    "total_chunks": 2,
+                })
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({
+                        "status": "COMPLETE",
+                        "run_id": "run-vm-was",
+                    }) + "\n",
+                    stderr="",
+                )
+
+            jobs = JobQueue(root, root / "orchestration" / "clients.json", runner)
+            jobs.enqueue(["cliente-a"], {"mode": "manual", "days": 30})
+            jobs._pending.join()
+            job = jobs.snapshot()[0]
+
+        self.assertEqual(job["export_progress"]["export_uuid"], "vm-job")
+        self.assertEqual(
+            job["was_export_progress"]["export_uuid"],
+            "was-job",
+        )
+        self.assertEqual(job["was_export_progress"]["status"], "PROCESSING")
+    def test_job_queue_exposes_running_vm_export_stall_warning(self) -> None:
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def runner(command, cwd, progress_callback=None):
+                progress_callback({
+                    "event": "TENABLE_EXPORT_PROGRESS",
+                    "export_uuid": "job-processing",
+                    "origin": "created",
+                    "status": "PROCESSING",
+                    "completed_chunks": 3,
+                    "total_chunks": 8,
+                    "idle_seconds": 1900,
+                    "stalled": True,
+                })
+                return subprocess.CompletedProcess(
+                    command, 0,
+                    stdout=json.dumps({"status": "COMPLETE", "run_id": "run-ok"}) + "\n",
+                    stderr="",
+                )
+
+            jobs = JobQueue(root, root / "orchestration" / "clients.json", runner)
+            jobs.enqueue(["cliente-a"], {"mode": "manual", "days": 30})
+            jobs._pending.join()
+            export = jobs.snapshot()[0]["export_progress"]
+
+        self.assertTrue(export["stalled"])
+        self.assertEqual(export["idle_seconds"], 1900)
+
     def test_stuck_export_can_be_cancelled_and_retried_with_exact_uuid(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -379,6 +453,9 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("duas exportações", javascript)
         self.assertIn("window.confirm", javascript)
         self.assertIn("vm_export_validation", javascript)
+        self.assertIn('value="1000"', html)
+        self.assertIn("sem novos chunks", javascript)
+
     def test_frontend_offers_confirmed_cancel_and_retry_for_stuck_export(self) -> None:
         source = (
             Path(__file__).resolve().parents[1]
@@ -720,6 +797,21 @@ class WebDashboardTests(unittest.TestCase):
                 with self.subTest(values=values):
                     with self.assertRaisesRegex(ValueError, message):
                         store.update_client("cliente-vm", values)
+
+    def test_new_client_uses_recommended_vm_chunk_size(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DashboardConfigStore(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+
+            created = store.add_client({
+                "client_id": "cliente-recomendado",
+                "display_name": "Cliente Recomendado",
+            })
+
+            self.assertEqual(created["vm_num_assets_per_chunk"], 1000)
 
     def test_vm_export_validation_route_enqueues_explicit_ab_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

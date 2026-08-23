@@ -389,7 +389,7 @@ class CliTests(unittest.TestCase):
             profile,
         )
 
-        self.assertEqual(defaults, ("combined", 250, "disabled"))
+        self.assertEqual(defaults, ("combined", 1000, "disabled"))
         self.assertEqual(overridden, ("split", 500, "validation"))
 
     def test_run_client_parser_leaves_vm_tuning_to_profile_by_default(self) -> None:

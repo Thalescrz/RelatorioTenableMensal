@@ -266,6 +266,11 @@ def _client_from_environment(credentials: CredentialConfig) -> TenableVmClient:
             secret_key=credentials.secret_key,
             base_url=credentials.base_url,
             timeout_seconds=credentials.timeout_seconds,
+            poll_seconds=credentials.export_poll_seconds,
+            max_poll_seconds=credentials.export_max_poll_seconds,
+            max_wait_seconds=credentials.export_queue_timeout_seconds,
+            max_processing_wait_seconds=credentials.export_processing_timeout_seconds,
+            stall_warning_seconds=credentials.export_stall_warning_seconds,
             ca_bundle=credentials.ca_bundle,
             validate_tls=credentials.validate_tls,
         )
@@ -279,6 +284,19 @@ def _was_client_from_environment(credentials: CredentialConfig) -> TenableWasCli
             secret_key=credentials.secret_key,
             base_url=credentials.base_url,
             timeout_seconds=credentials.timeout_seconds,
+            poll_seconds=credentials.export_poll_seconds,
+            max_poll_seconds=credentials.export_max_poll_seconds,
+            # WAS e opcional: limites menores impedem que ele bloqueie por horas
+            # um relatorio VM que ja foi coletado com sucesso.
+            max_wait_seconds=min(
+                credentials.export_queue_timeout_seconds, 300.0
+            ),
+            max_processing_wait_seconds=min(
+                credentials.export_processing_timeout_seconds, 900.0
+            ),
+            stall_warning_seconds=min(
+                credentials.export_stall_warning_seconds, 300.0
+            ),
             ca_bundle=credentials.ca_bundle,
             validate_tls=credentials.validate_tls,
         )
@@ -1076,6 +1094,7 @@ def _execute_period(
             output_root=output_root,
             run_id=actual_run_id,
             export_uuid=args.was_export_uuid,
+            progress_callback=_emit_progress_event,
         )
         was_collection = was_attempt.result
         was_collection_status = was_attempt.status

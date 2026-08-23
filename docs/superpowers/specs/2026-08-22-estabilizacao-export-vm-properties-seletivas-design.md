@@ -33,7 +33,7 @@ O perfil passa a aceitar o bloco abaixo dentro de `reporting`:
 {
   "vm_export": {
     "strategy": "combined",
-    "num_assets_per_chunk": 250,
+    "num_assets_per_chunk": 1000,
     "selective_properties": "disabled"
   }
 }
@@ -42,7 +42,7 @@ O perfil passa a aceitar o bloco abaixo dentro de `reporting`:
 Contratos:
 
 - `strategy`: `combined` ou `split`.
-- `num_assets_per_chunk`: inteiro entre 50 e 5000; a interface oferece 100, 250, 500 e 1000.
+- `num_assets_per_chunk`: inteiro entre 50 e 5000; o padrão é 1000, dentro da faixa de 1000 a 3000 recomendada pela Tenable.
 - `selective_properties`: `disabled`, `validation` ou `enabled`.
 - Perfis antigos recebem os padrões acima sem migração obrigatória.
 

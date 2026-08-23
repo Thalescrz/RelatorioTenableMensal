@@ -85,7 +85,7 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 self.assertEqual(row.cells[1].text, "")
                 self.assertLessEqual(int(row.cells[7].text), int(row.cells[6].text))
 
-            host_header = ("ASSET NAME", "IP", "PORTA", "PORTA")
+            host_header = ("ASSET NAME", "IP", "PORTA", "PROTOCOLO")
             host_tables = [table for table in document.tables if tuple(cell.text for cell in table.rows[0].cells) == host_header]
             self.assertEqual(len(host_tables), 5)
             for table in host_tables:
@@ -287,7 +287,7 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 tuple(cell.text for cell in table.rows[0].cells)
                 for table in Document(output).tables
             ]
-            self.assertEqual(headers.count(("ASSET NAME", "IP", "PORTA", "PORTA", "Output")), 5)
+            self.assertEqual(headers.count(("ASSET NAME", "IP", "PORTA", "PROTOCOLO", "Output")), 5)
             self.assertEqual(headers.count(("URI", "Plugin Output")), 5)
 
     def test_output_column_fails_when_plugin_output_was_not_collected(self) -> None:

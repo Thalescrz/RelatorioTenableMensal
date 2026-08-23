@@ -133,7 +133,7 @@ class PresentationConfig:
 @dataclass(frozen=True, slots=True)
 class VmExportConfig:
     strategy: str = "combined"
-    num_assets_per_chunk: int = 250
+    num_assets_per_chunk: int = 1000
     selective_properties: str = "disabled"
 
 
@@ -354,7 +354,7 @@ class ClientProfile:
             )
         try:
             vm_num_assets_per_chunk = int(
-                vm_export_data.get("num_assets_per_chunk", 250)
+                vm_export_data.get("num_assets_per_chunk", 1000)
             )
         except (TypeError, ValueError) as exc:
             raise ProfileError(

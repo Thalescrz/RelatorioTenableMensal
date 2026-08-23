@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - `combined` é a estratégia padrão; `split` permanece experimental e opcional.
-- O padrão local é 250 ativos por chunk; a API continua limitada entre 50 e 5000.
+- O padrão local corrigido é 1000 ativos por chunk; a API continua limitada entre 50 e 5000.
 - O timeout permanece explícito e não deve ser aumentado silenciosamente.
 - Job reutilizado, fornecido ou retomado nunca é cancelado automaticamente.
 - O limite superior do período permanece aplicado localmente.
@@ -42,7 +42,7 @@
 def test_vm_export_defaults_preserve_legacy_profiles(self):
     profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
     self.assertEqual(profile.reporting.vm_export.strategy, "combined")
-    self.assertEqual(profile.reporting.vm_export.num_assets_per_chunk, 250)
+    self.assertEqual(profile.reporting.vm_export.num_assets_per_chunk, 1000)
     self.assertEqual(profile.reporting.vm_export.selective_properties, "disabled")
 
 def test_vm_export_rejects_invalid_strategy_chunk_and_mode(self):
@@ -405,7 +405,7 @@ git commit -m "feat: manage optimized VM exports in web UI"
 
 - [x] **Step 1: Update README with operator workflow**
 
-Document that combined/250/full is the safe default, how to run the A/B validation from the client card, how to interpret `PASSED`/`FAILED`/fallback, and that validation starts two live exports only after confirmation.
+Document that combined/1000/full is the safe default, how to run the A/B validation from the client card, how to interpret `PASSED`/`FAILED`/fallback, and that validation starts two live exports only after confirmation.
 
 - [x] **Step 2: Run focused regression suites**
 

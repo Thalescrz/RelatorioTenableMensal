@@ -167,20 +167,66 @@ class FakeWasCollectionClient:
         self.chunks = chunks
         self.start_arguments: dict[str, Any] = {}
 
+    def start_findings_export_job(self, **kwargs: Any) -> ExportJob:
+        self.start_arguments = kwargs
+        return ExportJob("fixture-was-export", "created")
+
     def start_findings_export(self, **kwargs: Any) -> str:
         self.start_arguments = kwargs
         return "fixture-was-export"
 
-    def wait_for_findings_completion(self, export_uuid: str) -> tuple[dict[str, Any], list[int]]:
-        return {"status": "FINISHED"}, sorted(self.chunks)
+    def wait_for_findings_completion(
+        self,
+        export_uuid: str,
+        progress_callback=None,
+        chunk_callback=None,
+    ) -> tuple[dict[str, Any], list[int]]:
+        chunk_ids = sorted(self.chunks)
+        for chunk_id in chunk_ids:
+            if chunk_callback is not None:
+                chunk_callback(chunk_id)
+        status = {
+            "status": "FINISHED",
+            "completed_chunks": len(chunk_ids),
+            "total_chunks": len(chunk_ids),
+        }
+        if progress_callback is not None:
+            progress_callback(status)
+        return status, chunk_ids
 
     def download_findings_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:
         return self.chunks[chunk_id]
 
 
 class UnavailableWasCollectionClient(FakeWasCollectionClient):
+    def start_findings_export_job(self, **kwargs: Any) -> ExportJob:
+        raise ApiError("WAS indisponivel.", status_code=403)
+
     def start_findings_export(self, **kwargs: Any) -> str:
         raise ApiError("WAS indisponivel.", status_code=403)
+
+
+class TimedOutWasCollectionClient(FakeWasCollectionClient):
+    def wait_for_findings_completion(
+        self,
+        export_uuid: str,
+        progress_callback=None,
+        chunk_callback=None,
+    ) -> tuple[dict[str, Any], list[int]]:
+        status = {
+            "status": "PROCESSING",
+            "completed_chunks": 0,
+            "total_chunks": 1,
+            "progress_made": False,
+        }
+        if progress_callback is not None:
+            progress_callback(status)
+        raise ExportTimeoutError(
+            "Tempo maximo excedido aguardando o export WAS.",
+            export_uuid=export_uuid,
+            last_status=status,
+            progress_made=False,
+        )
 
 
 class CollectionTests(unittest.TestCase):
@@ -533,11 +579,35 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(attempt.status, "UNAVAILABLE")
             self.assertEqual(attempt.warnings[0]["code"], "WAS_NOT_AVAILABLE")
 
+    def test_optional_was_timeout_reports_progress_and_does_not_raise(self) -> None:
+        profile = load_client_profile(
+            ROOT / "clients/examples/client-profile-intelligence-expanded.json"
+        )
+        progress: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            attempt = collect_optional_was_snapshot(
+                client=TimedOutWasCollectionClient({}),  # type: ignore[arg-type]
+                profile=profile,
+                request=WasExportRequest(filters={"state": ["OPEN"]}),
+                output_root=directory,
+                run_id="run-was-timeout",
+                progress_callback=progress.append,
+            )
+
+        self.assertIsNone(attempt.result)
+        self.assertEqual(attempt.status, "UNAVAILABLE")
+        self.assertEqual(attempt.warnings[0]["code"], "WAS_COLLECTION_UNAVAILABLE")
+        self.assertEqual(progress[-1]["source"], "tenable_was_findings")
+        self.assertEqual(progress[-1]["export_uuid"], "fixture-was-export")
+        self.assertEqual(progress[-1]["origin"], "created")
+        self.assertEqual(progress[-1]["status"], "TIMED_OUT")
+
     def test_was_collection_writes_immutable_dedicated_snapshot(self) -> None:
         profile = load_client_profile(
             ROOT / "clients/examples/client-profile-intelligence-expanded.json"
         )
         client = FakeWasCollectionClient({1: b'[{"finding_id":"was-finding"}]'})
+        progress: list[dict[str, Any]] = []
         with tempfile.TemporaryDirectory() as directory:
             result = collect_was_snapshot(
                 client=client,  # type: ignore[arg-type]
@@ -547,12 +617,21 @@ class CollectionTests(unittest.TestCase):
                 ),
                 output_root=directory,
                 run_id="run-was-fixture",
+                progress_callback=progress.append,
             )
             snapshot = json.loads(result.snapshot_path.read_text(encoding="utf-8"))
             manifest = json.loads(result.raw_manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(snapshot["source"], "tenable_was_findings")
             self.assertEqual(snapshot["record_count"], 1)
             self.assertEqual(snapshot["query"]["filters"]["since"], 1782860400)
+            self.assertEqual(manifest["schema_version"], 3)
+            self.assertEqual(manifest["origin"], "created")
+            self.assertEqual(manifest["status"], "FINISHED")
+            self.assertEqual(progress[-1]["source"], "tenable_was_findings")
+            self.assertEqual(progress[-1]["status"], "FINISHED")
+            self.assertTrue(
+                (result.raw_manifest_path.parent / "export-state.json").is_file()
+            )
             chunk = manifest["chunks"][0]
             chunk_path = result.raw_manifest_path.parent / "chunk-000001.jsonl.gz"
             self.assertEqual(chunk["path"], chunk_path.resolve().as_uri())
