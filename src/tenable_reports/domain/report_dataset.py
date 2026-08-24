@@ -974,7 +974,7 @@ def build_report_dataset(
             "top_resurfaced_vulnerabilities": {
                 **general_filter,
                 "states": ["REOPENED"],
-                "date_fields": ["Last Seen", "Resurfaced Date"],
+                "date_fields": ["Resurfaced Date"],
                 "group_by": "Plugin ID",
                 "order_by": "VPR (decrescente)",
                 "limit": top_vulnerabilities_limit,

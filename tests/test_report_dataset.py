@@ -512,10 +512,7 @@ class ReportDatasetTests(unittest.TestCase):
             },
         ]
         assert tables["top_fixed_vulnerabilities"]["date_fields"] == ["Last Fixed"]
-        assert tables["top_resurfaced_vulnerabilities"]["date_fields"] == [
-            "Last Seen",
-            "Resurfaced Date",
-        ]
+        assert tables["top_resurfaced_vulnerabilities"]["date_fields"] == ["Resurfaced Date"]
         assert tables["aging_by_severity"]["date_fields"] == ["Last Seen"]
         assert tables["plugin_family"]["states"] == ["FIXED"]
         assert tables["plugin_family"]["date_fields"] == ["Last Fixed"]

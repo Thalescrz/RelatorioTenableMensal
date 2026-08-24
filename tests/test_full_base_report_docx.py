@@ -265,7 +265,7 @@ class FullBaseReportDocxTests(unittest.TestCase):
                     "top_assets": {**common, "states": ["OPEN", "REOPENED"], "date_fields": ["Last Seen"], "rule": "Agrupar por ativo"},
                     "top_open_vulnerabilities": {**common, "states": ["OPEN", "REOPENED"], "date_fields": ["Last Seen"], "rule": "Agrupar por Plugin ID"},
                     "top_fixed_vulnerabilities": {**common, "states": ["FIXED"], "date_fields": ["Last Fixed"], "rule": "Agrupar por Plugin ID mitigado"},
-                    "top_resurfaced_vulnerabilities": {**common, "states": ["REOPENED"], "date_fields": ["Last Seen", "Resurfaced Date"], "rule": "Agrupar por Plugin ID ressurgido"},
+                    "top_resurfaced_vulnerabilities": {**common, "states": ["REOPENED"], "date_fields": ["Resurfaced Date"], "rule": "Agrupar por Plugin ID ressurgido"},
                     "was_applications": {**common, "states": ["OPEN", "REOPENED"], "date_fields": ["Last Seen"], "rule": "Agrupar por aplicação WEB"},
                     "was_top_vulnerabilities": {**common, "states": ["OPEN", "REOPENED"], "date_fields": ["Last Seen"], "rule": "Agrupar por Plugin ID WEB"},
                     "was_owasp": {**common, "states": ["OPEN", "REOPENED"], "date_fields": ["Last Seen"], "rule": "Agrupar pela categoria OWASP 2021"},
@@ -326,7 +326,7 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 "Faixas calculadas desde First Seen",
                 "Flags individuais de framework",
                 "State = Fixed; Severity = Critical, High, Medium, Low; Last Fixed = 01/07/2026 a 31/07/2026",
-                "State = Resurfaced; Severity = Critical, High, Medium, Low; Last Seen = 01/07/2026 a 31/07/2026; Resurfaced Date = 01/07/2026 a 31/07/2026",
+                "State = Resurfaced; Severity = Critical, High, Medium, Low; Resurfaced Date = 01/07/2026 a 31/07/2026",
             ):
                 self.assertIn(marker, text)
 

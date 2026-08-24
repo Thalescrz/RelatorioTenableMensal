@@ -142,29 +142,51 @@ def _tag_body(
 
     _heading(document, "VISÃO GERAL DAS PRINCIPAIS VULNERABILIDADES")
     _paragraph(document, copy.PRINCIPAL_VULNERABILITIES_INTRO)
-    _heading(document, "4.2. Vulnerabilidades Não Mitigadas", 2)
-    top_open = dataset.get("top_open_vulnerabilities") or []
-    if top_open:
-        _simple_table(
-            document,
-            ("Plugin ID", "Nome", "Família OS", "Severidade", "Total", "VPR"),
-            _compact_rows(top_open),
-            widths=(900, 3000, 2050, 1050, 850, 850),
-            left_columns=frozenset({1, 2}),
-        )
-        add_source_filter_note(
-            document,
-            dataset,
+    _paragraph(document, copy.FIXED_REMINDER)
+    headers = ("Plugin ID", "Nome", "Família OS", "Severidade", "Total", "VPR")
+    widths = (900, 3000, 2050, 1050, 850, 850)
+    overview_tables = (
+        (
+            "4.1. Vulnerabilidades Mitigadas",
+            "top_fixed_vulnerabilities",
+            "vulnerabilidades mitigadas",
+        ),
+        (
+            "4.2. Vulnerabilidades Não Mitigadas",
             "top_open_vulnerabilities",
-            enabled=profile.presentation.show_source_filters,
-            extra_filters=filters,
-        )
-    else:
-        _paragraph(
-            document,
-            "Neste mês não foram identificadas vulnerabilidades não mitigadas "
-            "para esta TAG.",
-        )
+            "vulnerabilidades não mitigadas",
+        ),
+        (
+            "4.3. Vulnerabilidades Ressurgidas",
+            "top_resurfaced_vulnerabilities",
+            "vulnerabilidades ressurgidas",
+        ),
+    )
+    for title, field, empty_label in overview_tables:
+        _heading(document, title, 2)
+        items = dataset.get(field) or []
+        if items:
+            _simple_table(
+                document,
+                headers,
+                _compact_rows(items),
+                widths=widths,
+                left_columns=frozenset({1, 2}),
+            )
+            add_source_filter_note(
+                document,
+                dataset,
+                field,
+                enabled=profile.presentation.show_source_filters,
+                extra_filters=filters,
+            )
+        else:
+            _paragraph(
+                document,
+                f"Neste mês não foram identificadas {empty_label} para esta TAG.",
+            )
+
+    top_open = dataset.get("top_open_vulnerabilities") or []
 
     _heading(
         document,

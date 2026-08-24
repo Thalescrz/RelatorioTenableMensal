@@ -47,8 +47,9 @@ corrente.
 ### Relatório operacional por TAG
 
 É um recorte VM compacto para uma TAG selecionada. Repete os módulos operacionais
-necessários — inclusive principais ativos e detalhamento das vulnerabilidades —
-usando o padrão completo de hosts do projeto. Pode incluir tabelas e gráficos do
+necessários — inclusive principais ativos, visão geral das vulnerabilidades
+mitigadas, não mitigadas e ressurgidas e detalhamento das vulnerabilidades — usando
+o padrão completo de hosts do projeto. Pode incluir tabelas e gráficos do
 comparativo da mesma TAG no tempo.
 
 O nome do arquivo identifica cliente, categoria/valor da TAG e período. A seleção
