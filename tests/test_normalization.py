@@ -10,7 +10,11 @@ from tenable_reports.application.collect import CollectionResult
 from tenable_reports.application.normalize import normalize_collections
 from tenable_reports.config.profile import load_client_profile
 from tenable_reports.domain.models import build_source_snapshot
-from tenable_reports.domain.normalization import AssetLifecycle, normalize_and_link
+from tenable_reports.domain.normalization import (
+    AssetLifecycle,
+    NormalizedAsset,
+    normalize_and_link,
+)
 from tenable_reports.infrastructure.jsonl_io import iter_jsonl_objects
 
 
@@ -69,6 +73,86 @@ def fixture_findings() -> list[dict[str, object]]:
 
 
 class NormalizationTests(unittest.TestCase):
+    def test_asset_display_name_uses_stable_alias_fallbacks_without_becoming_blank(self) -> None:
+        cases = (
+            (
+                "explicit-name",
+                {
+                    "name": "asset-explicit.invalid",
+                    "network": {
+                        "hostnames": ["asset-hostname.invalid"],
+                        "fqdns": ["asset-fqdn.example.invalid"],
+                        "ipv4s": ["192.0.2.10"],
+                    },
+                },
+                "asset-explicit.invalid",
+            ),
+            (
+                "hostname",
+                {"network": {"hostnames": ["asset-hostname.invalid"]}},
+                "asset-hostname.invalid",
+            ),
+            (
+                "fqdn",
+                {"network": {"fqdns": ["asset-fqdn.example.invalid"]}},
+                "asset-fqdn.example.invalid",
+            ),
+            (
+                "netbios",
+                {"network": {"netbios_names": ["ASSET-NETBIOS"]}},
+                "ASSET-NETBIOS",
+            ),
+            (
+                "ip",
+                {"network": {"ipv4s": ["192.0.2.10"]}},
+                "192.0.2.10",
+            ),
+            ("source-id", {}, "asset-source-id"),
+        )
+
+        for label, fields, expected in cases:
+            with self.subTest(label=label):
+                raw = {"id": "asset-source-id", **fields}
+                result = normalize_and_link(
+                    asset_records=[raw],
+                    finding_records=[],
+                    client_id="client-fixture",
+                )
+                self.assertEqual(result.assets[0].display_name, expected)
+
+    def test_old_snapshot_rebuilds_blank_display_name_from_preserved_aliases(self) -> None:
+        old_snapshot = {
+            "asset_key": "client-fixture:tenable_vm:asset-source-id",
+            "client_id": "client-fixture",
+            "source": "tenable_vm_assets_v2",
+            "source_asset_id": "asset-source-id",
+            "lifecycle": "ACTIVE",
+            "display_name": None,
+            "asset_types": [],
+            "source_names": [],
+            "hostnames": ["asset-hostname.invalid"],
+            "fqdns": ["asset-fqdn.example.invalid"],
+            "ipv4s": ["192.0.2.10"],
+            "ipv6s": [],
+            "mac_addresses": [],
+            "operating_systems": [],
+            "network_id": None,
+            "network_name": None,
+            "first_scan_at": None,
+            "last_scan_at": None,
+            "last_authenticated_scan_at": None,
+            "created_at": None,
+            "updated_at": None,
+            "deleted_at": None,
+            "terminated_at": None,
+            "acr_score": None,
+            "aes_score": None,
+        }
+
+        restored = NormalizedAsset.from_dict(old_snapshot)
+
+        self.assertEqual(restored.display_name, "asset-hostname.invalid")
+
     def test_normalization_accepts_single_pass_generators(self) -> None:
         result = normalize_and_link(
             asset_records=(item for item in fixture_assets()),
@@ -92,6 +176,9 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(
             result.findings[0].exploit_frameworks,
             ("Canvas", "Metasploit"),
+        )
+        self.assertTrue(
+            result.findings[0].to_dict().get("exploited_by_malware")
         )
 
     def test_selective_definition_schema_preserves_report_semantics(self) -> None:
@@ -120,6 +207,7 @@ class NormalizationTests(unittest.TestCase):
                 "exploithub": False,
                 "metasploit": True,
                 "exploitability_ease": "Exploits are available",
+                "exploited_by_malware": True,
                 "patch_published": "2026-07-10T00:00:00Z",
             },
             "port": 443,
@@ -148,12 +236,27 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(finding.cvss_attack_vector, "NETWORK")
         self.assertEqual(finding.vpr_score, 9.4)
         self.assertTrue(finding.exploitable)
+        self.assertTrue(finding.to_dict().get("exploited_by_malware"))
         self.assertEqual(finding.exploit_frameworks, ("Canvas", "Metasploit"))
         self.assertTrue(finding.has_patch)
         self.assertIn("https://example.invalid/see-also", finding.references)
         self.assertIn("CWE-79", finding.references)
         self.assertEqual(finding.first_found_at, "2026-07-01T10:00:00Z")
         self.assertEqual(finding.last_found_at, "2026-07-31T10:00:00Z")
+
+    def test_old_snapshot_defaults_exploited_by_malware_to_unknown(self) -> None:
+        finding = normalize_and_link(
+            asset_records=fixture_assets(),
+            finding_records=[fixture_findings()[0]],
+            client_id="client-fixture",
+        ).findings[0]
+        old_snapshot = finding.to_dict()
+        old_snapshot.pop("exploited_by_malware", None)
+
+        restored = type(finding).from_dict(old_snapshot)
+
+        self.assertTrue(hasattr(restored, "exploited_by_malware"))
+        self.assertIsNone(restored.exploited_by_malware)
 
     def test_links_only_by_tenable_uuid_and_tracks_orphans(self) -> None:
         result = normalize_and_link(

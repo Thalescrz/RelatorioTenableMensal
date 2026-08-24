@@ -493,6 +493,88 @@ class PostgresReportRegistry:
                 reason=reason,
             )
 
+    def hard_delete(
+        self,
+        run_id: str,
+        *,
+        actor: str,
+        reason: str,
+        replacement_run_id: str | None = None,
+    ) -> None:
+        actor = _required(actor, "actor")
+        reason = _required(reason, "reason")
+        with self.database.connection() as connection:
+            report = self._get_report(connection, run_id, for_update=True)
+            key = reference_key_for_candidate(report.candidate)
+            current = connection.execute(
+                f"""
+                select run_id from {SCHEMA_NAME}.report_main_references
+                where reference_key = %s for update
+                """,
+                (key.stable_key,),
+            ).fetchone()
+            is_main = current is not None and str(current[0]) == run_id
+            if is_main:
+                if not replacement_run_id:
+                    raise MainDeletionRequiresDecision(
+                        "Escolha uma geração substituta antes da exclusão permanente."
+                    )
+                if replacement_run_id == run_id:
+                    raise MainDeletionRequiresDecision(
+                        "A substituta precisa ser uma geração diferente."
+                    )
+                replacement = self._get_report(
+                    connection, replacement_run_id, for_update=True
+                )
+                self._validate_promotion(key, replacement)
+                connection.execute(
+                    f"""
+                    update {SCHEMA_NAME}.report_main_references
+                    set run_id = %s, set_by = %s, set_reason = %s,
+                        set_at = now(), updated_at = now()
+                    where reference_key = %s
+                    """,
+                    (
+                        replacement.run_id,
+                        actor,
+                        f"REPLACEMENT_ON_HARD_DELETE: {reason}",
+                        key.stable_key,
+                    ),
+                )
+            elif replacement_run_id:
+                raise ValueError(
+                    "Uma substituta só deve ser informada ao excluir o relatório MAIN."
+                )
+
+            connection.execute(
+                f"""
+                delete from {SCHEMA_NAME}.report_reference_events
+                where previous_run_id = %s or new_run_id = %s
+                """,
+                (run_id, run_id),
+            )
+            for table in (
+                "history_snapshots",
+                "compact_finding_snapshots",
+                "artifacts",
+            ):
+                connection.execute(
+                    f"delete from {SCHEMA_NAME}.{table} where run_id = %s",
+                    (run_id,),
+                )
+            connection.execute(
+                f"delete from {SCHEMA_NAME}.publications where run_id = %s",
+                (run_id,),
+            )
+            connection.execute(
+                f"delete from {SCHEMA_NAME}.events where report_run_id = %s",
+                (run_id,),
+            )
+            connection.execute(
+                f"delete from {SCHEMA_NAME}.report_runs where run_id = %s",
+                (run_id,),
+            )
+
     def restore(self, run_id: str, *, actor: str, reason: str) -> None:
         actor = _required(actor, "actor")
         reason = _required(reason, "reason")

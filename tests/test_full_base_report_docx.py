@@ -159,6 +159,48 @@ class FullBaseReportDocxTests(unittest.TestCase):
             self.assertTrue(image_nodes)
             self.assertTrue(all('descr="' in node and 'descr=""' not in node for node in image_nodes))
 
+    def test_exploitability_matrix_is_kept_together_across_pages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = json.loads(FIXTURE.read_text(encoding="utf-8"))
+            labels = (
+                "Exploitable",
+                "Malware",
+                "Core Impact",
+                "Canvas",
+                "D2 Elliot",
+                "ExploitHub",
+                "Metasploit",
+            )
+            dataset["metrics"]["by_exploit_framework"] = [
+                {
+                    "framework": label,
+                    "total": 1,
+                    "critical": 0,
+                    "high": 1,
+                    "medium": 0,
+                }
+                for label in labels
+            ]
+            dataset_path = Path(directory) / "dataset.json"
+            dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+            output = Path(directory) / "frameworks.docx"
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=dataset_path,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                mask_sensitive=True,
+            )
+
+            document = Document(output)
+            table = next(
+                table
+                for table in document.tables
+                if len(table.rows) > 1 and table.cell(1, 0).text == "Exploitable"
+            )
+            for row in table.rows[:-1]:
+                self.assertTrue(all(cell.paragraphs[0].paragraph_format.keep_with_next for cell in row.cells))
+
     def test_output_column_is_controlled_by_profile(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             profile = load_client_profile(PROFILE)

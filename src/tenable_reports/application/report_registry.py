@@ -107,6 +107,15 @@ class ReportRegistry(Protocol):
         allow_gap: bool = False,
     ) -> None: ...
 
+    def hard_delete(
+        self,
+        run_id: str,
+        *,
+        actor: str,
+        reason: str,
+        replacement_run_id: str | None = None,
+    ) -> None: ...
+
     def restore(self, run_id: str, *, actor: str, reason: str) -> None: ...
 
     def list_reports(
@@ -338,6 +347,48 @@ class InMemoryReportRegistry(ReportRegistry):
             reason=reason,
             event_at=timestamp,
         ))
+
+
+    def hard_delete(
+        self,
+        run_id: str,
+        *,
+        actor: str,
+        reason: str,
+        replacement_run_id: str | None = None,
+    ) -> None:
+        actor = _required(actor, "actor")
+        reason = _required(reason, "reason")
+        report = self.get_report(run_id)
+        key = reference_key_for_candidate(report.candidate)
+        current = self.get_main(key)
+        is_main = current is not None and current.run_id == run_id
+        if is_main:
+            if not replacement_run_id:
+                raise MainDeletionRequiresDecision(
+                    "Escolha uma geração substituta antes da exclusão permanente."
+                )
+            if replacement_run_id == run_id:
+                raise MainDeletionRequiresDecision(
+                    "A substituta precisa ser uma geração diferente."
+                )
+            replacement = self._validate_promotion(key, replacement_run_id)
+            self._set_main(
+                key,
+                replacement,
+                actor=actor,
+                reason=f"REPLACEMENT_ON_HARD_DELETE: {reason}",
+            )
+        elif replacement_run_id:
+            raise ValueError(
+                "Uma substituta só deve ser informada ao excluir o relatório MAIN."
+            )
+        del self._reports[run_id]
+        self._events = [
+            event
+            for event in self._events
+            if event.previous_run_id != run_id and event.new_run_id != run_id
+        ]
 
     def restore(self, run_id: str, *, actor: str, reason: str) -> None:
         actor = _required(actor, "actor")

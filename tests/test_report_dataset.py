@@ -4,11 +4,13 @@ import unittest
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from tenable_reports.domain.normalization import normalize_and_link
 from tenable_reports.domain.report_dataset import (
     AssetPopulationReason,
     FindingPopulationReason,
+    _exploit_framework_matrix,
     build_report_dataset,
 )
 from tenable_reports.domain.reporting import previous_calendar_month
@@ -188,9 +190,76 @@ class ReportDatasetTests(unittest.TestCase):
         self.assertEqual(
             rows,
             [
+                {"framework": "Exploitable", "total": 1, "critical": 1, "high": 0, "medium": 0},
+                {"framework": "Malware", "total": 0, "critical": 0, "high": 0, "medium": 0},
+                {"framework": "Core Impact", "total": 0, "critical": 0, "high": 0, "medium": 0},
                 {"framework": "Canvas", "total": 1, "critical": 1, "high": 0, "medium": 0},
+                {"framework": "D2 Elliot", "total": 0, "critical": 0, "high": 0, "medium": 0},
+                {"framework": "ExploitHub", "total": 0, "critical": 0, "high": 0, "medium": 0},
                 {"framework": "Metasploit", "total": 1, "critical": 1, "high": 0, "medium": 0},
             ],
+        )
+    def test_exploitability_matrix_matches_the_seven_tenable_widget_rows(self) -> None:
+
+        findings = (
+            SimpleNamespace(
+                exploitable=True,
+                exploited_by_malware=True,
+                exploit_frameworks=("Canvas", "Metasploit"),
+                severity="CRITICAL",
+            ),
+            SimpleNamespace(
+                exploitable=True,
+                exploited_by_malware=False,
+                exploit_frameworks=("Core Impact",),
+                severity="HIGH",
+            ),
+            SimpleNamespace(
+                exploitable=False,
+                exploited_by_malware=True,
+                exploit_frameworks=("D2 Elliot",),
+                severity="MEDIUM",
+            ),
+            SimpleNamespace(
+                exploitable=True,
+                exploited_by_malware=False,
+                exploit_frameworks=(),
+                severity="LOW",
+            ),
+        )
+
+        self.assertEqual(
+            _exploit_framework_matrix(findings),
+            (
+                {
+                    "framework": "Exploitable", "total": 3,
+                    "critical": 1, "high": 1, "medium": 0,
+                },
+                {
+                    "framework": "Malware", "total": 1,
+                    "critical": 1, "high": 0, "medium": 0,
+                },
+                {
+                    "framework": "Core Impact", "total": 1,
+                    "critical": 0, "high": 1, "medium": 0,
+                },
+                {
+                    "framework": "Canvas", "total": 1,
+                    "critical": 1, "high": 0, "medium": 0,
+                },
+                {
+                    "framework": "D2 Elliot", "total": 1,
+                    "critical": 0, "high": 0, "medium": 1,
+                },
+                {
+                    "framework": "ExploitHub", "total": 0,
+                    "critical": 0, "high": 0, "medium": 0,
+                },
+                {
+                    "framework": "Metasploit", "total": 1,
+                    "critical": 1, "high": 0, "medium": 0,
+                },
+            ),
         )
 
     def test_operating_system_matrix_uses_the_five_legacy_itp_groups(self) -> None:

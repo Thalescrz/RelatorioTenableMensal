@@ -37,6 +37,7 @@ class VmExportPolicyTests(unittest.TestCase):
         self.assertIn("definition.cvss3.base_score", properties)
         self.assertIn("definition.cvss3.base_vector", properties)
         self.assertIn("definition.vpr.score", properties)
+        self.assertIn("definition.exploited_by_malware", properties)
         self.assertNotIn("definition.cvss3_base_score", properties)
         self.assertNotIn("output", properties)
         self.assertEqual(len(properties), len(set(properties)))
@@ -82,6 +83,17 @@ class VmExportPolicyTests(unittest.TestCase):
         self.assertTrue(comparison.passed)
         self.assertEqual(comparison.status, "PASSED")
         self.assertEqual(comparison.differences, ())
+
+    def test_comparison_detects_malware_indicator_difference(self) -> None:
+        legacy = full_record()
+        selective = selective_record()
+        legacy["plugin"]["exploited_by_malware"] = True
+        selective["definition"]["exploited_by_malware"] = False
+
+        comparison = compare_vm_exports([legacy], [selective])
+
+        self.assertFalse(comparison.passed)
+        self.assertIn("malware_count", comparison.differences)
 
     def test_comparison_detects_identity_divergence(self) -> None:
         selective = selective_record()
@@ -266,6 +278,7 @@ def selective_record() -> dict:
             },
             "vpr": {"score": 9.4},
             "canvas": True,
+            "exploited_by_malware": True,
             "core": False,
             "elliot": False,
             "exploithub": False,
@@ -305,6 +318,7 @@ def full_record() -> dict:
             "vpr": {"score": 9.4},
             "exploit_available": True,
             "exploit_framework_canvas": True,
+            "exploited_by_malware": True,
             "exploit_framework_metasploit": True,
             "has_patch": True,
         },

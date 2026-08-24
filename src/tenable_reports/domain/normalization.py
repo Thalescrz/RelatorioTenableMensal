@@ -75,10 +75,24 @@ class NormalizedAsset:
         values = dict(data)
         values["lifecycle"] = AssetLifecycle(str(values["lifecycle"]))
         for key in (
-            "asset_types", "source_names", "hostnames", "fqdns", "ipv4s", "ipv6s",
-            "mac_addresses", "operating_systems",
+            "asset_types",
+            "source_names",
+            "hostnames",
+            "fqdns",
+            "ipv4s",
+            "ipv6s",
+            "mac_addresses",
+            "operating_systems",
         ):
             values[key] = tuple(values.get(key) or ())
+        values["display_name"] = _preferred_asset_name(
+            values.get("display_name"),
+            values["hostnames"],
+            values["fqdns"],
+            values["ipv4s"],
+            values["ipv6s"],
+            values.get("source_asset_id"),
+        )
         return cls(**values)
 
 
@@ -113,6 +127,7 @@ class NormalizedFinding:
     resurfaced_at: str | None
     exploitable: bool | None
     vpr_score: float | None
+    exploited_by_malware: bool | None = None
     exploit_frameworks: tuple[str, ...] = ()
     cvss_attack_vector: str | None = None
 
@@ -133,6 +148,7 @@ class NormalizedFinding:
         values["cves"] = tuple(values.get("cves") or ())
         # Compatibilidade com snapshots publicados antes deste campo.
         values["references"] = tuple(values.get("references") or ())
+        values.setdefault("exploited_by_malware", None)
         values["exploit_frameworks"] = tuple(values.get("exploit_frameworks") or ())
         values.setdefault("cvss_attack_vector", None)
         return cls(**values)
@@ -210,6 +226,21 @@ def _combined_string_tuple(
     for path in paths:
         values.update(_string_tuple(_path(record, path)))
     return tuple(sorted(values, key=str.casefold))
+
+
+def _preferred_asset_name(*candidates: Any) -> str:
+    for candidate in candidates:
+        values = (
+            candidate
+            if isinstance(candidate, (list, tuple, set))
+            else (candidate,)
+        )
+        for value in values:
+            text = _text(value)
+            if text:
+                return text
+    raise ValueError("Ativo normalizado sem identidade apresentável.")
+
 
 
 def _source_names(value: Any) -> tuple[str, ...]:
@@ -399,6 +430,19 @@ def normalize_assets(
         ipv6s, invalid_ipv6 = _normalized_ips(
             _first(record, ("network.ipv6s", "ipv6_addresses", "ipv6")), 6
         )
+        hostnames = _combined_string_tuple(
+            record, ("network.hostnames", "hostnames", "hostname")
+        )
+        fqdns = _combined_string_tuple(
+            record, ("network.fqdns", "fqdns", "fqdn")
+        )
+        netbios_names = _combined_string_tuple(
+            record,
+            (
+                "network.netbios_names", "network.netbios_name",
+                "netbios_names", "netbios_name",
+            ),
+        )
         for _invalid in (*invalid_ipv4, *invalid_ipv6):
             issues.append(DataQualityIssue(
                 code="ASSET_IP_INVALID",
@@ -414,11 +458,19 @@ def normalize_assets(
             source="tenable_vm_assets_v2",
             source_asset_id=source_id,
             lifecycle=lifecycle,
-            display_name=_text(_first(record, ("name", "display_name"))),
+            display_name=_preferred_asset_name(
+                _first(record, ("name", "display_name")),
+                hostnames,
+                fqdns,
+                netbios_names,
+                ipv4s,
+                ipv6s,
+                source_id,
+            ),
             asset_types=_string_tuple(_first(record, ("types", "type"))),
             source_names=_source_names(record.get("sources")),
-            hostnames=_string_tuple(_first(record, ("network.hostnames", "hostname"))),
-            fqdns=_string_tuple(_first(record, ("network.fqdns", "fqdn"))),
+            hostnames=tuple(dict.fromkeys((*hostnames, *netbios_names))),
+            fqdns=fqdns,
             ipv4s=ipv4s,
             ipv6s=ipv6s,
             mac_addresses=_string_tuple(_first(record, ("network.mac_addresses", "mac_address"))),
@@ -560,6 +612,10 @@ def normalize_findings(
             last_fixed_at=_text(record.get("last_fixed")),
             resurfaced_at=_text(record.get("resurfaced_date")),
             exploitable=_exploitability(record),
+            exploited_by_malware=_bool_or_none(_first(record, (
+                "plugin.exploited_by_malware",
+                "definition.exploited_by_malware",
+            ))),
             vpr_score=_number(_first(record, ("plugin.vpr.score", "definition.vpr.score"))),
             exploit_frameworks=_exploit_frameworks(record),
             cvss_attack_vector=_cvss_attack_vector(record),

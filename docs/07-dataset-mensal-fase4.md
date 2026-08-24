@@ -1,9 +1,10 @@
 # Contrato e validação do dataset mensal da Fase 4
 
 > Nota de compatibilidade: `report-definition-v1.2` acrescenta a matriz
-> `metrics.by_exploit_framework`, obtida dos flags individuais
-> `plugin.exploit_framework_*` da Tenable. Snapshots antigos sem o campo continuam
-> legíveis e representam a lista de frameworks como vazia, sem inferência.
+> `metrics.by_exploit_framework`. Ela combina `Exploit Available`, o indicador
+> direto `Exploited By Malware` e os cinco flags individuais de framework da
+> Tenable. Snapshots antigos continuam legíveis: malware fica desconhecido e a
+> lista de frameworks fica vazia, sem inferência.
 
 **Versão métrica atual:** `report-definition-v1.2`  
 **Validação:** 53 testes offline e coleta autenticada em 2026-08-12/13
@@ -59,7 +60,11 @@ O grão é a instância estável `asset.uuid + plugin.id + port + protocol`.
 - Patch acima de 30 dias: finding não mitigado com patch disponível e idade maior que 30 dias.
 - Exploitable: `plugin.exploit_available == true`; sempre subconjunto do total.
   Sinais de malware, facilidade de exploração e flags de frameworks não promovem
-  o finding para esse total. A matriz por framework usa seus flags individuais.
+  o finding para esse total.
+- A matriz de exploração usa, nessa ordem: `Exploitable`, `Malware`, `Core Impact`,
+  `Canvas`, `D2 Elliot`, `ExploitHub` e `Metasploit`. `Malware` conta apenas
+  findings exploráveis com `exploited_by_malware == true`; as cinco linhas de
+  framework usam seus próprios flags. As linhas podem se sobrepor.
 
 O dataset publica ainda Top 10 de ativos, matriz por sistema operacional e Top 5 de plugins para não mitigadas, mitigadas e ressurgidas. O Top 5 contém detalhes, hosts, CVEs e links públicos; `Plugin Output` só aparece quando a coleta e a geração foram explicitamente habilitadas.
 

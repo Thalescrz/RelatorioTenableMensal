@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
+import gzip
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -139,6 +143,41 @@ class CompactSnapshotTests(unittest.TestCase):
         )
         self.assertEqual(repository.count, 2)
         self.assertEqual(exact.run_id, "run-b")
+
+    def test_replay_recovers_hostname_from_legacy_blank_display_name(self) -> None:
+        normalized = normalized_fixture()
+        snapshot = build_compact_snapshot(
+            client_id="client-a",
+            tenant_id="tenant-a",
+            run_id="run-a",
+            execution_type="MANUAL",
+            period_mode="EXPLICIT_RANGE",
+            period_start_at="2026-07-01T03:00:00Z",
+            period_end_at="2026-08-01T03:00:00Z",
+            assets=normalized.assets,
+            findings=normalized.findings,
+            quality_issues=(),
+            tag_asset_ids={},
+            document_references={"base": "C:/reports/base.docx"},
+        )
+        payload = json.loads(gzip.decompress(snapshot.payload_gzip).decode("utf-8"))
+        payload["assets"][0]["display_name"] = ""
+        payload["assets"][0]["hostnames"] = ["host-a.invalid"]
+        logical = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        legacy_snapshot = replace(
+            snapshot,
+            content_sha256=hashlib.sha256(logical).hexdigest(),
+            payload_gzip=gzip.compress(logical, compresslevel=9, mtime=0),
+        )
+
+        replay = replay_compact_snapshot(legacy_snapshot)
+
+        self.assertEqual(replay.assets[0].display_name, "host-a.invalid")
 
     def test_history_finalization_requires_publication_and_documents(self) -> None:
         normalized = normalized_fixture()
