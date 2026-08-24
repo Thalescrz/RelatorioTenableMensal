@@ -60,6 +60,10 @@ ativos nem CVEs distintos.
 
 ## Rankings
 
+VPR ausente permanece nulo no dataset. Nas tabelas compactas de vulnerabilidades,
+ele é apresentado como 0 por convenção editorial; ranking, matriz VPR e histórico
+continuam usando o valor original, sem converter ausência em pontuação real.
+
 O Top 5 VM parte somente das não mitigadas no período. Valide nesta ordem:
 
 1. conjunto de findings elegíveis;

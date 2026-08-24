@@ -177,9 +177,13 @@
       </fieldset>
       <div id="days-fields" class="conditional hidden"><label>Quantidade de dias<input name="days" type="number" min="1" max="366" value="30"></label></div>
       <div id="range-fields" class="field-row conditional hidden">
-        <label>Início<input name="start_at" type="datetime-local"></label>
-        <label>Fim<input name="end_at" type="datetime-local"></label>
+        <label>Data inicial<input name="start_date" type="date"></label>
+        <label>Data final (inclusiva)<input name="end_date" type="date"></label>
       </div>
+      <label class="force-live-option">
+        <input name="force_live_collection" type="checkbox">
+        <span><strong>Forçar nova coleta pela API</strong><small>Ignora o snapshot deste período sem apagá-lo.</small></span>
+      </label>
       <div class="queue-note"><span>→</span><p><strong>Execução em fila</strong><br>Um cliente por vez para reduzir limites e falhas na API.</p></div>
       <button class="button primary full" type="submit">Adicionar à fila</button>
     </form>

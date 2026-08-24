@@ -45,6 +45,10 @@ O modelo conserva:
 `Plugin Output` pode conter dados sensíveis e aumentar bastante o payload. Ele só é
 coletado e exibido quando o perfil autoriza a coluna opcional.
 
+O VPR permanece como número ou nulo no dado normalizado. Nas tabelas compactas
+de vulnerabilidades, o relatório exibe 0 quando o plugin não possui VPR atribuído;
+essa convenção é apenas visual e não altera ranking, faixas VPR ou histórico.
+
 ## Finding WAS normalizado
 
 O modelo WEB conserva:
@@ -89,6 +93,12 @@ e Low.
   `plugin.exploit_available` verdadeiro.
 - Exploráveis por framework: contagens separadas pelos indicadores de cada
   framework; não devem ser inferidas apenas do indicador geral.
+- Panorama por sistema operacional: para manter compatibilidade com o quadro ITP,
+  classifica as instâncias pelas famílias de plugin nas linhas `Windows`, `Mac OS X`,
+  `Linux/Unix` e `WEB`; `Devices/Services` usa nome de plugin contendo
+  `service`. As cinco linhas são sempre exibidas. As categorias são filtros
+  independentes e podem se sobrepor; os nomes completos dos sistemas operacionais
+  dos ativos não criam linhas adicionais.
 - Top 5 VM: ranking local de findings não mitigados usando VPR, severidade e ativos
   afetados, seguido do detalhamento e conjunto de hosts.
 - Top 5 WAS: ranking equivalente no conjunto WEB suportado.

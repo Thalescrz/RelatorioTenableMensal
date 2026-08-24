@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import inspect
+import os
 import re
 import shutil
 import subprocess
@@ -89,6 +90,7 @@ class OrchestrationRequest:
     vm_selective_mode: str | None = None
     vm_export_strategy: str | None = None
     historical_source: str | None = None
+    force_live_collection: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -525,6 +527,8 @@ def build_client_command(
         str(config.minimum_free_gb),
         "--confirm-live-api",
     ]
+    if request.force_live_collection:
+        command.append("--force-live-collection")
     if request.vm_selective_mode:
         command.extend(("--vm-selective-mode", request.vm_selective_mode))
     if request.vm_export_strategy:
@@ -555,9 +559,12 @@ def _default_runner(
     working_directory: Path,
     progress_callback: ProgressCallback | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    child_environment = os.environ.copy()
+    child_environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
     process = subprocess.Popen(
         list(command),
         cwd=working_directory,
+        env=child_environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

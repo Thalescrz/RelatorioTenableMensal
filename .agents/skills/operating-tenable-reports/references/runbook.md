@@ -56,6 +56,24 @@ Os dois relatórios gerais mantêm o ambiente inteiro.
 Internamente o fim é exclusivo. Antes de iniciar, repita o período visível para o
 analista e confirme o fuso do cliente.
 
+Na interface, início e fim do período explícito são datas inclusivas. O servidor
+converte a data final para o dia seguinte antes de enviar `--end-at`; confirme no
+job que 01/07 a 31/07 resultou em `start_at=01/07 00:00` e
+`end_at=01/08 00:00` no fuso do cliente.
+
+Para validar a API no mesmo cliente e período de um snapshot existente, marque
+**Forçar nova coleta pela API**. Confirme o aviso: novos jobs de export serão
+criados, o snapshot anterior será preservado e a opção continuará ativa em uma
+retentativa. Use esse controle somente quando a intenção for testar ou atualizar a
+coleta; a regeneração comum deve permanecer em replay. Período encerrado continua
+sujeito às limitações de reconstrução histórica da fonte configurada.
+
+Não confunda coleta forçada com propriedades seletivas. A primeira ignora o replay;
+a segunda reduz o payload somente quando habilitada no perfil. Uma coleta nova pode
+usar `legacy_vm` com payload completo. Nessa rota, `since` limita o início e o fim
+é aplicado localmente; para período encerrado, espere
+`HISTORICAL_RECONSTRUCTION` e o aviso correspondente.
+
 ## Gerar e acompanhar
 
 Use o card para um cliente ou **Gerar todos** para a fila da carteira. Acompanhe:
@@ -71,6 +89,22 @@ Use o card para um cliente ou **Gerar todos** para a fila da carteira. Acompanhe
 Para VM, registre UUID, origem (`created`, `resumed` ou equivalente), estado,
 chunks persistidos e última mudança. Só `FINISHED` com chunks tratados encerra a
 etapa.
+
+Ao validar **Forçar nova coleta pela API**, encerre a conferência somente depois
+de confirmar:
+
+1. sinalizador de coleta forçada mantido no job e em eventual retentativa;
+2. export novo com origem `created`, sem replay do snapshot exato;
+3. VM e WAS acompanhados separadamente até `FINISHED` ou aviso tolerado do WAS;
+4. chunks concluídos iguais ao total informado;
+5. rota, reconstrução histórica e problemas de qualidade registrados;
+6. documentos esperados publicados;
+7. snapshot compacto preservado e staging removido após sucesso.
+
+Referência sanitizada de 24/08/2026: uma coleta manual forçada, com propriedades
+seletivas desativadas, concluiu em uma tentativa pela rota `legacy_vm`; VM terminou
+2/2 chunks e WAS 1/1. Foram gerados base, customizado e um relatório por TAG. O
+tempo observado, próximo de seis minutos, não deve ser tratado como SLA.
 
 ## Export sem progresso
 

@@ -69,6 +69,38 @@ No card do cliente, escolha gerar relatório, confirme o modo manual e defina:
 - últimos dias: janela de `X` dias;
 - período específico: datas inicial e final escolhidas.
 
+No período específico, as duas datas são inclusivas para o analista. A aplicação
+transforma a data final no início do dia seguinte: selecionar 01/07 a 31/07 produz
+o intervalo técnico `[01/07 00:00, 01/08 00:00)`. Assim, nenhum minuto do último
+dia é perdido.
+
+Quando existir um snapshot compacto exato, a execução padrão o reutiliza e não
+abre novos exports. Para testar a integração ou atualizar deliberadamente a coleta,
+marque **Forçar nova coleta pela API**. A opção vale somente para aquela execução,
+preserva o snapshot anterior e fica visível no progresso do card. Em períodos já
+encerrados, a nova coleta é uma reconstrução histórica e pode divergir do estado
+observado no fechamento original. O fluxo automático mensal não força a coleta
+quando já existe um snapshot exato.
+
+**Forçar nova coleta** e **Propriedades seletivas** são controles independentes.
+O primeiro decide entre replay e novos jobs de API; o segundo altera o payload do
+export VM somente quando habilitado e validado para o tenant. Portanto, é possível
+testar uma coleta real nova mantendo o payload completo e a rota VM tradicional.
+
+### Evidência autenticada de referência
+
+Em 24/08/2026, uma execução manual sanitizada para período mensal encerrado foi
+concluída em uma tentativa, sem replay, com os novos exports VM e WAS em
+`FINISHED` e todos os chunks processados. Foram publicados os dois DOCX gerais e
+um DOCX por TAG habilitada. A limpeza pós-publicação removeu o staging pesado e
+preservou o snapshot compacto.
+
+A rota usada nessa validação foi `legacy_vm`, com propriedades seletivas
+desativadas. Como essa origem aplica `since` como limite inferior, mas não oferece
+limite superior, a aplicação delimitou o fim do período localmente e registrou
+`HISTORICAL_RECONSTRUCTION` com aviso. A duração observada foi de aproximadamente
+seis minutos; ela é apenas evidência operacional, não um SLA para outros tenants.
+
 ### Carteira
 
 Use **Gerar todos** para colocar todos os clientes habilitados na fila. A execução
@@ -97,6 +129,15 @@ Estados importantes:
 
 Um export com `total_chunks=1` ainda pode estar processando. Não considere o número
 de chunks como confirmação de término.
+
+Para uma execução com coleta nova, confirme também:
+
+- indicação de coleta forçada no card;
+- origem `created` em vez de replay;
+- VM e WAS independentes, cada um em `FINISHED` quando disponível;
+- quantidade de chunks concluídos igual à quantidade total;
+- rota e estado de reconstrução registrados no resultado;
+- DOCX esperados disponíveis e limpeza concluída após a publicação.
 
 ## Export preso e cancelamento
 

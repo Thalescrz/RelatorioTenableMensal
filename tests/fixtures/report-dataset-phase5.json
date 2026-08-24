@@ -70,13 +70,13 @@
     "assets": {"normalized_total": 1000, "observed_in_period": 840, "excluded_from_period": 160, "vulnerable_in_period": 198},
     "by_operating_system": {
       "availability": "AVAILABLE",
-      "grain": "finding_instance_grouped_by_primary_asset_operating_system",
+      "grain": "finding_instance_grouped_by_legacy_itp_plugin_family",
       "rows": [
-        {"operating_system": "Sistema Operacional Exemplo A", "non_mitigated": 2450, "mitigated": 1900, "exploitable": 760, "patch_available_over_30_days": 410},
-        {"operating_system": "Sistema Operacional Exemplo B", "non_mitigated": 1900, "mitigated": 1700, "exploitable": 620, "patch_available_over_30_days": 330},
-        {"operating_system": "Sistema Operacional Exemplo C", "non_mitigated": 1400, "mitigated": 1100, "exploitable": 480, "patch_available_over_30_days": 250},
-        {"operating_system": "Sistema Operacional Exemplo D", "non_mitigated": 1100, "mitigated": 900, "exploitable": 350, "patch_available_over_30_days": 180},
-        {"operating_system": "Sistema operacional não informado", "non_mitigated": 905, "mitigated": 736, "exploitable": 212, "patch_available_over_30_days": 96}
+        {"operating_system": "Windows", "non_mitigated": 2450, "mitigated": 1900, "exploitable": 760, "patch_available_over_30_days": 410},
+        {"operating_system": "Mac OS X", "non_mitigated": 1900, "mitigated": 1700, "exploitable": 620, "patch_available_over_30_days": 330},
+        {"operating_system": "Linux/Unix", "non_mitigated": 1400, "mitigated": 1100, "exploitable": 480, "patch_available_over_30_days": 250},
+        {"operating_system": "WEB", "non_mitigated": 1100, "mitigated": 900, "exploitable": 350, "patch_available_over_30_days": 180},
+        {"operating_system": "Devices/Services", "non_mitigated": 905, "mitigated": 736, "exploitable": 212, "patch_available_over_30_days": 96}
       ]
     },
     "by_cvss": [

@@ -4,6 +4,7 @@ import json
 import subprocess
 import tempfile
 import unittest
+from html.parser import HTMLParser
 from pathlib import Path
 
 from tenable_reports.application.orchestration import (
@@ -20,8 +21,103 @@ from tenable_reports.webapp.server import (
 
 ROOT = Path(__file__).resolve().parents[1]
 
+class _InputCollector(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.inputs: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag == "input":
+            self.inputs.append(dict(attrs))
+
 
 class HistoricalWebUiTests(unittest.TestCase):
+    def test_run_dialog_uses_inclusive_calendar_dates(self) -> None:
+        parser = _InputCollector()
+        parser.feed(
+            (ROOT / "src/tenable_reports/webapp/static/index.html").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        by_name = {
+            item.get("name"): item
+            for item in parser.inputs
+            if item.get("name") in {"start_date", "end_date"}
+        }
+        self.assertEqual(set(by_name), {"start_date", "end_date"})
+        self.assertEqual(by_name["start_date"].get("type"), "date")
+        self.assertEqual(by_name["end_date"].get("type"), "date")
+
+    def test_inclusive_calendar_range_becomes_exclusive_next_day(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            observed: list[list[str]] = []
+
+            def runner(command, cwd, progress_callback=None):
+                observed.append(list(command))
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({"status": "COMPLETE", "run_id": "run-ok"}) + "\n",
+                    stderr="",
+                )
+
+            jobs = JobQueue(
+                root, root / "orchestration" / "clients.json", runner
+            )
+            job = jobs.enqueue(["cliente-a"], {
+                "mode": "manual",
+                "start_date": "2026-07-01",
+                "end_date": "2026-07-31",
+            })[0]
+            jobs._pending.join()
+
+        self.assertEqual(job["start_at"], "2026-07-01")
+        self.assertEqual(job["end_at"], "2026-08-01")
+        start_index = observed[0].index("--start-at")
+        end_index = observed[0].index("--end-at")
+        self.assertEqual(observed[0][start_index + 1], "2026-07-01")
+        self.assertEqual(observed[0][end_index + 1], "2026-08-01")
+
+    def test_inclusive_calendar_range_rejects_end_before_start(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def runner(command, cwd, progress_callback=None):
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({"status": "COMPLETE"}) + "\n",
+                    stderr="",
+                )
+
+            jobs = JobQueue(
+                root, root / "orchestration" / "clients.json", runner
+            )
+            with self.assertRaisesRegex(ValueError, "Data final"):
+                jobs.enqueue(["cliente-a"], {
+                    "mode": "manual",
+                    "start_date": "2026-08-01",
+                    "end_date": "2026-07-31",
+                })
+
+    def test_run_dialog_offers_opt_in_live_collection(self) -> None:
+        parser = _InputCollector()
+        parser.feed(
+            (ROOT / "src/tenable_reports/webapp/static/index.html").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        live_inputs = [
+            item for item in parser.inputs
+            if item.get("name") == "force_live_collection"
+        ]
+        self.assertEqual(len(live_inputs), 1)
+        self.assertEqual(live_inputs[0].get("type"), "checkbox")
+        self.assertNotIn("checked", live_inputs[0])
+
     def test_historical_source_round_trip_and_invalid_value(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -185,8 +281,8 @@ class HistoricalWebUiTests(unittest.TestCase):
             })
             request = {
                 "mode": "manual",
-                "start_at": "2026-07-01T03:00:00Z",
-                "end_at": "2026-08-01T02:59:59Z",
+                "start_date": "2026-07-01",
+                "end_date": "2026-07-31",
             }
             with self.assertRaisesRegex(ValueError, "reconstrucao"):
                 app.enqueue_jobs(["cliente-historico"], request)

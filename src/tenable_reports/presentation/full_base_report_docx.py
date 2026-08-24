@@ -424,7 +424,7 @@ def _compact_rows(items: Any) -> list[tuple[Any, ...]]:
         item.get("plugin_family") or "",
         _severity_pt(item.get("severity")),
         item.get("finding_instances", item.get("affected_assets", "")),
-        item.get("vpr_score") if item.get("vpr_score") is not None else "",
+        item.get("vpr_score") if item.get("vpr_score") is not None else 0,
     ) for item in items[:5] if isinstance(item, Mapping)]
 
 

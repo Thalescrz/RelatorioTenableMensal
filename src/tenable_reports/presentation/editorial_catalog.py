@@ -247,9 +247,7 @@ OS_COLUMNS = (
     "na coluna “Explorável” exibe porcentagem dessas vulnerabilidades não mitigadas "
     "que são conhecidas por serem exploráveis. Na coluna Patch disponível exibe a "
     "porcentagem de vulnerabilidade não mitigadas e exploráveis que tiveram o seu "
-    "patch disponível por mais de 30 (trinta) dias. A Última coluna a de Assets "
-    "exploráveis exibe o número de atinos na rede que possuem vulnerabilidades não "
-    "mitigadas e exploráveis."
+    "patch disponível por mais de 30 (trinta) dias."
 )
 
 OS_GRAPH = (

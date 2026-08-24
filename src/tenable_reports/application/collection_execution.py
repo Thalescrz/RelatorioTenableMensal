@@ -73,6 +73,7 @@ def resolve_execution_collection_route(
     execution_mode: str,
     historical_source_override: str | None,
     compact_repository: CompactSnapshotRepository | None,
+    force_live_collection: bool = False,
     now: datetime | None = None,
 ) -> tuple[CollectionRoute, CompactFindingSnapshot | None]:
     snapshot = (
@@ -84,6 +85,8 @@ def resolve_execution_collection_route(
         )
         if compact_repository is not None else None
     )
+    if force_live_collection:
+        snapshot = None
     configured = profile.reporting.vm_export
     historical_source = _normalize_source(
         historical_source_override

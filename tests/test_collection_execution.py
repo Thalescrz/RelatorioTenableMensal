@@ -85,6 +85,34 @@ class CollectionExecutionTests(unittest.TestCase):
         self.assertEqual(route.accuracy.value, "authoritative_snapshot")
         self.assertEqual(snapshot.run_id, "source-run")
 
+    def test_force_live_collection_ignores_exact_snapshot_without_deleting_it(self) -> None:
+        repository = MemoryCompactSnapshotRepository()
+        existing = self.compact_snapshot()
+        repository.publish(existing)
+
+        route, snapshot = resolve_execution_collection_route(
+            profile=self.profile,
+            period=self.period,
+            execution_mode="manual",
+            historical_source_override="inventory-beta",
+            compact_repository=repository,
+            force_live_collection=True,
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+        )
+
+        self.assertEqual(route.source.value, "inventory_bounded")
+        self.assertEqual(route.accuracy.value, "historical_reconstruction")
+        self.assertIsNone(snapshot)
+        self.assertEqual(
+            repository.find_exact(
+                client_id=self.profile.client_id,
+                tenant_id=self.profile.tenant_id,
+                period_start_at=self.period.to_dict()["start_at"],
+                period_end_at=self.period.to_dict()["end_at"],
+            ).snapshot_id,
+            existing.snapshot_id,
+        )
+
     def test_replay_materializes_existing_report_contract_with_provenance(self) -> None:
         snapshot = self.compact_snapshot()
         with tempfile.TemporaryDirectory() as directory:
