@@ -193,6 +193,162 @@ class ReportDatasetTests(unittest.TestCase):
             ],
         )
 
+    def test_operating_system_matrix_uses_the_five_legacy_itp_groups(self) -> None:
+        def asset(suffix: str, operating_system: str):
+            return replace(
+                self.asset,
+                asset_key=f"client-fixture:asset-{suffix}",
+                source_asset_id=f"asset-{suffix}",
+                operating_systems=(operating_system,),
+            )
+
+        windows_22631 = asset("windows-22631", "Microsoft Windows 11 Pro 10.0.22631")
+        windows_26100 = asset("windows-26100", "Microsoft Windows 11 Pro 10.0.26100")
+        linux = asset("linux", "Ubuntu 24.04 LTS")
+        mac = asset("mac", "macOS 15.0")
+        web = asset("web", "Debian GNU/Linux 12")
+        device = asset("device", "Network appliance")
+
+        def finding(
+            suffix: str,
+            target,
+            *,
+            family: str,
+            name: str,
+            exploitable: bool = False,
+            has_patch: bool = False,
+        ):
+            return replace(
+                self.finding,
+                finding_key=f"finding-{suffix}",
+                source_asset_id=target.source_asset_id,
+                asset_key=target.asset_key,
+                plugin_id=200000 + len(suffix),
+                plugin_family=family,
+                plugin_name=name,
+                exploitable=exploitable,
+                has_patch=has_patch,
+            )
+
+        findings = [
+            finding(
+                "windows-22631",
+                windows_22631,
+                family="Windows",
+                name="Windows finding",
+                exploitable=True,
+                has_patch=True,
+            ),
+            finding(
+                "windows-26100",
+                windows_26100,
+                family="Windows : Microsoft Bulletins",
+                name="Windows bulletin",
+            ),
+            finding(
+                "linux",
+                linux,
+                family="Ubuntu Local Security Checks",
+                name="Linux finding",
+            ),
+            finding(
+                "mac",
+                mac,
+                family="MacOS X Local Security Checks",
+                name="macOS finding",
+            ),
+            finding(
+                "web",
+                web,
+                family="Web Servers",
+                name="Web finding",
+            ),
+            finding(
+                "device",
+                device,
+                family="General",
+                name="Remote service detection",
+            ),
+        ]
+        fixed_windows = replace(
+            finding(
+                "fixed-windows",
+                windows_22631,
+                family="Windows",
+                name="Fixed Windows finding",
+            ),
+            state="FIXED",
+            last_fixed_at="2026-07-20T10:00:00Z",
+        )
+
+        result = self.build(
+            [windows_22631, windows_26100, linux, mac, web, device],
+            [*findings, fixed_windows],
+            query={"filters": {"state": ["OPEN", "REOPENED", "FIXED"]}},
+        )
+
+        self.assertEqual(
+            result.dataset.metrics["by_operating_system"]["rows"],
+            [
+                {
+                    "operating_system": "Windows",
+                    "non_mitigated": 2,
+                    "mitigated": 1,
+                    "exploitable": 1,
+                    "patch_available_over_30_days": 1,
+                },
+                {
+                    "operating_system": "Mac OS X",
+                    "non_mitigated": 1,
+                    "mitigated": 0,
+                    "exploitable": 0,
+                    "patch_available_over_30_days": 0,
+                },
+                {
+                    "operating_system": "Linux/Unix",
+                    "non_mitigated": 1,
+                    "mitigated": 0,
+                    "exploitable": 0,
+                    "patch_available_over_30_days": 0,
+                },
+                {
+                    "operating_system": "WEB",
+                    "non_mitigated": 1,
+                    "mitigated": 0,
+                    "exploitable": 0,
+                    "patch_available_over_30_days": 0,
+                },
+                {
+                    "operating_system": "Devices/Services",
+                    "non_mitigated": 1,
+                    "mitigated": 0,
+                    "exploitable": 0,
+                    "patch_available_over_30_days": 0,
+                },
+            ],
+        )
+
+    def test_operating_system_provenance_describes_the_legacy_itp_filters(self) -> None:
+        result = self.build([self.asset], [self.finding])
+        provenance = result.dataset.table_provenance["tables"]["by_operating_system"]
+
+        self.assertEqual(provenance["group_by"], "família do plugin")
+        self.assertEqual(
+            provenance["rule"],
+            "Windows, Mac OS X, Linux/Unix e WEB por Plugin Family; "
+            "Devices/Services por Plugin Name contendo service; categorias independentes",
+        )
+
+    def test_operating_system_matrix_preserves_no_occurrences_availability(self) -> None:
+        result = self.build([self.asset], [])
+
+        matrix = result.dataset.metrics["by_operating_system"]
+        self.assertEqual(matrix["availability"], "NO_DATA")
+        self.assertEqual(
+            [row["operating_system"] for row in matrix["rows"]],
+            ["Windows", "Mac OS X", "Linux/Unix", "WEB", "Devices/Services"],
+        )
+
     def test_tag_snapshot_does_not_filter_the_general_report_population(self) -> None:
         other_asset = replace(
             self.asset,

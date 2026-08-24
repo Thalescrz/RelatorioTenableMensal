@@ -361,6 +361,62 @@ def _cvss_metrics(
     return cvss_rows, matrix_rows, vpr
 
 
+_ITP_OS_GROUP_ORDER = (
+    "Windows",
+    "Mac OS X",
+    "Linux/Unix",
+    "WEB",
+    "Devices/Services",
+)
+_ITP_WINDOWS_PLUGIN_FAMILIES = frozenset({
+    "windows",
+    "windows : user management",
+    "windows : microsoft bulletins",
+})
+_ITP_LINUX_PLUGIN_FAMILIES = frozenset({
+    "red hat local security checks",
+    "debian local security checks",
+    "fedora local security checks",
+    "gentoo local security checks",
+    "suse local security checks",
+    "freebsd local security checks",
+    "ubuntu local security checks",
+    "centos local security checks",
+    "scientific linux local security checks",
+    "oracle linux local security checks",
+    "amazon linux local security checks",
+    "hp-ux local security checks",
+    "solaris local security checks",
+    "aix local security checks",
+    "slackware local security checks",
+    "netware",
+    "mandriva local security checks",
+    "mandrake local security checks",
+})
+_ITP_MAC_PLUGIN_FAMILIES = frozenset({"macos x local security checks"})
+_ITP_WEB_PLUGIN_FAMILIES = frozenset({
+    "cgi abuses",
+    "web servers",
+    "cgi abuses : xss",
+})
+
+
+def _itp_operating_system_groups(finding: NormalizedFinding) -> tuple[str, ...]:
+    family = (finding.plugin_family or "").strip().casefold()
+    groups: list[str] = []
+    if family in _ITP_WINDOWS_PLUGIN_FAMILIES:
+        groups.append("Windows")
+    elif family in _ITP_LINUX_PLUGIN_FAMILIES:
+        groups.append("Linux/Unix")
+    elif family in _ITP_MAC_PLUGIN_FAMILIES:
+        groups.append("Mac OS X")
+    elif family in _ITP_WEB_PLUGIN_FAMILIES:
+        groups.append("WEB")
+    if "service" in (finding.plugin_name or "").casefold():
+        groups.append("Devices/Services")
+    return tuple(groups)
+
+
 def _operating_system_matrix(
     assets_by_key: Mapping[str, NormalizedAsset],
     open_findings: Sequence[NormalizedFinding],
@@ -369,32 +425,31 @@ def _operating_system_matrix(
     *,
     fixed_collected: bool,
 ) -> tuple[dict[str, Any], ...]:
-    rows: dict[str, dict[str, Any]] = {}
-
-    def row_for(finding: NormalizedFinding) -> dict[str, Any]:
-        asset = assets_by_key[finding.asset_key or ""]
-        operating_system = asset.operating_systems[0] if asset.operating_systems else "UNKNOWN"
-        return rows.setdefault(operating_system, {
-            "operating_system": operating_system,
+    del assets_by_key
+    rows = {
+        group: {
+            "operating_system": group,
             "non_mitigated": 0,
             "mitigated": 0 if fixed_collected else None,
             "exploitable": 0,
             "patch_available_over_30_days": 0,
-        })
+        }
+        for group in _ITP_OS_GROUP_ORDER
+    }
 
     for finding in open_findings:
-        row = row_for(finding)
-        row["non_mitigated"] += 1
-        row["exploitable"] += int(finding.exploitable is True)
-        age = _age_days(finding, period)
-        if finding.has_patch is True and age is not None and age > 30:
-            row["patch_available_over_30_days"] += 1
+        for group in _itp_operating_system_groups(finding):
+            row = rows[group]
+            row["non_mitigated"] += 1
+            row["exploitable"] += int(finding.exploitable is True)
+            age = _age_days(finding, period)
+            if finding.has_patch is True and age is not None and age > 30:
+                row["patch_available_over_30_days"] += 1
     if fixed_collected:
         for finding in fixed_findings:
-            row_for(finding)["mitigated"] += 1
-    return tuple(sorted(rows.values(), key=lambda row: (
-        -row["non_mitigated"], row["operating_system"].casefold()
-    )))
+            for group in _itp_operating_system_groups(finding):
+                rows[group]["mitigated"] += 1
+    return tuple(rows[group] for group in _ITP_OS_GROUP_ORDER)
 
 
 def _exploit_framework_matrix(
@@ -800,8 +855,12 @@ def build_report_dataset(
             "vulnerable_in_period": vulnerable_assets,
         },
         "by_operating_system": {
-            "availability": _availability(open_collected, len(operating_system_matrix)).value,
-            "grain": "finding_instance_grouped_by_primary_asset_operating_system",
+            "availability": _availability(
+                open_collected,
+                sum(row["non_mitigated"] + (row["mitigated"] or 0)
+                    for row in operating_system_matrix),
+            ).value,
+            "grain": "finding_instance_grouped_by_legacy_itp_plugin_family",
             "rows": list(operating_system_matrix) if open_collected else None,
         },
         "by_cvss": cvss_rows if open_collected else None,
@@ -955,8 +1014,11 @@ def build_report_dataset(
                         "date_fields": ["Last Fixed"],
                     },
                 ],
-                "group_by": "Operating Systems",
-                "rule": "contagem por instância de finding e sistema operacional primário do ativo",
+                "group_by": "família do plugin",
+                "rule": (
+                    "Windows, Mac OS X, Linux/Unix e WEB por Plugin Family; "
+                    "Devices/Services por Plugin Name contendo service; categorias independentes"
+                ),
             },
             "by_cvss": {
                 **general_filter,
