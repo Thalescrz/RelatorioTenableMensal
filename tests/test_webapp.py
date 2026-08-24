@@ -965,6 +965,33 @@ class WebDashboardTests(unittest.TestCase):
             self.assertEqual(retried["mode"], "manual")
             self.assertEqual(retried["days"], 15)
             self.assertEqual(retried["retry_of_job_id"], original["job_id"])
+
+    def test_forced_live_collection_reaches_command_and_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            observed: list[list[str]] = []
+
+            def runner(command, cwd):
+                observed.append(list(command))
+                return subprocess.CompletedProcess(
+                    command, 1, stdout="", stderr="falha controlada"
+                )
+
+            jobs = JobQueue(root, root / "orchestration" / "clients.json", runner)
+            original = jobs.enqueue(["cliente-a"], {
+                "mode": "manual",
+                "days": 30,
+                "force_live_collection": True,
+            })[0]
+            jobs._pending.join()
+            retried = jobs.retry(original["job_id"])
+            jobs._pending.join()
+
+        self.assertTrue(original["force_live_collection"])
+        self.assertTrue(retried["force_live_collection"])
+        self.assertEqual(len(observed), 2)
+        self.assertIn("--force-live-collection", observed[0])
+        self.assertIn("--force-live-collection", observed[1])
     def test_connection_check_supports_multiple_clients(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

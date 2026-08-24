@@ -15,7 +15,7 @@ import unicodedata
 import uuid
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -937,9 +937,30 @@ class JobQueue:
         )
         if historical_source not in {None, "legacy", "inventory-beta"}:
             raise ValueError("Fonte historica invalida.")
+        force_live_collection = request.get("force_live_collection") is True
         days = request.get("days")
         start_at = str(request.get("start_at") or "").strip() or None
         end_at = str(request.get("end_at") or "").strip() or None
+        start_date = str(request.get("start_date") or "").strip() or None
+        end_date = str(request.get("end_date") or "").strip() or None
+        if bool(start_date) != bool(end_date):
+            raise ValueError("Informe a data inicial e a data final.")
+        if start_date:
+            if start_at or end_at:
+                raise ValueError(
+                    "Use datas inclusivas ou instantes especificos, nao os dois."
+                )
+            try:
+                parsed_start_date = date.fromisoformat(start_date)
+                parsed_end_date = date.fromisoformat(end_date)
+            except ValueError as exc:
+                raise ValueError(
+                    "Informe datas validas no formato AAAA-MM-DD."
+                ) from exc
+            if parsed_end_date < parsed_start_date:
+                raise ValueError("Data final nao pode ser anterior a data inicial.")
+            start_at = parsed_start_date.isoformat()
+            end_at = (parsed_end_date + timedelta(days=1)).isoformat()
         if days not in (None, ""):
             days = int(days)
             if not 1 <= days <= 366:
@@ -972,6 +993,7 @@ class JobQueue:
                     "vm_selective_mode": vm_selective_mode,
                     "vm_export_strategy": vm_export_strategy,
                     "historical_source": historical_source,
+                    "force_live_collection": force_live_collection,
                     "confirm_historical_reconstruction": bool(
                         request.get("confirm_historical_reconstruction", False)
                     ),
@@ -1052,6 +1074,7 @@ class JobQueue:
                 "confirm_historical_reconstruction": original.get(
                     "confirm_historical_reconstruction", False
                 ),
+                "force_live_collection": original.get("force_live_collection", False),
             }
             if explicit_export_recovery:
                 export = original.get("export_progress")
@@ -1118,6 +1141,8 @@ class JobQueue:
                 "1",
                 "--confirm-live-api",
             ]
+            if job.get("force_live_collection"):
+                command.append("--force-live-collection")
             if job.get("vm_selective_mode"):
                 command.extend((
                     "--vm-selective-mode", job["vm_selective_mode"]
@@ -1585,7 +1610,10 @@ class DashboardApplication:
         request: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
         clients = {item["client_id"]: item for item in self.config.list_clients()}
-        exact_period = bool(request.get("start_at") and request.get("end_at"))
+        exact_period = bool(
+            (request.get("start_at") and request.get("end_at"))
+            or (request.get("start_date") and request.get("end_date"))
+        )
         historical_clients = [
             client_id
             for client_id in client_ids

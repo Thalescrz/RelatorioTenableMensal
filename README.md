@@ -41,11 +41,21 @@ tradicional. Para período fechado sem snapshot compacto exato, a opção
 **HISTÓRICO RECONSTRUÍDO**; execuções automáticas e janelas atuais continuam no
 export tradicional.
 
+Ao gerar manualmente, **Forçar nova coleta pela API** ignora somente o replay de
+um snapshot compacto exato e cria novos jobs para aquela execução. Esse controle
+não ativa propriedades seletivas nem muda sozinho a rota de coleta configurada no
+cliente. O snapshot anterior é preservado e uma retentativa mantém a intenção de
+coleta nova.
+
 ## Períodos
 
 - Automático mensal: executado no primeiro dia do mês para o mês-calendário anterior completo.
 - Manual padrão: um mês móvel até o instante da execução.
 - Manual personalizado: últimos `X` dias ou intervalo explícito escolhido pelo analista.
+
+No período explícito, a interface recebe datas de calendário inclusivas. Por
+exemplo, 01/07 a 31/07 é convertido internamente para
+`[01/07 00:00, 01/08 00:00)`, preservando o dia final inteiro.
 
 Os intervalos internos são tratados como `[início, fim)`. Findings ativos usam a
 data de última identificação; findings mitigados usam a data da correção. A

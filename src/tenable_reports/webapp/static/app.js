@@ -73,6 +73,11 @@ function wasExportProgressCopy(job) {
 }
 
 function collectionOutcomeCopy(job) {
+  if (job?.force_live_collection) {
+    const detail = job.reconstruction_status === "HISTORICAL_RECONSTRUCTION" ? " · HISTÓRICO RECONSTRUÍDO" : "";
+    return `NOVA COLETA PELA API${detail}`;
+  }
+
   if (job?.reconstruction_status === "HISTORICAL_RECONSTRUCTION") {
     return "HISTÓRICO RECONSTRUÍDO · Inventory Findings";
   }
@@ -150,6 +155,8 @@ function render() {
     const runningCopy = job?.vm_selective_mode === "validation"
       ? "Validando export completo x otimizado"
       : tagProgressCopy(job) || wasExportProgressCopy(job) || exportProgressCopy(job) || "Coletando e gerando documentos";
+    const displayRunningCopy = job?.force_live_collection ? `API ao vivo · ${runningCopy}` : runningCopy;
+    const queuedCopy = job?.force_live_collection ? "Aguardando execução · API ao vivo" : "Aguardando execução";
     const validation = job?.vm_export_validation;
     const completedCopy = validation
       ? `Validação do export: ${validation.outcome === "PASSED" ? "aprovada" : "revisar"}`
@@ -158,7 +165,7 @@ function render() {
       <div class="card-top"><span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? '<span class="warning-badge" title="Há um alerta">!</span>' : ""}</div>
       <h3>${escapeHtml(client.display_name)}</h3><p class="client-meta">${escapeHtml(client.client_id)}<br>${escapeHtml(client.tenant_id || "tenant não informado")}</p>
       <div class="card-report"><span>Último relatório</span><strong>${report ? escapeHtml(report.period_id || formatDate(report.ended_at)) : "Ainda não gerado"}</strong></div>
-      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(runningCopy) : job?.status === "QUEUED" ? "Aguardando execução" : job?.status === "FAILED" ? "Execução interrompida" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div></div>
+      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(displayRunningCopy) : job?.status === "QUEUED" ? queuedCopy : job?.status === "FAILED" ? "Execução interrompida" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div></div>
     </article>`;
   }).join("");
   document.querySelectorAll(".client-card").forEach(card => {
@@ -566,19 +573,29 @@ clientForm.addEventListener("submit", async event => {
 $("#run-form").addEventListener("submit", async event => {
   event.preventDefault(); const form = new FormData(event.currentTarget); const type = form.get("period_type"); const payload = { client_ids: state.runClientIds, mode: "manual" };
   if (type === "days") payload.days = Number(form.get("days"));
+  payload.force_live_collection = form.has("force_live_collection");
   if (type === "range") {
-    if (!form.get("start_at") || !form.get("end_at")) { toast("Informe o início e o fim do período.", "error"); return; }
-    payload.start_at = new Date(form.get("start_at")).toISOString(); payload.end_at = new Date(form.get("end_at")).toISOString();
+    if (!form.get("start_date") || !form.get("end_date")) { toast("Informe a data inicial e a data final.", "error"); return; }
+    payload.start_date = String(form.get("start_date"));
+    payload.end_date = String(form.get("end_date"));
+
     const inventoryClients = state.runClientIds
       .map(clientId => state.data?.clients.find(client => client.client_id === clientId))
       .filter(client => client?.historical_source === "inventory_beta");
     if (inventoryClients.length) {
       const names = inventoryClients.map(client => client.display_name).join(", ");
-      const message = `Se não houver snapshot compacto exato, o período será reconstruído pela Inventory Findings API para: ${names}. O resultado será identificado como histórico reconstruído. Deseja continuar?`;
+      const message = payload.force_live_collection
+        ? `O snapshot será ignorado e o período será reconstruído pela Inventory Findings API para: ${names}. Deseja continuar?`
+        : `Se não houver snapshot compacto exato, o período será reconstruído pela Inventory Findings API para: ${names}. O resultado será identificado como histórico reconstruído. Deseja continuar?`;
       if (!window.confirm(message)) return;
       payload.confirm_historical_reconstruction = true;
     }
   }
+  if (payload.force_live_collection && !payload.confirm_historical_reconstruction) {
+    const message = "Esta execução ignorará o snapshot existente e iniciará novos exports na Tenable. O snapshot atual não será apagado. Deseja continuar?";
+    if (!window.confirm(message)) return;
+  }
+
   const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
   try { const result = await api("/api/jobs", { method: "POST", body: payload }); $("#run-dialog").close(); await refresh(); toast(`${result.jobs.length} execução(ões) adicionada(s) à fila.`); }
   catch (error) { toast(error.message, "error"); } finally { button.disabled = false; }

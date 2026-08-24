@@ -22,6 +22,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliTests(unittest.TestCase):
+    def test_live_collection_flag_is_accepted_by_orchestrator_and_client(self) -> None:
+        parser = cli_module.build_parser()
+
+        orchestrate = parser.parse_args([
+            "orchestrate", "--config", "clients.json", "--force-live-collection",
+        ])
+        run_client = parser.parse_args([
+            "run-client", "--profile", "client.json", "--force-live-collection",
+        ])
+
+        self.assertTrue(orchestrate.force_live_collection)
+        self.assertTrue(run_client.force_live_collection)
+
     def _tag_run_fixture(self, directory: Path):
         dataset = directory / "dataset.json"
         dataset.write_text("{}", encoding="utf-8")

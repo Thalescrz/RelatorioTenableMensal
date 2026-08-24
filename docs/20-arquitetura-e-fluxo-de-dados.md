@@ -58,11 +58,33 @@ da interface, de Word ou de uma resposta HTTP específica.
 12. Métricas compactas são persistidas; dados intermediários pesados de uma
    execução bem-sucedida são removidos.
 
+## Replay e coleta nova
+
+Antes de abrir exports, o roteador reutiliza um snapshot compacto exato quando
+elegível. Isso torna uma regeneração comum reprodutível e evita chamadas externas
+desnecessárias. Em uma execução manual, o analista pode forçar novos jobs de API
+sem apagar o snapshot anterior; rota, chunk e payload continuam vindo do perfil do
+cliente.
+
+Forçar uma coleta não seleciona outra estratégia de VM e não habilita propriedades
+seletivas. O resultado registra essa decisão e a origem dos jobs para que a
+interface diferencie replay de exports recém-criados.
+
 ## Período e estados VM
+
+O contrato de domínio permanece `[início, fim)`. A interface, porém, recebe duas
+datas inclusivas e normaliza a data final para a meia-noite do dia seguinte antes
+de criar o job. Dessa forma, um intervalo visível de 01/07 a 31/07 chega ao domínio
+como `[01/07 00:00, 01/08 00:00)`.
 
 O filtro `since` enviado ao export limita o universo inferior, mas a fronteira
 superior é garantida no processamento local. Isso é necessário porque a API pode
 coletar até o momento em que a execução ocorre.
+
+Por isso, uma coleta nova de um mês já encerrado pela rota `legacy_vm` é publicada
+como `HISTORICAL_RECONSTRUCTION`, acompanhada de aviso explícito. O dado continua
+delimitado pelo contrato local, mas não é apresentado como se tivesse sido
+observado exatamente no fechamento original.
 
 - `OPEN` e `REOPENED`: pertencem ao período quando `last_found` está no intervalo.
 - `FIXED`: pertence ao período quando `last_fixed` está no intervalo.

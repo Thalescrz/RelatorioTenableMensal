@@ -45,6 +45,10 @@ O modelo conserva:
 `Plugin Output` pode conter dados sensíveis e aumentar bastante o payload. Ele só é
 coletado e exibido quando o perfil autoriza a coluna opcional.
 
+O VPR permanece como número ou nulo no dado normalizado. Nas tabelas compactas
+de vulnerabilidades, o relatório exibe 0 quando o plugin não possui VPR atribuído;
+essa convenção é apenas visual e não altera ranking, faixas VPR ou histórico.
+
 ## Finding WAS normalizado
 
 O modelo WEB conserva:

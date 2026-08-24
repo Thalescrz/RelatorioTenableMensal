@@ -90,6 +90,7 @@ class OrchestrationRequest:
     vm_selective_mode: str | None = None
     vm_export_strategy: str | None = None
     historical_source: str | None = None
+    force_live_collection: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -526,6 +527,8 @@ def build_client_command(
         str(config.minimum_free_gb),
         "--confirm-live-api",
     ]
+    if request.force_live_collection:
+        command.append("--force-live-collection")
     if request.vm_selective_mode:
         command.extend(("--vm-selective-mode", request.vm_selective_mode))
     if request.vm_export_strategy:

@@ -41,6 +41,35 @@ def all_document_text(document):
 
 
 class FullBaseReportDocxTests(unittest.TestCase):
+    def test_compact_vulnerability_table_displays_missing_and_numeric_zero_vpr_as_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = json.loads(FIXTURE.read_text(encoding="utf-8"))
+            dataset["top_open_vulnerabilities"][0]["vpr_score"] = 0
+            dataset["top_open_vulnerabilities"][1]["vpr_score"] = None
+            dataset_path = Path(directory) / "vpr-zero.json"
+            dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+            output = Path(directory) / "vpr-zero.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=dataset_path,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+            )
+
+            rows_by_plugin_id = {
+                row.cells[0].text: row
+                for table in Document(output).tables
+                if table.rows
+                and tuple(cell.text for cell in table.rows[0].cells)
+                == ("Plugin ID", "Nome", "Família OS", "Severidade", "Total", "VPR")
+                for row in table.rows[1:]
+            }
+            self.assertEqual(rows_by_plugin_id["900001"].cells[5].text, "0")
+            self.assertEqual(rows_by_plugin_id["900002"].cells[5].text, "0")
+
     def test_full_sanitised_report_contains_contractual_sections(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "full.docx"

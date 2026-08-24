@@ -1052,6 +1052,7 @@ def _execute_period(
         ),
         historical_source_override=getattr(args, "historical_source", None),
         compact_repository=compact_repository,
+        force_live_collection=bool(getattr(args, "force_live_collection", False)),
     )
 
     if route.source.value == "snapshot_replay":
@@ -1698,6 +1699,7 @@ def command_orchestrate(args: argparse.Namespace) -> int:
             vm_selective_mode=args.vm_selective_mode,
             vm_export_strategy=args.vm_export_strategy,
             historical_source=args.historical_source,
+            force_live_collection=args.force_live_collection,
         ),
         run_status=retention_state.get("run_status"),
         history_confirmed_run_ids=retention_state.get(
@@ -1886,6 +1888,11 @@ def _add_complete_collection_arguments(parser: argparse.ArgumentParser) -> None:
     tag_scope.add_argument("--select-tags", action="store_true")
     tag_scope.add_argument("--tag", dest="tags", action="append")
     parser.add_argument("--confirm-live-api", action="store_true")
+    parser.add_argument(
+        "--force-live-collection",
+        action="store_true",
+        help="Ignora snapshot compacto exato e inicia uma nova coleta pela API.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2303,6 +2310,11 @@ def build_parser() -> argparse.ArgumentParser:
         dest="apply_retention",
         action="store_false",
         help="Somente planeja a retenção nesta execução, sem remover artefatos.",
+    )
+    orchestrate.add_argument(
+        "--force-live-collection",
+        action="store_true",
+        help="Ignora snapshot compacto exato e inicia uma nova coleta pela API.",
     )
     orchestrate.set_defaults(apply_retention=True)
     orchestrate.add_argument("--confirm-live-api", action="store_true")
