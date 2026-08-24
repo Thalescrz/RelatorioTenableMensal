@@ -23,8 +23,15 @@ O modelo conserva:
 - criação, atualização, exclusão e encerramento;
 - ACR e AES quando fornecidos.
 
-Hostname e IP podem mudar ou ser reutilizados. Eles servem para apresentação, nunca
-para reconciliar a identidade entre ativo e finding.
+O nome apresentado nunca deve ficar vazio. A precedência é: nome explícito do
+ativo, hostname, FQDN, NetBIOS, IPv4, IPv6 e, somente como último recurso, UUID da
+origem. O replay de snapshots compactos antigos reaplica essa regra aos aliases que
+ainda estejam preservados. Se o snapshot não contiver nenhum nome ou alias, o IP ou
+UUID é exibido; o sistema não inventa um hostname perdido.
+
+Hostname e IP podem mudar ou ser reutilizados. Eles servem somente para
+apresentação; a reconciliação entre ativo e finding continua exclusivamente por
+UUID.
 
 ## Finding VM normalizado
 
@@ -40,6 +47,7 @@ O modelo conserva:
 - CVSS v2/v3, VPR e vetor de ataque;
 - patch disponível;
 - indicador geral `exploitable`;
+- indicador direto `exploited_by_malware`;
 - indicadores segregados por framework de exploração.
 
 `Plugin Output` pode conter dados sensíveis e aumentar bastante o payload. Ele só é
@@ -91,8 +99,12 @@ e Low.
   mantendo IP e nome somente como atributos de exibição.
 - `Exploitable` por ativo: quantidade de findings do ativo com
   `plugin.exploit_available` verdadeiro.
-- Exploráveis por framework: contagens separadas pelos indicadores de cada
-  framework; não devem ser inferidas apenas do indicador geral.
+- Matriz de explorabilidade: exibe `Exploitable`, `Malware`, `Core Impact`,
+  `Canvas`, `D2 Elliot`, `ExploitHub` e `Metasploit`, nessa ordem. A linha
+  `Malware` exige simultaneamente `Exploit Available = true` e
+  `Exploited By Malware = true`. As cinco linhas de framework usam seus
+  indicadores específicos e não devem ser inferidas apenas do indicador geral.
+  Se alguma linha tiver dados, as sete aparecem, inclusive as de valor zero.
 - Panorama por sistema operacional: para manter compatibilidade com o quadro ITP,
   classifica as instâncias pelas famílias de plugin nas linhas `Windows`, `Mac OS X`,
   `Linux/Unix` e `WEB`; `Devices/Services` usa nome de plugin contendo

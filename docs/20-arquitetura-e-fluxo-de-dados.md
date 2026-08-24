@@ -123,17 +123,20 @@ O próximo comparativo consulta a referência compatível anterior, não apenas 
 arquivo mais recente da pasta. Para TAGs, categoria e valor fazem parte da
 identidade; mudar a TAG evita comparações incorretas.
 
-Excluir um documento é uma ação explícita. Se ele for `MAIN`, a interface deve
-exigir a escolha de outra referência ou deixar claro que o próximo comparativo não
-terá base.
+Excluir é uma ação explícita sobre o conjunto inteiro. Se ele for `MAIN`, a
+interface exige outra referência compatível. O serviço bloqueia gerações ativas,
+valida que todos os alvos pertencem à raiz `data` e usa quarentena reversível antes
+da transação PostgreSQL. Somente após o commit a remoção física é finalizada.
 
 ## Ciclo de vida do armazenamento
 
 Duráveis:
 
 - DOCX publicados, até exclusão explícita;
-- métricas mensais compactas e fingerprints para tendências;
-- registro de execução, tentativa, documento e `MAIN` no PostgreSQL.
+- métricas mensais compactas e fingerprints para tendências, até a exclusão
+  explícita do conjunto;
+- registros de execução, publicação, documento e `MAIN` no PostgreSQL, enquanto o
+  conjunto existir.
 
 Temporários:
 

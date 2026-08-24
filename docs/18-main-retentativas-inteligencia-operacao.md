@@ -1,6 +1,6 @@
 # Operação de main, retentativas e inteligência
 
-## Estado atual — 2026-08-23
+## Estado atual — 2026-08-24
 
 A referência `MAIN` também cobre a identidade dos documentos por TAG, garantindo
 comparação da mesma TAG no tempo. Retentativas VM preservam chunks íntegros e
@@ -28,17 +28,24 @@ o `main` do mês imediatamente anterior.
 - Sem `main` no mês imediatamente anterior, o documento customizado mantém tabelas
   atuais e baselines disponíveis e informa que não há histórico para comparação.
 
-## Exclusão e restauração
+## Exclusão permanente
 
-A exclusão pela interface é lógica e auditada.
+A exclusão iniciada pela interface é física, irreversível e auditada.
 
-- Para excluir um `main`, selecione uma geração substituta compatível ou confirme
-  explicitamente a criação de uma lacuna histórica.
-- A substituta passa a ser `main` na mesma operação.
-- Restaurar um relatório apenas remove a marca de exclusão; ele não volta a ser
-  `main` automaticamente.
-- Os arquivos físicos permanecem sujeitos à política de retenção. Uma exclusão
-  física já aplicada depende de backup para recuperação.
+- A prévia informa período, documentos, arquivos e bytes que serão removidos.
+- O analista informa o motivo e digita exatamente `EXCLUIR`.
+- Para excluir um `MAIN`, é obrigatório selecionar uma geração substituta
+  compatível; a operação não permite criar uma lacuna histórica.
+- A substituta passa a ser `MAIN` na mesma operação.
+- A exclusão é bloqueada enquanto existir geração ativa para o mesmo cliente.
+- DOCX gerais, customizados e por TAG, manifesto de publicação, histórico compacto
+  e registros PostgreSQL relacionados ao conjunto são removidos.
+- O serviço aceita somente arquivos resolvidos dentro da raiz `data` configurada.
+- Os arquivos passam por `data/.purge` antes da transação. Falha no disco ou no
+  banco restaura o estágio; depois do commit, não há restauração pela aplicação.
+
+O fluxo anterior de exclusão lógica permanece apenas para registros legados já
+marcados; novas exclusões usam exclusivamente o procedimento permanente acima.
 
 ## Retentativas
 

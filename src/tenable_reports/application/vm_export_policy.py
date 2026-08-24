@@ -55,6 +55,7 @@ VM_REPORT_PROPERTIES = (
     "definition.cvss4.base_score",
     "definition.cvss4.base_vector",
     "definition.vpr.score",
+    "definition.exploited_by_malware",
 )
 
 REQUIRED_SELECTIVE_PROPERTIES = (
@@ -76,6 +77,7 @@ REQUIRED_SELECTIVE_PROPERTIES = (
     "definition.cvss3.base_score",
     "definition.cvss3.base_vector",
     "definition.vpr.score",
+    "definition.exploited_by_malware",
 )
 
 
@@ -216,6 +218,10 @@ def _comparison_metrics(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             "resurfaced": sum(item.resurfaced_at is not None for item in findings),
         },
         "exploitable_count": sum(item.exploitable is True for item in findings),
+        "malware_count": sum(
+            item.exploitable is True and item.exploited_by_malware is True
+            for item in findings
+        ),
         "framework_counts": dict(sorted(framework_counts.items())),
         "coverage": {
             "synopsis": sum(item.synopsis is not None for item in findings),

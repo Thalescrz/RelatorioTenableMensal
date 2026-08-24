@@ -197,7 +197,7 @@ async function openClient(clientId) {
       const documents = renderDocumentGroups(report.documents || []);
       const omitted = (report.omitted_modules || []).length ? ` · omitidos: ${escapeHtml(report.omitted_modules.join(", "))}` : "";
       const reference = report.reference_run_id ? ` · referência: ${escapeHtml(report.reference_run_id)}` : "";
-      return `<div class="report-row ${report.deleted_at ? "deleted" : ""}" data-report-run="${escapeHtml(report.run_id)}"><div><div class="report-badges">${report.is_main ? '<span class="report-badge main">MAIN</span>' : ""}<span class="report-badge">${escapeHtml(report.origin || "MANUAL")}</span><span class="report-badge">${escapeHtml(report.status || "")}</span>${report.deleted_at ? '<span class="report-badge">EXCLUÍDO</span>' : ""}</div><strong>${escapeHtml(report.period_id || report.run_id)}</strong><small>${escapeHtml(report.run_id)} · ${formatBytes(report.size_bytes)}${reference}${omitted}</small><div class="report-documents">${documents || '<small>Documentos não localizados no disco.</small>'}</div></div><div class="report-actions">${!report.deleted_at && !report.is_main ? '<button class="mini-button" data-report-action="main" type="button">Definir MAIN</button>' : ""}${report.deleted_at ? '<button class="mini-button" data-report-action="restore" type="button">Restaurar</button>' : '<button class="mini-button danger" data-report-action="delete" type="button">Excluir</button>'}</div></div>`;
+      return `<div class="report-row ${report.deleted_at ? "deleted" : ""}" data-report-run="${escapeHtml(report.run_id)}"><div><div class="report-badges">${report.is_main ? '<span class="report-badge main">MAIN</span>' : ""}<span class="report-badge">${escapeHtml(report.origin || "MANUAL")}</span><span class="report-badge">${escapeHtml(report.status || "")}</span>${report.deleted_at ? '<span class="report-badge">EXCLUÍDO</span>' : ""}</div><strong>${escapeHtml(report.period_id || report.run_id)}</strong><small>${escapeHtml(report.run_id)} · ${formatBytes(report.size_bytes)}${reference}${omitted}</small><div class="report-documents">${documents || '<small>Documentos não localizados no disco.</small>'}</div></div><div class="report-actions">${!report.deleted_at && !report.is_main ? '<button class="mini-button" data-report-action="main" type="button">Definir MAIN</button>' : ""}${report.deleted_at ? '<button class="mini-button" data-report-action="restore" type="button">Restaurar</button>' : '<button class="mini-button danger" data-report-action="delete" type="button">Excluir conjunto</button>'}</div></div>`;
     }).join("") : '<div class="loading">Nenhum relatório gerado para este cliente.</div>';
     bindReportActions();
   } catch (error) { $("#report-list").innerHTML = `<div class="loading">${escapeHtml(error.message)}</div>`; }
@@ -209,6 +209,7 @@ function bindReportActions() {
     const report = state.currentReports.find(item => item.run_id === runId);
     if (!report) return;
     try {
+      let successMessage = "Registro de relatório atualizado.";
       if (button.dataset.reportAction === "main") {
         const reason = prompt("Motivo para definir esta geração como MAIN:"); if (!reason?.trim()) return;
         await api(`/api/reports/${encodeURIComponent(runId)}/main`, { method: "POST", body: { actor: "analista-web", reason } });
@@ -216,23 +217,36 @@ function bindReportActions() {
         const reason = prompt("Motivo da restauração:"); if (!reason?.trim()) return;
         await api(`/api/reports/${encodeURIComponent(runId)}/restore`, { method: "POST", body: { actor: "analista-web", reason } });
       } else {
-        const reason = prompt("Motivo da exclusão:"); if (!reason?.trim()) return;
-        const body = { actor: "analista-web", reason };
-        if (report.is_main) {
-          const replacements = state.currentReports.filter(item => item.run_id !== runId && !item.deleted_at && item.period_id === report.period_id);
-          if (replacements.length) {
-            const selected = prompt(`Esta geração é MAIN. Informe a substituta:\n${replacements.map(item => item.run_id).join("\n")}`);
-            if (!selected || !replacements.some(item => item.run_id === selected.trim())) return;
-            body.replacement_run_id = selected.trim();
-          } else {
-            if (!confirm("Não há substituta compatível. Deseja deixar uma lacuna histórica?")) return;
-            if (!confirm("Confirme novamente: o próximo relatório ficará sem esta referência histórica.")) return;
-            body.allow_gap = true;
+        const preview = await api(`/api/reports/${encodeURIComponent(runId)}/purge-preview`);
+        const summary = `Esta exclusão é permanente e não poderá ser desfeita.\n\nPeríodo: ${preview.period_id}\nDocumentos: ${preview.document_count}\nArquivos no disco: ${preview.file_count}\nEspaço: ${formatBytes(preview.total_bytes)}\n\nDeseja continuar?`;
+        if (!window.confirm(summary)) return;
+        const reason = prompt("Motivo da exclusão permanente:"); if (!reason?.trim()) return;
+        const confirmation = prompt('Digite EXCLUIR para remover o conjunto do banco e do disco:');
+        if (confirmation !== "EXCLUIR") {
+          toast('Confirmação cancelada. Digite exatamente "EXCLUIR".', "error");
+          return;
+        }
+        const body = { actor: "analista-web", reason, confirmation };
+        if (preview.is_main) {
+          const replacementIds = preview.compatible_replacement_run_ids || [];
+          if (!replacementIds.length) {
+            throw new Error("Este conjunto é MAIN e não existe uma geração compatível para substituí-lo.");
           }
-        } else if (!confirm("Excluir logicamente esta geração?")) return;
-        await api(`/api/reports/${encodeURIComponent(runId)}`, { method: "DELETE", body });
+          const replacementLines = replacementIds.map(id => {
+            const candidate = state.currentReports.find(item => item.run_id === id);
+            return `${id}${candidate?.period_id ? ` · ${candidate.period_id}` : ""}`;
+          });
+          const selected = prompt(`Esta geração é MAIN. Informe o ID da substituta:\n${replacementLines.join("\n")}`);
+          if (!selected || !replacementIds.includes(selected.trim())) {
+            toast("Selecione exatamente um dos IDs de geração apresentados.", "error");
+            return;
+          }
+          body.replacement_run_id = selected.trim();
+        }
+        const deleted = await api(`/api/reports/${encodeURIComponent(runId)}`, { method: "DELETE", body });
+        successMessage = `Conjunto excluído: ${deleted.deleted_files} arquivo(s), ${formatBytes(deleted.deleted_bytes)}.`;
       }
-      toast("Registro de relatório atualizado.");
+      toast(successMessage);
       await openClient(state.selectedClient);
       await refresh();
     } catch (error) { toast(error.message, "error"); }

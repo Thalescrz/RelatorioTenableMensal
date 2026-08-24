@@ -164,8 +164,24 @@ confirmação consciente do analista.
 Na lista de documentos do cliente é possível:
 
 - baixar o DOCX;
-- excluir um relatório com confirmação;
+- excluir permanentemente o conjunto completo com confirmação;
 - promover uma geração como `MAIN` para o próximo comparativo.
+
+Para excluir um conjunto:
+
+1. clique em **Excluir conjunto**;
+2. confira período, quantidade de documentos, arquivos e espaço ocupado;
+3. informe o motivo e digite exatamente `EXCLUIR`;
+4. se a geração for `MAIN`, escolha uma substituta compatível dentre as opções
+   apresentadas.
+
+A exclusão não prossegue se existir geração ativa para o cliente ou se algum alvo
+estiver fora da raiz `data`. Quando concluída, remove do disco os DOCX gerais,
+customizados e por TAG, o manifesto e os demais arquivos registrados; também remove
+snapshot compacto, publicação, documentos, artefatos, eventos e execução associados
+no PostgreSQL. Não há botão de desfazer. Registros legados anteriormente excluídos
+de forma lógica ainda podem mostrar **Restaurar**, mas esse não é o fluxo das novas
+exclusões.
 
 Uma execução automática bem-sucedida torna-se `MAIN` por padrão. Se o analista
 refizer o relatório por falta de dados, deve promover manualmente a melhor versão.
@@ -180,6 +196,9 @@ revisão.
 Os documentos publicados e o histórico compacto permanecem. Staging pesado é
 removido depois do sucesso. Em falhas, ele fica temporariamente disponível para
 diagnóstico e retomada e depois entra na limpeza.
+
+Documentos e histórico compacto deixam de permanecer quando o próprio conjunto é
+excluído explicitamente pela interface.
 
 Não copie `data`, `credentials` ou arquivos `.env` para o Git. Antes de uma limpeza
 manual, confirme que nenhum processo está em execução e que os DOCX registrados e

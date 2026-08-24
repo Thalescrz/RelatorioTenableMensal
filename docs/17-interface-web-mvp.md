@@ -1,13 +1,13 @@
 # Interface web local — MVP
 
-## Estado atual — 2026-08-23
+## Estado atual — 2026-08-24
 
 Além da fila e dos downloads, o painel permite editar clientes, testar uma API ou
 todas, buscar e selecionar TAGs, configurar relatórios/comparativos por TAG,
 acompanhar exports e cancelar com confirmação, validar propriedades seletivas,
-excluir documentos e promover a referência `MAIN`. A área administrativa analisa
-e aplica backfill e limpeza. WAS é opcional e não paralisa VM. A interface continua
-local e não possui autenticação multiusuário.
+excluir conjuntos de relatórios permanentemente e promover a referência `MAIN`. A
+área administrativa analisa e aplica backfill e limpeza. WAS é opcional e não
+paralisa VM. A interface continua local e não possui autenticação multiusuário.
 
 O painel web é uma camada operacional simples sobre a carteira de clientes, a
 orquestração existente e o PostgreSQL. Ele concentra a operação normal sem exigir
@@ -34,6 +34,9 @@ pressione `Ctrl+C`.
 
 - cards com estado, progresso, último período e alerta por cliente;
 - download dos DOCX/PDF registrados no PostgreSQL;
+- exclusão permanente de um conjunto completo, com prévia de período, documentos,
+  arquivos e espaço ocupado, confirmação digitada e substituição obrigatória se a
+  geração for `MAIN`;
 - cadastro de cliente, perfil e credencial local;
 - edição, ativação e desativação de clientes; o ID interno permanece imutável;
 - geração pontual individual ou de todos os clientes;
@@ -100,6 +103,24 @@ derivados localmente e não filtram o relatório geral. Uma falha específica ap
 no alerta do cliente, mas os documentos gerais e as demais TAGs continuam sendo
 publicados. No primeiro mês sem histórico compatível, o documento corrente ainda é
 gerado e não inventa valores anteriores.
+
+## Exclusão de um conjunto
+
+Em **Relatórios gerados**, o botão **Excluir conjunto** remove o conjunto completo,
+não apenas um DOCX isolado. A interface mostra a prévia do período, a quantidade de
+documentos, os arquivos localizados e o espaço que será liberado. Depois exige
+motivo e a digitação exata de `EXCLUIR`.
+
+Se o conjunto for `MAIN`, é obrigatório selecionar outra geração compatível antes
+de continuar. A operação também é bloqueada enquanto houver geração ativa para o
+mesmo cliente. Quando autorizada, remove os documentos, o manifesto, o snapshot
+compacto e os registros relacionados no PostgreSQL. Não existe restauração pela
+interface; uma recuperação posterior depende de backup externo.
+
+Arquivos são primeiro movidos para uma área de quarentena sob `data/.purge`. Se a
+alteração no banco falhar, eles retornam ao local original. A quarentena só é
+eliminada depois da confirmação da transação. O botão **Restaurar** pode aparecer
+apenas em registros legados que já estavam marcados pela antiga exclusão lógica.
 
 ## Limites intencionais desta versão
 

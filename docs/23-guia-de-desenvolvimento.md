@@ -104,8 +104,11 @@ Depois de alterar apresentação:
 
 Rotas novas precisam de teste do servidor e do JavaScript que as consome. Mostre
 erros de forma acionável, associe-os ao cliente e não retorne secrets ao navegador.
-Operações destrutivas, como exclusão ou cancelamento de export, exigem confirmação
-e alvo explícito.
+Operações destrutivas, como exclusão ou cancelamento de export, exigem alvo
+explícito e confirmação proporcional ao risco. Para conjuntos de relatórios, teste
+prévia, frase digitada, substituição obrigatória de `MAIN`, bloqueio por job ativo,
+validação da raiz `data`, rollback do estágio físico e remoção transacional dos
+registros PostgreSQL.
 
 ## Documentação e instruções
 

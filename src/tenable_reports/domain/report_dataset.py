@@ -451,25 +451,50 @@ def _operating_system_matrix(
                 rows[group]["mitigated"] += 1
     return tuple(rows[group] for group in _ITP_OS_GROUP_ORDER)
 
+_EXPLOITABILITY_MATRIX_ORDER = (
+    "Exploitable",
+    "Malware",
+    "Core Impact",
+    "Canvas",
+    "D2 Elliot",
+    "ExploitHub",
+    "Metasploit",
+)
+
 
 def _exploit_framework_matrix(
     open_findings: Sequence[NormalizedFinding],
 ) -> tuple[dict[str, Any], ...]:
-    rows: dict[str, dict[str, Any]] = {}
+    rows = {
+        label: {
+            "framework": label,
+            "total": 0,
+            "critical": 0,
+            "high": 0,
+            "medium": 0,
+        }
+        for label in _EXPLOITABILITY_MATRIX_ORDER
+    }
+
+    def increment(label: str, finding: NormalizedFinding) -> None:
+        row = rows[label]
+        row["total"] += 1
+        severity = finding.severity.lower()
+        if severity in {"critical", "high", "medium"}:
+            row[severity] += 1
+
     for finding in open_findings:
+        if finding.exploitable is True:
+            increment("Exploitable", finding)
+            if finding.exploited_by_malware is True:
+                increment("Malware", finding)
         for framework in finding.exploit_frameworks:
-            row = rows.setdefault(framework, {
-                "framework": framework,
-                "total": 0,
-                "critical": 0,
-                "high": 0,
-                "medium": 0,
-            })
-            row["total"] += 1
-            severity = finding.severity.lower()
-            if severity in {"critical", "high", "medium"}:
-                row[severity] += 1
-    return tuple(sorted(rows.values(), key=lambda row: (-row["total"], row["framework"].casefold())))
+            if framework in rows:
+                increment(framework, finding)
+
+    if not any(row["total"] for row in rows.values()):
+        return ()
+    return tuple(rows[label] for label in _EXPLOITABILITY_MATRIX_ORDER)
 
 
 def _states_from_query(query: Mapping[str, Any] | None) -> set[str] | None:
@@ -1090,8 +1115,8 @@ def build_report_dataset(
                 "date_fields": ["Last Seen"],
                 "group_by": "Exploit Framework",
                 "rule": (
-                    "flags Canvas, Core Impact, D2 Elliot, ExploitHub e Metasploit; "
-                    "pode haver múltipla contagem"
+                    "Exploit Available; Exploited By Malware; flags Canvas, Core Impact, "
+                    "D2 Elliot, ExploitHub e Metasploit; pode haver múltipla contagem"
                 ),
             },
             "previous_period_overview": {

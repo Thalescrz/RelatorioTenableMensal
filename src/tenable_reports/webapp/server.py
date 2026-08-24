@@ -37,6 +37,13 @@ from tenable_reports.application.report_registry import (
     MainDeletionRequiresDecision,
     ReportRegistry,
 )
+from tenable_reports.application.report_set_purge import (
+    ActiveReportSetError,
+    MainReportReplacementRequired,
+    ReportSetPurgeFinalizationError,
+    ReportSetPurgeService,
+    UnsafeReportSetPath,
+)
 from tenable_reports.application.storage_guard import required_free_bytes
 from tenable_reports.application.vm_export_policy import recovery_vm_strategy
 from tenable_reports.application.tag_scope import parse_tag_values
@@ -59,6 +66,9 @@ from tenable_reports.infrastructure.postgresql import (
     SCHEMA_NAME,
 )
 from tenable_reports.infrastructure.report_registry_postgresql import PostgresReportRegistry
+from tenable_reports.infrastructure.report_set_purge_postgresql import (
+    PostgresReportSetPurgeRepository,
+)
 from tenable_reports.domain.report_reference import reference_key_for_candidate
 from tenable_reports.infrastructure.tenable_vm.client import (
     ExportTimeoutError,
@@ -1298,6 +1308,7 @@ class DashboardApplication:
             [Path, str], Mapping[str, Any]
         ] = cancel_tenable_export,
         report_registry: ReportRegistry | None = None,
+        report_set_purger: ReportSetPurgeService | None = None,
         backfill_state_provider: Callable[[], MainBackfillSourceState] | None = None,
         retention_state_provider: Callable[[], Mapping[str, Any]] | None = None,
         cleanup_status_recorder: Callable[..., Any] | None = None,
@@ -1320,6 +1331,25 @@ class DashboardApplication:
         if self.report_registry is None and self.database is not None:
             self.report_registry = PostgresReportRegistry(
                 self.database.database, migrate=False
+            )
+        self.report_set_purger = report_set_purger
+        if (
+            self.report_set_purger is None
+            and self.database is not None
+            and self.report_registry is not None
+        ):
+            config_payload = self.config.raw()
+            defaults = config_payload.get("defaults") or {}
+            raw_root = str(defaults.get("output_root") or "../data")
+            data_root = (self.config.config_path.parent / raw_root).resolve()
+            purge_repository = PostgresReportSetPurgeRepository(
+                database=self.database.database,
+                registry=self.report_registry,
+            )
+            self.report_set_purger = ReportSetPurgeService(
+                data_root=data_root,
+                repository=purge_repository,
+                active_jobs=self.jobs.snapshot,
             )
         self._backfill_state_provider = backfill_state_provider
         if self._backfill_state_provider is None and self.database is not None:
@@ -1870,6 +1900,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         _safe_error(str(exc), limit=300),
                     )
             return
+        match = re.fullmatch(r"/api/reports/([^/]+)/purge-preview", parsed.path)
+        if match:
+            if self.app.report_set_purger is None:
+                self._json_error(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Exclusão permanente indisponível sem o banco configurado.",
+                )
+                return
+            try:
+                preview = self.app.report_set_purger.preview(
+                    unquote(match.group(1))
+                )
+                self._json(HTTPStatus.OK, preview.to_dict())
+            except KeyError as exc:
+                self._json_error(HTTPStatus.NOT_FOUND, _safe_error(str(exc), limit=500))
+            except UnsafeReportSetPath as exc:
+                self._json_error(HTTPStatus.CONFLICT, _safe_error(str(exc), limit=500))
+            except Exception as exc:
+                self._json_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    _safe_error(str(exc), limit=500),
+                )
+            return
         match = re.fullmatch(r"/api/reports/(\d+)/download", parsed.path)
         if match:
             inline = parse_qs(parsed.query).get("inline", ["false"])[0].lower() == "true"
@@ -2012,27 +2065,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_error(HTTPStatus.NOT_FOUND, "Rota nao encontrada.")
             return
         try:
-            if self.app.report_registry is None:
-                self._json_error(HTTPStatus.SERVICE_UNAVAILABLE, "Registro de relatórios indisponível.")
+            if self.app.report_set_purger is None:
+                self._json_error(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Exclusão permanente indisponível sem o banco configurado.",
+                )
                 return
             payload = self._request_json()
             run_id = unquote(match.group(1))
-            self.app.report_registry.soft_delete(
+            result = self.app.report_set_purger.purge(
                 run_id,
                 actor=str(payload.get("actor") or ""),
                 reason=str(payload.get("reason") or ""),
+                confirmation=str(payload.get("confirmation") or ""),
                 replacement_run_id=(
                     str(payload.get("replacement_run_id") or "").strip() or None
                 ),
-                allow_gap=bool(payload.get("allow_gap", False)),
             )
-            self._json(HTTPStatus.OK, {"run_id": run_id, "deleted": True})
-        except MainDeletionRequiresDecision as exc:
+            self._json(HTTPStatus.OK, result.to_dict())
+        except (
+            ActiveReportSetError,
+            MainDeletionRequiresDecision,
+            MainReportReplacementRequired,
+            UnsafeReportSetPath,
+        ) as exc:
             self._json_error(HTTPStatus.CONFLICT, _safe_error(str(exc), limit=500))
         except KeyError as exc:
             self._json_error(HTTPStatus.NOT_FOUND, _safe_error(str(exc), limit=500))
         except (ValueError, json.JSONDecodeError) as exc:
             self._json_error(HTTPStatus.BAD_REQUEST, _safe_error(str(exc), limit=500))
+        except ReportSetPurgeFinalizationError as exc:
+            self._json_error(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                _safe_error(str(exc), limit=500),
+            )
         except Exception as exc:
             self._json_error(HTTPStatus.INTERNAL_SERVER_ERROR, _safe_error(str(exc), limit=500))
 

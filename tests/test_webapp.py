@@ -15,6 +15,10 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from tenable_reports.application.report_registry import InMemoryReportRegistry
+from tenable_reports.application.report_set_purge import (
+    ReportSetPurgeRecord,
+    ReportSetPurgeService,
+)
 from tenable_reports.application.postgresql_migration import MainBackfillSourceState
 from tenable_reports.config.profile import load_client_profile
 from tenable_reports.domain.report_reference import READY_STATUS, ReportCandidate, ReportOrigin, reference_key_for_candidate
@@ -60,6 +64,35 @@ class _RowsDatabase:
 
     def connection(self):
         return self.connection_value
+
+
+
+class _WebPurgeRepository:
+    def __init__(
+        self,
+        registry: InMemoryReportRegistry,
+        records: dict[str, ReportSetPurgeRecord],
+    ) -> None:
+        self.registry = registry
+        self.records = records
+
+    def describe(self, run_id: str) -> ReportSetPurgeRecord:
+        return self.records[run_id]
+
+    def purge(
+        self,
+        run_id: str,
+        *,
+        actor: str,
+        reason: str,
+        replacement_run_id: str | None,
+    ) -> None:
+        self.registry.hard_delete(
+            run_id,
+            actor=actor,
+            reason=reason,
+            replacement_run_id=replacement_run_id,
+        )
 
 
 def valid_run(run_id: str, *, client_id: str = "cliente-a") -> ReportCandidate:
@@ -641,9 +674,13 @@ class WebDashboardTests(unittest.TestCase):
         safe = _safe_error(raw)
         self.assertEqual(safe, "MemoryError")
 
-    def test_report_endpoints_manage_main_delete_and_restore(self) -> None:
+    def test_report_endpoints_preview_and_permanently_delete_a_set(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            data_root = root / "data"
+            document = data_root / "manual" / "reports" / "cliente-a" / "run-a" / "base.docx"
+            document.parent.mkdir(parents=True, exist_ok=True)
+            document.write_bytes(b"doc")
             registry = InMemoryReportRegistry()
             for run_id in ("run-a", "run-b"):
                 registry.register_report(valid_run(run_id))
@@ -651,10 +688,35 @@ class WebDashboardTests(unittest.TestCase):
                 reference_key_for_candidate(valid_run("run-a")), "run-a",
                 actor="system", reason="primeiro",
             )
+            records = {
+                "run-a": ReportSetPurgeRecord(
+                    run_id="run-a",
+                    client_id="cliente-a",
+                    period_id="2026-07",
+                    disk_paths=(str(document),),
+                    document_count=1,
+                    is_main=True,
+                    compatible_replacement_run_ids=("run-b",),
+                ),
+                "run-b": ReportSetPurgeRecord(
+                    run_id="run-b",
+                    client_id="cliente-a",
+                    period_id="2026-07",
+                    disk_paths=(),
+                    document_count=0,
+                    is_main=False,
+                ),
+            }
+            purger = ReportSetPurgeService(
+                data_root=data_root,
+                repository=_WebPurgeRepository(registry, records),
+                active_jobs=lambda: (),
+            )
             app = DashboardApplication(
                 project_root=root,
                 config_path=root / "orchestration" / "clients.json",
                 report_registry=registry,
+                report_set_purger=purger,
             )
             client = LocalClient(app)
             try:
@@ -668,6 +730,13 @@ class WebDashboardTests(unittest.TestCase):
                     "reference_run_id", "size_bytes", "documents",
                 } <= row.keys())
 
+                status, preview = client.request(
+                    "GET", "/api/reports/run-a/purge-preview"
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(preview["file_count"], 1)
+                self.assertEqual(preview["total_bytes"], 3)
+
                 status, _ = client.request(
                     "POST", "/api/reports/run-b/main",
                     {"actor": "analista", "reason": ""},
@@ -676,20 +745,33 @@ class WebDashboardTests(unittest.TestCase):
 
                 status, _ = client.request(
                     "DELETE", "/api/reports/run-a",
-                    {"actor": "analista", "reason": "incompleto"},
+                    {
+                        "actor": "analista",
+                        "reason": "incompleto",
+                        "confirmation": "EXCLUIR",
+                    },
                 )
                 self.assertEqual(status, 409)
 
-                client.request(
+                status, deleted = client.request(
                     "DELETE", "/api/reports/run-a",
-                    {"actor": "analista", "reason": "incompleto", "allow_gap": True},
-                )
-                status, _ = client.request(
-                    "POST", "/api/reports/run-a/restore",
-                    {"actor": "analista", "reason": "recuperação"},
+                    {
+                        "actor": "analista",
+                        "reason": "incompleto",
+                        "confirmation": "EXCLUIR",
+                        "replacement_run_id": "run-b",
+                    },
                 )
                 self.assertEqual(status, 200)
-                self.assertIsNone(registry.get_main(reference_key_for_candidate(valid_run("run-a"))))
+                self.assertEqual(deleted["deleted_files"], 1)
+                self.assertEqual(deleted["deleted_bytes"], 3)
+                self.assertFalse(document.exists())
+                with self.assertRaises(KeyError):
+                    registry.get_report("run-a")
+                self.assertEqual(
+                    registry.get_main(reference_key_for_candidate(valid_run("run-b"))).run_id,
+                    "run-b",
+                )
             finally:
                 client.close()
 

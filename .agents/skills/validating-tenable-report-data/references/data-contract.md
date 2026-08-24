@@ -45,8 +45,11 @@ esse nome, confirme o campo retornado pela API em vez de substituir por `Last Se
 ### Exploitable
 
 Aplique `Exploit Available = true` dentro da população e do período da tabela.
-Para o quadro por framework, confira separadamente Metasploit, Core, Canvas e demais
-flags existentes; o total geral não distribui frameworks por inferência.
+No quadro de exploração, confira nesta ordem `Exploitable`, `Malware`,
+`Core Impact`, `Canvas`, `D2 Elliot`, `ExploitHub` e `Metasploit`. `Malware`
+exige também o indicador direto `Exploited By Malware = true`. As cinco linhas
+de framework usam seus próprios flags; o total geral não distribui frameworks
+por inferência, e as linhas podem se sobrepor.
 
 ## Ativos e vínculo
 
@@ -85,7 +88,9 @@ população deve trazer mensagem explícita de ausência.
 
 Frameworks de exploração dependem de indicadores específicos do plugin. Se o
 indicador geral for verdadeiro e nenhuma flag de framework estiver presente, conte
-no total explorável, mas não atribua a um framework inventado.
+no total explorável, mas não atribua a um framework inventado. Havendo qualquer
+dado na matriz, preserve as sete linhas canônicas, inclusive as que tenham valor
+zero; sem qualquer ocorrência, exiba a mensagem explícita de ausência.
 
 ## TAGs
 

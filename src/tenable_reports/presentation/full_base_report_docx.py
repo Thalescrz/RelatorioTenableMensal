@@ -242,6 +242,7 @@ def _simple_table(
     *,
     widths: Sequence[int] | None = None,
     left_columns: frozenset[int] = frozenset(),
+    keep_together: bool = False,
     header_fills: Sequence[str] | None = None,
     empty_message: str | None = copy.EMPTY_TABLE_MONTH,
 ) -> Any:
@@ -289,6 +290,11 @@ def _simple_table(
             for run in paragraph.runs:
                 base._set_run_font(run, size=7.2, color=base.NAVY)
                 base._set_language(run)
+    if keep_together and rows:
+        for row in table.rows[:-1]:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    _set_keep_with_next(paragraph)
     if not rows and empty_message:
         _paragraph(document, empty_message)
     return table
@@ -818,6 +824,7 @@ def _summary_section(
         widths=(2500, 1700, 1700, 1700, 1700),
         left_columns=frozenset({0}),
         empty_message=copy.EXPLOIT_FRAMEWORK_EMPTY_MONTH,
+        keep_together=True,
     )
     if framework_rows:
         add_source_filter_note(

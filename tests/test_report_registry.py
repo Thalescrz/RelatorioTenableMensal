@@ -102,6 +102,56 @@ class ReportRegistryTests(unittest.TestCase):
         self.assertTrue(registry.get_report(old.run_id).deleted)
         self.assertEqual(registry.get_main(key).run_id, replacement.run_id)
 
+    def test_hard_delete_main_requires_replacement_and_removes_the_record(self) -> None:
+        module = _registry_module()
+        registry = module.InMemoryReportRegistry()
+        old = _candidate("run-old")
+        replacement = _candidate("run-new")
+        key = reference_key_for_candidate(old)
+        registry.register_report(old)
+        registry.register_report(replacement)
+        registry.promote_main(key, old.run_id, actor="sistema", reason="automático")
+
+        with self.assertRaises(module.MainDeletionRequiresDecision):
+            registry.hard_delete(
+                old.run_id,
+                actor="analista",
+                reason="conjunto inválido",
+            )
+
+        registry.hard_delete(
+            old.run_id,
+            actor="analista",
+            reason="conjunto inválido",
+            replacement_run_id=replacement.run_id,
+        )
+
+        with self.assertRaises(KeyError):
+            registry.get_report(old.run_id)
+        self.assertEqual(registry.get_main(key).run_id, replacement.run_id)
+        self.assertTrue(all(
+            event.previous_run_id != old.run_id and event.new_run_id != old.run_id
+            for event in registry.reference_events()
+        ))
+
+    def test_hard_delete_rejects_an_incompatible_replacement(self) -> None:
+        module = _registry_module()
+        registry = module.InMemoryReportRegistry()
+        old = _candidate("run-old")
+        incompatible = _candidate("run-other", scope_hash="scope-b")
+        key = reference_key_for_candidate(old)
+        registry.register_report(old)
+        registry.register_report(incompatible)
+        registry.promote_main(key, old.run_id, actor="sistema", reason="automático")
+
+        with self.assertRaises(module.IncompatibleReference):
+            registry.hard_delete(
+                old.run_id,
+                actor="analista",
+                reason="conjunto inválido",
+                replacement_run_id=incompatible.run_id,
+            )
+
     def test_restore_never_repromotes_report_automatically(self) -> None:
         module = _registry_module()
         registry = module.InMemoryReportRegistry()
