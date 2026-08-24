@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
 import os
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from pathlib import Path
@@ -24,6 +26,7 @@ from tenable_reports.webapp.server import (
     JobQueue,
     slugify_client_id,
     _safe_error,
+    _default_runner as _web_default_runner,
 )
 
 
@@ -97,6 +100,24 @@ class LocalClient:
 
 
 class WebDashboardTests(unittest.TestCase):
+    def test_default_runner_forces_utf8_for_json_protocol(self) -> None:
+        script = (
+            "import json; "
+            "print(json.dumps({'text':'\\ufffd'}, ensure_ascii=False))"
+        )
+
+        with patch.dict(
+            os.environ,
+            {"PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"},
+        ):
+            completed = _web_default_runner(
+                (sys.executable, "-c", script),
+                Path(__file__).resolve().parents[1],
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["text"], "�")
+
     def test_tag_report_configuration_persists_across_store_reload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

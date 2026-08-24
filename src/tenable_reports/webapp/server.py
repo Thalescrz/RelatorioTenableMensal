@@ -823,9 +823,12 @@ def _default_runner(
     cwd: Path,
     progress_callback: ProgressCallback | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    child_environment = os.environ.copy()
+    child_environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
     process = subprocess.Popen(
         list(command),
         cwd=cwd,
+        env=child_environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from zipfile import ZipFile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -118,6 +120,21 @@ def _docx_text(path: Path) -> str:
 
 
 class OrchestrationTests(unittest.TestCase):
+    def test_default_runner_forces_utf8_for_json_protocol(self) -> None:
+        script = (
+            "import json; "
+            "print(json.dumps({'text':'\\ufffd'}, ensure_ascii=False))"
+        )
+
+        with patch.dict(
+            os.environ,
+            {"PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"},
+        ):
+            completed = _default_runner((sys.executable, "-c", script), ROOT)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["text"], "�")
+
     def test_default_runner_forwards_vm_export_progress(self) -> None:
         events: list[dict] = []
         script = (

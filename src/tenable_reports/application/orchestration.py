@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import inspect
+import os
 import re
 import shutil
 import subprocess
@@ -555,9 +556,12 @@ def _default_runner(
     working_directory: Path,
     progress_callback: ProgressCallback | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    child_environment = os.environ.copy()
+    child_environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
     process = subprocess.Popen(
         list(command),
         cwd=working_directory,
+        env=child_environment,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
