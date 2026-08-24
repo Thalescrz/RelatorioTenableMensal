@@ -20,6 +20,8 @@ operacional compacto para cada TAG selecionada. Cada documento por TAG contém:
 
 - identificação da categoria e do valor na capa e no nome do arquivo;
 - principais ativos vulneráveis, com `Exploitable` na última coluna;
+- visão geral com as tabelas de vulnerabilidades mitigadas, não mitigadas e
+  ressurgidas, usando os filtros temporais próprios de cada população;
 - Top 5 de vulnerabilidades VM não mitigadas;
 - detalhamento de cada vulnerabilidade com a tabela de hosts padrão;
 - tabelas e gráficos mensais da própria TAG, quando o comparativo estiver habilitado.

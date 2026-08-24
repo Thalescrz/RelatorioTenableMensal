@@ -65,11 +65,33 @@ def _tag_dataset(
                 "period_end_at": data["period"]["end_at"],
                 "timezone": data["period"]["timezone"],
             },
+            "top_fixed_vulnerabilities": {
+                "source": "Tenable Vulnerability Management",
+                "view": "Explore > Findings > Vulnerabilities",
+                "states": ["FIXED"],
+                "severities": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                "date_fields": ["Last Fixed"],
+                "period_start_at": data["period"]["start_at"],
+                "period_end_at": data["period"]["end_at"],
+                "timezone": data["period"]["timezone"],
+            },
+            "top_resurfaced_vulnerabilities": {
+                "source": "Tenable Vulnerability Management",
+                "view": "Explore > Findings > Vulnerabilities",
+                "states": ["REOPENED"],
+                "severities": ["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+                "date_fields": ["Resurfaced Date"],
+                "period_start_at": data["period"]["start_at"],
+                "period_end_at": data["period"]["end_at"],
+                "timezone": data["period"]["timezone"],
+            },
         },
     }
     if empty:
         data["top_assets"] = []
+        data["top_fixed_vulnerabilities"] = []
         data["top_open_vulnerabilities"] = []
+        data["top_resurfaced_vulnerabilities"] = []
         data["metrics"]["non_mitigated"]["total"] = 0
         data["metrics"]["non_mitigated"]["by_severity"] = {
             "critical": 0,
@@ -192,6 +214,15 @@ def test_tag_report_contains_only_approved_operational_sections(tmp_path: Path) 
     assert result.top_asset_rows == 10
     assert result.top_open_rows == 5
     assert "TAG Equipe - Infraestrutura" in text
+    assert "4.1. Vulnerabilidades Mitigadas" in text
+    assert "Atualização de exemplo aplicada" in text
+    assert "4.2. Vulnerabilidades Não Mitigadas" in text
+    assert "4.3. Vulnerabilidades Ressurgidas" in text
+    assert "Vulnerabilidade de exemplo ressurgida" in text
+    assert text.index("4.1. Vulnerabilidades Mitigadas") < text.index(
+        "4.2. Vulnerabilidades Não Mitigadas"
+    ) < text.index("4.3. Vulnerabilidades Ressurgidas")
+    assert "Lembrando que para uma vulnerabilidade ser marcada como corrigida" in text
     assert "Principais Ativos Vulneráveis" in text
     assert "VULNERABILIDADES E SUAS CORREÇÕES" in text
     assert "SENSOR WAS" not in text
@@ -210,7 +241,15 @@ def test_tag_report_empty_blocks_have_monthly_message(tmp_path: Path) -> None:
     )
     text = _all_text(Document(output))
 
+    assert (
+        "Neste mês não foram identificadas vulnerabilidades mitigadas para esta TAG."
+        in text
+    )
     assert "Neste mês não foram identificados ativos vulneráveis" in text
+    assert (
+        "Neste mês não foram identificadas vulnerabilidades ressurgidas para esta TAG."
+        in text
+    )
     assert "Neste mês não foram identificadas vulnerabilidades não mitigadas" in text
 
 
@@ -231,6 +270,10 @@ def test_output_column_and_tag_validation_filters_are_optional(tmp_path: Path) -
         "PROTOCOLO",
     ))
 
+    assert "State = Fixed" in text
+    assert "Last Fixed = 01/07/2026 a 31/07/2026" in text
+    assert "State = Resurfaced" in text
+    assert "Resurfaced Date = 01/07/2026 a 31/07/2026" in text
     assert host_header[-1] == "Output"
     assert "Tag UUID = tag-a" in text
     assert "Tag = Equipe:Infraestrutura" in text
