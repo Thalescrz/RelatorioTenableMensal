@@ -213,15 +213,31 @@ query CloudVulnerabilityDetails($first: Int, $after: String) {
 
 _VULNERABILITY_REMEDIATIONS = r"""
 query CloudVulnerabilityRemediations($first: Int, $after: String) {
-  Findings(first: $first, after: $after) {
+  Findings(
+    first: $first
+    after: $after
+    filter: {
+      Types: [
+        VirtualMachineOperatingSystemUnpatchedFinding
+        VirtualMachineVulnerabilityFinding
+      ]
+    }
+  ) {
     nodes {
+      Id
       AccountId
       AccountName
       Description
       Policy { Category Name }
       Provider
       Remediation { Console { Steps } }
-      Resources { Id Name }
+      Resources {
+        Id
+        Name
+        ... on VirtualMachine {
+          Vulnerabilities { Id }
+        }
+      }
       Severity
       Status
     }
@@ -229,7 +245,6 @@ query CloudVulnerabilityRemediations($first: Int, $after: String) {
   }
 }
 """.strip()
-
 
 CLOUD_SOURCE_QUERIES = {
     "virtual_machines": CloudQueryDefinition(

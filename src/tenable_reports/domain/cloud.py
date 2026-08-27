@@ -43,6 +43,7 @@ class CloudVulnerabilityOccurrence:
 class CloudResourceReference:
     resource_id: str
     name: str
+    vulnerability_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +63,7 @@ class CloudFinding:
     resources: tuple[CloudResourceReference, ...]
     remediation_steps: tuple[str, ...]
     vulnerability_related: bool
+    explicit_correction_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -123,6 +123,16 @@ def test_required_queries_stay_light_and_enrichment_is_separate() -> None:
     assert details.page_size <= virtual_machines.page_size
 
 
+
+
+def test_vulnerability_remediation_query_keeps_documented_correlation_fields() -> None:
+    queries = _queries_module()
+    remediation = queries.CLOUD_SOURCE_QUERIES["vulnerability_remediations"]
+
+    assert "VirtualMachineVulnerabilityFinding" in remediation.query
+    assert "VirtualMachineOperatingSystemUnpatchedFinding" in remediation.query
+    assert "Vulnerabilities { Id }" in remediation.query
+    assert "Remediation { Console { Steps } }" in remediation.query
 def test_unknown_cloud_environment_is_rejected_before_network_use() -> None:
     queries = _queries_module()
 

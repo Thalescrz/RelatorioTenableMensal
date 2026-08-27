@@ -183,3 +183,40 @@ def test_missing_asset_id_becomes_quality_issue_not_approximate_asset() -> None:
     assert snapshot.assets == ()
     assert snapshot.occurrences == ()
     assert snapshot.quality_issues[0].code == "MISSING_ASSET_ID"
+
+
+def test_vulnerability_finding_preserves_cves_per_resource() -> None:
+    snapshot = _snapshot(
+        vulnerability_remediations=[
+            {
+                "Id": "finding-001",
+                "Policy": {
+                    "Category": "Vulnerability",
+                    "Name": "Fixture vulnerability policy",
+                },
+                "Status": "Open",
+                "Remediation": {
+                    "Type": "Patch",
+                    "Console": {"Steps": ["Apply the security patch."]},
+                },
+                "Resources": [
+                    {
+                        "Id": "vm-001",
+                        "Name": "vm-fixture",
+                        "Vulnerabilities": [
+                            {"Id": "CVE-2026-0001"},
+                            {"Id": "CVE-2026-0002"},
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+
+    finding = snapshot.findings[0]
+    assert finding.vulnerability_related is True
+    assert finding.explicit_correction_type == "Patch"
+    assert finding.resources[0].vulnerability_ids == (
+        "CVE-2026-0001",
+        "CVE-2026-0002",
+    )

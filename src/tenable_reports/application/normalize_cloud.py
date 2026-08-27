@@ -316,15 +316,46 @@ def _enrich_descriptions(
 
 
 def _resource_references(value: Any) -> tuple[CloudResourceReference, ...]:
-    references = {
-        (_text(item.get("Id")), _text(item.get("Name")))
-        for item in _mappings(value)
-        if _text(item.get("Id"))
-    }
-    return tuple(
-        CloudResourceReference(resource_id=resource_id, name=name)
-        for resource_id, name in sorted(references)
-    )
+    references: dict[str, CloudResourceReference] = {}
+    for item in _mappings(value):
+        resource_id = _text(item.get("Id"))
+        if not resource_id:
+            continue
+        vulnerability_ids = tuple(
+            sorted(
+                {
+                    vulnerability_id
+                    for vulnerability in _mappings(
+                        item.get("Vulnerabilities")
+                    )
+                    if (
+                        vulnerability_id := _text(
+                            vulnerability.get("Id")
+                        )
+                    )
+                }
+            )
+        )
+        candidate = CloudResourceReference(
+            resource_id=resource_id,
+            name=_text(item.get("Name")),
+            vulnerability_ids=vulnerability_ids,
+        )
+        current = references.get(resource_id)
+        if current is None:
+            references[resource_id] = candidate
+        else:
+            references[resource_id] = CloudResourceReference(
+                resource_id=resource_id,
+                name=current.name or candidate.name,
+                vulnerability_ids=tuple(
+                    sorted(
+                        set(current.vulnerability_ids)
+                        | set(candidate.vulnerability_ids)
+                    )
+                ),
+            )
+    return tuple(references[key] for key in sorted(references))
 
 
 def _remediation_steps(raw: Mapping[str, Any]) -> tuple[str, ...]:
@@ -332,6 +363,12 @@ def _remediation_steps(raw: Mapping[str, Any]) -> tuple[str, ...]:
     console = _mapping(remediation.get("Console"))
     return _strings(console.get("Steps"))
 
+
+def _explicit_correction_type(raw: Mapping[str, Any]) -> str | None:
+    remediation = _mapping(raw.get("Remediation"))
+    return _optional_text(
+        remediation.get("Type") or raw.get("CorrectionType")
+    )
 
 def _finding_key(
     *,
@@ -343,7 +380,13 @@ def _finding_key(
         "account": _text(raw.get("AccountId")),
         "category": _text(policy.get("Category")),
         "policy": _text(policy.get("Name")),
-        "resources": [item.resource_id for item in resources],
+        "resources": [
+            {
+                "id": item.resource_id,
+                "cves": list(item.vulnerability_ids),
+            }
+            for item in resources
+        ],
         "severity": _severity(raw.get("Severity")),
         "status": _text(raw.get("Status")).upper(),
     }
@@ -384,6 +427,7 @@ def _normalize_findings(
                 resources=resources,
                 remediation_steps=_remediation_steps(raw),
                 vulnerability_related=vulnerability_related,
+                explicit_correction_type=_explicit_correction_type(raw),
             )
             current = findings.get(key)
             if current is None:
@@ -401,6 +445,10 @@ def _normalize_findings(
                     vulnerability_related=(
                         current.vulnerability_related
                         or candidate.vulnerability_related
+                    ),
+                    explicit_correction_type=(
+                        current.explicit_correction_type
+                        or candidate.explicit_correction_type
                     ),
                 )
     return tuple(findings[key] for key in sorted(findings))
