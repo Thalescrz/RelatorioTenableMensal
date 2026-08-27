@@ -171,7 +171,14 @@ class OrchestrationResult:
 
     @property
     def failed_count(self) -> int:
-        return sum(item.status not in {"COMPLETE", "PLANNED"} for item in self.clients)
+        return sum(
+            item.status not in {
+                "COMPLETE",
+                "COMPLETE_WITH_WARNINGS",
+                "PLANNED",
+            }
+            for item in self.clients
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -183,7 +190,10 @@ class OrchestrationResult:
             "manifest": str(self.manifest_path.resolve()),
             "notifications": str(self.notification_path.resolve()),
             "client_count": len(self.clients),
-            "succeeded": sum(item.status == "COMPLETE" for item in self.clients),
+            "succeeded": sum(
+                item.status in {"COMPLETE", "COMPLETE_WITH_WARNINGS"}
+                for item in self.clients
+            ),
             "failed": self.failed_count,
             "planned": sum(item.status == "PLANNED" for item in self.clients),
             "clients": [item.to_dict() for item in self.clients],
@@ -777,9 +787,19 @@ def _execute_client(
             )
         else:
             payload = _payload_from_stdout(completed.stdout)
+            payload_status = str(payload.get("status") or "").strip().lower()
+            client_status = (
+                "COMPLETE_WITH_WARNINGS"
+                if payload_status == "complete_with_warnings"
+                else "COMPLETE"
+            )
             events.append({
                 "timestamp": ended.isoformat(),
-                "event": "CLIENT_COMPLETED",
+                "event": (
+                    "CLIENT_COMPLETED_WITH_WARNINGS"
+                    if client_status == "COMPLETE_WITH_WARNINGS"
+                    else "CLIENT_COMPLETED"
+                ),
                 "client_id": client.client_id,
                 "exit_code": completed.returncode,
                 "duration_seconds": duration,
@@ -787,7 +807,7 @@ def _execute_client(
             })
             result = ClientExecutionResult(
                 client_id=client.client_id,
-                status="COMPLETE",
+                status=client_status,
                 exit_code=completed.returncode,
                 command=command,
                 started_at=started.isoformat(),
@@ -966,7 +986,7 @@ def _execute_client_with_retry(
         )
         attempts.extend(result.attempts)
         last_result = replace(result, attempts=tuple(attempts))
-        if result.status == "COMPLETE":
+        if result.status in {"COMPLETE", "COMPLETE_WITH_WARNINGS"}:
             return last_result
         current_attempt = result.attempts[-1]
         if not current_attempt.retryable or attempt_number >= max_attempts:
@@ -1121,7 +1141,16 @@ def run_orchestration(
         else ()
     )
     failed = sum(item.status == "FAILED" for item in results)
-    status = "DRY_RUN" if request.dry_run else ("COMPLETE" if failed == 0 else "PARTIAL_FAILURE")
+    warned = sum(item.status == "COMPLETE_WITH_WARNINGS" for item in results)
+    status = (
+        "DRY_RUN"
+        if request.dry_run
+        else (
+            "PARTIAL_FAILURE"
+            if failed
+            else "COMPLETE_WITH_WARNINGS" if warned else "COMPLETE"
+        )
+    )
     manifest_path = control_directory / "orchestration-manifest.json"
     notification_path = control_directory / "notifications.jsonl"
     retention_payload = tuple(item.to_dict() for item in retention_plan.candidates)
@@ -1158,6 +1187,7 @@ def run_orchestration(
         "run_id": run_id,
         "clients": len(results),
         "failed": failed,
+        "warnings": warned,
     })
     notification_path.write_text(
         "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in notifications),

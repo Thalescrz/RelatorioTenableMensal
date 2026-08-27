@@ -120,6 +120,42 @@ def _docx_text(path: Path) -> str:
 
 
 class OrchestrationTests(unittest.TestCase):
+    def test_component_warning_is_a_successful_orchestration_with_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = json.loads(EXAMPLE_CONFIG.read_text(encoding="utf-8"))
+            payload["defaults"]["output_root"] = str(Path(directory) / "data")
+            payload["clients"] = payload["clients"][:1]
+            config_path = ROOT / "orchestration" / "clients.test-warning.json"
+
+            def runner(command, _):
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({
+                        "status": "complete_with_warnings",
+                        "client_id": "cliente-a-exemplo",
+                        "cloud_status": "FAILED",
+                        "warnings": [{"code": "CLOUD_COMPONENT_FAILED"}],
+                    }) + "\n",
+                    stderr="",
+                )
+
+            try:
+                config_path.write_text(json.dumps(payload), encoding="utf-8")
+                result = run_orchestration(
+                    config=load_orchestration_config(config_path),
+                    request=OrchestrationRequest(mode="automatic"),
+                    runner=runner,
+                    sleeper=lambda _: None,
+                    now=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+                )
+            finally:
+                config_path.unlink(missing_ok=True)
+
+        self.assertEqual(result.status, "COMPLETE_WITH_WARNINGS")
+        self.assertEqual(result.clients[0].status, "COMPLETE_WITH_WARNINGS")
+        self.assertEqual(result.failed_count, 0)
+        self.assertEqual(result.to_dict()["succeeded"], 1)
     def test_default_runner_forces_utf8_for_json_protocol(self) -> None:
         script = (
             "import json; "
@@ -236,7 +272,7 @@ class OrchestrationTests(unittest.TestCase):
             finally:
                 config_path.unlink(missing_ok=True)
 
-        self.assertEqual(result.clients[0].status, "COMPLETE")
+        self.assertEqual(result.clients[0].status, "COMPLETE_WITH_WARNINGS")
         self.assertEqual(result.clients[0].payload["status"], "complete_with_warnings")
         self.assertEqual(progress_events[0]["client_id"], "cliente-a-exemplo")
         self.assertEqual(progress_events[0]["tag_uuid"], "tag-a")

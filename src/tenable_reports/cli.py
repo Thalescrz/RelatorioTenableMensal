@@ -43,6 +43,17 @@ from tenable_reports.application.collect_was import (
     collect_optional_was_snapshot,
     collect_was_snapshot,
 )
+from tenable_reports.application.cloud_execution import (
+    CloudComponentResult,
+    CloudExecutionDependencies,
+    CloudExecutionRequest,
+    CloudExecutionStatus,
+    TenableCloudLiveCollector,
+    execute_cloud_component,
+)
+from tenable_reports.application.cloud_snapshots import (
+    MemoryCloudSnapshotRepository,
+)
 from tenable_reports.application.failures import (
     FailureCode,
     OperationalFailure,
@@ -94,7 +105,12 @@ from tenable_reports.application.tag_scope import (
     prompt_tag_selection,
     resolve_tag_selectors,
 )
-from tenable_reports.config.environment import CredentialConfig, EnvironmentError, load_dotenv_file
+from tenable_reports.config.environment import (
+    CloudCredentialConfig,
+    CredentialConfig,
+    EnvironmentError,
+    load_dotenv_file,
+)
 from tenable_reports.config.database import DatabaseAdminConfig, DatabaseConfig
 from tenable_reports.config.profile import ClientProfile, ProfileError, load_client_profile
 from tenable_reports.domain.normalization import (
@@ -114,6 +130,9 @@ from tenable_reports.infrastructure.tenable_vm.client import (
 )
 from tenable_reports.infrastructure.tenable_was.client import TenableWasClient
 from tenable_reports.infrastructure.tenable_inventory.client import InventoryFindingsClient
+from tenable_reports.infrastructure.cloud_snapshots_postgresql import (
+    PostgresCloudSnapshotRepository,
+)
 from tenable_reports.infrastructure.compact_snapshots_postgresql import (
     PostgresCompactSnapshotRepository,
 )
@@ -403,6 +422,84 @@ def _postgres_operations(
     if config is None:
         return None
     return PostgresOperationsRepository(PostgresDatabase(config))
+
+
+def _cloud_snapshot_repository_for_args(
+    args: argparse.Namespace,
+) -> tuple[Any, bool]:
+    config = _load_database_config(
+        getattr(args, "database_env_file", None),
+        required=False,
+    )
+    if config is None:
+        return MemoryCloudSnapshotRepository(), False
+    return (
+        PostgresCloudSnapshotRepository(PostgresDatabase(config)),
+        True,
+    )
+
+
+def _run_cloud_for_client(
+    *,
+    args: argparse.Namespace,
+    profile: ClientProfile,
+    collected: _CollectedPeriodExecution,
+    period: Any,
+    execution_type: str,
+    report_directory: Path,
+) -> CloudComponentResult:
+    scope = getattr(profile, "cloud_security_scope", None)
+    if scope is None or not bool(getattr(scope, "enabled", False)):
+        return CloudComponentResult(status=CloudExecutionStatus.DISABLED)
+
+    load_dotenv_file(args.env_file, override=True)
+    credentials = CloudCredentialConfig.from_environment()
+    repository, persistent = _cloud_snapshot_repository_for_args(args)
+    result = execute_cloud_component(
+        CloudExecutionRequest(
+            profile=profile,
+            period=period,
+            execution_type=execution_type,
+            run_id=collected.run_id,
+            attempt_number=int(getattr(args, "attempt_number", 1) or 1),
+            output_root=Path(args.output_root),
+            report_directory=report_directory,
+            template_path=Path(
+                getattr(
+                    args,
+                    "cloud_template",
+                    "templates/corporate/cloud-base-v1.docx",
+                )
+            ),
+            force_refresh=bool(
+                getattr(args, "force_cloud_refresh", False)
+            ),
+        ),
+        dependencies=CloudExecutionDependencies(
+            repository=repository,
+            collect_live=TenableCloudLiveCollector(credentials),
+            history_persistent=persistent,
+        ),
+        progress_callback=_emit_progress_event,
+    )
+    if result.status in {
+        CloudExecutionStatus.COMPLETE,
+        CloudExecutionStatus.REPLAYED,
+    } and not persistent:
+        warning = {
+            "code": "CLOUD_HISTORY_NOT_PERSISTENT",
+            "message": (
+                "O relatório Cloud foi gerado, mas o histórico compacto não "
+                "foi persistido no PostgreSQL; a limpeza ficou bloqueada."
+            ),
+            "retryable": True,
+        }
+        return replace(
+            result,
+            warnings=tuple((*result.warnings, warning)),
+            cleanup_ready=False,
+        )
+    return result
 
 
 def _candidate_from_legacy_snapshot(snapshot: Any) -> ReportCandidate:
@@ -1508,6 +1605,41 @@ def command_run_client(args: argparse.Namespace) -> int:
         })
     tag_reports_generated = len(tag_documents)
     tag_reports_failed = max(0, requested_tag_reports - tag_reports_generated)
+    cloud_result = _run_cloud_for_client(
+        args=args,
+        profile=profile,
+        collected=collected,
+        period=period,
+        execution_type=execution_type,
+        report_directory=report_directory,
+    )
+    cloud_documents: list[dict[str, str]] = []
+    for document in cloud_result.documents:
+        publication_documents.append(
+            PublicationDocument(
+                path=document.path,
+                document_kind="cloud",
+                document_variant=document.variant,
+            )
+        )
+        cloud_documents.append({
+            "variant": document.variant,
+            "path": str(document.path.resolve()),
+        })
+    tag_warnings.extend(dict(item) for item in cloud_result.warnings)
+    cloud_datasets = (
+        {"cloud": cloud_result.dataset_path}
+        if cloud_result.dataset_path is not None
+        else {}
+    )
+    cloud_cleanup_confirmed = (
+        cloud_result.status is CloudExecutionStatus.DISABLED
+        or cloud_result.cleanup_ready
+    )
+    cloud_has_warnings = bool(cloud_result.warnings) or cloud_result.status in {
+        CloudExecutionStatus.BLOCKED_RECENT_COLLECTION,
+        CloudExecutionStatus.FAILED,
+    }
     publication_manifest = create_publication_manifest(
         output_path=report_directory / "publication-manifest.json",
         client_id=profile.client_id,
@@ -1517,6 +1649,7 @@ def command_run_client(args: argparse.Namespace) -> int:
         period=period.to_dict(),
         dataset_path=collected.dataset_path,
         documents=tuple(publication_documents),
+        additional_datasets=cloud_datasets,
         history_database=collected.history_database_path,
         history_store=collected.history_store,
         origin=getattr(args, "origin", None),
@@ -1542,7 +1675,11 @@ def command_run_client(args: argparse.Namespace) -> int:
             (
                 f"tag:{document.tag_uuid}"
                 if document.document_kind == "tag"
-                else document.document_kind
+                else (
+                    f"cloud:{document.document_variant}"
+                    if document.document_kind == "cloud"
+                    else document.document_kind
+                )
             ): str(Path(document.path).resolve())
             for document in publication_documents
         }
@@ -1574,6 +1711,7 @@ def command_run_client(args: argparse.Namespace) -> int:
         operations is not None
         and history_confirmed
         and compact_snapshot_confirmed
+        and cloud_cleanup_confirmed
         and getattr(args, "cleanup_after_publish", True)
     ):
         operations.record_cleanup_status(collected.run_id, "PENDING")
@@ -1617,7 +1755,9 @@ def command_run_client(args: argparse.Namespace) -> int:
     payload = collected.to_dict()
     payload.update({
         "status": (
-            "complete_with_warnings" if tag_reports_failed else "complete"
+            "complete_with_warnings"
+            if tag_reports_failed or cloud_has_warnings
+            else "complete"
         ),
         "base_document": str(base_result.output_path.resolve()),
         "customizations_document": str(custom_result.output_path.resolve()),
@@ -1628,6 +1768,10 @@ def command_run_client(args: argparse.Namespace) -> int:
         "tag_reports_generated": tag_reports_generated,
         "tag_reports_failed": tag_reports_failed,
         "tag_documents": tag_documents,
+        "cloud_status": cloud_result.status.value,
+        "cloud_documents": cloud_documents,
+        "cloud_snapshot_id": cloud_result.snapshot_id,
+        "cloud_warnings": [dict(item) for item in cloud_result.warnings],
         "warnings": tag_warnings,
         "external_distribution_performed": False,
         "cleanup": cleanup_payload,
@@ -1880,6 +2024,10 @@ def _add_complete_collection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--history-export-csv")
     parser.add_argument("--skip-history", action="store_true")
     parser.add_argument("--template", default="templates/corporate/base-v1.docx")
+    parser.add_argument(
+        "--cloud-template",
+        default="templates/corporate/cloud-base-v1.docx",
+    )
     parser.add_argument("--assets-dir", default="templates/corporate/assets")
     parser.add_argument("--base-output")
     parser.add_argument("--custom-output")
@@ -1892,6 +2040,14 @@ def _add_complete_collection_arguments(parser: argparse.ArgumentParser) -> None:
         "--force-live-collection",
         action="store_true",
         help="Ignora snapshot compacto exato e inicia uma nova coleta pela API.",
+    )
+    parser.add_argument(
+        "--force-cloud-refresh",
+        action="store_true",
+        help=(
+            "Ignora snapshot Cloud exato e a proteção de 24 horas, iniciando "
+            "uma nova coleta GraphQL somente para o componente Cloud."
+        ),
     )
 
 
