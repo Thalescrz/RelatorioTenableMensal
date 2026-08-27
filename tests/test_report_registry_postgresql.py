@@ -116,6 +116,7 @@ class PostgresReportRegistryHardDeleteTests(unittest.TestCase):
             "tenable_reports.report_reference_events",
             "tenable_reports.history_snapshots",
             "tenable_reports.compact_finding_snapshots",
+            "tenable_reports.cloud_report_snapshots",
             "tenable_reports.artifacts",
             "tenable_reports.publications",
             "tenable_reports.events",
@@ -135,6 +136,13 @@ class PostgresReportRegistryHardDeleteTests(unittest.TestCase):
             if statement.startswith("delete from tenable_reports.report_runs")
         )
         self.assertLess(update_index, report_delete_index)
+        cloud_delete_index = next(
+            index for index, statement in enumerate(statements)
+            if statement.startswith(
+                "delete from tenable_reports.cloud_report_snapshots"
+            )
+        )
+        self.assertLess(cloud_delete_index, report_delete_index)
 
 
 if __name__ == "__main__":

@@ -1728,6 +1728,7 @@ def command_run_client(args: argparse.Namespace) -> int:
                 publication_confirmed=True,
                 history_confirmed=True,
                 compact_snapshot_confirmed=compact_snapshot_confirmed,
+                cloud_cleanup_ready=cloud_cleanup_confirmed,
             )
             cleanup_result = apply_cleanup_plan(
                 scoped_output_root=collected.output_root,
