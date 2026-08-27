@@ -413,8 +413,22 @@ def _custom_data(dataset: Mapping[str, Any]) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def resolve_custom_intelligence_modules(
+    profile: ClientProfile,
+) -> tuple[tuple[str, ...], dict[str, str]]:
+    active: list[str] = []
+    suppressed: dict[str, str] = {}
+    for module in profile.report.intelligence_modules:
+        if module == "cloud_container_images" and profile.cloud_security_scope.enabled:
+            suppressed[module] = "MOVED_TO_CLOUD_REPORT"
+        else:
+            active.append(module)
+    return tuple(active), suppressed
+
+
 def _module_enabled(profile: ClientProfile, module: str) -> bool:
-    return module in set(profile.report.intelligence_modules)
+    active, _ = resolve_custom_intelligence_modules(profile)
+    return module in active
 
 
 def _cover_title(document: Any) -> None:
@@ -1085,11 +1099,14 @@ def generate_customizations_report(
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)
     requested = tuple(profile.report.intelligence_modules)
+    _, suppressed = resolve_custom_intelligence_modules(profile)
     omitted = tuple(
         {
             "module_id": module,
             "reason": (
-                "MOVED_TO_TAG_REPORT"
+                suppressed[module]
+                if module in suppressed
+                else "MOVED_TO_TAG_REPORT"
                 if module == "vm_network_comparison"
                 else "NO_COMPATIBLE_HISTORY"
                 if module in HISTORICAL_INTELLIGENCE_MODULES

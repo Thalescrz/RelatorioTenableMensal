@@ -149,3 +149,39 @@ class CredentialConfig:
                 values, "TENABLE_EXPORT_AUTOMATIC_NO_PROGRESS_SECONDS", 1800.0
             ),
         )
+
+@dataclass(frozen=True, slots=True)
+class CloudCredentialConfig:
+    api_secret: str
+    ca_bundle: str | None = None
+    timeout_seconds: float = 180.0
+    retries: int = 4
+    used_legacy_alias: bool = False
+
+    @property
+    def is_complete(self) -> bool:
+        return bool(self.api_secret.strip())
+
+    @classmethod
+    def from_environment(
+        cls, environ: Mapping[str, str] | None = None
+    ) -> "CloudCredentialConfig":
+        values = os.environ if environ is None else environ
+        current_secret = values.get("TCS_API_SECRET", "").strip()
+        legacy_secret = values.get("TCS_API_KEY", "").strip()
+        try:
+            retries = int(values.get("TCS_HTTP_RETRIES", "4"))
+        except ValueError as exc:
+            raise EnvironmentError("TCS_HTTP_RETRIES deve ser inteiro.") from exc
+        if not 0 <= retries <= 10:
+            raise EnvironmentError("TCS_HTTP_RETRIES deve estar entre 0 e 10.")
+        ca_bundle = values.get("TCS_CA_BUNDLE", "").strip() or None
+        if ca_bundle and not Path(ca_bundle).expanduser().is_file():
+            raise EnvironmentError("TCS_CA_BUNDLE nao aponta para um arquivo existente.")
+        return cls(
+            api_secret=current_secret or legacy_secret,
+            ca_bundle=str(Path(ca_bundle).expanduser().resolve()) if ca_bundle else None,
+            timeout_seconds=_positive_float(values, "TCS_HTTP_TIMEOUT_SECONDS", 180.0),
+            retries=retries,
+            used_legacy_alias=not current_secret and bool(legacy_secret),
+        )

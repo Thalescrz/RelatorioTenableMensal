@@ -44,7 +44,7 @@ def test_customizations_are_kept_outside_the_base_document() -> None:
             "vm_eol_software",
             "vm_executive_evolution",
             "vm_monthly_evolution",
-            "cloud_container_images",
+
             "vm_exploit_vector",
             "was_unsupported_tech",
         }
@@ -53,10 +53,16 @@ def test_customizations_are_kept_outside_the_base_document() -> None:
                 ROOT / "clients/examples/client-profile-all-customizations.json"
             ).report.intelligence_modules
         )
-        assert result.omitted_modules == ({
-            "module_id": "vm_network_comparison",
-            "reason": "MOVED_TO_TAG_REPORT",
-        },)
+        assert result.omitted_modules == (
+            {
+                "module_id": "vm_network_comparison",
+                "reason": "MOVED_TO_TAG_REPORT",
+            },
+            {
+                "module_id": "cloud_container_images",
+                "reason": "MOVED_TO_CLOUD_REPORT",
+            },
+        )
         document = Document(output)
         text = _text(document)
         assert "JULHO/2026" in text
@@ -67,7 +73,7 @@ def test_customizations_are_kept_outside_the_base_document() -> None:
         assert "Geral" in text
         assert "Servidores" in text
         assert "Sistemas operacionais e software sem suportes" in text
-        assert "TENABLE CLOUD SECURITY (CONTAINER IMAGES)" in text
+        assert "TENABLE CLOUD SECURITY (CONTAINER IMAGES)" not in text
         assert "Vulnerabilidades Exploráveis por Vetor de Ataque" in text
         assert "Dados indisponíveis para este indicador." in text
         assert "Exploitable" in text
@@ -103,7 +109,7 @@ def test_customization_modules_without_data_are_omitted_with_reason() -> None:
         reasons = {item["module_id"]: item["reason"] for item in result.omitted_modules}
         assert reasons["vm_monthly_volume"] == "NO_COMPATIBLE_HISTORY"
         assert reasons["vm_network_comparison"] == "MOVED_TO_TAG_REPORT"
-        assert reasons["cloud_container_images"] == "NO_COMPATIBLE_DATA"
+        assert reasons["cloud_container_images"] == "MOVED_TO_CLOUD_REPORT"
 
 
 def test_profile_without_customizations_produces_only_cover_and_summary() -> None:

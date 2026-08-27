@@ -25,7 +25,9 @@
       "application_ids": []
     },
     "cloud_security": {
-      "enabled": false
+      "enabled": false,
+      "environment": "global",
+      "layout": "comparison"
     }
   },
   "presentation": {
