@@ -101,6 +101,18 @@ class CloudTransportResponse:
     content: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class CloudGraphQLPage:
+    """One validated page, yielded before the next request is issued."""
+
+    nodes: tuple[dict[str, Any], ...]
+    page: int
+    records: int
+    end_cursor: str | None
+    has_next_page: bool
+    page_size: int
+
+
 class CloudTransport(Protocol):
     def send(
         self,
@@ -334,25 +346,30 @@ class CloudGraphQLClient:
     def execute(self, query: str, variables: Mapping[str, Any]) -> dict[str, Any]:
         return self._execute(query, variables, root_field=None)
 
-    def paginate(
+    def paginate_pages(
         self,
         query: str,
         root_field: str,
         *,
         page_size: int,
+        after: str | None = None,
+        pages_completed: int = 0,
+        records_completed: int = 0,
         max_pages: int = 0,
         variables: Mapping[str, Any] | None = None,
         progress: Callable[[Mapping[str, Any]], None] | None = None,
-    ) -> Iterator[dict[str, Any]]:
+    ) -> Iterator[CloudGraphQLPage]:
         if page_size < 1:
             raise ValueError("page_size deve ser positivo.")
+        if pages_completed < 0 or records_completed < 0:
+            raise ValueError("Contadores de retomada nao podem ser negativos.")
         if max_pages < 0:
             raise ValueError("max_pages nao pode ser negativo.")
         current_size = max(self.config.min_page_size, page_size)
-        cursor: str | None = None
-        seen_cursors: set[str] = set()
-        page = 0
-        records = 0
+        cursor = after
+        seen_cursors: set[str] = {after} if after else set()
+        page = pages_completed
+        records = records_completed
         base_variables = dict(variables or {})
         while True:
             request_variables = dict(base_variables)
@@ -377,7 +394,9 @@ class CloudGraphQLClient:
                 )
             nodes = connection.get("nodes")
             page_info = connection.get("pageInfo")
-            if not isinstance(nodes, list) or any(not isinstance(item, Mapping) for item in nodes):
+            if not isinstance(nodes, list) or any(
+                not isinstance(item, Mapping) for item in nodes
+            ):
                 raise CloudContractError(
                     "A conexao GraphQL retornou nodes invalidos.",
                     root_field=root_field,
@@ -404,6 +423,14 @@ class CloudGraphQLClient:
                     )
             page += 1
             records += len(nodes)
+            page_result = CloudGraphQLPage(
+                nodes=tuple(dict(item) for item in nodes),
+                page=page,
+                records=records,
+                end_cursor=end_cursor if isinstance(end_cursor, str) else None,
+                has_next_page=has_next_page,
+                page_size=current_size,
+            )
             if progress is not None:
                 progress(
                     {
@@ -414,8 +441,7 @@ class CloudGraphQLClient:
                         "has_next_page": has_next_page,
                     }
                 )
-            for item in nodes:
-                yield dict(item)
+            yield page_result
             if not has_next_page:
                 return
             if max_pages and page >= max_pages:
@@ -425,3 +451,23 @@ class CloudGraphQLClient:
                 )
             seen_cursors.add(end_cursor)
             cursor = end_cursor
+
+    def paginate(
+        self,
+        query: str,
+        root_field: str,
+        *,
+        page_size: int,
+        max_pages: int = 0,
+        variables: Mapping[str, Any] | None = None,
+        progress: Callable[[Mapping[str, Any]], None] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        for page in self.paginate_pages(
+            query,
+            root_field,
+            page_size=page_size,
+            max_pages=max_pages,
+            variables=variables,
+            progress=progress,
+        ):
+            yield from page.nodes

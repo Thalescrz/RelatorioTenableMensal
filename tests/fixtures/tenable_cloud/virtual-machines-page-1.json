@@ -1,0 +1,24 @@
+{
+  "nodes": [
+    {
+      "Id": "vm-001",
+      "Name": "vm-fixture-001",
+      "AccountId": "account-fixture",
+      "Software": [
+        {
+          "Name": "Fixture OS",
+          "Vulnerabilities": [
+            {
+              "Id": "CVE-2026-0001",
+              "Severity": "Critical",
+              "CvssScore": 9.8,
+              "VprScore": 0.0,
+              "VprSeverity": "Low"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "pageInfo": {"hasNextPage": false, "endCursor": null}
+}

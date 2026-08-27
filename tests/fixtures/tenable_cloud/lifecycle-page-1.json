@@ -1,0 +1,17 @@
+{
+  "nodes": [
+    {
+      "FirstScanTime": "2026-08-01T00:00:00Z",
+      "ResolutionTime": null,
+      "Resolved": false,
+      "Software": {"Name": "Fixture OS"},
+      "Resource": {"Id": "vm-001", "Name": "vm-fixture-001"},
+      "Vulnerability": {
+        "Id": "CVE-2026-0001",
+        "Severity": "Critical",
+        "CvssScore": 9.8
+      }
+    }
+  ],
+  "pageInfo": {"hasNextPage": false, "endCursor": null}
+}
