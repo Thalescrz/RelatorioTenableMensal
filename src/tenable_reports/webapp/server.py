@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from tenable_reports.application.cloud_contract import probe_cloud_contract
 from tenable_reports.application.orchestration import SAFE_ID_PATTERN
 from tenable_reports.application.orchestration import load_orchestration_config
 from tenable_reports.application.postgresql_migration import (
@@ -58,8 +59,15 @@ from tenable_reports.application.retention import (
     plan_tiered_retention,
 )
 from tenable_reports.config.database import DatabaseConfig
-from tenable_reports.config.environment import CredentialConfig, load_dotenv_file
+from tenable_reports.config.environment import (
+    CloudCredentialConfig,
+    CredentialConfig,
+    load_dotenv_file,
+)
 from tenable_reports.config.profile import ClientProfile
+from tenable_reports.infrastructure.cloud_snapshots_postgresql import (
+    PostgresCloudSnapshotRepository,
+)
 from tenable_reports.infrastructure.postgresql import (
     PostgresDatabase,
     PostgresOperationsRepository,
@@ -70,6 +78,10 @@ from tenable_reports.infrastructure.report_set_purge_postgresql import (
     PostgresReportSetPurgeRepository,
 )
 from tenable_reports.domain.report_reference import reference_key_for_candidate
+from tenable_reports.infrastructure.tenable_cloud.client import (
+    CloudGraphQLClient,
+    CloudGraphQLConfig,
+)
 from tenable_reports.infrastructure.tenable_vm.client import (
     ExportTimeoutError,
     TenableVmClient,
@@ -204,6 +216,41 @@ def _credential_status(path: Path) -> tuple[bool, bool]:
     return True, bool(values.get("TENABLE_ACCESS") and values.get("TENABLE_SECRET"))
 
 
+def _cloud_token_status(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        values = _read_env_values(path)
+    except OSError:
+        return False
+    return bool(values.get("TCS_API_SECRET") or values.get("TCS_API_KEY"))
+
+
+def _write_env_values(path: Path, values: Mapping[str, str]) -> None:
+    preferred = (
+        "TENABLE_BASE_URL",
+        "TENABLE_ACCESS",
+        "TENABLE_SECRET",
+        "TENABLE_HTTP_TIMEOUT_SECONDS",
+        "TENABLE_VALIDATE_TLS",
+        "TENABLE_EXPORT_POLL_SECONDS",
+        "TENABLE_EXPORT_MAX_POLL_SECONDS",
+        "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS",
+        "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS",
+        "TENABLE_EXPORT_STALL_WARNING_SECONDS",
+        "TCS_API_SECRET",
+        "TCS_HTTP_TIMEOUT_SECONDS",
+        "TCS_HTTP_RETRIES",
+        "TCS_CA_BUNDLE",
+    )
+    ordered = [key for key in preferred if key in values]
+    ordered.extend(sorted(key for key in values if key not in preferred))
+    path.write_text(
+        "\n".join(f"{key}={values[key]}" for key in ordered) + "\n",
+        encoding="utf-8",
+    )
+
+
 def check_tenable_connection(path: Path) -> dict[str, Any]:
     started = time.monotonic()
     try:
@@ -231,6 +278,53 @@ def check_tenable_connection(path: Path) -> dict[str, Any]:
         "latency_ms": round((time.monotonic() - started) * 1000),
         "message": "Conexao com a API Tenable funcionando.",
         "checked_at": _utc_now(),
+    }
+
+
+def check_cloud_connection(path: Path, environment: str) -> dict[str, Any]:
+    started = time.monotonic()
+    try:
+        credentials = CloudCredentialConfig.from_environment(_read_env_values(path))
+        if not credentials.is_complete:
+            raise ValueError("Token Tenable Cloud Security nao configurado.")
+
+        def client_factory(endpoint: str) -> CloudGraphQLClient:
+            return CloudGraphQLClient(CloudGraphQLConfig(
+                endpoint=endpoint,
+                api_secret=credentials.api_secret,
+                timeout_seconds=credentials.timeout_seconds,
+                retries=credentials.retries,
+                ca_bundle=credentials.ca_bundle,
+            ))
+
+        report = probe_cloud_contract(
+            environment,
+            client_factory=client_factory,
+        )
+        unavailable = [
+            item.name for item in report.sources if item.status != "AVAILABLE"
+        ]
+    except Exception as exc:  # O resultado seguro deve voltar para a interface.
+        return {
+            "ok": False,
+            "latency_ms": round((time.monotonic() - started) * 1000),
+            "message": _safe_error(str(exc), limit=300),
+            "checked_at": _utc_now(),
+            "retryable": bool(getattr(exc, "retryable", False)),
+        }
+    message = "Conexao com a API Tenable Cloud Security funcionando."
+    if unavailable:
+        message += " Fontes opcionais indisponiveis: " + ", ".join(unavailable) + "."
+    return {
+        "ok": bool(report.required_ready),
+        "latency_ms": round((time.monotonic() - started) * 1000),
+        "message": message,
+        "checked_at": report.checked_at,
+        "retryable": False,
+        "required_ready": bool(report.required_ready),
+        "sources": {
+            item.name: item.status for item in report.sources
+        },
     }
 
 
@@ -301,6 +395,10 @@ class DashboardConfigStore:
                     self.project_root / "templates" / "corporate" / "assets",
                     self.config_path.parent,
                 ),
+                "cloud_template": _relative_path(
+                    self.project_root / "templates" / "corporate" / "cloud-base-v1.docx",
+                    self.config_path.parent,
+                ),
                 "database_env_file": _relative_path(
                     self.project_root / "credentials" / "database.env",
                     self.config_path.parent,
@@ -340,6 +438,19 @@ class DashboardConfigStore:
             raise KeyError("Cliente nao encontrado.")
         return (self.config_path.parent / str(client.get("env_file") or "")).resolve()
 
+    def client_profile_path(self, client_id: str) -> Path:
+        payload = self.raw()
+        client = next(
+            (
+                item for item in payload.get("clients") or []
+                if isinstance(item, Mapping) and item.get("client_id") == client_id
+            ),
+            None,
+        )
+        if client is None:
+            raise KeyError("Cliente nao encontrado.")
+        return (self.config_path.parent / str(client.get("profile") or "")).resolve()
+
     def list_clients(self) -> list[dict[str, Any]]:
         payload = self.raw()
         result: list[dict[str, Any]] = []
@@ -373,6 +484,11 @@ class DashboardConfigStore:
                 reporting.get("vm_export")
                 if isinstance(reporting.get("vm_export"), Mapping) else {}
             )
+            cloud_scope = (
+                (profile.get("scope") or {}).get("cloud_security")
+                if isinstance((profile.get("scope") or {}).get("cloud_security"), Mapping)
+                else {}
+            )
             result.append({
                 "client_id": client_id,
                 "display_name": str(
@@ -386,9 +502,10 @@ class DashboardConfigStore:
                 "env_exists": env_exists,
                 "credentials_ready": credentials_ready,
                 "was_enabled": bool(((profile.get("scope") or {}).get("was") or {}).get("enabled")),
-                "cloud_enabled": bool(
-                    ((profile.get("scope") or {}).get("cloud_security") or {}).get("enabled")
-                ),
+                "cloud_enabled": bool(cloud_scope.get("enabled")),
+                "cloud_token_saved": _cloud_token_status(env_path),
+                "cloud_environment": str(cloud_scope.get("environment") or "global"),
+                "cloud_layout": str(cloud_scope.get("layout") or "comparison"),
                 "intelligence_enabled": bool(report.get("intelligence_modules") or []),
                 "include_output": bool(raw.get("include_output", False)),
                 "show_source_filters": bool(presentation.get("show_source_filters", False)),
@@ -437,6 +554,15 @@ class DashboardConfigStore:
             env_path.parent.mkdir(parents=True, exist_ok=True)
             was_enabled = bool(values.get("was_enabled", False))
             cloud_enabled = bool(values.get("cloud_enabled", False))
+            cloud_secret = self._secret(
+                values.get("cloud_api_secret"), "Token Cloud Security"
+            )
+            cloud_environment = str(
+                values.get("cloud_environment") or "global"
+            ).strip().lower()
+            cloud_layout = str(
+                values.get("cloud_layout") or "comparison"
+            ).strip().lower()
             intelligence_enabled = bool(values.get("intelligence_enabled", True))
             intelligence_modules = _intelligence_modules(
                 enabled=intelligence_enabled,
@@ -461,7 +587,11 @@ class DashboardConfigStore:
                 "scope": {
                     "vm": {"asset_groups": [], "include_unlicensed": False},
                     "was": {"enabled": was_enabled, "application_ids": []},
-                    "cloud_security": {"enabled": cloud_enabled},
+                    "cloud_security": {
+                        "enabled": cloud_enabled,
+                        "environment": cloud_environment,
+                        "layout": cloud_layout,
+                    },
                 },
                 "presentation": {
                     "locale": "pt-BR",
@@ -496,22 +626,21 @@ class DashboardConfigStore:
             }
             ClientProfile.from_dict(profile)
             write_json_atomic(profile_path, profile)
-            env_path.write_text(
-                "\n".join((
-                    "TENABLE_BASE_URL=https://cloud.tenable.com",
-                    f"TENABLE_ACCESS={access_key}",
-                    f"TENABLE_SECRET={secret_key}",
-                    "TENABLE_HTTP_TIMEOUT_SECONDS=30",
-                    "TENABLE_VALIDATE_TLS=true",
-                    "TENABLE_EXPORT_POLL_SECONDS=10",
-                    "TENABLE_EXPORT_MAX_POLL_SECONDS=30",
-                    "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS=1800",
-                    "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS=7200",
-                    "TENABLE_EXPORT_STALL_WARNING_SECONDS=1800",
-                    "",
-                )),
-                encoding="utf-8",
-            )
+            _write_env_values(env_path, {
+                "TENABLE_BASE_URL": "https://cloud.tenable.com",
+                "TENABLE_ACCESS": access_key,
+                "TENABLE_SECRET": secret_key,
+                "TENABLE_HTTP_TIMEOUT_SECONDS": "30",
+                "TENABLE_VALIDATE_TLS": "true",
+                "TENABLE_EXPORT_POLL_SECONDS": "10",
+                "TENABLE_EXPORT_MAX_POLL_SECONDS": "30",
+                "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS": "1800",
+                "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS": "7200",
+                "TENABLE_EXPORT_STALL_WARNING_SECONDS": "1800",
+                "TCS_API_SECRET": cloud_secret,
+                "TCS_HTTP_TIMEOUT_SECONDS": "180",
+                "TCS_HTTP_RETRIES": "4",
+            })
             clients.append({
                 "client_id": client_id,
                 "display_name": display_name,
@@ -611,7 +740,13 @@ class DashboardConfigStore:
                     "tags": selected,
                 }
                 profile_changed = True
-            capability_fields = {"was_enabled", "cloud_enabled", "intelligence_enabled"}
+            capability_fields = {
+                "was_enabled",
+                "cloud_enabled",
+                "cloud_environment",
+                "cloud_layout",
+                "intelligence_enabled",
+            }
             if capability_fields.intersection(values):
                 scope = profile.setdefault("scope", {})
                 was_scope = scope.setdefault("was", {"application_ids": []})
@@ -626,6 +761,12 @@ class DashboardConfigStore:
                 )
                 was_scope["enabled"] = was_enabled
                 cloud_scope["enabled"] = cloud_enabled
+                cloud_scope["environment"] = str(
+                    values.get("cloud_environment", cloud_scope.get("environment", "global"))
+                ).strip().lower()
+                cloud_scope["layout"] = str(
+                    values.get("cloud_layout", cloud_scope.get("layout", "comparison"))
+                ).strip().lower()
                 profile.setdefault("report", {})["intelligence_modules"] = (
                     _intelligence_modules(
                         enabled=intelligence_enabled,
@@ -636,27 +777,25 @@ class DashboardConfigStore:
                 profile_changed = True
             access_key = self._secret(values.get("access_key"), "Access Key")
             secret_key = self._secret(values.get("secret_key"), "Secret Key")
-            if access_key or secret_key:
-                if not (access_key and secret_key):
-                    raise ValueError("Para trocar credenciais, informe as duas chaves.")
+            cloud_secret = self._secret(
+                values.get("cloud_api_secret"), "Token Cloud Security"
+            )
+            if access_key or secret_key or cloud_secret:
+                if bool(access_key) != bool(secret_key):
+                    raise ValueError("Para trocar credenciais VM, informe as duas chaves.")
                 env_path = (self.config_path.parent / str(client["env_file"])).resolve()
-                env_path.write_text(
-                    "\n".join((
-                        "TENABLE_BASE_URL=https://cloud.tenable.com",
-                        f"TENABLE_ACCESS={access_key}",
-                        f"TENABLE_SECRET={secret_key}",
-                        "TENABLE_HTTP_TIMEOUT_SECONDS=30",
-                        "TENABLE_VALIDATE_TLS=true",
-                        "TENABLE_EXPORT_POLL_SECONDS=10",
-                        "TENABLE_EXPORT_MAX_POLL_SECONDS=30",
-                        "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS=1800",
-                        "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS=7200",
-                        "TENABLE_EXPORT_STALL_WARNING_SECONDS=1800",
-                        "",
-                    )),
-                    encoding="utf-8",
-                )
+                env_values = _read_env_values(env_path) if env_path.is_file() else {}
+                if access_key and secret_key:
+                    env_values["TENABLE_ACCESS"] = access_key
+                    env_values["TENABLE_SECRET"] = secret_key
+                if cloud_secret:
+                    env_values["TCS_API_SECRET"] = cloud_secret
+                    env_values.pop("TCS_API_KEY", None)
+                env_values.setdefault("TCS_HTTP_TIMEOUT_SECONDS", "180")
+                env_values.setdefault("TCS_HTTP_RETRIES", "4")
+                _write_env_values(env_path, env_values)
             if profile_changed:
+                ClientProfile.from_dict(profile)
                 write_json_atomic(profile_path, profile)
             write_json_atomic(self.config_path, payload)
         return next(item for item in self.list_clients() if item["client_id"] == client_id)
@@ -747,7 +886,8 @@ class DashboardDatabase:
         query = f"""
             select d.document_id, d.path, d.size_bytes, d.package_status,
                    r.run_id, r.period_id, r.execution_type, r.ended_at, p.created_at,
-                   d.document_kind, d.tag_uuid, d.tag_category, d.tag_value
+                   d.document_kind, d.document_variant,
+                   d.tag_uuid, d.tag_category, d.tag_value
             from {SCHEMA_NAME}.published_documents d
             join {SCHEMA_NAME}.publications p on p.publication_id = d.publication_id
             join {SCHEMA_NAME}.report_runs r on r.run_id = p.run_id
@@ -769,10 +909,39 @@ class DashboardDatabase:
             "ended_at": row[7].isoformat() if row[7] else None,
             "created_at": row[8].isoformat() if row[8] else None,
             "document_kind": row[9],
-            "tag_uuid": row[10],
-            "tag_category": row[11],
-            "tag_value": row[12],
+            "document_variant": row[10],
+            "tag_uuid": row[11],
+            "tag_category": row[12],
+            "tag_value": row[13],
         } for row in rows]
+
+    def cloud_results(self, client_id: str) -> dict[str, dict[str, Any]]:
+        query = f"""
+            select distinct on (payload ->> 'run_id')
+                   payload ->> 'run_id', payload ->> 'cloud_status',
+                   coalesce(payload -> 'cloud_warnings', '[]'::jsonb)
+            from {SCHEMA_NAME}.orchestration_clients
+            where client_id = %s
+              and payload is not null
+              and nullif(payload ->> 'run_id', '') is not null
+              and nullif(payload ->> 'cloud_status', '') is not null
+            order by payload ->> 'run_id',
+                     coalesce(ended_at, started_at) desc nulls last,
+                     orchestration_client_id desc
+        """
+        with self.database.connection() as connection:
+            rows = connection.execute(query, (client_id,)).fetchall()
+        return {
+            str(row[0]): {
+                "status": str(row[1] or "UNKNOWN"),
+                "warnings": [
+                    dict(item) for item in (row[2] or ())
+                    if isinstance(item, Mapping)
+                ],
+            }
+            for row in rows
+            if row[0]
+        }
 
     def alerts(self, *, limit: int = 50) -> list[dict[str, Any]]:
         query = f"""
@@ -867,7 +1036,9 @@ def _default_runner(
             if (
                 isinstance(event, Mapping)
                 and event.get("event") in {
-                    "TAG_REPORT_PROGRESS", "TENABLE_EXPORT_PROGRESS",
+                    "TAG_REPORT_PROGRESS",
+                    "TENABLE_EXPORT_PROGRESS",
+                    "TENABLE_CLOUD_PROGRESS",
                 }
             ):
                 try:
@@ -996,6 +1167,7 @@ class JobQueue:
                 job = {
                     "job_id": job_id,
                     "client_id": client_id,
+                    "operation": "report",
                     "mode": mode,
                     "days": days,
                     "start_at": start_at,
@@ -1017,6 +1189,8 @@ class JobQueue:
                     "tag_progress": None,
                     "export_progress": None,
                     "was_export_progress": None,
+                    "cloud_progress": None,
+                    "cloud_status": None,
                     "warnings": [],
                     "vm_export_validation": None,
                     "collection_route": None,
@@ -1030,13 +1204,76 @@ class JobQueue:
             self._trim()
         return created
 
+    def enqueue_cloud_retry(
+        self,
+        *,
+        run_id: str,
+        client_id: str,
+        profile_path: Path,
+        env_path: Path,
+        database_env_path: Path,
+        cloud_template_path: Path,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if any(
+                item["client_id"] == client_id
+                and item["status"] in {"QUEUED", "RUNNING"}
+                for item in self._jobs.values()
+            ):
+                raise ValueError("O cliente ja esta na fila ou em execucao.")
+            job_id = uuid.uuid4().hex
+            job = {
+                "job_id": job_id,
+                "client_id": client_id,
+                "operation": "cloud_retry",
+                "mode": "manual",
+                "days": None,
+                "start_at": None,
+                "end_at": None,
+                "vm_selective_mode": None,
+                "vm_export_strategy": None,
+                "historical_source": None,
+                "force_live_collection": False,
+                "confirm_historical_reconstruction": False,
+                "status": "QUEUED",
+                "progress": 8,
+                "created_at": _utc_now(),
+                "started_at": None,
+                "ended_at": None,
+                "error": None,
+                "run_id": run_id,
+                "tag_progress": None,
+                "export_progress": None,
+                "was_export_progress": None,
+                "cloud_progress": None,
+                "cloud_status": "RETRY_QUEUED",
+                "warnings": [],
+                "vm_export_validation": None,
+                "collection_route": None,
+                "reconstruction_status": None,
+                "collection_sources": [],
+                "_profile_path": str(profile_path),
+                "_env_path": str(env_path),
+                "_database_env_path": str(database_env_path),
+                "_cloud_template_path": str(cloud_template_path),
+            }
+            self._jobs[job_id] = job
+            self._pending.put(job_id)
+            self._trim()
+            return {
+                key: value for key, value in job.items() if not key.startswith("_")
+            }
+
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
             pending = [item for item in self._jobs.values() if item["status"] == "QUEUED"]
             positions = {item["job_id"]: index + 1 for index, item in enumerate(pending)}
             result = []
             for item in sorted(self._jobs.values(), key=lambda row: row["created_at"], reverse=True):
-                row = dict(item)
+                row = {
+                    key: value for key, value in item.items()
+                    if not key.startswith("_")
+                }
                 row["queue_position"] = positions.get(item["job_id"])
                 result.append(row)
             return result
@@ -1136,44 +1373,88 @@ class JobQueue:
             job["status"] = "RUNNING"
             job["progress"] = 45
             job["started_at"] = _utc_now()
-            command = [
-                sys.executable,
-                "-m",
-                "tenable_reports",
-                "orchestrate",
-                "--config",
-                str(self.config_path),
-                "--mode",
-                job["mode"],
-                "--client",
-                job["client_id"],
-                "--max-parallel",
-                "1",
-                "--confirm-live-api",
-            ]
-            if job.get("force_live_collection"):
-                command.append("--force-live-collection")
-            if job.get("vm_selective_mode"):
-                command.extend((
-                    "--vm-selective-mode", job["vm_selective_mode"]
-                ))
-            if job.get("vm_export_strategy"):
-                command.extend((
-                    "--vm-export-strategy", job["vm_export_strategy"]
-                ))
-            if job.get("historical_source"):
-                command.extend((
-                    "--historical-source", job["historical_source"]
-                ))
-            if job["days"] is not None:
-                command.extend(("--days", str(job["days"])))
-            if job["start_at"]:
-                command.extend(("--start-at", job["start_at"], "--end-at", job["end_at"]))
+            if job.get("operation") == "cloud_retry":
+                command = [
+                    sys.executable,
+                    "-m",
+                    "tenable_reports",
+                    "retry-cloud",
+                    "--run-id",
+                    str(job["run_id"]),
+                    "--profile",
+                    str(job["_profile_path"]),
+                    "--env-file",
+                    str(job["_env_path"]),
+                    "--database-env-file",
+                    str(job["_database_env_path"]),
+                    "--cloud-template",
+                    str(job["_cloud_template_path"]),
+                    "--confirm-live-api",
+                ]
+            else:
+                command = [
+                    sys.executable,
+                    "-m",
+                    "tenable_reports",
+                    "orchestrate",
+                    "--config",
+                    str(self.config_path),
+                    "--mode",
+                    job["mode"],
+                    "--client",
+                    job["client_id"],
+                    "--max-parallel",
+                    "1",
+                    "--confirm-live-api",
+                ]
+                if job.get("force_live_collection"):
+                    command.append("--force-live-collection")
+                if job.get("vm_selective_mode"):
+                    command.extend((
+                        "--vm-selective-mode", job["vm_selective_mode"]
+                    ))
+                if job.get("vm_export_strategy"):
+                    command.extend((
+                        "--vm-export-strategy", job["vm_export_strategy"]
+                    ))
+                if job.get("historical_source"):
+                    command.extend((
+                        "--historical-source", job["historical_source"]
+                    ))
+                if job["days"] is not None:
+                    command.extend(("--days", str(job["days"])))
+                if job["start_at"]:
+                    command.extend((
+                        "--start-at", job["start_at"], "--end-at", job["end_at"]
+                    ))
         try:
             def update_progress(event: Mapping[str, Any]) -> None:
                 with self._lock:
                     current_job = self._jobs.get(job_id)
                     if current_job is None:
+                        return
+                    if event.get("event") == "TENABLE_CLOUD_PROGRESS":
+                        current_job["cloud_progress"] = {
+                            key: event.get(key)
+                            for key in (
+                                "status",
+                                "stage",
+                                "source",
+                                "current",
+                                "total",
+                                "page",
+                                "records",
+                                "documents",
+                                "snapshot_id",
+                                "run_id",
+                            )
+                        }
+                        current_job["cloud_status"] = str(
+                            event.get("status") or current_job.get("cloud_status") or ""
+                        )
+                        current_job["progress"] = max(
+                            int(current_job.get("progress") or 0), 82
+                        )
                         return
                     if event.get("event") == "TENABLE_EXPORT_PROGRESS":
                         source = str(event.get("source") or "")
@@ -1239,19 +1520,34 @@ class JobQueue:
                 job = self._jobs[job_id]
                 job["ended_at"] = _utc_now()
                 job["progress"] = 100
-                job["run_id"] = payload.get("run_id")
+                job["run_id"] = payload.get("run_id") or job.get("run_id")
                 client_payloads = [
                     item.get("payload")
                     for item in payload.get("clients") or ()
                     if isinstance(item, Mapping)
                     and isinstance(item.get("payload"), Mapping)
                 ]
+                result_payloads = client_payloads or ([payload] if payload else [])
                 job["warnings"] = [
                     dict(warning)
-                    for client_payload in client_payloads
-                    for warning in client_payload.get("warnings") or ()
+                    for client_payload in result_payloads
+                    for warning in (
+                        list(client_payload.get("warnings") or ())
+                        + list(client_payload.get("cloud_warnings") or ())
+                    )
                     if isinstance(warning, Mapping)
                 ]
+                cloud_payload = next(
+                    (
+                        item for item in result_payloads
+                        if item.get("cloud_status") is not None
+                    ),
+                    None,
+                )
+                if cloud_payload is not None:
+                    job["cloud_status"] = str(
+                        cloud_payload.get("cloud_status") or "UNKNOWN"
+                    )
                 collection_payload = next(iter(client_payloads), None)
                 if collection_payload is not None:
                     job["collection_route"] = collection_payload.get(
@@ -1303,6 +1599,9 @@ class DashboardApplication:
         config_path: Path,
         runner: Runner = _default_runner,
         connection_checker: Callable[[Path], dict[str, Any]] = check_tenable_connection,
+        cloud_connection_checker: Callable[
+            [Path, str], dict[str, Any]
+        ] = check_cloud_connection,
         tag_lister: Callable[[Path], Sequence[Mapping[str, Any]]] = list_tenable_tags,
         export_canceller: Callable[
             [Path, str], Mapping[str, Any]
@@ -1312,11 +1611,13 @@ class DashboardApplication:
         backfill_state_provider: Callable[[], MainBackfillSourceState] | None = None,
         retention_state_provider: Callable[[], Mapping[str, Any]] | None = None,
         cleanup_status_recorder: Callable[..., Any] | None = None,
+        cloud_contract_invalidator: Callable[..., int] | None = None,
     ) -> None:
         self.project_root = project_root.resolve()
         self.config = DashboardConfigStore(project_root=self.project_root, config_path=config_path)
         self.jobs = JobQueue(self.project_root, self.config.config_path, runner)
         self.connection_checker = connection_checker
+        self.cloud_connection_checker = cloud_connection_checker
         self.tag_lister = tag_lister
         self.export_canceller = export_canceller
         self.database_error: str | None = None
@@ -1327,6 +1628,12 @@ class DashboardApplication:
         except Exception as exc:
             self.database = None
             self.database_error = _safe_error(str(exc), limit=500)
+        self.cloud_contract_invalidator = cloud_contract_invalidator
+        if self.cloud_contract_invalidator is None and self.database is not None:
+            cloud_repository = PostgresCloudSnapshotRepository(
+                self.database.database, migrate=False
+            )
+            self.cloud_contract_invalidator = cloud_repository.invalidate_contract_checks
         self.report_registry = report_registry
         if self.report_registry is None and self.database is not None:
             self.report_registry = PostgresReportRegistry(
@@ -1402,9 +1709,11 @@ class DashboardApplication:
         if self.report_registry is None:
             return []
         documents_by_run: dict[str, list[dict[str, Any]]] = {}
+        cloud_results: dict[str, dict[str, Any]] = {}
         if self.database is not None:
             for document in self.database.reports(client_id):
                 documents_by_run.setdefault(str(document.get("run_id") or ""), []).append(document)
+            cloud_results = self.database.cloud_results(client_id)
         rows = []
         for report in self.report_registry.list_reports(
             client_id=client_id, include_deleted=include_deleted
@@ -1413,6 +1722,25 @@ class DashboardApplication:
             key = reference_key_for_candidate(candidate)
             main = self.report_registry.get_main(key)
             documents = documents_by_run.get(candidate.run_id, [])
+            cloud_documents = [
+                item for item in documents
+                if str(item.get("document_kind") or "") == "cloud"
+            ]
+            cloud_result = cloud_results.get(candidate.run_id, {})
+            cloud_status = (
+                "COMPLETE" if cloud_documents
+                else str(cloud_result.get("status") or "NOT_REQUESTED")
+            )
+            cloud_warnings = [
+                dict(item) for item in cloud_result.get("warnings") or ()
+                if isinstance(item, Mapping)
+            ]
+            cloud_retry_available = (
+                not report.deleted_at
+                and not cloud_documents
+                and cloud_status == "FAILED"
+                and any(bool(item.get("retryable")) for item in cloud_warnings)
+            )
             rows.append({
                 "run_id": candidate.run_id,
                 "period_id": key.period_key,
@@ -1426,6 +1754,9 @@ class DashboardApplication:
                 "reference_run_id": None,
                 "size_bytes": sum(int(item.get("size_bytes") or 0) for item in documents),
                 "omitted_modules": [],
+                "cloud_status": cloud_status,
+                "cloud_warnings": cloud_warnings,
+                "cloud_retry_available": cloud_retry_available,
                 "documents": documents,
             })
         return rows
@@ -1698,6 +2029,57 @@ class DashboardApplication:
             "job": retried,
         }
 
+    def update_client(
+        self, client_id: str, values: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        clients = {item["client_id"]: item for item in self.config.list_clients()}
+        before = clients.get(client_id)
+        if before is None:
+            raise KeyError("Cliente nao encontrado.")
+        updated = self.config.update_client(client_id, values)
+        token_changed = bool(str(values.get("cloud_api_secret") or "").strip())
+        environment_changed = (
+            "cloud_environment" in values
+            and str(values.get("cloud_environment") or "").strip().lower()
+            != str(before.get("cloud_environment") or "global")
+        )
+        if (
+            self.cloud_contract_invalidator is not None
+            and (token_changed or environment_changed)
+        ):
+            environments = {
+                str(before.get("cloud_environment") or "global"),
+                str(updated.get("cloud_environment") or "global"),
+            }
+            try:
+                invalidated = sum(
+                    int(self.cloud_contract_invalidator(
+                        client_id=client_id,
+                        environment=environment,
+                    ))
+                    for environment in environments
+                )
+                updated["cloud_contract_cache_invalidated"] = invalidated
+            except Exception:
+                updated["cloud_contract_cache_invalidated"] = None
+        return updated
+
+    def check_cloud_client(self, client_id: str) -> dict[str, Any]:
+        clients = {item["client_id"]: item for item in self.config.list_clients()}
+        client = clients.get(client_id)
+        if client is None:
+            raise KeyError("Cliente nao encontrado.")
+        if not client.get("cloud_enabled"):
+            raise ValueError("Cloud Security nao esta habilitado neste cliente.")
+        return {
+            "client_id": client_id,
+            "display_name": client["display_name"],
+            **self.cloud_connection_checker(
+                self.config.client_env_path(client_id),
+                str(client.get("cloud_environment") or "global"),
+            ),
+        }
+
     def check_connections(self, client_ids: Sequence[str]) -> list[dict[str, Any]]:
         clients = {item["client_id"]: item for item in self.config.list_clients()}
         unknown = [client_id for client_id in client_ids if client_id not in clients]
@@ -1705,32 +2087,99 @@ class DashboardApplication:
             raise ValueError("Clientes nao encontrados: " + ", ".join(unknown))
         if not client_ids:
             raise ValueError("Nenhum cliente foi selecionado para o teste.")
-        results: dict[str, dict[str, Any]] = {}
-        with ThreadPoolExecutor(max_workers=min(4, len(client_ids))) as executor:
-            future_map = {
-                executor.submit(
-                    self.connection_checker,
-                    self.config.client_env_path(client_id),
-                ): client_id
-                for client_id in client_ids
+
+        def check_client(client_id: str) -> dict[str, Any]:
+            client = clients[client_id]
+            try:
+                vm_result = self.connection_checker(
+                    self.config.client_env_path(client_id)
+                )
+            except Exception as exc:
+                vm_result = {
+                    "ok": False,
+                    "latency_ms": 0,
+                    "message": _safe_error(str(exc), limit=300),
+                    "checked_at": _utc_now(),
+                }
+            result = {
+                "client_id": client_id,
+                "display_name": client["display_name"],
+                **vm_result,
             }
-            for future in as_completed(future_map):
-                client_id = future_map[future]
+            if client.get("cloud_enabled"):
                 try:
-                    result = future.result()
+                    result["cloud"] = self.cloud_connection_checker(
+                        self.config.client_env_path(client_id),
+                        str(client.get("cloud_environment") or "global"),
+                    )
                 except Exception as exc:
-                    result = {
+                    result["cloud"] = {
                         "ok": False,
                         "latency_ms": 0,
                         "message": _safe_error(str(exc), limit=300),
                         "checked_at": _utc_now(),
+                        "retryable": bool(getattr(exc, "retryable", False)),
                     }
-                results[client_id] = {
-                    "client_id": client_id,
-                    "display_name": clients[client_id]["display_name"],
-                    **result,
-                }
+            else:
+                result["cloud"] = None
+            return result
+
+        results: dict[str, dict[str, Any]] = {}
+        with ThreadPoolExecutor(max_workers=min(4, len(client_ids))) as executor:
+            future_map = {
+                executor.submit(check_client, client_id): client_id
+                for client_id in client_ids
+            }
+            for future in as_completed(future_map):
+                client_id = future_map[future]
+                results[client_id] = future.result()
         return [results[client_id] for client_id in client_ids]
+
+    def retry_cloud_report(
+        self, *, run_id: str, confirmation: str
+    ) -> dict[str, Any]:
+        expected = f"RETENTAR CLOUD {run_id}"
+        if confirmation.strip() != expected:
+            raise ValueError(f'Digite exatamente "{expected}" para confirmar.')
+        if self.report_registry is None:
+            raise RuntimeError("Registro de relatorios indisponivel.")
+        report = self.report_registry.get_report(run_id)
+        client_id = report.candidate.client_id
+        clients = {item["client_id"]: item for item in self.config.list_clients()}
+        client = clients.get(client_id)
+        if client is None:
+            raise KeyError("Cliente nao encontrado.")
+        if not client.get("enabled"):
+            raise ValueError("O cliente esta desabilitado.")
+        if not client.get("cloud_enabled"):
+            raise ValueError("Cloud Security nao esta habilitado neste cliente.")
+        if not client.get("cloud_token_saved"):
+            raise ValueError("O cliente nao possui token Cloud Security salvo.")
+        row = next(
+            (
+                item for item in self.report_rows(client_id, include_deleted=True)
+                if item.get("run_id") == run_id
+            ),
+            None,
+        )
+        if row is None or not row.get("cloud_retry_available"):
+            raise ValueError("Esta execucao nao possui uma falha Cloud retentavel.")
+        defaults = self.config.raw().get("defaults") or {}
+        raw_template = str(
+            defaults.get("cloud_template")
+            or "../templates/corporate/cloud-base-v1.docx"
+        )
+        cloud_template = (
+            self.config.config_path.parent / raw_template
+        ).resolve()
+        return self.jobs.enqueue_cloud_retry(
+            run_id=run_id,
+            client_id=client_id,
+            profile_path=self.config.client_profile_path(client_id),
+            env_path=self.config.client_env_path(client_id),
+            database_env_path=self.config.database_env_path(),
+            cloud_template_path=cloud_template,
+        )
 
     def list_client_tags(self, client_id: str) -> dict[str, Any]:
         clients = {item["client_id"]: item for item in self.config.list_clients()}
@@ -1940,6 +2389,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 client = self.app.config.add_client(payload)
                 self._json(HTTPStatus.CREATED, {"client": client})
                 return
+            match = re.fullmatch(r"/api/clients/([^/]+)/cloud/check", parsed.path)
+            if match:
+                result = self.app.check_cloud_client(unquote(match.group(1)))
+                self._json(HTTPStatus.OK, {"result": result})
+                return
             match = re.fullmatch(
                 r"/api/clients/([^/]+)/vm-export/validate", parsed.path
             )
@@ -1996,6 +2450,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/admin/backfill/apply":
                 result = self.app.apply_backfill(str(payload.get("confirmation") or ""))
                 self._json(HTTPStatus.OK, result)
+                return
+            match = re.fullmatch(r"/api/reports/([^/]+)/retry-cloud", parsed.path)
+            if match:
+                job = self.app.retry_cloud_report(
+                    run_id=unquote(match.group(1)),
+                    confirmation=str(payload.get("confirmation") or ""),
+                )
+                self._json(HTTPStatus.ACCEPTED, {"job": job})
                 return
             match = re.fullmatch(r"/api/reports/([^/]+)/main", parsed.path)
             if match:
@@ -2111,7 +2573,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_error(HTTPStatus.NOT_FOUND, "Rota nao encontrada.")
             return
         try:
-            client = self.app.config.update_client(unquote(match.group(1)), self._request_json())
+            client = self.app.update_client(unquote(match.group(1)), self._request_json())
             self._json(HTTPStatus.OK, {"client": client})
         except KeyError as exc:
             self._json_error(HTTPStatus.NOT_FOUND, _safe_error(str(exc), limit=500))

@@ -781,12 +781,14 @@ class WebDashboardTests(unittest.TestCase):
         database = DashboardDatabase.__new__(DashboardDatabase)
         database.database = _RowsDatabase([(
             7, "C:/reports/tag.docx", 1234, "VALID", "run-a", "2026-07",
-            "MANUAL", ended_at, created_at, "tag", "tag-a", "Equipe", "Infra",
+            "MANUAL", ended_at, created_at, "tag", None,
+            "tag-a", "Equipe", "Infra",
         )])
 
         report = database.reports("cliente-a")[0]
 
         self.assertEqual(report["document_kind"], "tag")
+        self.assertIsNone(report["document_variant"])
         self.assertEqual(report["tag_uuid"], "tag-a")
         self.assertEqual(report["tag_category"], "Equipe")
         self.assertEqual(report["tag_value"], "Infra")
@@ -1196,6 +1198,237 @@ class WebDashboardTests(unittest.TestCase):
             self.assertNotIn("cloud_container_images", profile["report"]["intelligence_modules"])
             load_client_profile(root / "clients" / "managed" / "cliente-editavel.json")
 
+    def test_cloud_settings_save_token_without_returning_it_and_blank_edit_preserves_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DashboardConfigStore(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+            created = store.add_client({
+                "client_id": "cliente-cloud",
+                "display_name": "Cliente Cloud",
+                "tenant_id": "tenant-cloud",
+                "cloud_enabled": True,
+                "cloud_api_secret": "cloud-secret-original",
+                "cloud_environment": "us_gov",
+                "cloud_layout": "comparison",
+            })
+
+            self.assertTrue(created["cloud_enabled"])
+            self.assertTrue(created["cloud_token_saved"])
+            self.assertEqual(created["cloud_environment"], "us_gov")
+            self.assertEqual(created["cloud_layout"], "comparison")
+            self.assertNotIn("cloud_api_secret", created)
+            self.assertNotIn("cloud-secret-original", json.dumps(created))
+
+            updated = store.update_client("cliente-cloud", {
+                "cloud_enabled": True,
+                "cloud_api_secret": "",
+                "cloud_environment": "global",
+                "cloud_layout": "expanded",
+            })
+            env_text = (root / "credentials" / "cliente-cloud.env").read_text(
+                encoding="utf-8"
+            )
+            profile = load_client_profile(
+                root / "clients" / "managed" / "cliente-cloud.json"
+            )
+
+            self.assertIn("TCS_API_SECRET=cloud-secret-original", env_text)
+            self.assertTrue(updated["cloud_token_saved"])
+            self.assertEqual(profile.cloud_security_scope.environment, "global")
+            self.assertEqual(profile.cloud_security_scope.layout, "expanded")
+
+    def test_connection_check_keeps_vm_and_cloud_results_independent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                connection_checker=lambda _path: {
+                    "ok": True,
+                    "latency_ms": 11,
+                    "message": "VM pronta",
+                    "checked_at": "2026-08-27T12:00:00+00:00",
+                },
+                cloud_connection_checker=lambda _path, environment: {
+                    "ok": False,
+                    "latency_ms": 22,
+                    "message": f"Cloud indisponivel em {environment}",
+                    "checked_at": "2026-08-27T12:00:00+00:00",
+                    "retryable": True,
+                },
+            )
+            app.config.add_client({
+                "client_id": "cliente-cloud",
+                "display_name": "Cliente Cloud",
+                "access_key": "access",
+                "secret_key": "secret",
+                "cloud_enabled": True,
+                "cloud_api_secret": "cloud-secret",
+                "cloud_environment": "global",
+            })
+
+            result = app.check_connections(["cliente-cloud"])[0]
+
+            self.assertTrue(result["ok"])
+            self.assertFalse(result["cloud"]["ok"])
+            self.assertTrue(result["cloud"]["retryable"])
+            self.assertNotIn("cloud-secret", json.dumps(result))
+
+    def test_cloud_token_or_environment_change_invalidates_contract_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invalidated: list[tuple[str, str]] = []
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                cloud_contract_invalidator=lambda **values: (
+                    invalidated.append((values["client_id"], values["environment"])) or 1
+                ),
+            )
+            app.config.add_client({
+                "client_id": "cliente-cloud",
+                "display_name": "Cliente Cloud",
+                "cloud_enabled": True,
+                "cloud_api_secret": "token-original",
+                "cloud_environment": "global",
+            })
+
+            updated = app.update_client("cliente-cloud", {
+                "cloud_api_secret": "token-novo",
+                "cloud_environment": "us_gov",
+            })
+
+            self.assertEqual(
+                set(invalidated),
+                {("cliente-cloud", "global"), ("cliente-cloud", "us_gov")},
+            )
+            self.assertEqual(updated["cloud_contract_cache_invalidated"], 2)
+            self.assertNotIn("token-novo", json.dumps(updated))
+
+    def test_cloud_web_controls_and_retry_action_are_exposed(self) -> None:
+        static_root = (
+            Path(__file__).resolve().parents[1]
+            / "src" / "tenable_reports" / "webapp" / "static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        javascript = (static_root / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('name="cloud_api_secret"', html)
+        self.assertIn('name="cloud_environment"', html)
+        self.assertIn('name="cloud_layout"', html)
+        self.assertIn('id="test-cloud-button"', html)
+        self.assertIn("Tentar Cloud novamente", javascript)
+        self.assertIn("TENABLE_CLOUD_PROGRESS", javascript)
+        self.assertIn("/retry-cloud", javascript)
+
+    def test_job_queue_exposes_cloud_progress_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def runner(command, cwd, progress_callback=None):
+                progress_callback({
+                    "event": "TENABLE_CLOUD_PROGRESS",
+                    "status": "STARTED",
+                    "stage": "COLLECTION",
+                    "source": "findings",
+                    "current": 2,
+                    "total": 5,
+                })
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({
+                        "status": "COMPLETE_WITH_WARNINGS",
+                        "run_id": "run-cloud-progress",
+                        "clients": [{"payload": {
+                            "cloud_status": "COMPLETE",
+                            "cloud_warnings": [],
+                        }}],
+                    }) + "\n",
+                    stderr="",
+                )
+
+            jobs = JobQueue(root, root / "orchestration" / "clients.json", runner)
+            jobs.enqueue(["cliente-cloud"], {"mode": "manual", "days": 30})
+            jobs._pending.join()
+            job = jobs.snapshot()[0]
+
+            self.assertEqual(job["cloud_progress"]["stage"], "COLLECTION")
+            self.assertEqual(job["cloud_progress"]["source"], "findings")
+            self.assertEqual(job["cloud_status"], "COMPLETE")
+
+    def test_cloud_retry_route_requires_exact_confirmation_and_runs_only_retry_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            observed: list[list[str]] = []
+
+            def runner(command, cwd, progress_callback=None):
+                observed.append(list(command))
+                progress_callback({
+                    "event": "TENABLE_CLOUD_PROGRESS",
+                    "status": "FINISHED",
+                    "stage": "PUBLICATION",
+                    "documents": 2,
+                })
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({
+                        "status": "complete",
+                        "run_id": "run-cloud-failed",
+                        "client_id": "cliente-cloud",
+                        "cloud_status": "COMPLETE",
+                        "warnings": [],
+                        "general_collection_repeated": False,
+                    }) + "\n",
+                    stderr="",
+                )
+
+            registry = InMemoryReportRegistry()
+            registry.register_report(valid_run("run-cloud-failed", client_id="cliente-cloud"))
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                runner=runner,
+                report_registry=registry,
+            )
+            app.config.add_client({
+                "client_id": "cliente-cloud",
+                "display_name": "Cliente Cloud",
+                "cloud_enabled": True,
+                "cloud_api_secret": "cloud-secret",
+            })
+            app.report_rows = lambda _client_id, include_deleted=False: [{
+                "run_id": "run-cloud-failed",
+                "cloud_retry_available": True,
+            }]
+            client = LocalClient(app)
+            try:
+                bad_status, _ = client.request(
+                    "POST",
+                    "/api/reports/run-cloud-failed/retry-cloud",
+                    {"confirmation": "sim"},
+                )
+                status, payload = client.request(
+                    "POST",
+                    "/api/reports/run-cloud-failed/retry-cloud",
+                    {"confirmation": "RETENTAR CLOUD run-cloud-failed"},
+                )
+                app.jobs._pending.join()
+            finally:
+                client.close()
+
+            self.assertEqual(bad_status, 400)
+            self.assertEqual(status, 202)
+            self.assertEqual(payload["job"]["operation"], "cloud_retry")
+            self.assertEqual(len(observed), 1)
+            self.assertIn("retry-cloud", observed[0])
+            self.assertNotIn("orchestrate", observed[0])
+            self.assertIn("--run-id", observed[0])
+            self.assertEqual(app.jobs.snapshot()[0]["cloud_status"], "COMPLETE")
     def test_queue_runs_one_client_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

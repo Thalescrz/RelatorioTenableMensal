@@ -124,6 +124,31 @@
           <label class="check"><input name="include_output" type="checkbox"><span>Coluna Output</span></label>
           <label class="check"><input name="show_source_filters" type="checkbox"><span>Exibir filtros de origem</span></label>
         </div>
+        <section class="cloud-config" id="cloud-config" aria-labelledby="cloud-config-title">
+          <div class="cloud-config-head">
+            <div><span>CLOUD SECURITY</span><strong id="cloud-config-title">Conexão e modelo do relatório</strong></div>
+            <button class="button ghost" id="test-cloud-button" type="button" disabled>Testar API Cloud</button>
+          </div>
+          <div class="cloud-config-grid">
+            <label class="cloud-token-field">Token Cloud Security
+              <input name="cloud_api_secret" type="password" autocomplete="off" placeholder="Preencha para salvar">
+            </label>
+            <label>Ambiente
+              <select name="cloud_environment">
+                <option value="global" selected>Global</option>
+                <option value="us_gov">US Government</option>
+              </select>
+            </label>
+            <label>Modelo inicial
+              <select name="cloud_layout">
+                <option value="comparison" selected>Comparativo · base e expandido</option>
+                <option value="base">Somente modelo base</option>
+                <option value="expanded">Somente modelo expandido</option>
+              </select>
+            </label>
+          </div>
+          <p id="cloud-config-note">Ative Cloud Security acima para gerar o relatório junto com os documentos VM.</p>
+        </section>
         <section class="vm-export-config" aria-labelledby="vm-export-title">
           <div class="vm-export-head">
             <div><span>COLETA VM</span><strong id="vm-export-title">Desempenho do export</strong></div>
