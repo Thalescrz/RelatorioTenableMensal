@@ -669,13 +669,14 @@ class PostgresOperationsRepository:
                     f"""
                     insert into {SCHEMA_NAME}.published_documents (
                         publication_id, path, sha256, size_bytes, package_status,
-                        document_kind, tag_uuid, tag_category, tag_value
-                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        document_kind, document_variant, tag_uuid, tag_category, tag_value
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     on conflict (publication_id, path) do update set
                         sha256 = excluded.sha256,
                         size_bytes = excluded.size_bytes,
                         package_status = excluded.package_status,
                         document_kind = excluded.document_kind,
+                        document_variant = excluded.document_variant,
                         tag_uuid = excluded.tag_uuid,
                         tag_category = excluded.tag_category,
                         tag_value = excluded.tag_value
@@ -687,6 +688,7 @@ class PostgresOperationsRepository:
                         int(document.get("size_bytes") or 0),
                         document.get("package_status"),
                         document.get("document_kind"),
+                        document.get("document_variant"),
                         document.get("tag_uuid"),
                         document.get("tag_category"),
                         document.get("tag_value"),
@@ -710,6 +712,21 @@ class PostgresOperationsRepository:
                     run_id=run_id or None,
                 )
             )
+        source_datasets = payload.get("source_datasets")
+        if isinstance(source_datasets, Mapping):
+            for name, item in source_datasets.items():
+                if str(name) == "vm" or not isinstance(item, Mapping):
+                    continue
+                additional_path = Path(str(item.get("path") or ""))
+                if additional_path.is_file():
+                    records.append(
+                        ArtifactRecord.from_file(
+                            additional_path,
+                            kind=f"{str(name)}_report_dataset",
+                            client_id=str(payload.get("client_id") or "") or None,
+                            run_id=run_id or None,
+                        )
+                    )
         for item in payload.get("documents") or ():
             document_path = Path(str(item.get("path") or "")) if isinstance(item, Mapping) else Path()
             if document_path.is_file():

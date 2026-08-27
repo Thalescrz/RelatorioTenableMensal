@@ -823,5 +823,51 @@ class OrchestrationTests(unittest.TestCase):
             )
 
 
+def test_manifest_records_cloud_variants_and_common_dataset(tmp_path: Path) -> None:
+    general_dataset = tmp_path / "general-dataset.json"
+    cloud_dataset = tmp_path / "cloud-dataset.json"
+    general_dataset.write_text("{}", encoding="utf-8")
+    cloud_dataset.write_text("{}", encoding="utf-8")
+    documents = []
+    for variant in ("base", "expanded"):
+        path = tmp_path / f"cloud-{variant}.docx"
+        document = Document()
+        document.add_paragraph(f"Cloud {variant}")
+        document.save(path)
+        documents.append(
+            PublicationDocument(
+                path=path,
+                document_kind="cloud",
+                document_variant=variant,
+            )
+        )
+
+    manifest = create_publication_manifest(
+        output_path=tmp_path / "publication.json",
+        client_id="cliente-fixture",
+        tenant_id="tenant-fixture",
+        run_id="cloud-proof",
+        execution_type="MANUAL",
+        period={"period_id": "2026-07"},
+        dataset_path=general_dataset,
+        additional_datasets={"cloud": cloud_dataset},
+        documents=tuple(documents),
+        history_database=None,
+    )
+
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    cloud_documents = [
+        item
+        for item in payload["documents"]
+        if item["document_kind"] == "cloud"
+    ]
+    self_contained_variants = {
+        item["document_variant"] for item in cloud_documents
+    }
+    assert self_contained_variants == {"base", "expanded"}
+    assert payload["source_dataset"] == payload["source_datasets"]["vm"]
+    assert payload["source_datasets"]["cloud"]["sha256"]
+
+
 if __name__ == "__main__":
     unittest.main()
