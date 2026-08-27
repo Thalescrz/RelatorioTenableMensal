@@ -54,6 +54,15 @@ def report_filename(
     )
 
 
+def cloud_report_filename(
+    display_name: str,
+    period: ReportingPeriod,
+) -> str:
+    return _safe_windows_filename(
+        f"[{display_name}] Relatório Tenable Cloud Security "
+        f"{period_suffix(period)}.docx"
+    )
+
 def tag_report_filename(
     display_name: str,
     period: ReportingPeriod,

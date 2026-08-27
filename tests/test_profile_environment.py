@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tenable_reports.config.environment import CredentialConfig, load_dotenv_file
+from tenable_reports.config import environment as environment_config
+from tenable_reports.config.environment import (
+    CredentialConfig,
+    EnvironmentError,
+    load_dotenv_file,
+)
 from tenable_reports.config.profile import ClientProfile, ProfileError, load_client_profile
 
 
@@ -28,6 +33,47 @@ class ProfileTests(unittest.TestCase):
             ("summary", "infrastructure", "vm_top5", "was", "was_top5"),
         )
         self.assertFalse(profile.cloud_security_scope.enabled)
+        self.assertEqual(profile.cloud_security_scope.environment, "global")
+        self.assertEqual(profile.cloud_security_scope.layout, "expanded")
+
+    def test_cloud_scope_normalizes_legacy_layouts_to_standard(self) -> None:
+        for legacy_layout in ("comparison", "base", "expanded"):
+            with self.subTest(layout=legacy_layout):
+                profile = ClientProfile.from_dict(
+                    {
+                        "schema_version": 1,
+                        "client_id": "client-001",
+                        "display_name": "Cliente",
+                        "tenant_id": "tenant",
+                        "scope": {
+                            "cloud_security": {
+                                "enabled": True,
+                                "environment": "us_gov",
+                                "layout": legacy_layout,
+                            }
+                        },
+                    }
+                )
+
+                self.assertTrue(profile.cloud_security_scope.enabled)
+                self.assertEqual(profile.cloud_security_scope.environment, "us_gov")
+                self.assertEqual(profile.cloud_security_scope.layout, "expanded")
+    def test_cloud_scope_rejects_unknown_environment_and_layout(self) -> None:
+        base = {
+            "schema_version": 1,
+            "client_id": "client-001",
+            "display_name": "Cliente",
+            "tenant_id": "tenant",
+        }
+        for field, value in (("environment", "private"), ("layout", "automatic")):
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ProfileError, field):
+                    ClientProfile.from_dict(
+                        {
+                            **base,
+                            "scope": {"cloud_security": {field: value}},
+                        }
+                    )
 
     def test_contrasting_profiles_are_declarative(self) -> None:
         standard = load_client_profile(
@@ -310,6 +356,34 @@ class ProfileTests(unittest.TestCase):
                 os.environ.pop("TENABLE_SECRET", None)
             else:
                 os.environ["TENABLE_SECRET"] = original_secret
+
+    def test_cloud_credentials_prefer_current_secret_name(self) -> None:
+        credentials = environment_config.CloudCredentialConfig.from_environment(
+            {
+                "TCS_API_SECRET": "current-secret",
+                "TCS_API_KEY": "legacy-secret",
+            }
+        )
+
+        self.assertTrue(credentials.is_complete)
+        self.assertEqual(credentials.api_secret, "current-secret")
+        self.assertFalse(credentials.used_legacy_alias)
+        self.assertEqual(credentials.timeout_seconds, 180)
+        self.assertEqual(credentials.retries, 4)
+
+    def test_cloud_credentials_accept_legacy_alias_for_reading(self) -> None:
+        credentials = environment_config.CloudCredentialConfig.from_environment(
+            {"TCS_API_KEY": "legacy-secret"}
+        )
+
+        self.assertEqual(credentials.api_secret, "legacy-secret")
+        self.assertTrue(credentials.used_legacy_alias)
+
+    def test_cloud_credentials_validate_operational_overrides(self) -> None:
+        with self.assertRaisesRegex(EnvironmentError, "TCS_HTTP_RETRIES"):
+            environment_config.CloudCredentialConfig.from_environment(
+                {"TCS_API_SECRET": "secret", "TCS_HTTP_RETRIES": "11"}
+            )
 
     def test_export_wait_settings_use_operational_defaults(self) -> None:
         credentials = CredentialConfig.from_environment({

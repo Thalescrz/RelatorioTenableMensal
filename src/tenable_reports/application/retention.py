@@ -304,6 +304,7 @@ def plan_published_run_cleanup(
     publication_confirmed: bool,
     history_confirmed: bool,
     compact_snapshot_confirmed: bool = True,
+    cloud_cleanup_ready: bool = True,
 ) -> CleanupPlan:
     if not publication_confirmed or not history_confirmed:
         raise ValueError("Publicação e histórico precisam estar confirmados.")
@@ -312,6 +313,8 @@ def plan_published_run_cleanup(
     client = _safe_component(client_id, label="client_id")
     run = _safe_component(run_id, label="run_id")
     root = Path(scoped_output_root).resolve()
+    if not cloud_cleanup_ready:
+        return CleanupPlan(())
     candidates: list[RetentionCandidate] = []
     for category in TRANSIENT_CATEGORIES:
         target = (root / category / client / run).resolve()

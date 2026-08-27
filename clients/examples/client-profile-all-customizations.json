@@ -24,7 +24,7 @@
   "scope": {
     "vm": {"asset_groups": [], "include_unlicensed": false},
     "was": {"enabled": true, "application_ids": []},
-    "cloud_security": {"enabled": true}
+    "cloud_security": {"enabled": true, "environment": "global", "layout": "expanded"}
   },
   "presentation": {
     "locale": "pt-BR",

@@ -556,6 +556,7 @@ class PostgresReportRegistry:
             for table in (
                 "history_snapshots",
                 "compact_finding_snapshots",
+                "cloud_report_snapshots",
                 "artifacts",
             ):
                 connection.execute(

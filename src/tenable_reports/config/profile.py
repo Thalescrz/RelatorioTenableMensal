@@ -91,6 +91,8 @@ class WasScope:
 @dataclass(frozen=True, slots=True)
 class CloudSecurityScope:
     enabled: bool = False
+    environment: str = "global"
+    layout: str = "expanded"
 
 
 @dataclass(frozen=True, slots=True)
@@ -296,10 +298,25 @@ class ClientProfile:
             )
         was_enabled = _as_bool(scope_data.get("was", {}).get("enabled"), "scope.was.enabled")
         cloud_security_enabled = _as_bool(
-            scope_data.get("cloud_security", {}).get("enabled"),
+            cloud_security_data.get("enabled"),
             "scope.cloud_security.enabled",
         )
+        cloud_environment = str(
+            cloud_security_data.get("environment", "global")
+        ).strip().lower()
+        if cloud_environment not in {"global", "us_gov"}:
+            raise ProfileError(
+                "scope.cloud_security.environment deve ser global ou us_gov."
+            )
+        cloud_layout = str(
+            cloud_security_data.get("layout", "expanded")
+        ).strip().lower()
+        if cloud_layout not in {"comparison", "base", "expanded"}:
+            raise ProfileError(
+                "scope.cloud_security.layout deve ser comparison, base ou expanded."
+            )
         missing_capabilities = []
+        cloud_layout = "expanded"
         for module in intelligence_modules:
             capability = INTELLIGENCE_MODULE_CAPABILITIES.get(module)
             if capability == "was" and not was_enabled:
@@ -448,6 +465,8 @@ class ClientProfile:
             ),
             cloud_security_scope=CloudSecurityScope(
                 enabled=cloud_security_enabled,
+                environment=cloud_environment,
+                layout=cloud_layout,
             ),
             presentation=PresentationConfig(
                 locale=str(presentation_data.get("locale", "pt-BR")).strip() or "pt-BR",

@@ -75,9 +75,14 @@ class _Connection:
                 (str(report_root / "base.docx"),),
                 (str(report_root / "custom.docx"),),
                 (str(report_root / "tag.docx"),),
+                (str(report_root / "cloud-base.docx"),),
+                (str(report_root / "cloud-expanded.docx"),),
             ))
         if "select a.path" in normalized:
-            return _Cursor(rows=((str(report_root / "asset-manifest.json"),),))
+            return _Cursor(rows=(
+                (str(report_root / "asset-manifest.json"),),
+                (str(report_root / "cloud-report-dataset.json"),),
+            ))
         raise AssertionError(normalized)
 
 
@@ -112,9 +117,16 @@ class PostgresReportSetPurgeRepositoryTests(unittest.TestCase):
             record = repository.describe(old.run_id)
 
             self.assertTrue(record.is_main)
-            self.assertEqual(record.document_count, 3)
+            self.assertEqual(record.document_count, 5)
             self.assertEqual(record.compatible_replacement_run_ids, ("run-b",))
-            self.assertEqual(len(record.disk_paths), 6)
+            self.assertEqual(len(record.disk_paths), 9)
+            self.assertTrue(any(
+                path.endswith("cloud-base.docx") for path in record.disk_paths
+            ))
+            self.assertTrue(any(
+                path.endswith("cloud-report-dataset.json")
+                for path in record.disk_paths
+            ))
             self.assertFalse(any(path.startswith("postgresql:") for path in record.disk_paths))
 
     def test_purge_delegates_the_atomic_database_removal_to_the_registry(self) -> None:

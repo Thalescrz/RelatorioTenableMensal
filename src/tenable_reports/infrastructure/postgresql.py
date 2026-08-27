@@ -263,6 +263,8 @@ class PostgresDatabase:
             "legacy_sqlite_imports",
             "plugin_catalog",
             "compact_finding_snapshots",
+            "cloud_report_snapshots",
+            "cloud_contract_checks",
         )
         with self.connection() as connection:
             server = connection.execute(
@@ -426,11 +428,67 @@ class PostgresSnapshotRepository(SnapshotRepository):
         return tuple(_history_snapshot_from_storage(*row) for row in rows)
 
 
+@dataclass(frozen=True, slots=True)
+class ReportRunContext:
+    run_id: str
+    client_id: str
+    tenant_id: str
+    execution_type: str
+    period_start_at: str
+    period_end_at: str
+    period_mode: str
+    timezone: str
+    publication_manifest: Path
+
+
+def _iso_context(value: Any) -> str:
+    if hasattr(value, "isoformat"):
+        return value.isoformat().replace("+00:00", "Z")
+    return str(value)
+
+
 class PostgresOperationsRepository:
     def __init__(self, database: PostgresDatabase, *, migrate: bool = True) -> None:
         self.database = database
         if migrate:
             self.database.apply_migrations()
+
+    def report_run_context(self, run_id: str) -> ReportRunContext:
+        normalized = str(run_id or "").strip()
+        if not normalized:
+            raise ValueError("run_id nao pode ser vazio.")
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                select run_id, client_id, tenant_id, execution_type,
+                       period_start_at, period_end_at, period_mode, timezone,
+                       publication_manifest_path
+                from {SCHEMA_NAME}.report_runs
+                where run_id = %s
+                  and deleted_at is null
+                  and publication_manifest_path is not null
+                """,
+                (normalized,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(
+                f"Execucao publicada nao encontrada para retry Cloud: {normalized}"
+            )
+        if row[4] is None or row[5] is None or not row[6] or not row[7]:
+            raise ValueError("Execucao sem contexto de periodo compativel.")
+        manifest = Path(str(row[8])).resolve()
+        return ReportRunContext(
+            run_id=str(row[0]),
+            client_id=str(row[1]),
+            tenant_id=str(row[2]),
+            execution_type=str(row[3]),
+            period_start_at=_iso_context(row[4]),
+            period_end_at=_iso_context(row[5]),
+            period_mode=str(row[6]),
+            timezone=str(row[7]),
+            publication_manifest=manifest,
+        )
+
 
     def register_artifacts(self, records: Sequence[ArtifactRecord]) -> int:
         if not records:
@@ -660,20 +718,35 @@ class PostgresOperationsRepository:
                     payload.get("created_at"),
                 ),
             ).fetchone()[0]
-            for document in payload.get("documents") or ():
-                if not isinstance(document, Mapping):
-                    continue
+            documents = tuple(
+                item
+                for item in (payload.get("documents") or ())
+                if isinstance(item, Mapping)
+            )
+            if any(
+                str(item.get("document_kind") or "").lower() == "cloud"
+                for item in documents
+            ):
+                connection.execute(
+                    f"""
+                    delete from {SCHEMA_NAME}.published_documents
+                    where publication_id = %s and document_kind = 'cloud'
+                    """,
+                    (publication_id,),
+                )
+            for document in documents:
                 connection.execute(
                     f"""
                     insert into {SCHEMA_NAME}.published_documents (
                         publication_id, path, sha256, size_bytes, package_status,
-                        document_kind, tag_uuid, tag_category, tag_value
-                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        document_kind, document_variant, tag_uuid, tag_category, tag_value
+                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     on conflict (publication_id, path) do update set
                         sha256 = excluded.sha256,
                         size_bytes = excluded.size_bytes,
                         package_status = excluded.package_status,
                         document_kind = excluded.document_kind,
+                        document_variant = excluded.document_variant,
                         tag_uuid = excluded.tag_uuid,
                         tag_category = excluded.tag_category,
                         tag_value = excluded.tag_value
@@ -685,6 +758,7 @@ class PostgresOperationsRepository:
                         int(document.get("size_bytes") or 0),
                         document.get("package_status"),
                         document.get("document_kind"),
+                        document.get("document_variant"),
                         document.get("tag_uuid"),
                         document.get("tag_category"),
                         document.get("tag_value"),
@@ -708,6 +782,21 @@ class PostgresOperationsRepository:
                     run_id=run_id or None,
                 )
             )
+        source_datasets = payload.get("source_datasets")
+        if isinstance(source_datasets, Mapping):
+            for name, item in source_datasets.items():
+                if str(name) == "vm" or not isinstance(item, Mapping):
+                    continue
+                additional_path = Path(str(item.get("path") or ""))
+                if additional_path.is_file():
+                    records.append(
+                        ArtifactRecord.from_file(
+                            additional_path,
+                            kind=f"{str(name)}_report_dataset",
+                            client_id=str(payload.get("client_id") or "") or None,
+                            run_id=run_id or None,
+                        )
+                    )
         for item in payload.get("documents") or ():
             document_path = Path(str(item.get("path") or "")) if isinstance(item, Mapping) else Path()
             if document_path.is_file():

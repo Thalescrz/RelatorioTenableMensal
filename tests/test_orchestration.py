@@ -27,6 +27,7 @@ from tenable_reports.application.orchestration import (
 from tenable_reports.application.publishing import (
     PublicationDocument,
     create_publication_manifest,
+    upsert_publication_documents,
     validate_docx_package,
 )
 from tenable_reports.application.retention import apply_retention, plan_retention
@@ -120,6 +121,42 @@ def _docx_text(path: Path) -> str:
 
 
 class OrchestrationTests(unittest.TestCase):
+    def test_component_warning_is_a_successful_orchestration_with_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = json.loads(EXAMPLE_CONFIG.read_text(encoding="utf-8"))
+            payload["defaults"]["output_root"] = str(Path(directory) / "data")
+            payload["clients"] = payload["clients"][:1]
+            config_path = ROOT / "orchestration" / "clients.test-warning.json"
+
+            def runner(command, _):
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({
+                        "status": "complete_with_warnings",
+                        "client_id": "cliente-a-exemplo",
+                        "cloud_status": "FAILED",
+                        "warnings": [{"code": "CLOUD_COMPONENT_FAILED"}],
+                    }) + "\n",
+                    stderr="",
+                )
+
+            try:
+                config_path.write_text(json.dumps(payload), encoding="utf-8")
+                result = run_orchestration(
+                    config=load_orchestration_config(config_path),
+                    request=OrchestrationRequest(mode="automatic"),
+                    runner=runner,
+                    sleeper=lambda _: None,
+                    now=datetime(2026, 8, 1, 12, tzinfo=timezone.utc),
+                )
+            finally:
+                config_path.unlink(missing_ok=True)
+
+        self.assertEqual(result.status, "COMPLETE_WITH_WARNINGS")
+        self.assertEqual(result.clients[0].status, "COMPLETE_WITH_WARNINGS")
+        self.assertEqual(result.failed_count, 0)
+        self.assertEqual(result.to_dict()["succeeded"], 1)
     def test_default_runner_forces_utf8_for_json_protocol(self) -> None:
         script = (
             "import json; "
@@ -236,7 +273,7 @@ class OrchestrationTests(unittest.TestCase):
             finally:
                 config_path.unlink(missing_ok=True)
 
-        self.assertEqual(result.clients[0].status, "COMPLETE")
+        self.assertEqual(result.clients[0].status, "COMPLETE_WITH_WARNINGS")
         self.assertEqual(result.clients[0].payload["status"], "complete_with_warnings")
         self.assertEqual(progress_events[0]["client_id"], "cliente-a-exemplo")
         self.assertEqual(progress_events[0]["tag_uuid"], "tag-a")
@@ -616,6 +653,70 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual(document["tag_category"], "Equipe")
             self.assertEqual(document["tag_value"], "Infra")
 
+    def test_cloud_retry_upserts_manifest_without_changing_general_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            general_dataset = directory / "general.json"
+            cloud_dataset = directory / "cloud.json"
+            general_dataset.write_text("{}", encoding="utf-8")
+            cloud_dataset.write_text("{}", encoding="utf-8")
+            base = directory / "base.docx"
+            cloud_expanded = directory / "cloud-expanded.docx"
+            for path, label in (
+                (base, "Relatório geral"),
+                (cloud_expanded, "Cloud ampliado"),
+            ):
+                document = Document()
+                document.add_paragraph(label)
+                document.save(path)
+            manifest = create_publication_manifest(
+                output_path=directory / "publication.json",
+                client_id="cliente-fixture",
+                tenant_id="tenant-fixture",
+                run_id="run-fixture",
+                execution_type="MANUAL",
+                period={"period_id": "2026-07"},
+                dataset_path=general_dataset,
+                documents=(PublicationDocument(base, "base"),),
+                history_database=None,
+            )
+            before = json.loads(manifest.read_text(encoding="utf-8"))
+
+            for _ in range(2):
+                upsert_publication_documents(
+                    manifest_path=manifest,
+                    documents=(
+                        PublicationDocument(cloud_expanded, "cloud", "expanded"),
+                    ),
+                    additional_datasets={"cloud": cloud_dataset},
+                )
+
+            after = json.loads(manifest.read_text(encoding="utf-8"))
+            general_before = [
+                item for item in before["documents"]
+                if item["document_kind"] != "cloud"
+            ]
+            general_after = [
+                item for item in after["documents"]
+                if item["document_kind"] != "cloud"
+            ]
+            cloud_after = [
+                item for item in after["documents"]
+                if item["document_kind"] == "cloud"
+            ]
+            self.assertEqual(general_after, general_before)
+            self.assertEqual(
+                [item["document_variant"] for item in cloud_after],
+                ["expanded"],
+            )
+            self.assertEqual(
+                after["source_dataset"],
+                before["source_dataset"],
+            )
+            self.assertEqual(
+                Path(after["source_datasets"]["cloud"]["path"]),
+                cloud_dataset.resolve(),
+            )
     def test_publication_rejects_structurally_empty_docx_before_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             document = Path(directory) / "empty.docx"
@@ -821,6 +922,52 @@ class OrchestrationTests(unittest.TestCase):
                 ["total"]["non_mitigated"],
                 100,
             )
+
+
+def test_manifest_preserves_legacy_cloud_variants_and_common_dataset(tmp_path: Path) -> None:
+    general_dataset = tmp_path / "general-dataset.json"
+    cloud_dataset = tmp_path / "cloud-dataset.json"
+    general_dataset.write_text("{}", encoding="utf-8")
+    cloud_dataset.write_text("{}", encoding="utf-8")
+    documents = []
+    for variant in ("base", "expanded"):
+        path = tmp_path / f"cloud-{variant}.docx"
+        document = Document()
+        document.add_paragraph(f"Cloud {variant}")
+        document.save(path)
+        documents.append(
+            PublicationDocument(
+                path=path,
+                document_kind="cloud",
+                document_variant=variant,
+            )
+        )
+
+    manifest = create_publication_manifest(
+        output_path=tmp_path / "publication.json",
+        client_id="cliente-fixture",
+        tenant_id="tenant-fixture",
+        run_id="cloud-proof",
+        execution_type="MANUAL",
+        period={"period_id": "2026-07"},
+        dataset_path=general_dataset,
+        additional_datasets={"cloud": cloud_dataset},
+        documents=tuple(documents),
+        history_database=None,
+    )
+
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    cloud_documents = [
+        item
+        for item in payload["documents"]
+        if item["document_kind"] == "cloud"
+    ]
+    self_contained_variants = {
+        item["document_variant"] for item in cloud_documents
+    }
+    assert self_contained_variants == {"base", "expanded"}
+    assert payload["source_dataset"] == payload["source_datasets"]["vm"]
+    assert payload["source_datasets"]["cloud"]["sha256"]
 
 
 if __name__ == "__main__":

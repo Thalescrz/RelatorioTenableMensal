@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import contextmanager
+from unittest.mock import patch
 from pathlib import Path
 
 from tenable_reports.application.history import SQLiteSnapshotRepository
@@ -11,6 +14,7 @@ from tenable_reports.config.database import DatabaseConfig
 from tenable_reports.domain.history import HistorySnapshot, SnapshotCompatibility
 from tenable_reports.domain.fingerprints import fingerprint_finding_key
 from tenable_reports.infrastructure.postgresql import (
+    PostgresOperationsRepository,
     _compact_legacy_history_payload,
     _history_snapshot_from_storage,
     _history_snapshot_storage,
@@ -247,6 +251,147 @@ class PostgreSqlTests(unittest.TestCase):
                 "history", "audit"
             })
             self.assertEqual(result.artifacts, 2)
+
+
+class _RunContextConnection:
+    def __init__(self, row) -> None:
+        self.row = row
+        self.calls = []
+
+    def execute(self, sql, params=None):
+        self.calls.append((sql, params))
+        return _PublicationCursor(self.row)
+
+
+class _RunContextDatabase:
+    def __init__(self, row) -> None:
+        self.connection_value = _RunContextConnection(row)
+
+    @contextmanager
+    def connection(self):
+        yield self.connection_value
+
+
+def test_report_run_context_returns_only_non_deleted_published_run() -> None:
+    row = (
+        "run-cloud",
+        "cliente-fixture",
+        "tenant-fixture",
+        "MANUAL",
+        "2026-07-01T03:00:00Z",
+        "2026-08-01T03:00:00Z",
+        "EXPLICIT_RANGE",
+        "America/Fortaleza",
+        "C:/fixture/publication-manifest.json",
+    )
+    database = _RunContextDatabase(row)
+    repository = PostgresOperationsRepository(database, migrate=False)  # type: ignore[arg-type]
+
+    context = repository.report_run_context("run-cloud")
+
+    assert context.run_id == "run-cloud"
+    assert context.client_id == "cliente-fixture"
+    assert context.period_mode == "EXPLICIT_RANGE"
+    assert context.publication_manifest == Path(
+        "C:/fixture/publication-manifest.json"
+    )
+    sql, params = database.connection_value.calls[0]
+    assert "deleted_at is null" in sql
+    assert params == ("run-cloud",)
+
+class _PublicationCursor:
+    def __init__(self, value=None) -> None:
+        self.value = value
+
+    def fetchone(self):
+        return self.value
+
+
+class _PublicationConnection:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def execute(self, sql, params=None):
+        self.calls.append((sql, params))
+        if "returning publication_id" in sql:
+            return _PublicationCursor((7,))
+        return _PublicationCursor()
+
+
+class _PublicationDatabase:
+    def __init__(self) -> None:
+        self.connection_value = _PublicationConnection()
+
+    @contextmanager
+    def connection(self):
+        yield self.connection_value
+
+
+def test_publication_registry_persists_cloud_variant_and_dataset(tmp_path: Path) -> None:
+    general_dataset = tmp_path / "general.json"
+    cloud_dataset = tmp_path / "cloud.json"
+    cloud_document = tmp_path / "cloud-expanded.docx"
+    for path in (general_dataset, cloud_dataset, cloud_document):
+        path.write_text("fixture", encoding="utf-8")
+    manifest = tmp_path / "publication.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "client_id": "cliente-fixture",
+                "tenant_id": "tenant-fixture",
+                "run_id": "run-cloud",
+                "execution_type": "MANUAL",
+                "status": "READY_FOR_CONTROLLED_DISTRIBUTION",
+                "created_at": "2026-08-27T00:00:00+00:00",
+                "period": {"period_id": "2026-07"},
+                "source_dataset": {
+                    "path": str(general_dataset),
+                    "sha256": "a" * 64,
+                },
+                "source_datasets": {
+                    "vm": {"path": str(general_dataset), "sha256": "a" * 64},
+                    "cloud": {"path": str(cloud_dataset), "sha256": "b" * 64},
+                },
+                "history_store": {},
+                "distribution": {},
+                "documents": [
+                    {
+                        "path": str(cloud_document),
+                        "sha256": "c" * 64,
+                        "size_bytes": 7,
+                        "package_status": "VALID",
+                        "document_kind": "cloud",
+                        "document_variant": "expanded",
+                        "tag_uuid": None,
+                        "tag_category": None,
+                        "tag_value": None,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    database = _PublicationDatabase()
+    repository = PostgresOperationsRepository(database, migrate=False)  # type: ignore[arg-type]
+
+    with patch(
+        "tenable_reports.infrastructure.postgresql._jsonb",
+        side_effect=lambda value: value,
+    ):
+        repository.record_publication_manifest(manifest)
+
+    document_call = next(
+        call
+        for call in database.connection_value.calls
+        if "insert into tenable_reports.published_documents" in call[0]
+    )
+    assert "document_variant" in document_call[0]
+    assert document_call[1][6] == "expanded"
+    assert any(
+        params and params[1] == "cloud_report_dataset"
+        for sql, params in database.connection_value.calls
+        if "insert into tenable_reports.artifacts" in sql
+    )
 
 
 if __name__ == "__main__":

@@ -4,12 +4,14 @@ Aplicação local para coletar dados da Tenable, normalizá-los, manter históri
 compacto e gerar relatórios mensais em Word para uma carteira de clientes.
 
 O projeto separa coleta, regras de negócio e apresentação para que os mesmos dados
-possam alimentar três tipos de documento:
+possam alimentar quatro tipos de documento:
 
 1. relatório-base geral, com o conteúdo editorial comum, Top 5 VM e Top 5 WEB;
 2. relatório geral de inteligência e customizações, com módulos atuais e históricos;
 3. relatório operacional compacto por TAG, opcional, com comparativo temporal da
-   própria TAG quando habilitado.
+   própria TAG quando habilitado;
+4. relatório Tenable Cloud Security, opcional por cliente, em um único modelo
+   padrão completo.
 
 As TAGs nunca filtram os dois relatórios gerais. A coleta VM geral acontece uma vez
 e os relatórios por TAG são recortes locais por UUID dos ativos.
@@ -32,6 +34,10 @@ no próximo comparativo.
 As credenciais ficam somente em `credentials/*.env`, arquivos ignorados pelo Git.
 Use os exemplos em [credentials](credentials) como referência; nunca grave chaves
 nos perfis JSON, documentação, logs, testes ou commits.
+
+Cloud Security usa uma credencial independente: `TCS_API_SECRET`. O token é salvo
+localmente pelo formulário do cliente, nunca retorna ao navegador e não reutiliza
+as chaves de VM.
 
 Em **Gerenciar clientes → Coleta VM**, cada cliente pode definir estratégia de
 export, tamanho de chunk, propriedades seletivas e fonte histórica. O padrão é
@@ -69,9 +75,32 @@ duráveis. Raw, snapshots, normalizados e datasets intermediários são temporá
 após uma publicação validada eles são removidos; uma falha os preserva por tempo
 limitado para diagnóstico.
 
-O WAS é opcional e tolerante a indisponibilidade: se o cliente não tiver o produto
-ou não houver achados, a parte VM continua sendo gerada. Cloud Security e tradução
-por provedor externo ainda não estão implementados.
+O WAS e o Cloud Security são componentes opcionais e independentes. Falha, ausência
+de licença ou ausência de população em um deles não invalida os documentos VM já
+gerados. O Cloud registra uma fotografia atual compacta no PostgreSQL e mantém o
+staging quando uma retentativa isolada ainda pode aproveitá-lo. Tradução por
+provedor externo continua sem integração automática.
+
+## Cloud Security
+
+Quando habilitado no cliente, o Cloud inicia junto com a execução normal e usa a
+API GraphQL em fluxo próprio. Antes da coleta completa, **Testar API Cloud** valida
+credencial e contrato mínimo. Cada execução publica um único DOCX Cloud padrão. Os
+valores legados `base`, `expanded` e `comparison` são aceitos somente ao carregar
+perfis antigos e normalizados internamente para o modelo atual; não há seletor de
+modelo na interface nem sufixo de variante no nome do arquivo.
+
+O documento padrão reúne resumo executivo, hosts e imagens vulneráveis, Top 5 de
+CVEs críticas detalhadas, Top 10 com correção disponível, dashboard, componentes,
+postura quando suportada, aging, desempenho de remediação e evolução mensal. Sem
+histórico anterior, a evolução mostra apenas a fotografia atual, sem simular uma
+comparação. O item de inventário Cloud não faz parte do documento.
+
+Uma falha Cloud resulta em sucesso parcial: VM, WAS, customizado e TAG continuam
+disponíveis. O histórico do cliente mostra o alerta e oferece **Tentar Cloud
+novamente**, sem repetir a coleta geral. O relatório representa o estado Cloud no
+instante da coleta; o período identifica a competência do relatório, mas não cria
+uma reconstrução histórica que não tenha sido preservada em fotografia anterior.
 
 A estratégia rápida do projeto legado `RelatorioTenableITP`, baseada em consultas
 projetadas e agregadas da API v3, está preservada no

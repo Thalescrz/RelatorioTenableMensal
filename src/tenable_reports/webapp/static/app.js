@@ -1,4 +1,5 @@
 const state = { data: null, selectedClient: null, runClientIds: [], filter: "", connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "" };
+const CLOUD_PROGRESS_EVENT = "TENABLE_CLOUD_PROGRESS";
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
 const slugify = (value = "") => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[-._]+|[-._]+$/g, "").replace(/[-_.]{2,}/g, "-").slice(0, 80) || "cliente";
@@ -72,6 +73,25 @@ function wasExportProgressCopy(job) {
   return sourceProgressCopy(job?.was_export_progress, "Export WEB");
 }
 
+function cloudProgressCopy(job) {
+  const progress = job?.cloud_progress;
+  if (!progress) return null;
+  const stages = {
+    CONTRACT_PROBE: "validando contrato",
+    COLLECTION: "coletando fontes",
+    DATASET: "montando dados",
+    RENDERING: "gerando documentos",
+    PUBLICATION: "publicando",
+    RECENT_COLLECTION_GUARD: "coleta recente protegida",
+  };
+  const stage = stages[progress.stage] || String(progress.stage || "processando").toLowerCase();
+  const count = Number(progress.total || 0) > 0
+    ? ` · ${Number(progress.current || 0)}/${Number(progress.total)}`
+    : "";
+  const source = progress.source ? ` · ${progress.source}` : "";
+  return `Cloud Security · ${stage}${source}${count}`;
+}
+
 function collectionOutcomeCopy(job) {
   if (job?.force_live_collection) {
     const detail = job.reconstruction_status === "HISTORICAL_RECONSTRUCTION" ? " · HISTÓRICO RECONSTRUÍDO" : "";
@@ -97,6 +117,7 @@ function renderDocumentGroups(documents) {
     ["base", "Geral"],
     ["custom", "Customizado"],
     ["tag", "Por TAG"],
+    ["cloud", "Cloud Security"],
   ];
   return groups.map(([kind, label]) => {
     const items = documents.filter(document => documentKind(document) === kind);
@@ -151,12 +172,17 @@ function render() {
     const progress = job?.progress ?? (client.latest_report ? 100 : 0);
     const report = client.latest_report;
     const connectionCheck = state.connectionChecks[client.client_id];
-    const warning = client.alert || job?.error || job?.warnings?.length || job?.export_progress?.stalled || job?.was_export_progress?.stalled || !client.credentials_ready || client.profile_error || connectionCheck?.ok === false;
+    const warning = client.alert || job?.error || job?.warnings?.length || job?.export_progress?.stalled || job?.was_export_progress?.stalled || !client.credentials_ready || client.profile_error || connectionCheck?.ok === false || connectionCheck?.cloud?.ok === false || (client.cloud_enabled && !client.cloud_token_saved);
     const runningCopy = job?.vm_selective_mode === "validation"
       ? "Validando export completo x otimizado"
-      : tagProgressCopy(job) || wasExportProgressCopy(job) || exportProgressCopy(job) || "Coletando e gerando documentos";
+      : cloudProgressCopy(job) || tagProgressCopy(job) || wasExportProgressCopy(job) || exportProgressCopy(job) || "Coletando e gerando documentos";
     const displayRunningCopy = job?.force_live_collection ? `API ao vivo · ${runningCopy}` : runningCopy;
     const queuedCopy = job?.force_live_collection ? "Aguardando execução · API ao vivo" : "Aguardando execução";
+    const componentProgress = [
+      exportProgressCopy(job),
+      wasExportProgressCopy(job),
+      cloudProgressCopy(job),
+    ].filter(Boolean);
     const validation = job?.vm_export_validation;
     const completedCopy = validation
       ? `Validação do export: ${validation.outcome === "PASSED" ? "aprovada" : "revisar"}`
@@ -165,7 +191,7 @@ function render() {
       <div class="card-top"><span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? '<span class="warning-badge" title="Há um alerta">!</span>' : ""}</div>
       <h3>${escapeHtml(client.display_name)}</h3><p class="client-meta">${escapeHtml(client.client_id)}<br>${escapeHtml(client.tenant_id || "tenant não informado")}</p>
       <div class="card-report"><span>Último relatório</span><strong>${report ? escapeHtml(report.period_id || formatDate(report.ended_at)) : "Ainda não gerado"}</strong></div>
-      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(displayRunningCopy) : job?.status === "QUEUED" ? queuedCopy : job?.status === "FAILED" ? "Execução interrompida" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div></div>
+      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(displayRunningCopy) : job?.status === "QUEUED" ? queuedCopy : job?.status === "FAILED" ? "Execução interrompida" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div>${componentProgress.length ? `<div class="component-progress">${componentProgress.map(item => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}</div>
     </article>`;
   }).join("");
   document.querySelectorAll(".client-card").forEach(card => {
@@ -184,7 +210,7 @@ async function openClient(clientId) {
   const client = state.data.clients.find(c => c.client_id === clientId); if (!client) return;
   state.selectedClient = clientId;
   $("#detail-title").textContent = client.display_name; $("#detail-subtitle").textContent = `${client.client_id} · ${client.tenant_id || "sem tenant"}`;
-  const status = statusFor(client); const warning = client.job?.error || client.job?.warnings?.[0]?.message || client.alert?.message || client.profile_error || (!client.credentials_ready ? "As credenciais Tenable ainda não foram preenchidas." : "");
+  const status = statusFor(client); const warning = client.job?.error || client.job?.warnings?.[0]?.message || client.alert?.message || client.profile_error || (!client.credentials_ready ? "As credenciais Tenable ainda não foram preenchidas." : client.cloud_enabled && !client.cloud_token_saved ? "Cloud Security está ativo, mas o token Cloud ainda não foi salvo. Os relatórios VM continuam disponíveis." : "");
   $("#detail-status").innerHTML = `<span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? `<p>${escapeHtml(warning)}</p>` : "<p>Cliente configurado e pronto para uma nova execução.</p>"}`;
   $("#detail-run-button").disabled = !client.enabled || !client.credentials_ready || ["QUEUED","RUNNING"].includes(client.job?.status);
   $("#detail-check-button").disabled = !client.credentials_ready;
@@ -197,7 +223,13 @@ async function openClient(clientId) {
       const documents = renderDocumentGroups(report.documents || []);
       const omitted = (report.omitted_modules || []).length ? ` · omitidos: ${escapeHtml(report.omitted_modules.join(", "))}` : "";
       const reference = report.reference_run_id ? ` · referência: ${escapeHtml(report.reference_run_id)}` : "";
-      return `<div class="report-row ${report.deleted_at ? "deleted" : ""}" data-report-run="${escapeHtml(report.run_id)}"><div><div class="report-badges">${report.is_main ? '<span class="report-badge main">MAIN</span>' : ""}<span class="report-badge">${escapeHtml(report.origin || "MANUAL")}</span><span class="report-badge">${escapeHtml(report.status || "")}</span>${report.deleted_at ? '<span class="report-badge">EXCLUÍDO</span>' : ""}</div><strong>${escapeHtml(report.period_id || report.run_id)}</strong><small>${escapeHtml(report.run_id)} · ${formatBytes(report.size_bytes)}${reference}${omitted}</small><div class="report-documents">${documents || '<small>Documentos não localizados no disco.</small>'}</div></div><div class="report-actions">${!report.deleted_at && !report.is_main ? '<button class="mini-button" data-report-action="main" type="button">Definir MAIN</button>' : ""}${report.deleted_at ? '<button class="mini-button" data-report-action="restore" type="button">Restaurar</button>' : '<button class="mini-button danger" data-report-action="delete" type="button">Excluir conjunto</button>'}</div></div>`;
+      const cloudBadge = report.cloud_status && report.cloud_status !== "NOT_REQUESTED"
+        ? `<span class="report-badge">CLOUD ${escapeHtml(report.cloud_status)}</span>`
+        : "";
+      const cloudRetryAction = report.cloud_retry_available
+        ? '<button class="mini-button" data-report-action="retry-cloud" type="button">Tentar Cloud novamente</button>'
+        : "";
+      return `<div class="report-row ${report.deleted_at ? "deleted" : ""}" data-report-run="${escapeHtml(report.run_id)}"><div><div class="report-badges">${report.is_main ? '<span class="report-badge main">MAIN</span>' : ""}<span class="report-badge">${escapeHtml(report.origin || "MANUAL")}</span><span class="report-badge">${escapeHtml(report.status || "")}</span>${cloudBadge}${report.deleted_at ? '<span class="report-badge">EXCLUÍDO</span>' : ""}</div><strong>${escapeHtml(report.period_id || report.run_id)}</strong><small>${escapeHtml(report.run_id)} · ${formatBytes(report.size_bytes)}${reference}${omitted}</small><div class="report-documents">${documents || '<small>Documentos não localizados no disco.</small>'}</div></div><div class="report-actions">${cloudRetryAction}${!report.deleted_at && !report.is_main ? '<button class="mini-button" data-report-action="main" type="button">Definir MAIN</button>' : ""}${report.deleted_at ? '<button class="mini-button" data-report-action="restore" type="button">Restaurar</button>' : '<button class="mini-button danger" data-report-action="delete" type="button">Excluir conjunto</button>'}</div></div>`;
     }).join("") : '<div class="loading">Nenhum relatório gerado para este cliente.</div>';
     bindReportActions();
   } catch (error) { $("#report-list").innerHTML = `<div class="loading">${escapeHtml(error.message)}</div>`; }
@@ -210,7 +242,15 @@ function bindReportActions() {
     if (!report) return;
     try {
       let successMessage = "Registro de relatório atualizado.";
-      if (button.dataset.reportAction === "main") {
+      if (button.dataset.reportAction === "retry-cloud") {
+        const message = `Somente o componente Cloud Security será executado novamente. A coleta VM e os demais documentos não serão repetidos.\n\nExecução: ${runId}\n\nDeseja continuar?`;
+        if (!window.confirm(message)) return;
+        await api(`/api/reports/${encodeURIComponent(runId)}/retry-cloud`, {
+          method: "POST",
+          body: { confirmation: `RETENTAR CLOUD ${runId}` },
+        });
+        successMessage = "Retentativa Cloud adicionada à fila.";
+      } else if (button.dataset.reportAction === "main") {
         const reason = prompt("Motivo para definir esta geração como MAIN:"); if (!reason?.trim()) return;
         await api(`/api/reports/${encodeURIComponent(runId)}/main`, { method: "POST", body: { actor: "analista-web", reason } });
       } else if (button.dataset.reportAction === "restore") {
@@ -257,7 +297,11 @@ function renderManageList() {
   if (!state.data) return;
   $("#manage-client-list").innerHTML = state.data.clients.length ? state.data.clients.map(c => {
     const check = state.connectionChecks[c.client_id];
-    const result = check ? `<span class="api-result ${check.ok ? "ok" : "failed"}">${check.ok ? `OK · ${check.latency_ms} ms` : "Falhou"}</span>` : "";
+    const checks = check ? [
+      `VM ${check.ok ? "OK" : "falhou"}`,
+      check.cloud ? `Cloud ${check.cloud.ok ? "OK" : "falhou"}` : "",
+    ].filter(Boolean).join(" · ") : "";
+    const result = check ? `<span class="api-result ${check.ok && (!check.cloud || check.cloud.ok) ? "ok" : "failed"}">${escapeHtml(checks)}</span>` : "";
     return `<div class="manage-item ${state.editingClientId === c.client_id ? "selected" : ""}" data-edit-client="${escapeHtml(c.client_id)}" role="button" tabindex="0" title="Clique para editar"><div><strong>${escapeHtml(c.display_name)}</strong><small>${escapeHtml(c.client_id)} · ${c.credentials_ready ? "credenciais prontas" : "sem credenciais"}</small></div><div class="manage-actions">${result}<button class="mini-button" type="button" data-check-client="${escapeHtml(c.client_id)}">Testar API</button><label class="switch" title="Ativar ou desativar"><input type="checkbox" data-toggle-client="${escapeHtml(c.client_id)}" ${c.enabled ? "checked" : ""}><span></span></label></div></div>`;
   }).join("") : '<div class="loading">Nenhum cliente cadastrado.</div>';
   document.querySelectorAll("[data-edit-client]").forEach(item => {
@@ -280,9 +324,15 @@ async function testConnections(clientIds, button) {
     const payload = await api("/api/connections/check", { method: "POST", body: { client_ids: clientIds } });
     for (const result of payload.results || []) state.connectionChecks[result.client_id] = result;
     render();
-    const ok = payload.results.filter(item => item.ok).length; const failed = payload.results.length - ok;
-    toast(`${ok} conexão(ões) OK${failed ? ` · ${failed} falha(s)` : ""}`, failed ? "error" : "success");
-    if (payload.results.length === 1 && failed) toast(payload.results[0].message, "error");
+    const vmOk = payload.results.filter(item => item.ok).length;
+    const vmFailed = payload.results.length - vmOk;
+    const cloudResults = payload.results.map(item => item.cloud).filter(Boolean);
+    const cloudOk = cloudResults.filter(item => item.ok).length;
+    const cloudFailed = cloudResults.length - cloudOk;
+    const cloudCopy = cloudResults.length ? ` · Cloud ${cloudOk} OK${cloudFailed ? ` / ${cloudFailed} falha(s)` : ""}` : "";
+    toast(`VM ${vmOk} OK${vmFailed ? ` / ${vmFailed} falha(s)` : ""}${cloudCopy}`, vmFailed || cloudFailed ? "error" : "success");
+    if (payload.results.length === 1 && vmFailed) toast(payload.results[0].message, "error");
+    if (payload.results.length === 1 && cloudFailed) toast(payload.results[0].cloud.message, "error");
     if (payload.results.length > 1 && !$("#manage-dialog").open) $("#manage-dialog").showModal();
   } catch (error) { toast(error.message, "error"); }
   finally { if (button?.isConnected) { button.disabled = false; button.textContent = original; } }
@@ -291,9 +341,20 @@ async function testConnections(clientIds, button) {
 function renderAlerts() {
   if (!state.data) return; const alerts = [...(state.data.alerts || [])];
   const failedJobs = (state.data.jobs || []).filter(j => j.status === "FAILED").map(j => ({client_id:j.client_id, message:j.error, at:j.ended_at, run_id:j.run_id, job_id:j.job_id, export:j.export_progress}));
-  const tagWarnings = (state.data.jobs || []).flatMap(job => (job.warnings || []).map(warning => ({client_id:job.client_id, message:`${warning.tag_label || warning.tag_uuid || "TAG"}: ${warning.message || "Falha no relatório por TAG."}`, at:job.ended_at, run_id:job.run_id})));
+  const componentWarnings = (state.data.jobs || []).flatMap(job => (job.warnings || []).map(warning => {
+    const cloud = String(warning.code || "").startsWith("CLOUD_");
+    return {
+      client_id: job.client_id,
+      message: cloud
+        ? `Cloud Security: ${warning.message || "Falha no componente Cloud."}`
+        : `${warning.tag_label || warning.tag_uuid || "TAG"}: ${warning.message || "Falha no relatório por TAG."}`,
+      at: job.ended_at,
+      run_id: job.run_id,
+      cloud_retry: cloud && Boolean(warning.retryable) && Boolean(job.run_id),
+    };
+  }));
   if (state.data.database_error) alerts.unshift({client_id:"Sistema", message:state.data.database_error, at:state.data.server_time});
-  const items = [...failedJobs, ...tagWarnings, ...alerts];
+  const items = [...failedJobs, ...componentWarnings, ...alerts];
   $("#alerts-list").innerHTML = items.length ? items.map(a => {
     const stuck = a.export?.status === "TIMED_OUT" && !a.export?.auto_cancelled;
     const segmentCopy = a.export?.segment ? ` · segmento ${a.export.segment === "fixed" ? "corrigidas / last_fixed" : "ativas e reabertas / last_found"}` : "";
@@ -301,14 +362,28 @@ function renderAlerts() {
     const limitCopy = a.export?.no_progress_timeout_seconds ? ` · limite ${Math.max(1, Math.floor(Number(a.export.no_progress_timeout_seconds) / 60))} min` : "";
     const routeCopy = a.export?.date_field ? ` · filtro ${escapeHtml(a.export.date_field)}` : "";
     const exportCopy = a.export?.export_uuid ? `<p><small>Export VM: ${escapeHtml(a.export.export_uuid)} · ${Number(a.export.completed_chunks || 0)}/${Number(a.export.total_chunks || 0)} chunks · origem ${escapeHtml(a.export.origin || "desconhecida")}${segmentCopy}${routeCopy}${idleCopy}${limitCopy}</small></p>` : "";
-    const action = !a.job_id ? "" : stuck
-      ? `<p><button class="mini-button danger" data-cancel-export-job="${escapeHtml(a.job_id)}" data-export-uuid="${escapeHtml(a.export.export_uuid)}" type="button">Cancelar export e tentar novamente</button></p>`
-      : `<p><button class="mini-button" data-retry-job="${escapeHtml(a.job_id)}" type="button">Tentar novamente</button></p>`;
+    const action = a.cloud_retry
+      ? `<p><button class="mini-button" data-retry-cloud-run="${escapeHtml(a.run_id)}" type="button">Tentar Cloud novamente</button></p>`
+      : !a.job_id ? "" : stuck
+        ? `<p><button class="mini-button danger" data-cancel-export-job="${escapeHtml(a.job_id)}" data-export-uuid="${escapeHtml(a.export.export_uuid)}" type="button">Cancelar export e tentar novamente</button></p>`
+        : `<p><button class="mini-button" data-retry-job="${escapeHtml(a.job_id)}" type="button">Tentar novamente</button></p>`;
     return `<div class="alert-row"><span class="alert-sign">!</span><div><strong>${escapeHtml(a.client_id || "Sistema")}</strong><p>${escapeHtml(a.message || "Falha sem detalhes.")}</p>${exportCopy}<small>${formatDate(a.at)}${a.run_id ? ` · ${escapeHtml(a.run_id)}` : ""}</small>${action}</div></div>`;
   }).join("") : '<div class="loading">Nenhum alerta registrado.</div>';
   document.querySelectorAll("[data-retry-job]").forEach(button => button.addEventListener("click", async () => {
     try { await api(`/api/jobs/${encodeURIComponent(button.dataset.retryJob)}/retry`, { method: "POST", body: {} }); await refresh(); toast("Nova tentativa adicionada à fila."); }
     catch (error) { toast(error.message, "error"); }
+  }));
+  document.querySelectorAll("[data-retry-cloud-run]").forEach(button => button.addEventListener("click", async () => {
+    const runId = button.dataset.retryCloudRun;
+    const message = `Somente o componente Cloud Security será executado novamente.\n\nExecução: ${runId}\n\nDeseja continuar?`;
+    if (!window.confirm(message)) return;
+    button.disabled = true;
+    try {
+      await api(`/api/reports/${encodeURIComponent(runId)}/retry-cloud`, {
+        method: "POST", body: { confirmation: `RETENTAR CLOUD ${runId}` },
+      });
+      await refresh(); toast("Retentativa Cloud adicionada à fila.");
+    } catch (error) { toast(error.message, "error"); button.disabled = false; }
   }));
   document.querySelectorAll("[data-cancel-export-job]").forEach(button => button.addEventListener("click", async () => {
     const exportUuid = button.dataset.exportUuid;
@@ -462,6 +537,19 @@ async function fetchClientTags() {
   finally { button.disabled = false; button.textContent = "Buscar TAGs da Tenable"; }
 }
 
+function syncCloudConfig() {
+  const enabled = clientForm.elements.cloud_enabled.checked;
+  const section = $("#cloud-config");
+  section.classList.toggle("disabled", !enabled);
+  const client = state.data?.clients.find(item => item.client_id === state.editingClientId);
+  $("#test-cloud-button").disabled = !enabled || !state.editingClientId || !client?.cloud_token_saved || !client?.enabled;
+  $("#cloud-config-note").textContent = !enabled
+    ? "Ative Cloud Security acima para gerar o relatório junto com os documentos VM."
+    : client?.cloud_token_saved
+      ? "Token Cloud salvo. Deixe o campo vazio para mantê-lo; o conteúdo nunca retorna à tela."
+      : "Informe o token Cloud e salve o cliente antes de testar a API.";
+}
+
 function resetClientForm() {
   state.editingClientId = null;
   clientForm.reset();
@@ -473,6 +561,10 @@ function resetClientForm() {
   clientForm.elements.secret_key.placeholder = "Opcional agora";
   clientForm.elements.intelligence_enabled.checked = true;
   clientForm.elements.was_enabled.checked = true;
+  clientForm.elements.cloud_enabled.checked = false;
+  clientForm.elements.cloud_api_secret.value = "";
+  clientForm.elements.cloud_api_secret.placeholder = "Preencha para salvar";
+  clientForm.elements.cloud_environment.value = "global";
   clientForm.elements.tag_reports_enabled.checked = false;
   clientForm.elements.vm_export_strategy.value = "combined";
   clientForm.elements.vm_num_assets_per_chunk.value = "1000";
@@ -484,6 +576,7 @@ function resetClientForm() {
   $("#tag-search-input").value = "";
   $("#fetch-tags-button").disabled = true;
   renderTagSelector();
+  syncCloudConfig();
   $("#client-form-mode").textContent = "NOVO";
   $("#client-form-title").textContent = "Adicionar cliente";
   $("#client-form-note").textContent = "As chaves ficam apenas no arquivo local ignorado pelo Git e nunca retornam à tela.";
@@ -516,6 +609,9 @@ function editClient(clientId) {
   clientForm.elements.intelligence_enabled.checked = Boolean(client.intelligence_enabled);
   clientForm.elements.was_enabled.checked = Boolean(client.was_enabled);
   clientForm.elements.cloud_enabled.checked = Boolean(client.cloud_enabled);
+  clientForm.elements.cloud_api_secret.value = "";
+  clientForm.elements.cloud_api_secret.placeholder = client.cloud_token_saved ? "Token Cloud salvo · preencha somente para trocar" : "Token Cloud ainda não salvo";
+  clientForm.elements.cloud_environment.value = client.cloud_environment || "global";
   clientForm.elements.include_output.checked = Boolean(client.include_output);
   clientForm.elements.show_source_filters.checked = Boolean(client.show_source_filters);
   clientForm.elements.vm_export_strategy.value = client.vm_export_strategy || "combined";
@@ -523,6 +619,7 @@ function editClient(clientId) {
   clientForm.elements.vm_selective_properties.value = client.vm_selective_properties || "disabled";
   clientForm.elements.historical_source.value = client.historical_source || "legacy";
   $("#validate-vm-export-button").disabled = !client.credentials_ready || !client.enabled;
+  syncCloudConfig();
   $("#client-form-mode").textContent = "EDITANDO";
   $("#client-form-title").textContent = client.display_name;
   $("#client-form-note").textContent = "Deixe as chaves vazias para manter as credenciais atuais. O ID interno não pode ser alterado.";
@@ -541,6 +638,26 @@ tenantField.addEventListener("input", event => { event.target.dataset.manual = e
 
 $("#cancel-edit-button").addEventListener("click", resetClientForm);
 $("#fetch-tags-button").addEventListener("click", fetchClientTags);
+clientForm.elements.cloud_enabled.addEventListener("change", syncCloudConfig);
+$("#test-cloud-button").addEventListener("click", async event => {
+  if (!state.editingClientId) return;
+  const button = event.currentTarget;
+  button.disabled = true;
+  button.textContent = "Testando…";
+  try {
+    const payload = await api(`/api/clients/${encodeURIComponent(state.editingClientId)}/cloud/check`, {
+      method: "POST", body: {},
+    });
+    const current = state.connectionChecks[state.editingClientId] || {};
+    state.connectionChecks[state.editingClientId] = { ...current, cloud: payload.result };
+    render();
+    toast(payload.result.ok ? "API Cloud funcionando." : payload.result.message, payload.result.ok ? "success" : "error");
+  } catch (error) { toast(error.message, "error"); }
+  finally {
+    button.textContent = "Testar API Cloud";
+    syncCloudConfig();
+  }
+});
 $("#validate-vm-export-button").addEventListener("click", async event => {
   if (!state.editingClientId) return;
   const message = "A validação inicia duas exportações reais na Tenable: uma completa e uma otimizada. O relatório continuará usando a coleta completa. Deseja continuar?";

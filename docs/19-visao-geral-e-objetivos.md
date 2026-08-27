@@ -18,6 +18,7 @@ enquanto módulos adicionais são ativados pelo perfil de cada cliente.
 - preservar textos, títulos, tabelas e ordem editorial aprovados nos modelos;
 - separar o documento-base das análises customizadas;
 - gerar recortes independentes por TAG sem alterar os números gerais;
+- gerar o relatório Cloud opcional na mesma execução, sem torná-lo dependência dos documentos VM;
 - manter histórico compacto suficiente para comparações futuras;
 - permitir validação dos números na Tenable por meio de filtros curtos;
 - operar múltiplos clientes com progresso, alertas e retentativas controladas;
@@ -56,6 +57,22 @@ O nome do arquivo identifica cliente, categoria/valor da TAG e período. A sele�
 de TAGs para gerar documentos é independente da seleção de TAGs que recebem o
 comparativo temporal.
 
+### Relatório Tenable Cloud Security
+
+É um documento próprio, habilitado por cliente e gerado junto com a execução
+normal. A coleta GraphQL cria uma fotografia Cloud independente do dataset VM. Cada
+execução publica um único DOCX padrão; perfis legados com `base`, `expanded` ou
+`comparison` são normalizados para esse modelo e não expõem seleção na interface.
+
+O conteúdo inclui resumo executivo, principais hosts e imagens, Top 5 de CVEs
+críticas com detalhamento, scores, correção e ativos afetados, Top 10 com correção
+disponível sem a coluna extensa de ação recomendada, dashboard, componentes,
+postura quando suportada, envelhecimento, remediação e evolução mensal. O item de
+inventário Cloud foi removido. Em 3.6.2 permanece o marcador editorial para inserir
+a captura da plataforma. Sem histórico anterior, 3.11 apresenta tabela e gráfico
+com somente a fotografia atual; não cria comparação fictícia. Fontes não
+licenciadas ou indisponíveis são omitidas ou sinalizadas, e ausência de dado não é
+convertida em zero.
 ## Princípios de negócio
 
 1. O relatório geral sempre representa o ambiente geral do cliente no período.
@@ -66,11 +83,12 @@ comparativo temporal.
 6. Texto editorial aprovado é preservado; somente campos dinâmicos são atualizados.
 7. Um DOCX só é registrado como publicado após passar pelas validações da execução.
 8. A referência automática `MAIN` pode ser substituída pelo analista.
+9. Falha Cloud preserva os demais documentos e permite retentativa somente do componente Cloud.
 
 ## Limites atuais
 
-- Cloud Security possui configuração prevista no perfil, mas a coleta e os módulos
-  correspondentes ainda não estão implementados.
+- O Cloud representa uma fotografia do instante da coleta. Um período histórico só
+  é reproduzido exatamente quando existe fotografia Cloud compatível preservada.
 - A tradução está preparada como fronteira de apresentação, porém não existe
   provedor automático integrado; textos longos não devem ser enviados a serviços
   externos sem autorização e política de privacidade.
@@ -84,4 +102,4 @@ comparativo temporal.
 Uma execução bem-sucedida apresenta período e cliente corretos, reconcilia
 contagens do dataset, gera apenas os módulos habilitados e suportados, registra os
 documentos no PostgreSQL, define a referência automática quando aplicável e remove
-os dados intermediários pesados sem eliminar o histórico compacto.
+os dados intermediários pesados sem eliminar o histórico compacto VM, TAG ou Cloud.

@@ -1,5 +1,6 @@
 from tenable_reports.domain.reporting import explicit_reporting_period, previous_calendar_month
 from tenable_reports.presentation.report_filenames import (
+    cloud_report_filename,
     period_suffix,
     report_filename,
     tag_report_filename,
@@ -73,3 +74,13 @@ def test_tag_filename_uses_uuid_when_sanitized_label_is_empty() -> None:
     )
     assert "12345678" in name
     assert name.endswith("JUL26.docx")
+
+
+def test_cloud_standard_filename_is_unique_and_windows_safe() -> None:
+    filename = cloud_report_filename("CLIENTE", july_period())
+    assert filename == "[CLIENTE] Relatório Tenable Cloud Security JUL26.docx"
+    assert "MODELO" not in filename
+    assert cloud_report_filename(
+        "CLIENTE: CLOUD/1",
+        july_period(),
+    ).startswith("[CLIENTE CLOUD1]")

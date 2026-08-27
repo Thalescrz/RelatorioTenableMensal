@@ -1,4 +1,4 @@
-from .environment import CredentialConfig, load_dotenv_file
+from .environment import CloudCredentialConfig, CredentialConfig, load_dotenv_file
 from .profile import (
     ClientProfile,
     CloudSecurityScope,
@@ -13,6 +13,7 @@ from .profile import (
 __all__ = [
     "ClientProfile",
     "CloudSecurityScope",
+    "CloudCredentialConfig",
     "CredentialConfig",
     "INTELLIGENCE_MODULE_CAPABILITIES",
     "ProfileError",

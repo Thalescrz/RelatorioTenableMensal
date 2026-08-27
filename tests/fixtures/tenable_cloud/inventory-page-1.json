@@ -1,0 +1,18 @@
+{
+  "nodes": [
+    {
+      "Type": "AwsEc2Instance",
+      "Id": "resource-001",
+      "AccountId": "account-fixture",
+      "AccountName": "Conta de exemplo",
+      "CreationTime": "2026-01-01T00:00:00Z",
+      "Labels": [],
+      "Name": "resource-fixture-001",
+      "Provider": "AWS",
+      "Region": "sa-east-1",
+      "SyncTime": "2026-08-26T10:00:00Z",
+      "Tags": [{"Key": "Environment", "Value": "Fixture"}]
+    }
+  ],
+  "pageInfo": {"hasNextPage": false, "endCursor": null}
+}

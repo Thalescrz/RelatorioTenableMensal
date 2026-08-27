@@ -4,7 +4,9 @@
 
 O projeto usa Tenable Vulnerability Management para ativos, findings VM, TAGs e
 metadados de plugins. Tenable Web App Scanning fornece aplicações e findings WEB
-quando o produto e as permissões estão disponíveis. Consulte o
+quando o produto e as permissões estão disponíveis. Tenable Cloud Security fornece
+uma fotografia GraphQL independente de workloads, imagens, ocorrências,
+inventário, postura e ciclo de vida quando habilitado. Consulte o
 [catálogo detalhado de APIs](02-catalogo-apis-tenable.md) para endpoints e contratos.
 
 O PostgreSQL não substitui a Tenable como origem dos findings. Ele mantém estado
@@ -71,6 +73,29 @@ O modelo WEB conserva:
 
 Ausência de licença, permissão ou achados WAS não deve invalidar o dataset VM.
 
+## Fotografia Cloud normalizada
+
+O Cloud mantém populações separadas para máquinas virtuais, imagens de contêiner,
+ocorrências de vulnerabilidade, recursos de inventário e findings de postura. A
+identidade usa o ID estável retornado pela API e inclui o tipo do recurso; nome,
+IP, conta, repositório e digest são atributos de exibição.
+
+O dataset `cloud-metrics-v1` conserva:
+
+- contexto da fotografia, horário de coleta, competência e aviso histórico;
+- totais de ativos, workloads, imagens, CVEs e ocorrências por severidade;
+- Top 5 de CVEs críticas com VPR, CVSS, componentes e ativos afetados;
+- Top 10 com correção, tipo, origem da classificação e ação recomendada;
+- aging, resolvidas e tempo médio de remediação quando o ciclo de vida existe;
+- inventário por provedor e região;
+- findings de postura e capacidades observadas no tenant;
+- proveniência das tabelas, qualidade, fontes completas ou indisponíveis;
+- série mensal compacta proveniente de fotografias anteriores compatíveis.
+
+VPR `0` é zero e aparece como `0`. VPR ausente é `N/D` e não recebe pontuação
+inventada no ranking. O tipo de correção prefere campo explícito; a regra local
+determinística registra sua origem e, sem evidência, retorna `Não determinado`.
+
 ## Janela temporal
 
 Todos os cálculos usam intervalo semiaberto `[início, fim)`: o início pertence ao
@@ -118,6 +143,25 @@ e Low.
   categorias sem ocorrências podem permanecer zeradas, acompanhadas de texto quando
   todo o quadro estiver vazio.
 
+## Métricas Cloud
+
+- Principais hosts e imagens: ranking por ocorrências e severidade dentro da
+  fotografia, sem misturar as duas populações.
+- Top 5 críticas: CVEs críticas ordenadas por VPR real, CVSS e ativos afetados,
+  acompanhadas de descrição, correção e tabela de ativos.
+- Top 10 com correção: apenas vulnerabilidades com remediação correlacionada e tipo
+  de correção rastreável; o documento não repete a ação recomendada extensa nessa
+  tabela.
+- Postura Cloud: findings não relacionados a vulnerabilidade, somente quando a
+  capacidade e a população são confirmadas.
+- Aging: ocorrências abertas por idade; data ausente permanece em faixa própria.
+- Remediação: resoluções dentro do intervalo e média de dias somente para registros
+  com datas válidas.
+- Evolução mensal: comparação de fotografias Cloud compactas e compatíveis; mês
+  indisponível permanece como lacuna, nunca zero artificial. Quando só existe a
+  fotografia atual, a tabela e o gráfico exibem um único ponto real e o texto deixa
+  explícito que ainda não há comparação temporal.
+
 ## TAGs
 
 As TAGs são descobertas no ambiente e associadas aos UUIDs de ativos. Há duas
@@ -135,6 +179,9 @@ período anterior compatível.
 O histórico compacto conserva as agregações necessárias para tabelas e gráficos,
 incluindo totais por severidade/estado, ativos, novas, mitigadas e não mitigadas.
 Ele não depende de reter permanentemente todos os chunks e findings raw.
+
+Para Cloud, cada fotografia compacta preserva indicadores, rankings e capacidades;
+as respostas GraphQL completas continuam transitórias.
 
 Se não houver referência anterior, os módulos correntes ainda são gerados e o
 comparativo informa que não existe base compatível. Uma ausência não pode resultar
@@ -154,6 +201,9 @@ Exemplos:
 - Ressurgidas: estado Resurfaced/Reopened; `Resurfaced Date` no período.
 - Exploráveis gerais: indicador `Exploit Available = true` dentro do conjunto e do
   período da própria tabela.
+
+No Cloud, as notas usam a visão GraphQL, tipos de entidade, agrupamento e regra de
+correlação correspondente à tabela.
 
 Os nomes visíveis dos filtros podem variar na plataforma. A regra temporal do
 dataset é a autoridade para explicar uma diferença.

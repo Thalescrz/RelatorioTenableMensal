@@ -132,6 +132,33 @@ def test_published_run_cleanup_removes_only_transient_categories(tmp_path: Path)
     assert (tmp_path / "reports" / "cliente-a" / "run-a").is_dir()
 
 
+def test_failed_cloud_staging_is_not_cleaned_before_retry_window(
+    tmp_path: Path,
+) -> None:
+    for category in ("raw", "snapshots", "normalized", "report-datasets"):
+        path = tmp_path / category / "cliente-a" / "run-a"
+        path.mkdir(parents=True)
+        (path / "fixture.bin").write_bytes(b"fixture")
+    cloud_staging = (
+        tmp_path / "raw" / "cliente-a" / "run-a" / "tenable_cloud"
+    )
+    cloud_staging.mkdir()
+    (cloud_staging / "checkpoint.json").write_text("{}", encoding="utf-8")
+
+    plan = plan_published_run_cleanup(
+        scoped_output_root=tmp_path,
+        client_id="cliente-a",
+        run_id="run-a",
+        publication_confirmed=True,
+        history_confirmed=True,
+        compact_snapshot_confirmed=True,
+        cloud_cleanup_ready=False,
+    )
+
+    assert plan.candidates == ()
+    assert cloud_staging.is_dir()
+
+
 def test_published_cleanup_requires_document_and_history_confirmation(tmp_path: Path) -> None:
     for publication, history in ((False, True), (True, False)):
         try:

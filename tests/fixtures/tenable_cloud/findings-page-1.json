@@ -1,0 +1,23 @@
+{
+  "nodes": [
+    {
+      "AccountId": "account-fixture",
+      "AccountName": "Conta de exemplo",
+      "AccountPath": "fixture/path",
+      "CreationTime": "2026-08-01T00:00:00Z",
+      "Description": "Fixture posture finding without customer data.",
+      "OpenTime": "2026-08-02T00:00:00Z",
+      "Policy": {"Category": "Identity", "Name": "Fixture policy"},
+      "Provider": "AWS",
+      "Remediation": {
+        "Console": {"Steps": ["Apply the documented fixture correction."]}
+      },
+      "Resources": [{"Id": "resource-001", "Name": "resource-fixture-001"}],
+      "Severity": "High",
+      "Status": "Open",
+      "SubStatus": "New",
+      "StatusUpdateTime": "2026-08-03T00:00:00Z"
+    }
+  ],
+  "pageInfo": {"hasNextPage": false, "endCursor": null}
+}

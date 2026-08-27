@@ -1,0 +1,26 @@
+{
+  "nodes": [
+    {
+      "Id": "image-001",
+      "Name": "image-fixture-001",
+      "AccountId": "account-fixture",
+      "Digest": "sha256:fixture001",
+      "RepositoryUri": "registry.invalid/fixture/image",
+      "Software": [
+        {
+          "Name": "Fixture Package",
+          "Vulnerabilities": [
+            {
+              "Id": "CVE-2026-0002",
+              "Severity": "High",
+              "CvssScore": 8.1,
+              "VprScore": null,
+              "VprSeverity": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "pageInfo": {"hasNextPage": false, "endCursor": null}
+}

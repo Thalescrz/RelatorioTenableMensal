@@ -280,6 +280,14 @@ automática.
 Deve entrar como adaptador e normalizador próprios, com capacidade explícita no
 perfil e falha isolada. Não reutilizar um finding VM como se fosse finding cloud.
 
+Quando habilitado, publica um único DOCX padrão. O valor técnico `expanded` é
+mantido no registro somente para compatibilidade; `base` e `comparison` não criam
+novos modelos e são normalizados ao carregar perfis legados. A apresentação inclui
+o Top 5 detalhado no padrão tipográfico do relatório geral, Top 10 corrigível sem a
+coluna de ação extensa, marcador manual em 3.6.2 e evolução mensal em 3.11. O
+inventário Cloud não é seção do documento. Uma série sem histórico anterior usa
+somente o ponto real da fotografia atual e declara que não há comparação temporal.
+
 ### Tradução
 
 Deve operar sobre blocos de texto editorialmente permitidos, respeitar limite do
@@ -298,7 +306,7 @@ Uma mudança estrutural deve declarar:
 
 1. invariante afetada;
 2. contrato de dados e migração;
-3. impacto nos três tipos de relatório;
+3. impacto nos quatro tipos de relatório;
 4. comportamento sem histórico ou capacidade opcional;
 5. plano de compatibilidade e rollback;
 6. testes automatizados e prova visual necessária;

@@ -3,7 +3,7 @@
 ## Visão por camadas
 
 ```text
-Tenable VM / WAS
+Tenable VM / WAS / Cloud Security
         |
         v
 infrastructure: clientes HTTP, exports, chunks e PostgreSQL
@@ -30,8 +30,8 @@ da interface, de Word ou de uma resposta HTTP específica.
   histórico e contratos dos datasets.
 - `src/tenable_reports/application`: casos de uso que coordenam coleta,
   normalização, inteligência, TAGs, retenção, registro e publicação.
-- `src/tenable_reports/infrastructure`: Tenable VM, Tenable WAS, JSONL, PostgreSQL e
-  migrations.
+- `src/tenable_reports/infrastructure`: Tenable VM, Tenable WAS, cliente GraphQL
+  Cloud, JSONL, PostgreSQL e migrations.
 - `src/tenable_reports/presentation`: documentos Word, catálogo editorial, imagens,
   nomes de arquivos, tradução e filtros de conferência.
 - `src/tenable_reports/webapp`: servidor local, endpoints e interface estática.
@@ -48,15 +48,41 @@ da interface, de Word ou de uma resposta HTTP específica.
 4. O export VM coleta findings gerais. O caminho combinado é o padrão; estratégias
    experimentais permanecem por cliente para diagnóstico.
 5. Se habilitado, o WAS é consultado em fluxo independente e tolerante a falha.
-6. Ativos e findings são normalizados. O vínculo válido é o UUID de ativo.
-7. A janela temporal é aplicada localmente ao campo correto de cada estado.
-8. Um dataset mensal reconciliado alimenta os relatórios gerais.
-9. Para cada TAG habilitada, os UUIDs associados recortam localmente o mesmo dataset
+6. Se Cloud Security estiver habilitado, o componente GraphQL valida o contrato e
+   coleta uma fotografia independente, sem filtrar ou alterar o dataset VM.
+7. Ativos e findings são normalizados. O vínculo válido é o UUID de ativo.
+8. A janela temporal é aplicada localmente ao campo correto de cada estado.
+9. Um dataset mensal reconciliado alimenta os relatórios gerais.
+10. Para cada TAG habilitada, os UUIDs associados recortam localmente o mesmo dataset
    VM e formam um dataset de relatório por TAG.
-10. O histórico compatível do cliente ou da própria TAG é recuperado do PostgreSQL.
-11. Os DOCX são renderizados, validados, registrados e oferecidos para download.
-12. Métricas compactas são persistidas; dados intermediários pesados de uma
+11. O histórico compatível do cliente ou da própria TAG é recuperado do PostgreSQL.
+12. Os DOCX são renderizados, validados, registrados e oferecidos para download.
+13. Métricas compactas são persistidas; dados intermediários pesados de uma
    execução bem-sucedida são removidos.
+
+## Fluxo Cloud Security
+
+O componente Cloud usa `TCS_API_SECRET` e endpoint definido pelo ambiente do perfil.
+Antes da coleta completa, um probe mínimo confirma autenticação e fontes obrigatórias.
+O contrato de capacidades fica em cache sem o token e controla módulos opcionais;
+nenhum campo GraphQL não comprovado é incluído silenciosamente.
+
+A coleta pagina máquinas virtuais, imagens de contêiner, ocorrências de
+vulnerabilidade, inventário, findings de postura e ciclo de vida. Descrição e
+remediação usam consultas enriquecidas somente para os candidatos de Top 5 e Top
+10. Uma fotografia normalizada alimenta o único DOCX Cloud padrão e o snapshot
+compacto PostgreSQL. O valor técnico de variante persistido continua `expanded`
+somente para compatibilidade com o histórico e com a restrição do banco.
+
+O projeto legado `RelatorioCloudTenable` permanece documentado como base técnica
+histórica do conector GraphQL: ajuda a localizar operações e campos já usados, mas
+não é fonte de verdade para paginação, ausência, histórico, retry, segurança de
+segredo ou publicação do fluxo atual.
+
+Cloud é tolerante a falha. Erro obrigatório não publica DOCX Cloud parcial, preserva
+checkpoints íntegros, registra alerta sanitizado e mantém VM, WAS, customizado e TAG.
+A ação **Tentar Cloud novamente** reutiliza o contexto da execução e não repete a
+coleta geral.
 
 ## Replay e coleta nova
 
@@ -133,6 +159,7 @@ da transação PostgreSQL. Somente após o commit a remoção física é finaliz
 Duráveis:
 
 - DOCX publicados, até exclusão explícita;
+- fotografias Cloud compactas e compatíveis para tendência e replay;
 - métricas mensais compactas e fingerprints para tendências, até a exclusão
   explícita do conjunto;
 - registros de execução, publicação, documento e `MAIN` no PostgreSQL, enquanto o
@@ -141,6 +168,7 @@ Duráveis:
 Temporários:
 
 - respostas raw e chunks;
+- respostas GraphQL, checkpoints e enriquecimentos Cloud;
 - snapshots normalizados completos;
 - datasets intermediários e imagens de montagem.
 
@@ -152,4 +180,5 @@ uma janela curta, atualmente orientada a sete dias, para diagnóstico e retomada
 A execução registra eventos estruturados por cliente. Falhas são classificadas
 para diferenciar credencial, contrato, limite de taxa, indisponibilidade temporária,
 timeout e erro não esperado. A interface mostra progresso e alerta por cliente sem
-expor chaves ou conteúdo sensível dos findings.
+expor chaves ou conteúdo sensível dos findings. Falha Cloud é registrada
+separadamente e pode produzir sucesso parcial com retentativa exclusiva.
