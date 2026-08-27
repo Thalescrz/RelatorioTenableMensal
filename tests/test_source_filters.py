@@ -156,3 +156,23 @@ def test_compound_historical_note_accepts_one_period_per_query() -> None:
 
     assert "Consulta 1: State = Active, New, Resurfaced; Last Seen = Junho/26" in note
     assert "Consulta 2: State = Active, New, Resurfaced; Last Seen = Julho/26" in note
+
+
+def test_cloud_snapshot_note_uses_collection_timestamp_without_fake_period() -> None:
+    dataset = {"table_provenance": {"tables": {"cloud_top_hosts": {
+        "view": "Cloud Security > Vulnerability Management",
+        "snapshot_collected_at": "2026-08-26T12:00:00Z",
+        "platform_filters": {
+            "Asset type": "Virtual Machine",
+            "Severity": "Critical, High, Medium, Low",
+        },
+        "group_by": "Resource Id",
+        "limit": 10,
+        "rule": "fotografia GraphQL atual, CVE deduplicada por recurso",
+    }}}}
+
+    note = format_source_filter_note(dataset, "cloud_top_hosts")
+
+    assert "Fotografia coletada em 26/08/2026 12:00 UTC" in note
+    assert "Período =" not in note
+    assert "Asset type = Virtual Machine" in note

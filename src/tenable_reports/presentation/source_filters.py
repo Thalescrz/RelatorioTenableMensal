@@ -56,6 +56,9 @@ def format_source_filter_note(
     source = _safe(item.get("source"))
     if source and not view:
         parts.append(f"fonte {source}")
+    snapshot = _display_snapshot(item)
+    if snapshot:
+        parts.append(f"Fotografia coletada em {snapshot}")
     state_labels = {
         "OPEN": ("Active", "New"),
         "REOPENED": ("Resurfaced",),
@@ -166,6 +169,22 @@ def format_source_filter_note(
         note += f" Regra: {rule}."
     return note
 
+
+def _display_snapshot(item: Mapping[str, Any]) -> str:
+    raw_value = str(item.get("snapshot_collected_at") or "").strip()
+    if not raw_value:
+        return ""
+    try:
+        collected_at = datetime.fromisoformat(
+            raw_value.replace("Z", "+00:00")
+        )
+        timezone_name = str(item.get("timezone") or "UTC").strip() or "UTC"
+        timezone = ZoneInfo(timezone_name)
+        collected_at = collected_at.astimezone(timezone)
+        zone_label = collected_at.tzname() or timezone_name
+        return collected_at.strftime("%d/%m/%Y %H:%M ") + zone_label
+    except (ValueError, ZoneInfoNotFoundError):
+        return _safe(raw_value)
 
 def _display_period(item: Mapping[str, Any]) -> tuple[str, str]:
     raw_start = str(item.get("period_start_at") or "").strip()
