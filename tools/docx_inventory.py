@@ -16,7 +16,6 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
 
-import pypdfium2 as pdfium
 from PIL import Image, ImageDraw, ImageFont
 from docx import Document
 from docx.document import Document as DocumentObject
@@ -260,9 +259,26 @@ def inventory_docx(docx_path: Path) -> dict[str, Any]:
 
 def render_pdf(pdf_path: Path, output_dir: Path, dpi: int) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        import pypdfium2 as pdfium
+    except ModuleNotFoundError:
+        import pymupdf
+
+        document = pymupdf.open(pdf_path)
+        paths: list[Path] = []
+        matrix = pymupdf.Matrix(dpi / 72.0, dpi / 72.0)
+        try:
+            for index, page in enumerate(document):
+                path = output_dir / f"page-{index + 1:03d}.png"
+                page.get_pixmap(matrix=matrix, alpha=False).save(path)
+                paths.append(path)
+        finally:
+            document.close()
+        return paths
+
     document = pdfium.PdfDocument(pdf_path)
     scale = dpi / 72.0
-    paths: list[Path] = []
+    paths = []
     for index in range(len(document)):
         page = document[index]
         bitmap = page.render(scale=scale, rev_byteorder=True)

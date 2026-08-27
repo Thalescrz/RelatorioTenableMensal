@@ -8,8 +8,9 @@ $env:PYTHONPATH = (Join-Path $PWD 'src')
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-Trabalhe em branch `codex/*` e, para mudanças extensas, use um worktree isolado.
-Antes de editar, verifique o estado do Git e preserve alterações do usuário.
+Trabalhe em uma única branch ativa `codex/*` por ciclo, além de `main`. Não crie
+branch ou worktree paralelo para a mesma entrega. Antes de editar, verifique o
+estado do Git e preserve alterações do usuário.
 
 ## Organização e dependências
 
@@ -59,10 +60,12 @@ frontmatter e links locais. Ele valida estrutura, não redação exata.
 - coleta geral independente de TAG;
 - comparativo da mesma TAG no tempo;
 - WAS opcional sem bloquear VM;
+- Cloud opcional, com falha, progresso e retentativa independentes;
+- VPR Cloud zero distinto de ausência e fotografia atual distinta de histórico exato;
 - `MAIN` explícito e histórico compatível;
 - descarte seguro apenas depois da publicação validada.
 
-## Tenable VM e WAS
+## Tenable VM, WAS e Cloud Security
 
 Respeite o contrato assíncrono dos exports. Não interprete `total_chunks` como estado
 final. Persista chunks conforme ficam disponíveis e preserve o manifesto parcial
@@ -75,6 +78,11 @@ de contrato já previstas; não mascare autenticação, limite de taxa ou timeou
 Não inicie export real, servidor ou cancelamento sem necessidade e autorização.
 Comandos reais devem exigir confirmação explícita.
 
+No Cloud, consultas GraphQL obrigatórias e opcionais são separadas por contrato. O
+probe mínimo deve ocorrer antes da coleta completa; token nunca entra em perfil,
+argumento, log, manifesto ou resposta HTTP. Enriquecimento de descrição e correção
+fica restrito aos candidatos dos rankings para evitar payload desnecessário.
+
 ## PostgreSQL
 
 Mudanças de esquema entram como nova migration numerada em
@@ -84,6 +92,10 @@ o teste deve cobrir ordem, idempotência esperada e leitura/escrita afetada.
 
 Segredos do banco ficam em `credentials/database.env`; exemplos só contêm nomes de
 variáveis e valores fictícios.
+
+Snapshots Cloud usam migration própria, compatibilidade por cliente, tenant, ambiente,
+período e versão de métricas. A exclusão permanente remove o snapshot Cloud pelo
+`run_id` dentro da mesma transação que apaga `report_runs`.
 
 ## Documentos Word
 
@@ -100,10 +112,22 @@ Depois de alterar apresentação:
 4. inspecione páginas críticas, tabelas, cortes e campos vazios;
 5. mantenha a prova fora do Git quando contiver dados reais.
 
+Para os modelos Cloud sanitizados:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\render_cloud_report_fixture.py `
+  --output-root artifacts\cloud-prototype --qa
+```
+
+O manifesto deve provar que o **Modelo Base** e o **Modelo Ampliado** usam o mesmo
+hash de dataset. O QA registra PDFs, páginas e contact sheets antes da inspeção.
+
 ## Interface web
 
 Rotas novas precisam de teste do servidor e do JavaScript que as consome. Mostre
 erros de forma acionável, associe-os ao cliente e não retorne secrets ao navegador.
+O formulário Cloud devolve apenas `cloud_token_saved`; um token vazio em edição
+preserva o valor local existente. VM e Cloud possuem resultados de teste separados.
 Operações destrutivas, como exclusão ou cancelamento de export, exigem alvo
 explícito e confirmação proporcional ao risco. Para conjuntos de relatórios, teste
 prévia, frase digitada, substituição obrigatória de `MAIN`, bloqueio por job ativo,

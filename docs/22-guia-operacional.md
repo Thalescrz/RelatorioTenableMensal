@@ -6,7 +6,8 @@
 - Python 3.11 ou superior;
 - PostgreSQL local acessível;
 - LibreOffice para inspeção visual automatizada dos DOCX;
-- chaves Tenable individuais para cada cliente.
+- chaves Tenable VM/WAS individuais para cada cliente;
+- token de conta de serviço Cloud quando esse produto estiver habilitado.
 
 Não é necessário usar a linha de comando para a rotina diária. Os comandos abaixo
 servem para instalação e recuperação administrativa.
@@ -43,11 +44,37 @@ aparecer, encerre todas as instâncias antigas e inicie novamente pela raiz corr
 3. Salve Access Key e Secret Key no formulário local.
 4. Mantenha **Vulnerabilidades WEB** habilitado quando desejar detecção automática;
    ausência de WAS não interrompe VM.
-5. Habilite relatório customizado, filtros de validação e coluna `Output` conforme
+5. Habilite **Cloud Security** somente quando o cliente possuir o produto e informe
+   o token próprio no campo Cloud.
+6. Habilite relatório customizado, filtros de validação e coluna `Output` conforme
    a necessidade do cliente.
-6. Salve e use **Testar API** no próprio cliente.
+7. Salve e use **Testar API** e, quando aplicável, **Testar API Cloud** no próprio
+   cliente.
 
 As chaves ficam no arquivo local ignorado pelo Git e não retornam para a tela.
+
+## Cloud Security
+
+1. Em **Gerenciar clientes**, habilite **Cloud Security**.
+2. Informe o token da conta de serviço. Ele é salvo como `TCS_API_SECRET` no arquivo
+   local `credentials/<client_id>.env`; um campo vazio em edição preserva o token
+   existente.
+3. Escolha o ambiente GraphQL correspondente ao tenant.
+4. Durante a homologação, mantenha a variante `comparison` para produzir o
+   **Modelo Base** e o **Modelo Ampliado** a partir da mesma fotografia Cloud.
+5. Clique em **Testar API Cloud** antes da primeira coleta. O teste valida somente
+   credencial e contrato mínimo; ele não gera o relatório completo.
+
+Quando habilitado, Cloud começa junto com VM, WAS, customizado e TAG, mas possui
+progresso e falha próprios. A coleta representa o estado no instante da execução.
+Solicitar um período passado não reconstrói o fechamento histórico sem uma
+fotografia Cloud compatível já preservada.
+
+Uma fotografia exata pode ser reutilizada. Outra coleta Cloud completa dentro de
+24 horas é bloqueada por padrão para evitar consumo repetido; atualização forçada
+exige ação manual explícita. Se Cloud falhar, os demais documentos permanecem
+válidos e o histórico oferece **Tentar Cloud novamente**, que não repete VM, WAS,
+customizado ou TAG.
 
 ## TAGs e relatórios por TAG
 
@@ -87,6 +114,9 @@ O primeiro decide entre replay e novos jobs de API; o segundo altera o payload d
 export VM somente quando habilitado e validado para o tenant. Portanto, é possível
 testar uma coleta real nova mantendo o payload completo e a rota VM tradicional.
 
+Se Cloud estiver habilitado, a mesma execução também inicia o componente GraphQL e
+publica as variantes selecionadas. Isso não altera o período nem o universo VM.
+
 ### Evidência autenticada de referência
 
 Em 24/08/2026, uma execução manual sanitizada para período mensal encerrado foi
@@ -116,8 +146,9 @@ fluxo executado fica em `scripts/run_monthly_orchestration.ps1`.
 ## Acompanhar progresso
 
 O card informa etapa, cliente, execução e alertas. Durante VM, observe UUID do
-export, origem, status e chunks persistidos. Durante WAS, a interface deve indicar
-que esse fluxo é independente.
+export, origem, status e chunks persistidos. Durante WAS e Cloud, a interface deve
+indicar etapas e falhas independentes; o progresso Cloud mostra contrato, fontes,
+normalização, fotografia e renderização das variantes.
 
 Estados importantes:
 
@@ -135,6 +166,7 @@ Para uma execução com coleta nova, confirme também:
 - indicação de coleta forçada no card;
 - origem `created` em vez de replay;
 - VM e WAS independentes, cada um em `FINISHED` quando disponível;
+- Cloud independente, com fotografia e variantes publicadas quando habilitado;
 - quantidade de chunks concluídos igual à quantidade total;
 - rota e estado de reconstrução registrados no resultado;
 - DOCX esperados disponíveis e limpeza concluída após a publicação.
@@ -177,8 +209,9 @@ Para excluir um conjunto:
 
 A exclusão não prossegue se existir geração ativa para o cliente ou se algum alvo
 estiver fora da raiz `data`. Quando concluída, remove do disco os DOCX gerais,
-customizados e por TAG, o manifesto e os demais arquivos registrados; também remove
-snapshot compacto, publicação, documentos, artefatos, eventos e execução associados
+customizados, por TAG e Cloud, o manifesto e os demais arquivos registrados; também
+remove snapshots compactos VM e Cloud, publicação, documentos, artefatos, eventos e
+execução associados
 no PostgreSQL. Não há botão de desfazer. Registros legados anteriormente excluídos
 de forma lógica ainda podem mostrar **Restaurar**, mas esse não é o fluxo das novas
 exclusões.
@@ -196,6 +229,8 @@ revisão.
 Os documentos publicados e o histórico compacto permanecem. Staging pesado é
 removido depois do sucesso. Em falhas, ele fica temporariamente disponível para
 diagnóstico e retomada e depois entra na limpeza.
+Quando Cloud falha com checkpoint reutilizável, seu staging permanece protegido até
+a retentativa ou a janela de retenção aplicável.
 
 Documentos e histórico compacto deixam de permanecer quando o próprio conjunto é
 excluído explicitamente pela interface.
@@ -212,6 +247,8 @@ o histórico compacto estão preservados.
 | Rota não encontrada | reinicie o servidor usando a versão atual do projeto |
 | Export VM demora | status remoto, fila, chunks, progresso e limites configurados |
 | WAS não aparece | licença/permissão, capacidade habilitada e eventos específicos do WAS |
+| Cloud não aparece | opção habilitada, `TCS_API_SECRET`, ambiente e resultado de **Testar API Cloud** |
+| Cloud falhou sozinho | consulte o alerta do componente e use **Tentar Cloud novamente** |
 | Customizado sem comparação | existência e compatibilidade da referência `MAIN` anterior |
 | Documento por TAG vazio | TAG atual, UUIDs associados e período do dataset |
 | Disco cresce | execuções falhas retidas e política de limpeza de staging |
@@ -227,6 +264,7 @@ Para intervenção controlada, consulte a ajuda atual:
 .\.venv\Scripts\python.exe -m tenable_reports --help
 .\.venv\Scripts\python.exe -m tenable_reports run-client --help
 .\.venv\Scripts\python.exe -m tenable_reports orchestrate --help
+.\.venv\Scripts\python.exe -m tenable_reports retry-cloud --help
 ```
 
 Não execute coleta real ou cancelamento fora da interface sem identificar cliente,

@@ -101,6 +101,57 @@ class ProjectGuidanceTests(unittest.TestCase):
 
         self.assertEqual(validate_guidance(self.root), ())
 
+    def test_cloud_fixture_renderer_builds_two_documents_from_one_hash(self) -> None:
+        from scripts.render_cloud_report_fixture import render_cloud_fixture
+
+        output_root = self.root / "cloud-prototype"
+        manifest = render_cloud_fixture(output_root)
+
+        self.assertEqual(
+            {item["variant"] for item in manifest["documents"]},
+            {"base", "expanded"},
+        )
+        self.assertEqual(
+            len({item["dataset_sha256"] for item in manifest["documents"]}),
+            1,
+        )
+        self.assertTrue((output_root / "cloud-modelo-base.docx").is_file())
+        self.assertTrue((output_root / "cloud-modelo-ampliado.docx").is_file())
+        self.assertTrue((output_root / "cloud-prototype-manifest.json").is_file())
+
+    def test_cloud_fixture_loads_qa_toolkit_by_project_path(self) -> None:
+        from scripts.render_cloud_report_fixture import _qa_toolkit
+
+        toolkit = _qa_toolkit()
+
+        self.assertTrue(callable(toolkit.inventory_docx))
+        self.assertTrue(callable(toolkit.render_pdf))
+
+    def test_current_guidance_documents_complete_cloud_workflow(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        documentation = "\n".join(
+            (project_root / relative).read_text(encoding="utf-8")
+            for relative in (
+                "README.md",
+                "docs/19-visao-geral-e-objetivos.md",
+                "docs/20-arquitetura-e-fluxo-de-dados.md",
+                "docs/21-catalogo-de-dados-e-metricas.md",
+                "docs/22-guia-operacional.md",
+                "docs/23-guia-de-desenvolvimento.md",
+                "templates/corporate/README.md",
+            )
+        )
+
+        for required in (
+            "TCS_API_SECRET",
+            "Testar API Cloud",
+            "Tentar Cloud novamente",
+            "Modelo Base",
+            "Modelo Ampliado",
+            "fotografia Cloud",
+            "RelatorioCloudTenable",
+        ):
+            self.assertIn(required, documentation)
 
 if __name__ == "__main__":
     unittest.main()
