@@ -202,3 +202,69 @@ def create_publication_manifest(
         },
     }
     return write_json_atomic(output_path, payload)
+
+def upsert_publication_documents(
+    *,
+    manifest_path: str | Path,
+    documents: Sequence[PublicationDocument],
+    additional_datasets: Mapping[str, str | Path],
+) -> Path:
+    """Replace only Cloud publication entries while preserving the VM set."""
+
+    source = Path(manifest_path).resolve()
+    if not source.is_file():
+        raise ValueError(f"Manifesto de publicacao nao encontrado: {source}")
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Manifesto de publicacao invalido.") from exc
+    if not isinstance(payload, Mapping):
+        raise ValueError("Manifesto de publicacao invalido.")
+    updated = dict(payload)
+    existing_documents = updated.get("documents")
+    if not isinstance(existing_documents, list):
+        raise ValueError("Manifesto sem documentos validos.")
+
+    validated_cloud: list[dict[str, Any]] = []
+    seen_variants: set[str] = set()
+    for document in documents:
+        metadata = document.metadata()
+        if metadata["document_kind"] != "cloud":
+            raise ValueError("A retentativa aceita somente documentos Cloud.")
+        variant = str(metadata["document_variant"])
+        if variant in seen_variants:
+            raise ValueError(f"Variante Cloud duplicada: {variant}.")
+        seen_variants.add(variant)
+        validated = validate_docx_package(document.path)
+        validated.update(metadata)
+        validated_cloud.append(validated)
+
+    preserved = [
+        dict(item)
+        for item in existing_documents
+        if isinstance(item, Mapping)
+        and str(item.get("document_kind") or "").lower() != "cloud"
+    ]
+    updated["documents"] = [*preserved, *validated_cloud]
+    source_dataset = updated.get("source_dataset")
+    source_datasets = updated.get("source_datasets")
+    merged_datasets = (
+        dict(source_datasets) if isinstance(source_datasets, Mapping) else {}
+    )
+    if "vm" not in merged_datasets and isinstance(source_dataset, Mapping):
+        merged_datasets["vm"] = dict(source_dataset)
+    for raw_name, raw_path in sorted(additional_datasets.items()):
+        name = str(raw_name or "").strip().lower()
+        if not name or name == "vm":
+            raise ValueError("Nome de dataset adicional inválido ou reservado.")
+        dataset = Path(raw_path)
+        if not dataset.is_file():
+            raise ValueError(f"Dataset adicional nao encontrado: {dataset}")
+        merged_datasets[name] = {
+            "path": str(dataset.resolve()),
+            "size_bytes": dataset.stat().st_size,
+            "sha256": sha256_file(dataset),
+        }
+    updated["source_datasets"] = merged_datasets
+    updated["updated_at"] = datetime.now(timezone.utc).isoformat()
+    return write_json_atomic(source, updated)

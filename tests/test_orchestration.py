@@ -27,6 +27,7 @@ from tenable_reports.application.orchestration import (
 from tenable_reports.application.publishing import (
     PublicationDocument,
     create_publication_manifest,
+    upsert_publication_documents,
     validate_docx_package,
 )
 from tenable_reports.application.retention import apply_retention, plan_retention
@@ -652,6 +653,73 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual(document["tag_category"], "Equipe")
             self.assertEqual(document["tag_value"], "Infra")
 
+    def test_cloud_retry_upserts_manifest_without_changing_general_documents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            general_dataset = directory / "general.json"
+            cloud_dataset = directory / "cloud.json"
+            general_dataset.write_text("{}", encoding="utf-8")
+            cloud_dataset.write_text("{}", encoding="utf-8")
+            base = directory / "base.docx"
+            cloud_base = directory / "cloud-base.docx"
+            cloud_expanded = directory / "cloud-expanded.docx"
+            for path, label in (
+                (base, "Relatório geral"),
+                (cloud_base, "Cloud base"),
+                (cloud_expanded, "Cloud ampliado"),
+            ):
+                document = Document()
+                document.add_paragraph(label)
+                document.save(path)
+            manifest = create_publication_manifest(
+                output_path=directory / "publication.json",
+                client_id="cliente-fixture",
+                tenant_id="tenant-fixture",
+                run_id="run-fixture",
+                execution_type="MANUAL",
+                period={"period_id": "2026-07"},
+                dataset_path=general_dataset,
+                documents=(PublicationDocument(base, "base"),),
+                history_database=None,
+            )
+            before = json.loads(manifest.read_text(encoding="utf-8"))
+
+            for _ in range(2):
+                upsert_publication_documents(
+                    manifest_path=manifest,
+                    documents=(
+                        PublicationDocument(cloud_base, "cloud", "base"),
+                        PublicationDocument(cloud_expanded, "cloud", "expanded"),
+                    ),
+                    additional_datasets={"cloud": cloud_dataset},
+                )
+
+            after = json.loads(manifest.read_text(encoding="utf-8"))
+            general_before = [
+                item for item in before["documents"]
+                if item["document_kind"] != "cloud"
+            ]
+            general_after = [
+                item for item in after["documents"]
+                if item["document_kind"] != "cloud"
+            ]
+            cloud_after = [
+                item for item in after["documents"]
+                if item["document_kind"] == "cloud"
+            ]
+            self.assertEqual(general_after, general_before)
+            self.assertEqual(
+                [item["document_variant"] for item in cloud_after],
+                ["base", "expanded"],
+            )
+            self.assertEqual(
+                after["source_dataset"],
+                before["source_dataset"],
+            )
+            self.assertEqual(
+                Path(after["source_datasets"]["cloud"]["path"]),
+                cloud_dataset.resolve(),
+            )
     def test_publication_rejects_structurally_empty_docx_before_cleanup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             document = Path(directory) / "empty.docx"

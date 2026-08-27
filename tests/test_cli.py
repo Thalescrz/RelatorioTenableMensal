@@ -127,6 +127,82 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(captured["additional_datasets"], {})
             self.assertEqual(result["warnings"][-1]["code"], "CLOUD_COMPONENT_FAILED")
+    def test_retry_cloud_reuses_run_context_without_general_collection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            manifest = directory / "publication-manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+            cloud_dataset = directory / "cloud-dataset.json"
+            cloud_dataset.write_text("{}", encoding="utf-8")
+            cloud_base = directory / "cloud-base.docx"
+            cloud_expanded = directory / "cloud-expanded.docx"
+            context = SimpleNamespace(
+                run_id="run-a",
+                client_id="cliente-a",
+                tenant_id="tenant-a",
+                execution_type="MANUAL",
+                period_start_at="2026-07-01T03:00:00Z",
+                period_end_at="2026-08-01T03:00:00Z",
+                period_mode="EXPLICIT_RANGE",
+                timezone="America/Fortaleza",
+                publication_manifest=manifest,
+            )
+            profile = SimpleNamespace(
+                client_id="cliente-a",
+                tenant_id="tenant-a",
+                display_name="CLIENTE A",
+                cloud_security_scope=SimpleNamespace(
+                    enabled=True,
+                    environment="global",
+                    layout="comparison",
+                ),
+                reporting=SimpleNamespace(
+                    include_info_severity=False,
+                    late_collection_grace_days=1,
+                ),
+            )
+            operations = SimpleNamespace(
+                report_run_context=lambda run_id: context,
+                record_publication_manifest=lambda path: None,
+            )
+            result = CloudComponentResult(
+                status=CloudExecutionStatus.COMPLETE,
+                documents=(
+                    CloudGeneratedDocument(cloud_base, "base"),
+                    CloudGeneratedDocument(cloud_expanded, "expanded"),
+                ),
+                dataset_path=cloud_dataset,
+                snapshot_id="cloud-snapshot",
+                cleanup_ready=True,
+            )
+            args = SimpleNamespace(
+                confirm_live_api=True,
+                run_id="run-a",
+                profile="profile.json",
+                env_file="client.env",
+                database_env_file="database.env",
+                cloud_template="cloud-template.docx",
+            )
+            with (
+                patch.object(cli_module, "load_client_profile", return_value=profile),
+                patch.object(cli_module, "_postgres_operations", return_value=operations),
+                patch.object(cli_module, "_cloud_snapshot_repository_for_args", return_value=(object(), True)),
+                patch.object(cli_module, "retry_cloud_component", return_value=result) as cloud_call,
+                patch.object(cli_module, "upsert_publication_documents", return_value=manifest) as upsert,
+                patch.object(cli_module, "_execute_period", side_effect=AssertionError("VM nao pode ser chamada")),
+                patch.object(cli_module, "load_dotenv_file"),
+                patch.object(cli_module.CloudCredentialConfig, "from_environment", return_value=SimpleNamespace()),
+                patch("builtins.print"),
+            ):
+                self.assertEqual(cli_module.command_retry_cloud(args), 0)
+
+            self.assertEqual(cloud_call.call_count, 1)
+            self.assertEqual(upsert.call_count, 1)
+            documents = upsert.call_args.kwargs["documents"]
+            self.assertEqual(
+                [item.document_variant for item in documents],
+                ["base", "expanded"],
+            )
     def test_live_collection_flag_is_accepted_by_orchestrator_and_client(self) -> None:
         parser = cli_module.build_parser()
 

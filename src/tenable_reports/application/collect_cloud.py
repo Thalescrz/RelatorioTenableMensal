@@ -184,6 +184,16 @@ def _validate_checkpoint(
         raise CloudCheckpointError(
             f"Checkpoint Cloud sem paginas para {definition.name}."
         )
+    if checkpoint.get("status") == "COMPLETE":
+        source_path = directory / f"{definition.name}.jsonl"
+        if (
+            not source_path.is_file()
+            or _sha256(source_path) != checkpoint.get("sha256")
+        ):
+            raise CloudCheckpointError(
+                f"Artefato Cloud completo invalido para {definition.name}."
+            )
+        return
     for chunk in chunks:
         if not isinstance(chunk, Mapping):
             raise CloudCheckpointError(
@@ -281,13 +291,22 @@ def _collect_source(
     checkpoint_path = _checkpoint_path(directory, definition.name)
     if checkpoint_path.is_file():
         checkpoint = dict(_load_json(checkpoint_path))
-        _validate_checkpoint(
-            checkpoint=checkpoint,
-            request=request,
-            definition=definition,
-            endpoint=endpoint,
-            directory=directory,
-        )
+        try:
+            _validate_checkpoint(
+                checkpoint=checkpoint,
+                request=request,
+                definition=definition,
+                endpoint=endpoint,
+                directory=directory,
+            )
+        except CloudCheckpointError:
+            _cleanup_optional_partial(directory, definition.name)
+            checkpoint = _initial_checkpoint(
+                request=request,
+                definition=definition,
+                endpoint=endpoint,
+            )
+            write_json_atomic(checkpoint_path, checkpoint)
     else:
         checkpoint = _initial_checkpoint(
             request=request,
@@ -586,7 +605,7 @@ def collect_cloud_snapshot(
         ),
     )
     for checkpoint_path in directory.glob("*.checkpoint.json"):
-        checkpoint = _load_json(checkpoint_path)
+        checkpoint = dict(_load_json(checkpoint_path))
         chunks = checkpoint.get("chunks")
         if isinstance(chunks, list):
             for chunk in chunks:
@@ -594,7 +613,11 @@ def collect_cloud_snapshot(
                     name = str(chunk.get("path") or "")
                     if name and Path(name).name == name:
                         (directory / name).unlink(missing_ok=True)
-        checkpoint_path.unlink(missing_ok=True)
+        if checkpoint.get("status") == "COMPLETE":
+            checkpoint["chunks"] = []
+            write_json_atomic(checkpoint_path, checkpoint)
+        else:
+            checkpoint_path.unlink(missing_ok=True)
     _emit(
         progress_callback,
         request=request,

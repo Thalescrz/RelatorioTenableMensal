@@ -10,6 +10,7 @@ from tenable_reports.application.cloud_execution import (
     CloudExecutionStatus,
     CloudLiveCollection,
     execute_cloud_component,
+    retry_cloud_component,
 )
 from tenable_reports.application.cloud_snapshots import (
     MemoryCloudSnapshotRepository,
@@ -265,6 +266,36 @@ def test_recent_compatible_non_exact_snapshot_blocks_duplicate_collection(
     assert forced.status is CloudExecutionStatus.COMPLETE
     assert calls["collect"] == 1
 
+
+def test_retry_cloud_bypasses_recent_guard_without_calling_other_components(
+    tmp_path: Path,
+) -> None:
+    repository = MemoryCloudSnapshotRepository()
+    dependencies, calls = _dependencies(tmp_path, repository)
+    request = _request(tmp_path)
+    compatibility = request.compatibility()
+    recent = build_cloud_snapshot(
+        dataset=_dataset(request.period),
+        client_id=request.profile.client_id,
+        tenant_id=request.profile.tenant_id,
+        run_id="recent-other-period",
+        attempt_number=1,
+        execution_type=request.execution_type,
+        period_mode=request.period.mode.value,
+        timezone=request.period.timezone,
+        period_start_at="2026-06-01T03:00:00Z",
+        period_end_at="2026-07-01T03:00:00Z",
+        scope_hash=compatibility.scope_hash,
+        collected_at="2026-08-01T10:00:00Z",
+        capabilities={"required_ready": True},
+    )
+    repository.publish(recent)
+
+    result = retry_cloud_component(request, dependencies=dependencies)
+
+    assert result.status is CloudExecutionStatus.COMPLETE
+    assert calls["collect"] == 1
+    assert calls["render"] == ["base", "expanded"]
 
 def test_cloud_failure_is_isolated_as_a_retryable_component_warning(
     tmp_path: Path,

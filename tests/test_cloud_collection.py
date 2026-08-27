@@ -180,6 +180,40 @@ def test_optional_failure_is_recorded_without_discarding_required_sources(
     assert len(artifact.warnings) == 1
 
 
+def test_retry_requests_only_source_missing_from_partial_collection(
+    tmp_path: Path,
+) -> None:
+    collection = _collection_module()
+    cloud = _cloud_module()
+    first_clients = _clients(
+        findings=FakePaginator(
+            error=cloud.CloudContractError("Fonte opcional indisponivel."),
+            error_after=0,
+        )
+    )
+    collection.collect_cloud_snapshot(
+        request=_request(tmp_path),
+        clients=first_clients,
+        capabilities=_capabilities_all(),
+    )
+
+    retry_clients = _clients()
+    artifact = collection.collect_cloud_snapshot(
+        request=_request(tmp_path),
+        clients=retry_clients,
+        capabilities=_capabilities_all(),
+    )
+
+    assert retry_clients["findings"].after_values == [None]
+    assert all(
+        client.after_values == []
+        for name, client in retry_clients.items()
+        if name != "findings"
+    )
+    assert artifact.source_status["findings"].status == "COMPLETE"
+    assert not list(artifact.manifest_path.parent.glob(".*.page-*.jsonl"))
+    assert list(artifact.manifest_path.parent.glob("*.checkpoint.json"))
+
 def test_required_source_failure_stops_cloud_collection(tmp_path: Path) -> None:
     collection = _collection_module()
     cloud = _cloud_module()
@@ -256,8 +290,35 @@ def test_resume_continues_from_checkpoint_without_duplicate_records(
     assert resumed.after_values == ["cursor-1"]
     assert [item["Id"] for item in records] == ["vm-a", "vm-b"]
     assert artifact.source_status["virtual_machines"].pages == 2
-    assert not list(artifact.manifest_path.parent.glob("*.checkpoint.json"))
+    assert list(artifact.manifest_path.parent.glob("*.checkpoint.json"))
+    assert not list(artifact.manifest_path.parent.glob(".*.page-*.jsonl"))
 
+
+def test_retry_recollects_only_source_with_invalid_consolidated_artifact(
+    tmp_path: Path,
+) -> None:
+    collection = _collection_module()
+    first = collection.collect_cloud_snapshot(
+        request=_request(tmp_path),
+        clients=_clients(),
+        capabilities=_capabilities_all(),
+    )
+    first.source_paths["findings"].write_text("corrompido", encoding="utf-8")
+    retry_clients = _clients()
+
+    artifact = collection.collect_cloud_snapshot(
+        request=_request(tmp_path),
+        clients=retry_clients,
+        capabilities=_capabilities_all(),
+    )
+
+    assert retry_clients["findings"].after_values == [None]
+    assert all(
+        client.after_values == []
+        for name, client in retry_clients.items()
+        if name != "findings"
+    )
+    assert artifact.source_status["findings"].status == "COMPLETE"
 
 def test_manifest_is_sanitized_and_progress_reports_page_counts(
     tmp_path: Path,

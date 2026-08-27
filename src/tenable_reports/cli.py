@@ -50,6 +50,7 @@ from tenable_reports.application.cloud_execution import (
     CloudExecutionStatus,
     TenableCloudLiveCollector,
     execute_cloud_component,
+    retry_cloud_component,
 )
 from tenable_reports.application.cloud_snapshots import (
     MemoryCloudSnapshotRepository,
@@ -93,6 +94,7 @@ from tenable_reports.application.orchestration import (
 from tenable_reports.application.publishing import (
     PublicationDocument,
     create_publication_manifest,
+    upsert_publication_documents,
 )
 from tenable_reports.application.retention import (
     apply_cleanup_plan,
@@ -118,6 +120,9 @@ from tenable_reports.domain.normalization import (
     normalize_assets,
 )
 from tenable_reports.domain.reporting import (
+    PeriodMode,
+    ReportingPeriod,
+    parse_datetime,
     previous_calendar_month,
     resolve_manual_period,
 )
@@ -1781,6 +1786,98 @@ def command_run_client(args: argparse.Namespace) -> int:
     return 0
 
 
+def _retry_output_root(manifest: Path) -> Path:
+    for parent in manifest.resolve().parents:
+        if parent.name in {"manual", "automatic-monthly"}:
+            return parent.parent
+    return manifest.resolve().parent
+
+
+def command_retry_cloud(args: argparse.Namespace) -> int:
+    if not args.confirm_live_api:
+        raise ValueError(
+            "A retentativa Cloud exige --confirm-live-api; ela pode consultar a API real."
+        )
+    profile = load_client_profile(args.profile)
+    operations = _postgres_operations(args.database_env_file, required=True)
+    if operations is None:
+        raise EnvironmentError("PostgreSQL e obrigatorio para retentar o Cloud.")
+    context = operations.report_run_context(args.run_id)
+    if (
+        context.client_id != profile.client_id
+        or context.tenant_id != profile.tenant_id
+    ):
+        raise ValueError("O perfil nao corresponde ao cliente da execucao.")
+    scope = getattr(profile, "cloud_security_scope", None)
+    if scope is None or not bool(getattr(scope, "enabled", False)):
+        raise ValueError("Cloud Security nao esta habilitado neste cliente.")
+    manifest = Path(context.publication_manifest)
+    if not manifest.is_file():
+        raise ValueError(f"Manifesto da execucao nao encontrado: {manifest}")
+    period = ReportingPeriod(
+        start_at=parse_datetime(context.period_start_at, context.timezone),
+        end_at=parse_datetime(context.period_end_at, context.timezone),
+        timezone=context.timezone,
+        mode=PeriodMode(context.period_mode),
+        reference_at=parse_datetime(context.period_end_at, context.timezone),
+    )
+    load_dotenv_file(args.env_file, override=True)
+    credentials = CloudCredentialConfig.from_environment()
+    repository, persistent = _cloud_snapshot_repository_for_args(args)
+    result = retry_cloud_component(
+        CloudExecutionRequest(
+            profile=profile,
+            period=period,
+            execution_type=context.execution_type,
+            run_id=context.run_id,
+            attempt_number=1,
+            output_root=_retry_output_root(manifest),
+            report_directory=manifest.parent,
+            template_path=Path(args.cloud_template),
+        ),
+        dependencies=CloudExecutionDependencies(
+            repository=repository,
+            collect_live=TenableCloudLiveCollector(credentials),
+            history_persistent=persistent,
+        ),
+        progress_callback=_emit_progress_event,
+    )
+    success = result.status in {
+        CloudExecutionStatus.COMPLETE,
+        CloudExecutionStatus.REPLAYED,
+    }
+    if success and result.dataset_path is not None:
+        publication_documents = tuple(
+            PublicationDocument(
+                path=item.path,
+                document_kind="cloud",
+                document_variant=item.variant,
+            )
+            for item in result.documents
+        )
+        upsert_publication_documents(
+            manifest_path=manifest,
+            documents=publication_documents,
+            additional_datasets={"cloud": result.dataset_path},
+        )
+        operations.record_publication_manifest(manifest)
+    payload = {
+        "status": "complete" if success else "failed",
+        "run_id": context.run_id,
+        "client_id": context.client_id,
+        "cloud_status": result.status.value,
+        "cloud_documents": [
+            {"variant": item.variant, "path": str(item.path.resolve())}
+            for item in result.documents
+        ],
+        "cloud_snapshot_id": result.snapshot_id,
+        "warnings": [dict(item) for item in result.warnings],
+        "general_collection_repeated": False,
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0 if success else 2
+
+
 def command_validate_orchestration(args: argparse.Namespace) -> int:
     config = load_orchestration_config(args.config)
     print(json.dumps({
@@ -2409,6 +2506,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_client.set_defaults(cleanup_after_publish=True)
     run_client.set_defaults(handler=command_run_client)
+
+    retry_cloud = subparsers.add_parser(
+        "retry-cloud",
+        help="Retenta somente o componente Cloud de uma execucao publicada.",
+    )
+    retry_cloud.add_argument("--run-id", required=True)
+    retry_cloud.add_argument("--profile", required=True)
+    retry_cloud.add_argument("--env-file", required=True)
+    retry_cloud.add_argument(
+        "--database-env-file",
+        default="credentials/database.env",
+    )
+    retry_cloud.add_argument(
+        "--cloud-template",
+        default="templates/corporate/cloud-base-v1.docx",
+    )
+    retry_cloud.add_argument("--confirm-live-api", action="store_true")
+    retry_cloud.set_defaults(handler=command_retry_cloud)
 
     validate_orchestration = subparsers.add_parser(
         "validate-orchestration",

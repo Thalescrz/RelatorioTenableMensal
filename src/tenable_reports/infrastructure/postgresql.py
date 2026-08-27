@@ -428,11 +428,67 @@ class PostgresSnapshotRepository(SnapshotRepository):
         return tuple(_history_snapshot_from_storage(*row) for row in rows)
 
 
+@dataclass(frozen=True, slots=True)
+class ReportRunContext:
+    run_id: str
+    client_id: str
+    tenant_id: str
+    execution_type: str
+    period_start_at: str
+    period_end_at: str
+    period_mode: str
+    timezone: str
+    publication_manifest: Path
+
+
+def _iso_context(value: Any) -> str:
+    if hasattr(value, "isoformat"):
+        return value.isoformat().replace("+00:00", "Z")
+    return str(value)
+
+
 class PostgresOperationsRepository:
     def __init__(self, database: PostgresDatabase, *, migrate: bool = True) -> None:
         self.database = database
         if migrate:
             self.database.apply_migrations()
+
+    def report_run_context(self, run_id: str) -> ReportRunContext:
+        normalized = str(run_id or "").strip()
+        if not normalized:
+            raise ValueError("run_id nao pode ser vazio.")
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                select run_id, client_id, tenant_id, execution_type,
+                       period_start_at, period_end_at, period_mode, timezone,
+                       publication_manifest_path
+                from {SCHEMA_NAME}.report_runs
+                where run_id = %s
+                  and deleted_at is null
+                  and publication_manifest_path is not null
+                """,
+                (normalized,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(
+                f"Execucao publicada nao encontrada para retry Cloud: {normalized}"
+            )
+        if row[4] is None or row[5] is None or not row[6] or not row[7]:
+            raise ValueError("Execucao sem contexto de periodo compativel.")
+        manifest = Path(str(row[8])).resolve()
+        return ReportRunContext(
+            run_id=str(row[0]),
+            client_id=str(row[1]),
+            tenant_id=str(row[2]),
+            execution_type=str(row[3]),
+            period_start_at=_iso_context(row[4]),
+            period_end_at=_iso_context(row[5]),
+            period_mode=str(row[6]),
+            timezone=str(row[7]),
+            publication_manifest=manifest,
+        )
+
 
     def register_artifacts(self, records: Sequence[ArtifactRecord]) -> int:
         if not records:
@@ -662,9 +718,23 @@ class PostgresOperationsRepository:
                     payload.get("created_at"),
                 ),
             ).fetchone()[0]
-            for document in payload.get("documents") or ():
-                if not isinstance(document, Mapping):
-                    continue
+            documents = tuple(
+                item
+                for item in (payload.get("documents") or ())
+                if isinstance(item, Mapping)
+            )
+            if any(
+                str(item.get("document_kind") or "").lower() == "cloud"
+                for item in documents
+            ):
+                connection.execute(
+                    f"""
+                    delete from {SCHEMA_NAME}.published_documents
+                    where publication_id = %s and document_kind = 'cloud'
+                    """,
+                    (publication_id,),
+                )
+            for document in documents:
                 connection.execute(
                     f"""
                     insert into {SCHEMA_NAME}.published_documents (

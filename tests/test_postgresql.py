@@ -253,6 +253,52 @@ class PostgreSqlTests(unittest.TestCase):
             self.assertEqual(result.artifacts, 2)
 
 
+class _RunContextConnection:
+    def __init__(self, row) -> None:
+        self.row = row
+        self.calls = []
+
+    def execute(self, sql, params=None):
+        self.calls.append((sql, params))
+        return _PublicationCursor(self.row)
+
+
+class _RunContextDatabase:
+    def __init__(self, row) -> None:
+        self.connection_value = _RunContextConnection(row)
+
+    @contextmanager
+    def connection(self):
+        yield self.connection_value
+
+
+def test_report_run_context_returns_only_non_deleted_published_run() -> None:
+    row = (
+        "run-cloud",
+        "cliente-fixture",
+        "tenant-fixture",
+        "MANUAL",
+        "2026-07-01T03:00:00Z",
+        "2026-08-01T03:00:00Z",
+        "EXPLICIT_RANGE",
+        "America/Fortaleza",
+        "C:/fixture/publication-manifest.json",
+    )
+    database = _RunContextDatabase(row)
+    repository = PostgresOperationsRepository(database, migrate=False)  # type: ignore[arg-type]
+
+    context = repository.report_run_context("run-cloud")
+
+    assert context.run_id == "run-cloud"
+    assert context.client_id == "cliente-fixture"
+    assert context.period_mode == "EXPLICIT_RANGE"
+    assert context.publication_manifest == Path(
+        "C:/fixture/publication-manifest.json"
+    )
+    sql, params = database.connection_value.calls[0]
+    assert "deleted_at is null" in sql
+    assert params == ("run-cloud",)
+
 class _PublicationCursor:
     def __init__(self, value=None) -> None:
         self.value = value

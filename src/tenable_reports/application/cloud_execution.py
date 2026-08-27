@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
@@ -112,6 +112,7 @@ class CloudExecutionRequest:
     report_directory: Path
     template_path: Path
     force_refresh: bool = False
+    bypass_recent_guard: bool = False
     recent_collection_hours: int = 24
 
     def compatibility(self) -> CloudSnapshotCompatibility:
@@ -409,9 +410,13 @@ def execute_cloud_component(
 
             current = dependencies.now()
             since = current - timedelta(hours=request.recent_collection_hours)
-            recent = dependencies.repository.latest_compatible_since(
-                compatibility=compatibility,
-                collected_since=_utc_iso(since),
+            recent = (
+                None
+                if request.bypass_recent_guard
+                else dependencies.repository.latest_compatible_since(
+                    compatibility=compatibility,
+                    collected_since=_utc_iso(since),
+                )
             )
             if recent is not None:
                 warning = {
@@ -541,6 +546,21 @@ def execute_cloud_component(
         )
 
 
+def retry_cloud_component(
+    request: CloudExecutionRequest,
+    *,
+    dependencies: CloudExecutionDependencies,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+) -> CloudComponentResult:
+    """Retry only Cloud while preserving exact replay and bypassing the 24h guard."""
+
+    return execute_cloud_component(
+        replace(request, bypass_recent_guard=True),
+        dependencies=dependencies,
+        progress_callback=progress_callback,
+    )
+
+
 __all__ = [
     "CloudComponentResult",
     "CloudExecutionDependencies",
@@ -550,4 +570,5 @@ __all__ = [
     "CloudLiveCollection",
     "TenableCloudLiveCollector",
     "execute_cloud_component",
+    "retry_cloud_component",
 ]
