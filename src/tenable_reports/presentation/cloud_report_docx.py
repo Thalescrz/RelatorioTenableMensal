@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -20,16 +21,24 @@ from tenable_reports.application.cloud_report_dataset import (
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation.cloud_report_sections import (
     CloudDocumentBuilder,
+    cloud_posture_available,
+    render_cloud_inventory,
     render_cloud_overview,
+    render_cloud_posture,
+    render_components_products,
     render_conclusion,
     render_critical_details,
     render_dashboard,
     render_document_control,
+    render_executive_overview,
     render_introduction,
+    render_monthly_evolution,
+    render_remediation_performance,
     render_top_correctable,
     render_top_critical,
     render_top_hosts,
     render_top_images,
+    render_vulnerability_aging,
 )
 from tenable_reports.presentation.translation import TextTranslator
 
@@ -48,6 +57,29 @@ BASE_SECTION_IDS = (
     "critical_details",
     "top_correctable",
     "dashboard",
+    "conclusion",
+    "back_cover",
+)
+EXPANDED_SECTION_IDS = (
+    "cover",
+    "table_of_contents",
+    "document_control",
+    "objective",
+    "cloud_overview",
+    "introduction",
+    "executive_overview",
+    "top_hosts",
+    "top_images",
+    "top_critical",
+    "critical_details",
+    "top_correctable",
+    "dashboard",
+    "components_products",
+    "cloud_posture",
+    "vulnerability_aging",
+    "remediation_performance",
+    "cloud_inventory",
+    "monthly_evolution",
     "conclusion",
     "back_cover",
 )
@@ -143,7 +175,11 @@ def _find_paragraph(document: DocxDocument, marker: str):
     raise ValueError(f"Marcador obrigatório ausente no template Cloud: {marker}")
 
 
-def _set_toc_field(paragraph: Any) -> None:
+def _set_toc_field(
+    paragraph: Any,
+    *,
+    entries: Sequence[str],
+) -> None:
     paragraph.clear()
     run = paragraph.add_run()
     begin = OxmlElement("w:fldChar")
@@ -159,22 +195,49 @@ def _set_toc_field(paragraph: Any) -> None:
     end.set(qn("w:fldCharType"), "end")
     for element in (begin, instruction, separate, value, end):
         run._r.append(element)
-    entries = (
-        "1. CONTROLE DE DOCUMENTO",
-        "2. OBJETIVO",
-        "3. TENABLE CLOUD SECURITY",
-        "3.1. Introdução",
-        "3.2. Principais Hosts Vulneráveis",
-        "3.3. Imagens de Contêineres Mais Vulneráveis",
-        "3.4. Principais Vulnerabilidades Críticas (TOP 5 CVEs)",
-        "3.5. Principais Vulnerabilidades com Correção Disponível",
-        "3.6. Painel de Controle (Dashboards)",
-        "4. Conclusão",
-    )
+
     for entry in entries:
         item = paragraph.add_run()
         item.add_break()
         item.add_text(entry)
+
+
+def _toc_entries(
+    variant: CloudReportVariant,
+    *,
+    include_posture: bool,
+) -> tuple[str, ...]:
+    entries = [
+        "1. CONTROLE DE DOCUMENTO",
+        "2. OBJETIVO",
+        "3. TENABLE CLOUD SECURITY",
+        "3.1. Introdução",
+    ]
+    if variant is CloudReportVariant.EXPANDED:
+        entries.append("3.1.1. Resumo Executivo do Período")
+    entries.extend(
+        (
+            "3.2. Principais Hosts Vulneráveis",
+            "3.3. Imagens de Contêineres Mais Vulneráveis",
+            "3.4. Principais Vulnerabilidades Críticas (TOP 5 CVEs)",
+            "3.5. Principais Vulnerabilidades com Correção Disponível",
+            "3.6. Painel de Controle (Dashboards)",
+        )
+    )
+    if variant is CloudReportVariant.EXPANDED:
+        entries.append("3.7. Componentes e Produtos em Maior Risco")
+        if include_posture:
+            entries.append("3.8. Postura de Segurança em Nuvem")
+        entries.extend(
+            (
+                "3.9. Envelhecimento das Vulnerabilidades",
+                "3.10. Desempenho de Remediação",
+                "3.11. Inventário Cloud",
+                "3.12. Evolução Mensal",
+            )
+        )
+    entries.append("4. Conclusão")
+    return tuple(entries)
 
 
 def _set_update_fields(document: DocxDocument) -> None:
@@ -218,8 +281,6 @@ def generate_cloud_report(
     dataset_source = Path(dataset_path)
     output = Path(output_path)
     selected_variant = CloudReportVariant(variant)
-    if selected_variant is not CloudReportVariant.BASE:
-        raise ValueError("O Modelo Ampliado será disponibilizado na próxima etapa.")
     if not template.is_file():
         raise FileNotFoundError(f"Template Cloud não encontrado: {template}")
     dataset = load_cloud_report_dataset(dataset_source)
@@ -231,44 +292,111 @@ def generate_cloud_report(
         client_name=profile.display_name,
         month_year=_month_year(dataset),
     )
+    include_posture = (
+        selected_variant is CloudReportVariant.EXPANDED
+        and cloud_posture_available(dataset)
+    )
     toc = _find_paragraph(document, "{{TABLE_OF_CONTENTS}}")
-    _set_toc_field(toc)
+    _set_toc_field(
+        toc,
+        entries=_toc_entries(
+            selected_variant,
+            include_posture=include_posture,
+        ),
+    )
     anchor = _find_paragraph(document, "{{CLOUD_CONTENT_START}}")
     builder = CloudDocumentBuilder(document=document, anchor=anchor)
-
-    render_document_control(builder, dataset)
-    render_cloud_overview(builder)
-    warning = str((dataset.get("snapshot_context") or {}).get("warning") or "").strip()
-    if warning:
-        builder.paragraph(warning, bold=True, color="C00000")
-    render_introduction(builder)
-    show_filters = profile.presentation.show_source_filters
-    render_top_hosts(builder, dataset, show_source_filters=show_filters)
-    render_top_images(builder, dataset, show_source_filters=show_filters)
-    render_top_critical(builder, dataset, show_source_filters=show_filters)
-    render_critical_details(builder, dataset, translator=translator)
-    render_top_correctable(
-        builder,
-        dataset,
-        show_source_filters=show_filters,
-        translator=translator,
+    rendered_sections = list(
+        BASE_SECTION_IDS
+        if selected_variant is CloudReportVariant.BASE
+        else EXPANDED_SECTION_IDS
     )
-    render_dashboard(builder, dataset)
-    render_conclusion(builder)
+    omitted_sections: list[str] = []
 
-    anchor.clear()
-    _set_update_fields(document)
-    _sanitize_properties(document, profile)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    document.save(output)
+    with tempfile.TemporaryDirectory(prefix="cloud-report-visuals-") as chart_directory:
+        chart_dir = Path(chart_directory)
+        render_document_control(builder, dataset)
+        render_cloud_overview(builder)
+        warning = str(
+            (dataset.get("snapshot_context") or {}).get("warning") or ""
+        ).strip()
+        if warning:
+            builder.paragraph(warning, bold=True, color="C00000")
+        render_introduction(builder)
+        show_filters = profile.presentation.show_source_filters
+        if selected_variant is CloudReportVariant.EXPANDED:
+            builder.page_break()
+            render_executive_overview(
+                builder,
+                dataset,
+                chart_dir=chart_dir,
+            )
+        render_top_hosts(builder, dataset, show_source_filters=show_filters)
+        render_top_images(builder, dataset, show_source_filters=show_filters)
+        render_top_critical(builder, dataset, show_source_filters=show_filters)
+        render_critical_details(builder, dataset, translator=translator)
+        render_top_correctable(
+            builder,
+            dataset,
+            show_source_filters=show_filters,
+            translator=translator,
+        )
+        render_dashboard(builder, dataset)
+        if selected_variant is CloudReportVariant.EXPANDED:
+            render_components_products(
+                builder,
+                dataset,
+                show_source_filters=show_filters,
+            )
+            if include_posture:
+                render_cloud_posture(
+                    builder,
+                    dataset,
+                    show_source_filters=show_filters,
+                )
+            else:
+                rendered_sections.remove("cloud_posture")
+                omitted_sections.append("cloud_posture")
+            render_vulnerability_aging(
+                builder,
+                dataset,
+                chart_dir=chart_dir,
+                show_source_filters=show_filters,
+            )
+            render_remediation_performance(
+                builder,
+                dataset,
+                show_source_filters=show_filters,
+            )
+            builder.page_break()
+            render_cloud_inventory(
+                builder,
+                dataset,
+                show_source_filters=show_filters,
+            )
+            history_chart_rendered = render_monthly_evolution(
+                builder,
+                dataset,
+                chart_dir=chart_dir,
+            )
+            if not history_chart_rendered:
+                omitted_sections.append("monthly_evolution_chart")
+            builder.page_break()
+        render_conclusion(builder)
+
+        anchor.clear()
+        _set_update_fields(document)
+        _sanitize_properties(document, profile)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        document.save(output)
 
     return CloudReportRenderResult(
         output_path=output,
         client_id=profile.client_id,
         period_id=_period_id(dataset),
         variant=selected_variant,
-        rendered_sections=BASE_SECTION_IDS,
-        omitted_sections=(),
+        rendered_sections=tuple(rendered_sections),
+        omitted_sections=tuple(omitted_sections),
         dataset_sha256=_sha256(dataset_source),
     )
 
@@ -276,6 +404,7 @@ def generate_cloud_report(
 __all__ = [
     "BASE_SECTION_IDS",
     "CLOUD_TEMPLATE_VERSION",
+    "EXPANDED_SECTION_IDS",
     "CloudReportRenderResult",
     "CloudReportVariant",
     "generate_cloud_report",

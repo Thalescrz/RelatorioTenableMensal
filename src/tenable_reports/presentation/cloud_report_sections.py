@@ -8,13 +8,19 @@ from zoneinfo import ZoneInfo
 
 from docx.document import Document as DocxDocument
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 from tenable_reports.presentation import base_report_docx as base
 from tenable_reports.presentation import cloud_editorial_catalog as copy
+from tenable_reports.presentation.cloud_visuals import (
+    normalize_history_series,
+    render_aging_chart,
+    render_monthly_history_chart,
+    render_severity_chart,
+)
 from tenable_reports.presentation.source_filters import format_source_filter_note
 from tenable_reports.presentation.translation import (
     TextTranslator,
@@ -115,8 +121,28 @@ class CloudDocumentBuilder:
 
     def page_break(self) -> None:
         paragraph = self.document.add_paragraph()
-        paragraph.add_run().add_break()
+        paragraph.add_run().add_break(WD_BREAK.PAGE)
         self._move(paragraph._p)
+
+    def image(
+        self,
+        path: str | Path,
+        *,
+        alt_text: str,
+        width_cm: float = 16.0,
+    ) -> Any:
+        paragraph = self.document.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        paragraph.paragraph_format.space_before = Pt(3)
+        paragraph.paragraph_format.space_after = Pt(8)
+        base._add_picture(
+            paragraph,
+            Path(path),
+            width=Cm(width_cm),
+            alt_text=alt_text,
+        )
+        self._move(paragraph._p)
+        return paragraph
 
     def table(
         self,
@@ -527,6 +553,294 @@ def render_dashboard(builder: CloudDocumentBuilder, dataset: Mapping[str, Any]) 
     builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
 
 
+def _source_status(
+    dataset: Mapping[str, Any],
+    *names: str,
+) -> str:
+    statuses = dataset.get("source_status")
+    statuses = statuses if isinstance(statuses, Mapping) else {}
+    for name in names:
+        value = statuses.get(name)
+        if value is not None:
+            return str(value).upper()
+    return "UNKNOWN"
+
+
+def _capability_available(
+    dataset: Mapping[str, Any],
+    source: str,
+) -> bool:
+    capabilities = dataset.get("capabilities")
+    capabilities = capabilities if isinstance(capabilities, Mapping) else {}
+    sources = capabilities.get("sources")
+    sources = sources if isinstance(sources, Mapping) else {}
+    value = sources.get(source)
+    if isinstance(value, Mapping):
+        value = value.get("status")
+    return str(value or "").upper() == "AVAILABLE"
+
+
+def cloud_posture_available(dataset: Mapping[str, Any]) -> bool:
+    return _capability_available(dataset, "findings") and bool(
+        dataset.get("top_posture_findings")
+    )
+
+
+def render_executive_overview(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    chart_dir: str | Path,
+) -> None:
+    builder.heading("3.1.1. Resumo Executivo do Período", 3)
+    builder.paragraph(copy.EXECUTIVE_OVERVIEW)
+    overview = dataset.get("overview")
+    overview = overview if isinstance(overview, Mapping) else {}
+    severity = overview.get("severity_counts")
+    severity = severity if isinstance(severity, Mapping) else {}
+    rows = (
+        ("Ativos Cloud", overview.get("assets", 0)),
+        ("Máquinas virtuais", overview.get("virtual_machines", 0)),
+        ("Imagens de contêiner", overview.get("container_images", 0)),
+        ("CVEs únicas", overview.get("unique_cves", 0)),
+        ("Ocorrências de vulnerabilidade", overview.get("vulnerability_occurrences", 0)),
+        ("Vulnerabilidades com correção mapeada", len(dataset.get("top_correctable_vulnerabilities") or ())),
+    )
+    builder.table(
+        ("Indicador", "Resultado"),
+        rows,
+        widths=(6500, 2700),
+        left_columns=frozenset({0}),
+    )
+    chart = render_severity_chart(
+        severity,
+        Path(chart_dir) / "cloud-severity-overview.png",
+    )
+    builder.image(
+        chart,
+        alt_text="Distribuição das ocorrências Cloud por severidade",
+    )
+
+
+def render_components_products(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    show_source_filters: bool,
+) -> None:
+    builder.heading("3.7. Componentes e Produtos em Maior Risco", 2)
+    builder.paragraph(copy.COMPONENTS_PRODUCTS)
+    rows = [
+        (
+            item.get("component") or "Não informado",
+            item.get("affected_assets", 0),
+            item.get("vulnerabilities", 0),
+            item.get("occurrences", 0),
+        )
+        for item in dataset.get("top_components") or ()
+        if isinstance(item, Mapping)
+    ]
+    builder.table(
+        ("Componente / Produto", "Ativos afetados", "CVEs únicas", "Ocorrências"),
+        rows,
+        widths=(4800, 1500, 1400, 1500),
+        left_columns=frozenset({0}),
+    )
+    builder.source_note(dataset, "cloud_top_components", enabled=show_source_filters)
+
+
+def render_cloud_posture(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    show_source_filters: bool,
+) -> None:
+    builder.heading("3.8. Postura de Segurança em Nuvem", 2)
+    builder.paragraph(copy.CLOUD_POSTURE)
+    rows = [
+        (
+            item.get("policy") or "",
+            item.get("category") or "",
+            SEVERITY_LABELS.get(str(item.get("severity") or ""), item.get("severity") or ""),
+            item.get("provider") or "N/D",
+            item.get("findings", 0),
+            item.get("affected_resources", 0),
+        )
+        for item in dataset.get("top_posture_findings") or ()
+        if isinstance(item, Mapping)
+    ]
+    builder.table(
+        ("Política", "Categoria", "Severidade", "Provedor", "Achados", "Recursos"),
+        rows,
+        widths=(3000, 1600, 1200, 1400, 1000, 1000),
+        left_columns=frozenset({0, 1, 3}),
+    )
+    builder.source_note(dataset, "cloud_posture", enabled=show_source_filters)
+
+
+def render_vulnerability_aging(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    chart_dir: str | Path,
+    show_source_filters: bool,
+) -> None:
+    builder.heading("3.9. Envelhecimento das Vulnerabilidades", 2)
+    builder.paragraph(copy.VULNERABILITY_AGING)
+    if _source_status(dataset, "vulnerability_lifecycle", "lifecycle") == "UNAVAILABLE":
+        builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+        return
+    aging = dataset.get("aging")
+    if not isinstance(aging, Mapping):
+        builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+        return
+    rows = (
+        ("0 a 30 dias", aging.get("0-30", 0)),
+        ("31 a 60 dias", aging.get("31-60", 0)),
+        ("61 a 90 dias", aging.get("61-90", 0)),
+        ("91 a 180 dias", aging.get("91-180", 0)),
+        ("Mais de 180 dias", aging.get(">180", 0)),
+        ("Data indisponível", aging.get("data_indisponivel", 0)),
+    )
+    builder.table(
+        ("Faixa", "Vulnerabilidades abertas"),
+        rows,
+        widths=(6000, 3200),
+        left_columns=frozenset({0}),
+    )
+    chart = render_aging_chart(
+        aging,
+        Path(chart_dir) / "cloud-vulnerability-aging.png",
+    )
+    builder.image(
+        chart,
+        alt_text="Distribuição das vulnerabilidades Cloud abertas por faixa de idade",
+    )
+    builder.source_note(dataset, "cloud_aging", enabled=show_source_filters)
+
+
+def render_remediation_performance(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    show_source_filters: bool,
+) -> None:
+    builder.heading("3.10. Desempenho de Remediação", 2)
+    builder.paragraph(copy.REMEDIATION_PERFORMANCE)
+    if _source_status(dataset, "vulnerability_lifecycle", "lifecycle") == "UNAVAILABLE":
+        builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+        return
+    performance = dataset.get("remediation_performance")
+    if not isinstance(performance, Mapping):
+        builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+        return
+    average = performance.get("average_resolution_days")
+    builder.table(
+        ("Indicador", "Resultado"),
+        (
+            ("Vulnerabilidades resolvidas no período", performance.get("resolved", 0)),
+            ("Tempo médio até resolução", f"{average} dias" if average is not None else "N/D"),
+        ),
+        widths=(6500, 2700),
+        left_columns=frozenset({0}),
+    )
+    builder.source_note(
+        dataset,
+        "cloud_remediation_performance",
+        enabled=show_source_filters,
+    )
+
+
+def render_cloud_inventory(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    show_source_filters: bool,
+) -> None:
+    builder.heading("3.11. Inventário Cloud", 2)
+    builder.paragraph(copy.CLOUD_INVENTORY)
+    if _source_status(dataset, "inventory") == "UNAVAILABLE":
+        builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+        return
+    inventory = dataset.get("inventory")
+    if not isinstance(inventory, Mapping):
+        builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+        return
+    builder.table(
+        ("Indicador", "Resultado"),
+        (("Total de recursos inventariados", inventory.get("total_resources", 0)),),
+        widths=(6500, 2700),
+        left_columns=frozenset({0}),
+    )
+    builder.heading("3.11.1. Recursos por Provedor", 3)
+    builder.table(
+        ("Provedor", "Recursos"),
+        [
+            (item.get("provider") or "Não informado", item.get("resources", 0))
+            for item in inventory.get("by_provider") or ()
+            if isinstance(item, Mapping)
+        ],
+        widths=(6500, 2700),
+        left_columns=frozenset({0}),
+    )
+    builder.heading("3.11.2. Recursos por Região", 3)
+    builder.table(
+        ("Região", "Recursos"),
+        [
+            (item.get("region") or "Não informada", item.get("resources", 0))
+            for item in inventory.get("by_region") or ()
+            if isinstance(item, Mapping)
+        ],
+        widths=(6500, 2700),
+        left_columns=frozenset({0}),
+    )
+    builder.source_note(dataset, "cloud_inventory", enabled=show_source_filters)
+
+
+def render_monthly_evolution(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    chart_dir: str | Path,
+) -> bool:
+    builder.heading("3.12. Evolução Mensal", 2)
+    builder.paragraph(copy.MONTHLY_EVOLUTION)
+    history = [
+        item
+        for item in dataset.get("history") or ()
+        if isinstance(item, Mapping)
+    ]
+    points = normalize_history_series(history)
+    if not points:
+        builder.paragraph(copy.HISTORY_UNAVAILABLE, color=MID_GRAY)
+        return False
+    builder.table(
+        ("Mês", "Ocorrências de vulnerabilidade"),
+        [
+            (point.label, point.value if point.value is not None else "N/D")
+            for point in points
+        ],
+        widths=(4200, 5000),
+        left_columns=frozenset({0}),
+    )
+    chart = render_monthly_history_chart(
+        history,
+        Path(chart_dir) / "cloud-monthly-evolution.png",
+    )
+    if chart is None:
+        builder.paragraph(copy.HISTORY_UNAVAILABLE, color=MID_GRAY)
+        return False
+    builder.image(
+        chart,
+        alt_text=(
+            "Evolução mensal das ocorrências Cloud; meses indisponíveis "
+            "aparecem como lacunas"
+        ),
+        width_cm=12.5,
+    )
+    return True
+
+
 def render_conclusion(builder: CloudDocumentBuilder) -> None:
     builder.heading("4. Conclusão", 1)
     builder.paragraph(copy.CONCLUSION_OVERVIEW)
@@ -539,14 +853,22 @@ def render_conclusion(builder: CloudDocumentBuilder) -> None:
 
 __all__ = [
     "CloudDocumentBuilder",
+    "cloud_posture_available",
+    "render_cloud_inventory",
     "render_cloud_overview",
+    "render_cloud_posture",
+    "render_components_products",
     "render_conclusion",
     "render_critical_details",
     "render_dashboard",
     "render_document_control",
+    "render_executive_overview",
     "render_introduction",
+    "render_monthly_evolution",
+    "render_remediation_performance",
     "render_top_correctable",
     "render_top_critical",
     "render_top_hosts",
     "render_top_images",
+    "render_vulnerability_aging",
 ]

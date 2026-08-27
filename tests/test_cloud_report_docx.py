@@ -342,3 +342,152 @@ def test_empty_translation_preserves_original_with_explicit_notice(
     text = _all_text(output)
     assert "Long technical sentence 0." in text
     assert "A tradução automática não pôde ser concluída" in text
+
+
+def _expanded_dataset(
+    tmp_path: Path,
+    *,
+    findings_available: bool = True,
+    with_history: bool = True,
+) -> Path:
+    path = _dataset(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["top_components"] = [
+        {
+            "component": "fixture-component",
+            "affected_assets": 2,
+            "vulnerabilities": 1,
+            "occurrences": 2,
+        }
+    ]
+    payload["top_posture_findings"] = [
+        {
+            "policy": "Fixture policy",
+            "category": "Configuration",
+            "severity": "HIGH",
+            "provider": "Fixture Cloud",
+            "findings": 2,
+            "affected_resources": 1,
+        }
+    ]
+    payload["capabilities"] = {
+        "required_ready": True,
+        "sources": {
+            "findings": "AVAILABLE" if findings_available else "UNAVAILABLE",
+        },
+    }
+    payload["inventory"] = {
+        "total_resources": 3,
+        "by_provider": [
+            {"provider": "Fixture Cloud", "resources": 3},
+        ],
+        "by_region": [
+            {"region": "fixture-region-1", "resources": 2},
+            {"region": "fixture-region-2", "resources": 1},
+        ],
+    }
+    payload["history"] = (
+        [
+            {
+                "period_id": "2026-05",
+                "label": "Mai/26",
+                "availability": "AVAILABLE",
+                "overview": {
+                    "unique_cves": 4,
+                    "vulnerability_occurrences": 9,
+                    "severity_counts": {
+                        "CRITICAL": 2,
+                        "HIGH": 3,
+                        "MEDIUM": 3,
+                        "LOW": 1,
+                    },
+                },
+            },
+            {
+                "period_id": "2026-06",
+                "label": "Jun/26",
+                "availability": "UNAVAILABLE",
+            },
+            {
+                "period_id": "2026-07",
+                "label": "Jul/26",
+                "availability": "AVAILABLE",
+                "overview": payload["overview"],
+            },
+        ]
+        if with_history
+        else []
+    )
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_expanded_cloud_report_adds_analysis_without_changing_base(
+    tmp_path: Path,
+) -> None:
+    dataset = _expanded_dataset(tmp_path)
+    base_output = tmp_path / "cloud-base.docx"
+    expanded_output = tmp_path / "cloud-expanded.docx"
+
+    base = generate_cloud_report(
+        template_path=CLOUD_TEMPLATE,
+        dataset_path=dataset,
+        profile=_profile(),
+        output_path=base_output,
+        variant=CloudReportVariant.BASE,
+    )
+    expanded = generate_cloud_report(
+        template_path=CLOUD_TEMPLATE,
+        dataset_path=dataset,
+        profile=_profile(),
+        output_path=expanded_output,
+        variant=CloudReportVariant.EXPANDED,
+    )
+
+    base_text = _all_text(base_output)
+    expanded_text = _all_text(expanded_output)
+    assert "Componentes e Produtos em Maior Risco" not in base_text
+    assert "Componentes e Produtos em Maior Risco" in expanded_text
+    assert "Evolução Mensal" in expanded_text
+    assert "CVE-2099-1000" in base_text and "CVE-2099-1000" in expanded_text
+    assert "VPR: 0" in base_text and "VPR: 0" in expanded_text
+    assert base.dataset_sha256 == expanded.dataset_sha256
+    assert "components_products" in expanded.rendered_sections
+    assert len(expanded.rendered_sections) > len(base.rendered_sections)
+
+
+def test_expanded_cloud_report_omits_unavailable_conditional_posture(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "cloud-expanded-no-findings.docx"
+    result = generate_cloud_report(
+        template_path=CLOUD_TEMPLATE,
+        dataset_path=_expanded_dataset(
+            tmp_path,
+            findings_available=False,
+        ),
+        profile=_profile(),
+        output_path=output,
+        variant=CloudReportVariant.EXPANDED,
+    )
+
+    assert "Postura de Segurança em Nuvem" not in _all_text(output)
+    assert "cloud_posture" in result.omitted_sections
+
+
+def test_expanded_cloud_report_handles_missing_history_without_fake_chart(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "cloud-expanded-no-history.docx"
+    result = generate_cloud_report(
+        template_path=CLOUD_TEMPLATE,
+        dataset_path=_expanded_dataset(tmp_path, with_history=False),
+        profile=_profile(),
+        output_path=output,
+        variant=CloudReportVariant.EXPANDED,
+    )
+
+    text = _all_text(output)
+    assert "Evolução Mensal" in text
+    assert "histórico mensal compatível" in text
+    assert "monthly_evolution_chart" in result.omitted_sections

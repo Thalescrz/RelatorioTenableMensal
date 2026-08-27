@@ -155,6 +155,39 @@ CONCLUSION_SUMMARY = (
     "segurança robusta e atualizada."
 )
 
+EXECUTIVE_OVERVIEW = (
+    "Este resumo reúne os principais indicadores do período para facilitar a "
+    "priorização e a validação dos resultados apresentados nas seções seguintes."
+)
+COMPONENTS_PRODUCTS = (
+    "A tabela identifica os componentes e produtos com maior concentração de "
+    "vulnerabilidades e de ativos afetados no período."
+)
+CLOUD_POSTURE = (
+    "Esta seção apresenta os principais achados de configuração e postura de "
+    "segurança retornados pela fonte Cloud Security disponível para o ambiente."
+)
+VULNERABILITY_AGING = (
+    "O envelhecimento considera vulnerabilidades ainda abertas e a data da "
+    "primeira identificação disponível na coleta Cloud."
+)
+REMEDIATION_PERFORMANCE = (
+    "Os indicadores abaixo mostram as vulnerabilidades resolvidas no período e, "
+    "quando disponível, o tempo médio entre identificação e resolução."
+)
+CLOUD_INVENTORY = (
+    "O inventário resume os recursos Cloud por provedor e região conforme a "
+    "fonte de inventário disponível no período."
+)
+MONTHLY_EVOLUTION = (
+    "A evolução mensal utiliza exclusivamente snapshots MAIN compatíveis; meses "
+    "indisponíveis permanecem como lacunas e não são tratados como zero."
+)
+HISTORY_UNAVAILABLE = (
+    "Neste mês ainda não há histórico mensal compatível suficiente para gerar o "
+    "gráfico de evolução."
+)
+
 EMPTY_TABLE_MONTH = "Neste mês não foram identificados registros para este item."
 EMPTY_CRITICAL_MONTH = (
     "Neste mês não foram identificadas vulnerabilidades críticas para detalhamento."
@@ -199,10 +232,18 @@ def approved_cloud_editorial_paragraphs() -> tuple[str, ...]:
 
 
 __all__ = [
+    "CLOUD_INVENTORY",
+    "CLOUD_POSTURE",
+    "COMPONENTS_PRODUCTS",
     "EMPTY_CORRECTABLE_MONTH",
     "EMPTY_CRITICAL_MONTH",
     "EMPTY_TABLE_MONTH",
+    "EXECUTIVE_OVERVIEW",
+    "HISTORY_UNAVAILABLE",
+    "MONTHLY_EVOLUTION",
+    "REMEDIATION_PERFORMANCE",
     "SOURCE_UNAVAILABLE",
     "TRANSLATION_UNAVAILABLE",
+    "VULNERABILITY_AGING",
     "approved_cloud_editorial_paragraphs",
 ]
