@@ -1,0 +1,552 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
+
+from docx.document import Document as DocxDocument
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Cm, Pt, RGBColor
+
+from tenable_reports.presentation import base_report_docx as base
+from tenable_reports.presentation import cloud_editorial_catalog as copy
+from tenable_reports.presentation.source_filters import format_source_filter_note
+from tenable_reports.presentation.translation import (
+    TextTranslator,
+    split_translation_chunks,
+    translate_in_chunks,
+)
+
+
+BLUE = "2E59FC"
+NAVY = "101326"
+LIGHT_BLUE = "EAF0FF"
+LIGHT_GRAY = "F1F3F6"
+MID_GRAY = "68728A"
+WHITE = "FFFFFF"
+SEVERITY_FILLS = {
+    "CRITICAL": "C00000",
+    "HIGH": "F26B00",
+    "MEDIUM": "FFF200",
+    "LOW": "00B050",
+    "NONE": "B7C9C5",
+}
+SEVERITY_LABELS = {
+    "CRITICAL": "Crítica",
+    "HIGH": "Alta",
+    "MEDIUM": "Média",
+    "LOW": "Baixa",
+    "NONE": "Sem vulnerabilidade",
+}
+
+
+@dataclass(slots=True)
+class CloudDocumentBuilder:
+    document: DocxDocument
+    anchor: Any
+
+    def _move(self, element: Any) -> Any:
+        parent = element.getparent()
+        if parent is not None:
+            parent.remove(element)
+        self.anchor._p.addprevious(element)
+        return element
+
+    def paragraph(
+        self,
+        text: str = "",
+        *,
+        bold: bool = False,
+        size: float = 10.5,
+        color: str = NAVY,
+        align: int = WD_ALIGN_PARAGRAPH.JUSTIFY,
+        keep_with_next: bool = False,
+        space_before: float = 0,
+        space_after: float = 6,
+        font_name: str = "Times New Roman",
+    ) -> Any:
+        paragraph = self.document.add_paragraph()
+        paragraph.alignment = align
+        paragraph.paragraph_format.space_before = Pt(space_before)
+        paragraph.paragraph_format.space_after = Pt(space_after)
+        paragraph.paragraph_format.line_spacing = 1.08
+        paragraph.paragraph_format.keep_with_next = keep_with_next
+        run = paragraph.add_run(str(text))
+        run.bold = bold
+        run.font.name = font_name
+        run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), font_name)
+        run.font.size = Pt(size)
+        run.font.color.rgb = RGBColor.from_string(color)
+        self._move(paragraph._p)
+        return paragraph
+
+    def heading(self, text: str, level: int = 1) -> Any:
+        sizes = {1: 15, 2: 12.5, 3: 11.5, 4: 10.5}
+        paragraph = self.paragraph(
+            text,
+            bold=True,
+            size=sizes.get(level, 10.5),
+            color=BLUE if level <= 2 else NAVY,
+            align=WD_ALIGN_PARAGRAPH.LEFT,
+            keep_with_next=True,
+            space_before=10 if level <= 2 else 6,
+            space_after=5,
+            font_name="Arial",
+        )
+        properties = paragraph._p.get_or_add_pPr()
+        outline = properties.find(qn("w:outlineLvl"))
+        if outline is None:
+            outline = OxmlElement("w:outlineLvl")
+            properties.append(outline)
+        outline.set(qn("w:val"), str(max(0, min(level, 9) - 1)))
+        return paragraph
+
+    def bullet(self, text: str) -> Any:
+        return self.paragraph(
+            f"• {text}",
+            align=WD_ALIGN_PARAGRAPH.LEFT,
+            space_after=4,
+        )
+
+    def page_break(self) -> None:
+        paragraph = self.document.add_paragraph()
+        paragraph.add_run().add_break()
+        self._move(paragraph._p)
+
+    def table(
+        self,
+        headers: Sequence[str],
+        rows: Sequence[Sequence[Any]],
+        *,
+        widths: Sequence[int] | None = None,
+        left_columns: frozenset[int] = frozenset(),
+        empty_message: str = copy.EMPTY_TABLE_MONTH,
+    ) -> Any | None:
+        if not rows:
+            self.paragraph(
+                empty_message,
+                color=MID_GRAY,
+                align=WD_ALIGN_PARAGRAPH.LEFT,
+            )
+            return None
+        if widths is None:
+            widths = tuple(9200 // len(headers) for _ in headers)
+        if len(widths) != len(headers):
+            raise ValueError("Cabeçalhos e larguras da tabela Cloud são incompatíveis.")
+        table = self.document.add_table(rows=1, cols=len(headers))
+        table.style = "Table Grid"
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.autofit = False
+        base._set_table_fixed(table, sum(widths))
+        header = table.rows[0]
+        base._set_repeat_table_header(header)
+        base._prevent_row_split(header)
+        for index, (cell, label, width) in enumerate(zip(header.cells, headers, widths)):
+            base._set_cell_width(cell, width)
+            base._set_cell_shading(cell, BLUE)
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+            paragraph = cell.paragraphs[0]
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            run = paragraph.add_run(str(label))
+            base._set_run_font(run, size=7.5, color=WHITE, bold=True, name="Arial")
+        for row_index, values in enumerate(rows):
+            row = table.add_row()
+            base._prevent_row_split(row)
+            for column, (cell, value, width) in enumerate(zip(row.cells, values, widths)):
+                base._set_cell_width(cell, width)
+                if row_index % 2:
+                    base._set_cell_shading(cell, LIGHT_GRAY)
+                cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                paragraph = cell.paragraphs[0]
+                paragraph.alignment = (
+                    WD_ALIGN_PARAGRAPH.LEFT
+                    if column in left_columns
+                    else WD_ALIGN_PARAGRAPH.CENTER
+                )
+                run = paragraph.add_run("" if value is None else str(value))
+                base._set_run_font(run, size=7.2, color=NAVY, name="Arial")
+        self._move(table._tbl)
+        return table
+
+    def source_note(
+        self,
+        dataset: Mapping[str, Any],
+        table_id: str,
+        *,
+        enabled: bool,
+    ) -> None:
+        if not enabled:
+            return
+        note = format_source_filter_note(dataset, table_id)
+        if note:
+            self.paragraph(
+                note,
+                size=8,
+                color=MID_GRAY,
+                align=WD_ALIGN_PARAGRAPH.LEFT,
+                font_name="Arial",
+                space_before=2,
+                space_after=6,
+            )
+
+
+def _period_labels(dataset: Mapping[str, Any]) -> tuple[str, str, str]:
+    period = dataset.get("period") or {}
+    timezone_name = str(period.get("timezone") or "UTC")
+    timezone = ZoneInfo(timezone_name)
+    start = datetime.fromisoformat(str(period["start_at"]).replace("Z", "+00:00"))
+    end = datetime.fromisoformat(str(period["end_at"]).replace("Z", "+00:00"))
+    start_local = start.astimezone(timezone)
+    end_local = (end.astimezone(timezone) - timedelta(microseconds=1))
+    return (
+        start_local.strftime("%d/%m/%Y"),
+        end_local.strftime("%d/%m/%Y"),
+        start_local.strftime("%m/%Y"),
+    )
+
+
+def _asset_identity(row: Mapping[str, Any]) -> str:
+    if row.get("kind") == "container_image":
+        return str(row.get("repository_uri") or row.get("name") or "")
+    return str(row.get("name") or "")
+
+
+def render_document_control(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+) -> None:
+    start, end, _ = _period_labels(dataset)
+    builder.heading("1. CONTROLE DE DOCUMENTO", 1)
+    builder.table(
+        ("Preparação", "Nome", "Data"),
+        (("Preparação", "", ""),),
+        widths=(2600, 4200, 2400),
+        left_columns=frozenset({0, 1}),
+    )
+    builder.table(
+        ("Controle de Versionamento", "Versão", "Data"),
+        (("Relatório mensal", "1.0", end),),
+        widths=(4600, 2200, 2400),
+        left_columns=frozenset({0}),
+    )
+    builder.table(
+        ("Lista de Distribuição", "Nome", "Organização"),
+        (("Distribuição", "", ""),),
+        widths=(3200, 3000, 3000),
+        left_columns=frozenset({0, 1, 2}),
+    )
+    builder.heading("2. OBJETIVO", 1)
+    builder.paragraph(copy.OBJECTIVE)
+    builder.paragraph(
+        f"Período deste relatório compreende-se entre {start} e {end}.",
+        bold=True,
+    )
+
+
+def render_cloud_overview(builder: CloudDocumentBuilder) -> None:
+    builder.heading("3. TENABLE CLOUD SECURITY", 1)
+    builder.paragraph(copy.CLOUD_OVERVIEW)
+    builder.paragraph(copy.CLOUD_INTEGRATION)
+
+
+def render_introduction(builder: CloudDocumentBuilder) -> None:
+    builder.heading("3.1. Introdução", 2)
+    builder.paragraph(copy.REPORT_OBJECTIVES_INTRO)
+    for item in copy.REPORT_OBJECTIVES:
+        builder.bullet(item)
+    builder.paragraph(copy.DETECTION_INTRO)
+    for item in copy.DETECTION_CAPABILITIES:
+        builder.bullet(item)
+
+
+def render_top_hosts(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    show_source_filters: bool,
+) -> None:
+    builder.heading("3.2. Principais Hosts Vulneráveis", 2)
+    builder.paragraph(copy.TOP_HOSTS_INTRO)
+    builder.paragraph(copy.TOP_HOSTS_DETAILS)
+    rows = [
+        (
+            row.get("name") or "",
+            ", ".join(row.get("ip_addresses") or ()),
+            row.get("critical", 0),
+            row.get("high", 0),
+            row.get("medium", 0),
+            row.get("low", 0),
+            row.get("vulnerabilities", 0),
+        )
+        for row in dataset.get("top_vulnerable_hosts") or ()
+    ]
+    builder.table(
+        ("Asset Name", "IP Address", "Crítica", "Alta", "Média", "Baixa", "Total"),
+        rows,
+        widths=(2100, 1600, 1050, 1050, 1050, 1050, 1300),
+        left_columns=frozenset({0, 1}),
+    )
+    builder.source_note(dataset, "cloud_top_hosts", enabled=show_source_filters)
+
+
+def render_top_images(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    show_source_filters: bool,
+) -> None:
+    builder.heading("3.3. Imagens de Contêineres Mais Vulneráveis", 2)
+    builder.paragraph(copy.TOP_IMAGES_INTRO)
+    builder.paragraph(copy.TOP_IMAGES_TABLE_INTRO)
+    rows = [
+        (
+            row.get("name") or "",
+            row.get("repository_uri") or row.get("digest") or "",
+            row.get("critical", 0),
+            row.get("high", 0),
+            row.get("medium", 0),
+            row.get("low", 0),
+            row.get("vulnerabilities", 0),
+        )
+        for row in dataset.get("top_vulnerable_images") or ()
+    ]
+    builder.table(
+        ("Imagem", "Repositório / Digest", "Crítica", "Alta", "Média", "Baixa", "Total"),
+        rows,
+        widths=(1500, 2700, 950, 950, 950, 950, 1200),
+        left_columns=frozenset({0, 1}),
+    )
+    builder.source_note(dataset, "cloud_top_images", enabled=show_source_filters)
+
+
+def render_top_critical(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    show_source_filters: bool,
+) -> None:
+    builder.heading("3.4. Principais Vulnerabilidades Críticas (TOP 5 CVEs)", 2)
+    builder.paragraph(copy.TOP_CRITICAL_INTRO)
+    builder.paragraph(copy.TOP_CRITICAL_PRIORITY)
+    rows = [
+        (
+            index,
+            item.get("cve") or "",
+            item.get("vpr_display") or "N/D",
+            item.get("cvss_display") or "N/D",
+            SEVERITY_LABELS.get(str(item.get("severity") or ""), item.get("severity") or ""),
+            item.get("affected_assets", 0),
+            ", ".join(item.get("components") or ()) or "N/D",
+        )
+        for index, item in enumerate(dataset.get("top_critical_cves") or (), start=1)
+    ]
+    builder.table(
+        ("Rank", "CVE", "VPR", "CVSS", "Severidade", "Ativos afetados", "Componente / Produto"),
+        rows,
+        widths=(600, 1450, 700, 700, 1200, 1250, 3300),
+        left_columns=frozenset({1, 6}),
+        empty_message=copy.EMPTY_CRITICAL_MONTH,
+    )
+    builder.source_note(dataset, "cloud_top_critical_cves", enabled=show_source_filters)
+
+
+def _translated_description(
+    text: str,
+    translator: TextTranslator | None,
+) -> tuple[tuple[str, ...], bool]:
+    if translator is None:
+        return split_translation_chunks(text, max_chars=900), False
+    try:
+        return translate_in_chunks(text, translator, max_chars=900), False
+    except (TypeError, ValueError, RuntimeError):
+        return split_translation_chunks(text, max_chars=900), True
+
+
+def render_critical_details(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    translator: TextTranslator | None,
+) -> None:
+    critical = dataset.get("top_critical_cves") or ()
+    corrections = {
+        str(item.get("cve") or ""): item
+        for item in dataset.get("top_correctable_vulnerabilities") or ()
+        if isinstance(item, Mapping)
+    }
+    for index, item in enumerate(critical[:5], start=1):
+        cve = str(item.get("cve") or "CVE não informada")
+        builder.heading(f"3.4.{index}. {cve}", 3)
+        builder.paragraph(
+            " | ".join(
+                (
+                    f"VPR: {item.get('vpr_display') or 'N/D'}",
+                    f"CVSS: {item.get('cvss_display') or 'N/D'}",
+                    "Severidade: "
+                    + SEVERITY_LABELS.get(
+                        str(item.get("severity") or ""),
+                        str(item.get("severity") or "N/D"),
+                    ),
+                )
+            ),
+            bold=True,
+            align=WD_ALIGN_PARAGRAPH.LEFT,
+        )
+        builder.paragraph(
+            "Componente / produto: "
+            + (", ".join(item.get("components") or ()) or "N/D"),
+            align=WD_ALIGN_PARAGRAPH.LEFT,
+        )
+        builder.heading("Descrição:", 4)
+        description = str(item.get("description") or "").strip()
+        if description:
+            chunks, failed = _translated_description(description, translator)
+            for chunk in chunks:
+                builder.paragraph(chunk)
+            if failed:
+                builder.paragraph(
+                    copy.TRANSLATION_UNAVAILABLE,
+                    color=MID_GRAY,
+                    align=WD_ALIGN_PARAGRAPH.LEFT,
+                )
+        else:
+            builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+        correction = corrections.get(cve)
+        builder.heading("Correção ou contramedida recomendada:", 4)
+        if correction and correction.get("recommended_action"):
+            action_chunks, action_failed = _translated_description(
+                str(correction["recommended_action"]),
+                translator,
+            )
+            for chunk in action_chunks:
+                builder.paragraph(chunk)
+            if action_failed:
+                builder.paragraph(
+                    copy.TRANSLATION_UNAVAILABLE,
+                    color=MID_GRAY,
+                    align=WD_ALIGN_PARAGRAPH.LEFT,
+                )
+            builder.paragraph(
+                "Tipo de correção: "
+                + str(correction.get("correction_type_display") or "Não determinado"),
+                align=WD_ALIGN_PARAGRAPH.LEFT,
+            )
+        else:
+            builder.paragraph(
+                "Não determinada pelos dados coletados neste mês.",
+                color=MID_GRAY,
+            )
+        builder.heading("Ativos afetados:", 4)
+        asset_rows = []
+        for asset in item.get("assets") or ():
+            if not isinstance(asset, Mapping):
+                continue
+            kind = "Imagem" if asset.get("kind") == "container_image" else "Máquina virtual"
+            address = (
+                asset.get("repository_uri")
+                or asset.get("digest")
+                or ", ".join(asset.get("ip_addresses") or ())
+            )
+            asset_rows.append(
+                (
+                    kind,
+                    _asset_identity(asset),
+                    address or "",
+                    asset.get("account_id") or "",
+                    ", ".join(asset.get("components") or ()) or "N/D",
+                )
+            )
+        builder.table(
+            ("Tipo", "Ativo", "IP / Repositório", "Conta", "Componente"),
+            asset_rows,
+            widths=(1200, 2100, 2500, 1500, 1900),
+            left_columns=frozenset({0, 1, 2, 3, 4}),
+        )
+
+
+def render_top_correctable(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    show_source_filters: bool,
+    translator: TextTranslator | None,
+) -> None:
+    builder.heading("3.5. Principais Vulnerabilidades com Correção Disponível", 2)
+    rows = [
+        (
+            item.get("cve") or "",
+            item.get("vpr_display") or "N/D",
+            item.get("cvss_display") or "N/D",
+            SEVERITY_LABELS.get(str(item.get("severity") or ""), item.get("severity") or ""),
+            item.get("affected_assets", 0),
+            item.get("correction_type_display") or "Não determinado",
+            " ".join(_translated_description(str(item.get("recommended_action") or ""), translator)[0]),
+        )
+        for item in dataset.get("top_correctable_vulnerabilities") or ()
+    ]
+    builder.table(
+        ("CVE", "VPR", "CVSS", "Severidade", "Ativos afetados", "Tipo de correção", "Ação recomendada"),
+        rows,
+        widths=(1250, 650, 650, 1000, 1150, 1800, 2700),
+        left_columns=frozenset({0, 5, 6}),
+        empty_message=copy.EMPTY_CORRECTABLE_MONTH,
+    )
+    builder.source_note(dataset, "cloud_top_correctable", enabled=show_source_filters)
+
+
+def render_dashboard(builder: CloudDocumentBuilder, dataset: Mapping[str, Any]) -> None:
+    builder.heading("3.6. Painel de Controle (Dashboards) – Informações Rápidas", 2)
+    builder.paragraph(copy.DASHBOARD_INTRO)
+    builder.heading("3.6.1. Proteção de Workloads (Workload Protection)", 3)
+    builder.paragraph(copy.WORKLOAD_STATUS)
+    workload = dataset.get("workload_status")
+    if not isinstance(workload, Mapping) or not isinstance(
+        workload.get("by_max_severity"),
+        Mapping,
+    ):
+        builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+    else:
+        counts = workload["by_max_severity"]
+        rows = [
+            (SEVERITY_LABELS[severity], counts.get(severity, 0))
+            for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE")
+        ]
+        builder.table(
+            ("Maior severidade no workload", "Máquinas virtuais"),
+            rows,
+            widths=(5800, 3400),
+            left_columns=frozenset({0}),
+        )
+    builder.heading("3.6.2. Status dos Sistemas Operacionais", 3)
+    builder.paragraph(copy.OPERATING_SYSTEM_STATUS)
+    builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+
+
+def render_conclusion(builder: CloudDocumentBuilder) -> None:
+    builder.heading("4. Conclusão", 1)
+    builder.paragraph(copy.CONCLUSION_OVERVIEW)
+    builder.paragraph(copy.CONCLUSION_VALUE_INTRO)
+    for item in copy.CONCLUSION_VALUES:
+        builder.bullet(item)
+    builder.paragraph(copy.CONCLUSION_PLATFORM)
+    builder.paragraph(copy.CONCLUSION_SUMMARY)
+
+
+__all__ = [
+    "CloudDocumentBuilder",
+    "render_cloud_overview",
+    "render_conclusion",
+    "render_critical_details",
+    "render_dashboard",
+    "render_document_control",
+    "render_introduction",
+    "render_top_correctable",
+    "render_top_critical",
+    "render_top_hosts",
+    "render_top_images",
+]

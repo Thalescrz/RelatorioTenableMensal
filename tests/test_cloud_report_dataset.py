@@ -246,6 +246,35 @@ def test_top_hosts_images_components_and_sources_are_materialized() -> None:
     assert "cloud_top_hosts" in dataset["table_provenance"]["tables"]
 
 
+def test_workload_status_uses_each_virtual_machine_worst_severity() -> None:
+    critical = _asset("vm-critical")
+    high = _asset("vm-high")
+    clean = _asset("vm-without-occurrence")
+    image = _asset("image-critical", image=True)
+    dataset = _dataset_module().build_cloud_dataset(
+        snapshot=_snapshot(
+            assets=(critical, high, clean, image),
+            occurrences=(
+                _occurrence(critical, "CVE-2026-0100", severity="LOW"),
+                _occurrence(critical, "CVE-2026-0101", severity="CRITICAL"),
+                _occurrence(high, "CVE-2026-0102", severity="HIGH"),
+                _occurrence(image, "CVE-2026-0103", severity="CRITICAL"),
+            ),
+        ),
+        period=_period(),
+    )
+
+    assert dataset["workload_status"] == {
+        "total_virtual_machines": 3,
+        "by_max_severity": {
+            "CRITICAL": 1,
+            "HIGH": 1,
+            "MEDIUM": 0,
+            "LOW": 0,
+            "NONE": 1,
+        },
+    }
+
 def test_dataset_artifact_is_atomic_hashed_and_replayable(tmp_path: Path) -> None:
     module = _dataset_module()
     artifact = module.write_cloud_report_dataset(

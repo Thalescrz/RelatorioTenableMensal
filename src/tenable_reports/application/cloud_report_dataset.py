@@ -303,6 +303,31 @@ def _top_posture(
     )[:10]
 
 
+def _workload_status(snapshot: NormalizedCloudSnapshot) -> dict[str, Any]:
+    virtual_machines = {
+        asset.key
+        for asset in snapshot.assets
+        if asset.key.kind is CloudAssetKind.VIRTUAL_MACHINE
+    }
+    worst_by_asset = {key: "NONE" for key in virtual_machines}
+    for occurrence in snapshot.occurrences:
+        if occurrence.asset not in virtual_machines:
+            continue
+        current = worst_by_asset[occurrence.asset]
+        if _SEVERITY_RANK.get(occurrence.severity, -1) > _SEVERITY_RANK.get(
+            current,
+            -1,
+        ):
+            worst_by_asset[occurrence.asset] = occurrence.severity
+    counts = Counter(worst_by_asset.values())
+    return {
+        "total_virtual_machines": len(virtual_machines),
+        "by_max_severity": {
+            severity: counts.get(severity, 0)
+            for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "NONE")
+        },
+    }
+
 def _aging(snapshot: NormalizedCloudSnapshot) -> dict[str, int]:
     buckets = {
         "0-30": 0,
@@ -622,6 +647,7 @@ def build_cloud_dataset(
             snapshot,
             CloudAssetKind.CONTAINER_IMAGE,
         ),
+        "workload_status": _workload_status(snapshot),
         "top_components": _top_components(snapshot),
         "top_posture_findings": _top_posture(snapshot),
         "top_correctable_vulnerabilities": _correctable(
