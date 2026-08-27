@@ -263,6 +263,8 @@ class PostgresDatabase:
             "legacy_sqlite_imports",
             "plugin_catalog",
             "compact_finding_snapshots",
+            "cloud_report_snapshots",
+            "cloud_contract_checks",
         )
         with self.connection() as connection:
             server = connection.execute(
