@@ -175,10 +175,6 @@ REMEDIATION_PERFORMANCE = (
     "Os indicadores abaixo mostram as vulnerabilidades resolvidas no período e, "
     "quando disponível, o tempo médio entre identificação e resolução."
 )
-CLOUD_INVENTORY = (
-    "O inventário resume os recursos Cloud por provedor e região conforme a "
-    "fonte de inventário disponível no período."
-)
 MONTHLY_EVOLUTION = (
     "A evolução mensal utiliza exclusivamente snapshots MAIN compatíveis; meses "
     "indisponíveis permanecem como lacunas e não são tratados como zero."
@@ -204,7 +200,7 @@ TRANSLATION_UNAVAILABLE = (
 
 
 def approved_cloud_editorial_paragraphs() -> tuple[str, ...]:
-    """Textos genéricos preservados e aprovados para o Modelo Base."""
+    """Textos genéricos preservados e aprovados para o relatório Cloud padrão."""
 
     return (
         OBJECTIVE,
@@ -232,7 +228,6 @@ def approved_cloud_editorial_paragraphs() -> tuple[str, ...]:
 
 
 __all__ = [
-    "CLOUD_INVENTORY",
     "CLOUD_POSTURE",
     "COMPONENTS_PRODUCTS",
     "EMPTY_CORRECTABLE_MONTH",

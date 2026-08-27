@@ -70,8 +70,9 @@ nenhum campo GraphQL não comprovado é incluído silenciosamente.
 A coleta pagina máquinas virtuais, imagens de contêiner, ocorrências de
 vulnerabilidade, inventário, findings de postura e ciclo de vida. Descrição e
 remediação usam consultas enriquecidas somente para os candidatos de Top 5 e Top
-10. Uma fotografia normalizada alimenta os dois DOCX de homologação e o snapshot
-compacto PostgreSQL.
+10. Uma fotografia normalizada alimenta o único DOCX Cloud padrão e o snapshot
+compacto PostgreSQL. O valor técnico de variante persistido continua `expanded`
+somente para compatibilidade com o histórico e com a restrição do banco.
 
 O projeto legado `RelatorioCloudTenable` permanece documentado como base técnica
 histórica do conector GraphQL: ajuda a localizar operações e campos já usados, mas

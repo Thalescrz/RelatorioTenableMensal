@@ -101,22 +101,19 @@ class ProjectGuidanceTests(unittest.TestCase):
 
         self.assertEqual(validate_guidance(self.root), ())
 
-    def test_cloud_fixture_renderer_builds_two_documents_from_one_hash(self) -> None:
+    def test_cloud_fixture_renderer_builds_one_standard_document(self) -> None:
         from scripts.render_cloud_report_fixture import render_cloud_fixture
 
         output_root = self.root / "cloud-prototype"
         manifest = render_cloud_fixture(output_root)
 
-        self.assertEqual(
-            {item["variant"] for item in manifest["documents"]},
-            {"base", "expanded"},
-        )
+        self.assertEqual(len(manifest["documents"]), 1)
+        self.assertEqual(manifest["documents"][0]["variant"], "expanded")
         self.assertEqual(
             len({item["dataset_sha256"] for item in manifest["documents"]}),
             1,
         )
-        self.assertTrue((output_root / "cloud-modelo-base.docx").is_file())
-        self.assertTrue((output_root / "cloud-modelo-ampliado.docx").is_file())
+        self.assertTrue((output_root / "cloud-relatorio-padrao.docx").is_file())
         self.assertTrue((output_root / "cloud-prototype-manifest.json").is_file())
 
     def test_cloud_fixture_loads_qa_toolkit_by_project_path(self) -> None:
@@ -146,8 +143,7 @@ class ProjectGuidanceTests(unittest.TestCase):
             "TCS_API_SECRET",
             "Testar API Cloud",
             "Tentar Cloud novamente",
-            "Modelo Base",
-            "Modelo Ampliado",
+            "relatório Cloud padrão",
             "fotografia Cloud",
             "RelatorioCloudTenable",
         ):

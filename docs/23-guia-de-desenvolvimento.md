@@ -112,15 +112,16 @@ Depois de alterar apresentação:
 4. inspecione páginas críticas, tabelas, cortes e campos vazios;
 5. mantenha a prova fora do Git quando contiver dados reais.
 
-Para os modelos Cloud sanitizados:
+Para o relatório Cloud padrão sanitizado:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\render_cloud_report_fixture.py `
   --output-root artifacts\cloud-prototype --qa
 ```
 
-O manifesto deve provar que o **Modelo Base** e o **Modelo Ampliado** usam o mesmo
-hash de dataset. O QA registra PDFs, páginas e contact sheets antes da inspeção.
+O manifesto deve registrar um único documento, o hash do dataset e as seções
+renderizadas ou omitidas. O QA registra PDF, páginas e contact sheet antes da
+inspeção.
 
 ## Interface web
 

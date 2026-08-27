@@ -22,7 +22,6 @@ from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation.cloud_report_sections import (
     CloudDocumentBuilder,
     cloud_posture_available,
-    render_cloud_inventory,
     render_cloud_overview,
     render_cloud_posture,
     render_components_products,
@@ -44,23 +43,7 @@ from tenable_reports.presentation.translation import TextTranslator
 
 
 CLOUD_TEMPLATE_VERSION = "cloud-base-v1.0"
-BASE_SECTION_IDS = (
-    "cover",
-    "table_of_contents",
-    "document_control",
-    "objective",
-    "cloud_overview",
-    "introduction",
-    "top_hosts",
-    "top_images",
-    "top_critical",
-    "critical_details",
-    "top_correctable",
-    "dashboard",
-    "conclusion",
-    "back_cover",
-)
-EXPANDED_SECTION_IDS = (
+STANDARD_SECTION_IDS = (
     "cover",
     "table_of_contents",
     "document_control",
@@ -78,7 +61,6 @@ EXPANDED_SECTION_IDS = (
     "cloud_posture",
     "vulnerability_aging",
     "remediation_performance",
-    "cloud_inventory",
     "monthly_evolution",
     "conclusion",
     "back_cover",
@@ -101,7 +83,6 @@ _MONTHS_PT = (
 
 
 class CloudReportVariant(StrEnum):
-    BASE = "base"
     EXPANDED = "expanded"
 
 
@@ -202,43 +183,31 @@ def _set_toc_field(
         item.add_text(entry)
 
 
-def _toc_entries(
-    variant: CloudReportVariant,
-    *,
-    include_posture: bool,
-) -> tuple[str, ...]:
+def _toc_entries(*, include_posture: bool) -> tuple[str, ...]:
     entries = [
         "1. CONTROLE DE DOCUMENTO",
         "2. OBJETIVO",
         "3. TENABLE CLOUD SECURITY",
         "3.1. Introdução",
+        "3.1.1. Resumo Executivo do Período",
+        "3.2. Principais Hosts Vulneráveis",
+        "3.3. Imagens de Contêineres Mais Vulneráveis",
+        "3.4. Principais Vulnerabilidades Críticas (TOP 5 CVEs)",
+        "3.5. Principais Vulnerabilidades com Correção Disponível",
+        "3.6. Painel de Controle (Dashboards)",
+        "3.7. Componentes e Produtos em Maior Risco",
     ]
-    if variant is CloudReportVariant.EXPANDED:
-        entries.append("3.1.1. Resumo Executivo do Período")
+    if include_posture:
+        entries.append("3.8. Postura de Segurança em Nuvem")
     entries.extend(
         (
-            "3.2. Principais Hosts Vulneráveis",
-            "3.3. Imagens de Contêineres Mais Vulneráveis",
-            "3.4. Principais Vulnerabilidades Críticas (TOP 5 CVEs)",
-            "3.5. Principais Vulnerabilidades com Correção Disponível",
-            "3.6. Painel de Controle (Dashboards)",
+            "3.9. Envelhecimento das Vulnerabilidades",
+            "3.10. Desempenho de Remediação",
+            "3.11. Evolução Mensal",
+            "4. Conclusão",
         )
     )
-    if variant is CloudReportVariant.EXPANDED:
-        entries.append("3.7. Componentes e Produtos em Maior Risco")
-        if include_posture:
-            entries.append("3.8. Postura de Segurança em Nuvem")
-        entries.extend(
-            (
-                "3.9. Envelhecimento das Vulnerabilidades",
-                "3.10. Desempenho de Remediação",
-                "3.11. Inventário Cloud",
-                "3.12. Evolução Mensal",
-            )
-        )
-    entries.append("4. Conclusão")
     return tuple(entries)
-
 
 def _set_update_fields(document: DocxDocument) -> None:
     settings = document.settings.element
@@ -274,7 +243,7 @@ def generate_cloud_report(
     dataset_path: str | Path,
     profile: ClientProfile,
     output_path: str | Path,
-    variant: CloudReportVariant | str,
+    variant: CloudReportVariant | str = CloudReportVariant.EXPANDED,
     translator: TextTranslator | None = None,
 ) -> CloudReportRenderResult:
     template = Path(template_path)
@@ -292,25 +261,15 @@ def generate_cloud_report(
         client_name=profile.display_name,
         month_year=_month_year(dataset),
     )
-    include_posture = (
-        selected_variant is CloudReportVariant.EXPANDED
-        and cloud_posture_available(dataset)
-    )
+    include_posture = cloud_posture_available(dataset)
     toc = _find_paragraph(document, "{{TABLE_OF_CONTENTS}}")
     _set_toc_field(
         toc,
-        entries=_toc_entries(
-            selected_variant,
-            include_posture=include_posture,
-        ),
+        entries=_toc_entries(include_posture=include_posture),
     )
     anchor = _find_paragraph(document, "{{CLOUD_CONTENT_START}}")
     builder = CloudDocumentBuilder(document=document, anchor=anchor)
-    rendered_sections = list(
-        BASE_SECTION_IDS
-        if selected_variant is CloudReportVariant.BASE
-        else EXPANDED_SECTION_IDS
-    )
+    rendered_sections = list(STANDARD_SECTION_IDS)
     omitted_sections: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="cloud-report-visuals-") as chart_directory:
@@ -324,13 +283,12 @@ def generate_cloud_report(
             builder.paragraph(warning, bold=True, color="C00000")
         render_introduction(builder)
         show_filters = profile.presentation.show_source_filters
-        if selected_variant is CloudReportVariant.EXPANDED:
-            builder.page_break()
-            render_executive_overview(
-                builder,
-                dataset,
-                chart_dir=chart_dir,
-            )
+        builder.page_break()
+        render_executive_overview(
+            builder,
+            dataset,
+            chart_dir=chart_dir,
+        )
         render_top_hosts(builder, dataset, show_source_filters=show_filters)
         render_top_images(builder, dataset, show_source_filters=show_filters)
         render_top_critical(builder, dataset, show_source_filters=show_filters)
@@ -342,46 +300,39 @@ def generate_cloud_report(
             translator=translator,
         )
         render_dashboard(builder, dataset)
-        if selected_variant is CloudReportVariant.EXPANDED:
-            render_components_products(
+        render_components_products(
+            builder,
+            dataset,
+            show_source_filters=show_filters,
+        )
+        if include_posture:
+            render_cloud_posture(
                 builder,
                 dataset,
                 show_source_filters=show_filters,
             )
-            if include_posture:
-                render_cloud_posture(
-                    builder,
-                    dataset,
-                    show_source_filters=show_filters,
-                )
-            else:
-                rendered_sections.remove("cloud_posture")
-                omitted_sections.append("cloud_posture")
-            render_vulnerability_aging(
-                builder,
-                dataset,
-                chart_dir=chart_dir,
-                show_source_filters=show_filters,
-            )
-            render_remediation_performance(
-                builder,
-                dataset,
-                show_source_filters=show_filters,
-            )
-            builder.page_break()
-            render_cloud_inventory(
-                builder,
-                dataset,
-                show_source_filters=show_filters,
-            )
-            history_chart_rendered = render_monthly_evolution(
-                builder,
-                dataset,
-                chart_dir=chart_dir,
-            )
-            if not history_chart_rendered:
-                omitted_sections.append("monthly_evolution_chart")
-            builder.page_break()
+        else:
+            rendered_sections.remove("cloud_posture")
+            omitted_sections.append("cloud_posture")
+        render_vulnerability_aging(
+            builder,
+            dataset,
+            chart_dir=chart_dir,
+            show_source_filters=show_filters,
+        )
+        render_remediation_performance(
+            builder,
+            dataset,
+            show_source_filters=show_filters,
+        )
+        history_chart_rendered = render_monthly_evolution(
+            builder,
+            dataset,
+            chart_dir=chart_dir,
+        )
+        if not history_chart_rendered:
+            omitted_sections.append("monthly_evolution_chart")
+        builder.page_break()
         render_conclusion(builder)
 
         anchor.clear()
@@ -400,11 +351,9 @@ def generate_cloud_report(
         dataset_sha256=_sha256(dataset_source),
     )
 
-
 __all__ = [
-    "BASE_SECTION_IDS",
     "CLOUD_TEMPLATE_VERSION",
-    "EXPANDED_SECTION_IDS",
+    "STANDARD_SECTION_IDS",
     "CloudReportRenderResult",
     "CloudReportVariant",
     "generate_cloud_report",

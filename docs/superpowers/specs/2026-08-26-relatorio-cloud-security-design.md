@@ -3,6 +3,11 @@
 **Data:** 2026-08-26  
 **Status:** aprovado para planejamento e implementação  
 **Projeto:** RelatorioTenableMensalv2
+> **Estado atual (2026-08-27):** este documento preserva a decisão histórica de
+> homologar dois modelos. O produto atual gera somente o antigo modelo ampliado,
+> agora denominado relatório Cloud padrão, sem seletor ou sufixo de variante. O
+> contrato vigente está em `docs/19` a `docs/23`.
+
 
 ## 1. Objetivo
 

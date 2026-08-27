@@ -60,17 +60,19 @@ comparativo temporal.
 ### Relatório Tenable Cloud Security
 
 É um documento próprio, habilitado por cliente e gerado junto com a execução
-normal. A coleta GraphQL cria uma fotografia Cloud independente do dataset VM. Na
-homologação, a mesma fotografia produz o **Modelo Base** e o **Modelo Ampliado**;
-a configuração final mantém `base`, `expanded` ou temporariamente `comparison`.
+normal. A coleta GraphQL cria uma fotografia Cloud independente do dataset VM. Cada
+execução publica um único DOCX padrão; perfis legados com `base`, `expanded` ou
+`comparison` são normalizados para esse modelo e não expõem seleção na interface.
 
-O conteúdo comum inclui principais hosts e imagens, Top 5 de CVEs críticas com
-detalhamento e ativos afetados, Top 10 com correção disponível e dashboard. O
-modelo ampliado acrescenta resumo executivo, componentes, postura quando suportada,
-envelhecimento, remediação, inventário e evolução mensal. Fontes não licenciadas ou
-indisponíveis são omitidas ou sinalizadas; ausência de dado não é convertida em
-zero.
-
+O conteúdo inclui resumo executivo, principais hosts e imagens, Top 5 de CVEs
+críticas com detalhamento, scores, correção e ativos afetados, Top 10 com correção
+disponível sem a coluna extensa de ação recomendada, dashboard, componentes,
+postura quando suportada, envelhecimento, remediação e evolução mensal. O item de
+inventário Cloud foi removido. Em 3.6.2 permanece o marcador editorial para inserir
+a captura da plataforma. Sem histórico anterior, 3.11 apresenta tabela e gráfico
+com somente a fotografia atual; não cria comparação fictícia. Fontes não
+licenciadas ou indisponíveis são omitidas ou sinalizadas, e ausência de dado não é
+convertida em zero.
 ## Princípios de negócio
 
 1. O relatório geral sempre representa o ambiente geral do cliente no período.

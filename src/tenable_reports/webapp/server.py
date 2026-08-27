@@ -505,7 +505,7 @@ class DashboardConfigStore:
                 "cloud_enabled": bool(cloud_scope.get("enabled")),
                 "cloud_token_saved": _cloud_token_status(env_path),
                 "cloud_environment": str(cloud_scope.get("environment") or "global"),
-                "cloud_layout": str(cloud_scope.get("layout") or "comparison"),
+                "cloud_layout": "expanded",
                 "intelligence_enabled": bool(report.get("intelligence_modules") or []),
                 "include_output": bool(raw.get("include_output", False)),
                 "show_source_filters": bool(presentation.get("show_source_filters", False)),
@@ -560,9 +560,7 @@ class DashboardConfigStore:
             cloud_environment = str(
                 values.get("cloud_environment") or "global"
             ).strip().lower()
-            cloud_layout = str(
-                values.get("cloud_layout") or "comparison"
-            ).strip().lower()
+            cloud_layout = "expanded"
             intelligence_enabled = bool(values.get("intelligence_enabled", True))
             intelligence_modules = _intelligence_modules(
                 enabled=intelligence_enabled,
@@ -744,7 +742,6 @@ class DashboardConfigStore:
                 "was_enabled",
                 "cloud_enabled",
                 "cloud_environment",
-                "cloud_layout",
                 "intelligence_enabled",
             }
             if capability_fields.intersection(values):
@@ -764,9 +761,7 @@ class DashboardConfigStore:
                 cloud_scope["environment"] = str(
                     values.get("cloud_environment", cloud_scope.get("environment", "global"))
                 ).strip().lower()
-                cloud_scope["layout"] = str(
-                    values.get("cloud_layout", cloud_scope.get("layout", "comparison"))
-                ).strip().lower()
+                cloud_scope["layout"] = "expanded"
                 profile.setdefault("report", {})["intelligence_modules"] = (
                     _intelligence_modules(
                         enabled=intelligence_enabled,

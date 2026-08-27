@@ -57,20 +57,11 @@ def report_filename(
 def cloud_report_filename(
     display_name: str,
     period: ReportingPeriod,
-    variant: str,
 ) -> str:
-    labels = {
-        "base": "MODELO BASE",
-        "expanded": "MODELO AMPLIADO",
-    }
-    selected = str(variant or "").strip().lower()
-    if selected not in labels:
-        raise ValueError("variant deve ser base ou expanded.")
     return _safe_windows_filename(
         f"[{display_name}] Relatório Tenable Cloud Security "
-        f"{period_suffix(period)} - {labels[selected]}.docx"
+        f"{period_suffix(period)}.docx"
     )
-
 
 def tag_report_filename(
     display_name: str,

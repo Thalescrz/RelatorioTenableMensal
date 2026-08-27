@@ -27,13 +27,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliTests(unittest.TestCase):
-    def test_complete_run_publishes_both_cloud_variants_from_same_dataset(self) -> None:
+    def test_complete_run_publishes_one_standard_cloud_document(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
             period, profile, collected, args = self._tag_run_fixture(directory)
             cloud_dataset = directory / "cloud-dataset.json"
             cloud_dataset.write_text("{}", encoding="utf-8")
-            cloud_base = directory / "cloud-base.docx"
             cloud_expanded = directory / "cloud-expanded.docx"
             manifest = directory / "publication.json"
             manifest.write_text("{}", encoding="utf-8")
@@ -47,7 +46,6 @@ class CliTests(unittest.TestCase):
             cloud_result = CloudComponentResult(
                 status=CloudExecutionStatus.COMPLETE,
                 documents=(
-                    CloudGeneratedDocument(cloud_base, "base"),
                     CloudGeneratedDocument(cloud_expanded, "expanded"),
                 ),
                 dataset_path=cloud_dataset,
@@ -75,11 +73,11 @@ class CliTests(unittest.TestCase):
             ]
             self.assertEqual(
                 [item.document_variant for item in cloud_documents],
-                ["base", "expanded"],
+                ["expanded"],
             )
             self.assertEqual(captured["additional_datasets"], {"cloud": cloud_dataset})
             self.assertEqual(result["cloud_status"], "COMPLETE")
-            self.assertEqual(len(result["cloud_documents"]), 2)
+            self.assertEqual(len(result["cloud_documents"]), 1)
             self.assertEqual(result["cloud_snapshot_id"], "cloud-snapshot-fixture")
 
     def test_cloud_failure_keeps_vm_documents_and_returns_warning_status(self) -> None:
@@ -134,7 +132,6 @@ class CliTests(unittest.TestCase):
             manifest.write_text("{}", encoding="utf-8")
             cloud_dataset = directory / "cloud-dataset.json"
             cloud_dataset.write_text("{}", encoding="utf-8")
-            cloud_base = directory / "cloud-base.docx"
             cloud_expanded = directory / "cloud-expanded.docx"
             context = SimpleNamespace(
                 run_id="run-a",
@@ -154,7 +151,7 @@ class CliTests(unittest.TestCase):
                 cloud_security_scope=SimpleNamespace(
                     enabled=True,
                     environment="global",
-                    layout="comparison",
+                    layout="expanded",
                 ),
                 reporting=SimpleNamespace(
                     include_info_severity=False,
@@ -168,7 +165,6 @@ class CliTests(unittest.TestCase):
             result = CloudComponentResult(
                 status=CloudExecutionStatus.COMPLETE,
                 documents=(
-                    CloudGeneratedDocument(cloud_base, "base"),
                     CloudGeneratedDocument(cloud_expanded, "expanded"),
                 ),
                 dataset_path=cloud_dataset,
@@ -201,7 +197,7 @@ class CliTests(unittest.TestCase):
             documents = upsert.call_args.kwargs["documents"]
             self.assertEqual(
                 [item.document_variant for item in documents],
-                ["base", "expanded"],
+                ["expanded"],
             )
     def test_live_collection_flag_is_accepted_by_orchestrator_and_client(self) -> None:
         parser = cli_module.build_parser()

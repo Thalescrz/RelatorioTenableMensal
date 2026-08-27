@@ -150,14 +150,17 @@ e Low.
 - Top 5 críticas: CVEs críticas ordenadas por VPR real, CVSS e ativos afetados,
   acompanhadas de descrição, correção e tabela de ativos.
 - Top 10 com correção: apenas vulnerabilidades com remediação correlacionada e tipo
-  de correção rastreável.
+  de correção rastreável; o documento não repete a ação recomendada extensa nessa
+  tabela.
 - Postura Cloud: findings não relacionados a vulnerabilidade, somente quando a
   capacidade e a população são confirmadas.
 - Aging: ocorrências abertas por idade; data ausente permanece em faixa própria.
 - Remediação: resoluções dentro do intervalo e média de dias somente para registros
   com datas válidas.
 - Evolução mensal: comparação de fotografias Cloud compactas e compatíveis; mês
-  indisponível permanece como lacuna, nunca zero artificial.
+  indisponível permanece como lacuna, nunca zero artificial. Quando só existe a
+  fotografia atual, a tabela e o gráfico exibem um único ponto real e o texto deixa
+  explícito que ainda não há comparação temporal.
 
 ## TAGs
 

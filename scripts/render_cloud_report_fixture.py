@@ -440,14 +440,14 @@ def render_cloud_fixture(
         cloud_security_scope=replace(
             profile.cloud_security_scope,
             enabled=True,
-            layout="comparison",
+            layout="expanded",
         ),
     )
     documents: list[dict[str, Any]] = []
-    targets = (
-        (CloudReportVariant.BASE, output_root / "cloud-modelo-base.docx"),
-        (CloudReportVariant.EXPANDED, output_root / "cloud-modelo-ampliado.docx"),
-    )
+    targets = ((
+        CloudReportVariant.EXPANDED,
+        output_root / "cloud-relatorio-padrao.docx",
+    ),)
     for variant, output_path in targets:
         result = generate_cloud_report(
             template_path=TEMPLATE,
@@ -475,7 +475,7 @@ def render_cloud_fixture(
         )
     dataset_hashes = {item["dataset_sha256"] for item in documents}
     if len(dataset_hashes) != 1:
-        raise RuntimeError("Os dois modelos não foram gerados do mesmo dataset.")
+        raise RuntimeError("O relatório padrão não preservou o hash do dataset.")
     manifest = {
         "schema_version": 1,
         "fixture": {
@@ -496,7 +496,7 @@ def render_cloud_fixture(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Gera os modelos Cloud Base e Ampliado com dados sanitizados."
+        description="Gera o relatório Cloud padrão com dados sanitizados."
     )
     parser.add_argument(
         "--output-root",

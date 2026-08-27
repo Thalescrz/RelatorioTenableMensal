@@ -1218,7 +1218,7 @@ class WebDashboardTests(unittest.TestCase):
             self.assertTrue(created["cloud_enabled"])
             self.assertTrue(created["cloud_token_saved"])
             self.assertEqual(created["cloud_environment"], "us_gov")
-            self.assertEqual(created["cloud_layout"], "comparison")
+            self.assertEqual(created["cloud_layout"], "expanded")
             self.assertNotIn("cloud_api_secret", created)
             self.assertNotIn("cloud-secret-original", json.dumps(created))
 
@@ -1318,7 +1318,9 @@ class WebDashboardTests(unittest.TestCase):
 
         self.assertIn('name="cloud_api_secret"', html)
         self.assertIn('name="cloud_environment"', html)
-        self.assertIn('name="cloud_layout"', html)
+        self.assertNotIn('name="cloud_layout"', html)
+        self.assertNotIn("elements.cloud_layout", javascript)
+        self.assertNotIn("Modelo expandido", javascript)
         self.assertIn('id="test-cloud-button"', html)
         self.assertIn("Tentar Cloud novamente", javascript)
         self.assertIn("TENABLE_CLOUD_PROGRESS", javascript)

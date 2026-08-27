@@ -60,10 +60,10 @@ As chaves ficam no arquivo local ignorado pelo Git e não retornam para a tela.
    local `credentials/<client_id>.env`; um campo vazio em edição preserva o token
    existente.
 3. Escolha o ambiente GraphQL correspondente ao tenant.
-4. Durante a homologação, mantenha a variante `comparison` para produzir o
-   **Modelo Base** e o **Modelo Ampliado** a partir da mesma fotografia Cloud.
-5. Clique em **Testar API Cloud** antes da primeira coleta. O teste valida somente
-   credencial e contrato mínimo; ele não gera o relatório completo.
+4. Clique em **Testar API Cloud** antes da primeira coleta. O teste valida somente
+   credencial e contrato mínimo; ele não gera o relatório completo. A interface não
+   possui seletor de modelo: toda execução Cloud habilitada gera o único documento
+   padrão completo.
 
 Quando habilitado, Cloud começa junto com VM, WAS, customizado e TAG, mas possui
 progresso e falha próprios. A coleta representa o estado no instante da execução.
@@ -166,7 +166,7 @@ Para uma execução com coleta nova, confirme também:
 - indicação de coleta forçada no card;
 - origem `created` em vez de replay;
 - VM e WAS independentes, cada um em `FINISHED` quando disponível;
-- Cloud independente, com fotografia e variantes publicadas quando habilitado;
+- Cloud independente, com fotografia e documento padrão publicado quando habilitado;
 - quantidade de chunks concluídos igual à quantidade total;
 - rota e estado de reconstrução registrados no resultado;
 - DOCX esperados disponíveis e limpeza concluída após a publicação.

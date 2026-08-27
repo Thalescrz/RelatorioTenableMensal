@@ -10,8 +10,8 @@ possam alimentar quatro tipos de documento:
 2. relatório geral de inteligência e customizações, com módulos atuais e históricos;
 3. relatório operacional compacto por TAG, opcional, com comparativo temporal da
    própria TAG quando habilitado;
-4. relatório Tenable Cloud Security, opcional por cliente, com Modelo Base e
-   Modelo Ampliado durante a homologação editorial.
+4. relatório Tenable Cloud Security, opcional por cliente, em um único modelo
+   padrão completo.
 
 As TAGs nunca filtram os dois relatórios gerais. A coleta VM geral acontece uma vez
 e os relatórios por TAG são recortes locais por UUID dos ativos.
@@ -85,9 +85,16 @@ provedor externo continua sem integração automática.
 
 Quando habilitado no cliente, o Cloud inicia junto com a execução normal e usa a
 API GraphQL em fluxo próprio. Antes da coleta completa, **Testar API Cloud** valida
-credencial e contrato mínimo. A primeira homologação publica o **Modelo Base** e o
-**Modelo Ampliado** a partir da mesma fotografia Cloud; depois da escolha editorial,
-o perfil pode manter somente a variante aprovada.
+credencial e contrato mínimo. Cada execução publica um único DOCX Cloud padrão. Os
+valores legados `base`, `expanded` e `comparison` são aceitos somente ao carregar
+perfis antigos e normalizados internamente para o modelo atual; não há seletor de
+modelo na interface nem sufixo de variante no nome do arquivo.
+
+O documento padrão reúne resumo executivo, hosts e imagens vulneráveis, Top 5 de
+CVEs críticas detalhadas, Top 10 com correção disponível, dashboard, componentes,
+postura quando suportada, aging, desempenho de remediação e evolução mensal. Sem
+histórico anterior, a evolução mostra apenas a fotografia atual, sem simular uma
+comparação. O item de inventário Cloud não faz parte do documento.
 
 Uma falha Cloud resulta em sucesso parcial: VM, WAS, customizado e TAG continuam
 disponíveis. O histórico do cliente mostra o alerta e oferece **Tentar Cloud

@@ -34,29 +34,30 @@ class ProfileTests(unittest.TestCase):
         )
         self.assertFalse(profile.cloud_security_scope.enabled)
         self.assertEqual(profile.cloud_security_scope.environment, "global")
-        self.assertEqual(profile.cloud_security_scope.layout, "comparison")
-
-    def test_cloud_scope_accepts_environment_and_layout(self) -> None:
-        profile = ClientProfile.from_dict(
-            {
-                "schema_version": 1,
-                "client_id": "client-001",
-                "display_name": "Cliente",
-                "tenant_id": "tenant",
-                "scope": {
-                    "cloud_security": {
-                        "enabled": True,
-                        "environment": "us_gov",
-                        "layout": "expanded",
-                    }
-                },
-            }
-        )
-
-        self.assertTrue(profile.cloud_security_scope.enabled)
-        self.assertEqual(profile.cloud_security_scope.environment, "us_gov")
         self.assertEqual(profile.cloud_security_scope.layout, "expanded")
 
+    def test_cloud_scope_normalizes_legacy_layouts_to_standard(self) -> None:
+        for legacy_layout in ("comparison", "base", "expanded"):
+            with self.subTest(layout=legacy_layout):
+                profile = ClientProfile.from_dict(
+                    {
+                        "schema_version": 1,
+                        "client_id": "client-001",
+                        "display_name": "Cliente",
+                        "tenant_id": "tenant",
+                        "scope": {
+                            "cloud_security": {
+                                "enabled": True,
+                                "environment": "us_gov",
+                                "layout": legacy_layout,
+                            }
+                        },
+                    }
+                )
+
+                self.assertTrue(profile.cloud_security_scope.enabled)
+                self.assertEqual(profile.cloud_security_scope.environment, "us_gov")
+                self.assertEqual(profile.cloud_security_scope.layout, "expanded")
     def test_cloud_scope_rejects_unknown_environment_and_layout(self) -> None:
         base = {
             "schema_version": 1,

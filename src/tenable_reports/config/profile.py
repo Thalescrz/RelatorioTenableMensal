@@ -92,7 +92,7 @@ class WasScope:
 class CloudSecurityScope:
     enabled: bool = False
     environment: str = "global"
-    layout: str = "comparison"
+    layout: str = "expanded"
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,13 +309,14 @@ class ClientProfile:
                 "scope.cloud_security.environment deve ser global ou us_gov."
             )
         cloud_layout = str(
-            cloud_security_data.get("layout", "comparison")
+            cloud_security_data.get("layout", "expanded")
         ).strip().lower()
         if cloud_layout not in {"comparison", "base", "expanded"}:
             raise ProfileError(
                 "scope.cloud_security.layout deve ser comparison, base ou expanded."
             )
         missing_capabilities = []
+        cloud_layout = "expanded"
         for module in intelligence_modules:
             capability = INTELLIGENCE_MODULE_CAPABILITIES.get(module)
             if capability == "was" and not was_enabled:

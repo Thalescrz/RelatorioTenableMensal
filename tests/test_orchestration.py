@@ -661,11 +661,9 @@ class OrchestrationTests(unittest.TestCase):
             general_dataset.write_text("{}", encoding="utf-8")
             cloud_dataset.write_text("{}", encoding="utf-8")
             base = directory / "base.docx"
-            cloud_base = directory / "cloud-base.docx"
             cloud_expanded = directory / "cloud-expanded.docx"
             for path, label in (
                 (base, "Relatório geral"),
-                (cloud_base, "Cloud base"),
                 (cloud_expanded, "Cloud ampliado"),
             ):
                 document = Document()
@@ -688,7 +686,6 @@ class OrchestrationTests(unittest.TestCase):
                 upsert_publication_documents(
                     manifest_path=manifest,
                     documents=(
-                        PublicationDocument(cloud_base, "cloud", "base"),
                         PublicationDocument(cloud_expanded, "cloud", "expanded"),
                     ),
                     additional_datasets={"cloud": cloud_dataset},
@@ -710,7 +707,7 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual(general_after, general_before)
             self.assertEqual(
                 [item["document_variant"] for item in cloud_after],
-                ["base", "expanded"],
+                ["expanded"],
             )
             self.assertEqual(
                 after["source_dataset"],
@@ -927,7 +924,7 @@ class OrchestrationTests(unittest.TestCase):
             )
 
 
-def test_manifest_records_cloud_variants_and_common_dataset(tmp_path: Path) -> None:
+def test_manifest_preserves_legacy_cloud_variants_and_common_dataset(tmp_path: Path) -> None:
     general_dataset = tmp_path / "general-dataset.json"
     cloud_dataset = tmp_path / "cloud-dataset.json"
     general_dataset.write_text("{}", encoding="utf-8")

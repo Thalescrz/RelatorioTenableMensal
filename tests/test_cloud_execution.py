@@ -177,7 +177,7 @@ def test_disabled_cloud_does_not_call_collection_or_rendering(tmp_path: Path) ->
     assert calls == {"collect": 0, "write": 0, "render": [], "validate": []}
 
 
-def test_enabled_cloud_renders_both_variants_from_one_live_dataset(tmp_path: Path) -> None:
+def test_enabled_cloud_renders_one_standard_report_from_live_dataset(tmp_path: Path) -> None:
     dependencies, calls = _dependencies(tmp_path)
 
     result = execute_cloud_component(
@@ -188,9 +188,9 @@ def test_enabled_cloud_renders_both_variants_from_one_live_dataset(tmp_path: Pat
     assert result.status is CloudExecutionStatus.COMPLETE
     assert calls["collect"] == 1
     assert calls["write"] == 1
-    assert calls["render"] == ["base", "expanded"]
-    assert len(result.documents) == 2
-    assert {item.variant for item in result.documents} == {"base", "expanded"}
+    assert calls["render"] == ["expanded"]
+    assert len(result.documents) == 1
+    assert {item.variant for item in result.documents} == {"expanded"}
     assert result.dataset_path is not None
     assert result.snapshot_id
     assert result.cleanup_ready is True
@@ -223,7 +223,7 @@ def test_exact_snapshot_is_replayed_without_live_collection(tmp_path: Path) -> N
     assert result.status is CloudExecutionStatus.REPLAYED
     assert calls["collect"] == 0
     assert calls["write"] == 1
-    assert calls["render"] == ["base", "expanded"]
+    assert calls["render"] == ["expanded"]
     assert result.snapshot_id == snapshot.snapshot_id
 
 
@@ -295,7 +295,7 @@ def test_retry_cloud_bypasses_recent_guard_without_calling_other_components(
 
     assert result.status is CloudExecutionStatus.COMPLETE
     assert calls["collect"] == 1
-    assert calls["render"] == ["base", "expanded"]
+    assert calls["render"] == ["expanded"]
 
 def test_cloud_failure_is_isolated_as_a_retryable_component_warning(
     tmp_path: Path,

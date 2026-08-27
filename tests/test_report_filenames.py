@@ -76,15 +76,11 @@ def test_tag_filename_uses_uuid_when_sanitized_label_is_empty() -> None:
     assert name.endswith("JUL26.docx")
 
 
-def test_cloud_prototype_filenames_are_distinct_and_windows_safe() -> None:
-    assert cloud_report_filename("CLIENTE", july_period(), "base") == (
-        "[CLIENTE] Relatório Tenable Cloud Security JUL26 - MODELO BASE.docx"
-    )
-    assert cloud_report_filename("CLIENTE", july_period(), "expanded") == (
-        "[CLIENTE] Relatório Tenable Cloud Security JUL26 - MODELO AMPLIADO.docx"
-    )
+def test_cloud_standard_filename_is_unique_and_windows_safe() -> None:
+    filename = cloud_report_filename("CLIENTE", july_period())
+    assert filename == "[CLIENTE] Relatório Tenable Cloud Security JUL26.docx"
+    assert "MODELO" not in filename
     assert cloud_report_filename(
         "CLIENTE: CLOUD/1",
         july_period(),
-        "base",
     ).startswith("[CLIENTE CLOUD1]")

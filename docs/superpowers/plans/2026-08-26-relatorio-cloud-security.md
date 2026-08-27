@@ -1,5 +1,9 @@
 # Relatório Tenable Cloud Security Implementation Plan
 
+> **Estado atual (2026-08-27):** plano histórico da fase de homologação. A
+> implementação vigente publica um único relatório Cloud padrão, derivado do
+> antigo modelo ampliado. Consulte `docs/19` a `docs/23` antes de executar tarefas.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Integrar a coleta GraphQL do Tenable Cloud Security à execução mensal de cada cliente e gerar, durante a homologação, os modelos DOCX Base e Ampliado a partir de uma única fotografia Cloud reproduzível.

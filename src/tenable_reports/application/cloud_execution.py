@@ -286,13 +286,8 @@ def _history_row(dataset: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _variants(profile: ClientProfile) -> tuple[str, ...]:
-    selected = profile.cloud_security_scope.layout
-    if selected == "base":
-        return ("base",)
-    if selected == "expanded":
-        return ("expanded",)
-    return ("base", "expanded")
+def _variants(_profile: ClientProfile) -> tuple[str, ...]:
+    return ("expanded",)
 
 
 def _emit(
@@ -340,7 +335,6 @@ def _write_and_render(
         output_path = request.report_directory / cloud_report_filename(
             request.profile.display_name,
             request.period,
-            variant,
         )
         rendered = dependencies.render_report(
             template_path=request.template_path,

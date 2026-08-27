@@ -27,7 +27,7 @@
     "cloud_security": {
       "enabled": false,
       "environment": "global",
-      "layout": "comparison"
+      "layout": "expanded"
     }
   },
   "presentation": {

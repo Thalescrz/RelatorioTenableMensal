@@ -125,9 +125,7 @@ function renderDocumentGroups(documents) {
     const links = items.map(document => {
       const title = kind === "tag"
         ? `${document.tag_category || "TAG"}: ${document.tag_value || document.name}`
-        : kind === "cloud"
-          ? `${document.document_variant === "expanded" ? "Modelo expandido" : "Modelo base"} · ${document.name || "documento"}`
-          : document.name || "documento";
+        : document.name || "documento";
       return `<div class="report-document"><span>${escapeHtml(title)}</span><div><a class="download" target="_blank" rel="noopener" href="/api/reports/${document.document_id}/download?inline=true">Abrir</a><a class="download" href="/api/reports/${document.document_id}/download">Baixar</a></div></div>`;
     }).join("");
     return `<section class="document-group"><strong>${label}</strong>${links}</section>`;
@@ -567,7 +565,6 @@ function resetClientForm() {
   clientForm.elements.cloud_api_secret.value = "";
   clientForm.elements.cloud_api_secret.placeholder = "Preencha para salvar";
   clientForm.elements.cloud_environment.value = "global";
-  clientForm.elements.cloud_layout.value = "comparison";
   clientForm.elements.tag_reports_enabled.checked = false;
   clientForm.elements.vm_export_strategy.value = "combined";
   clientForm.elements.vm_num_assets_per_chunk.value = "1000";
@@ -615,7 +612,6 @@ function editClient(clientId) {
   clientForm.elements.cloud_api_secret.value = "";
   clientForm.elements.cloud_api_secret.placeholder = client.cloud_token_saved ? "Token Cloud salvo · preencha somente para trocar" : "Token Cloud ainda não salvo";
   clientForm.elements.cloud_environment.value = client.cloud_environment || "global";
-  clientForm.elements.cloud_layout.value = client.cloud_layout || "comparison";
   clientForm.elements.include_output.checked = Boolean(client.include_output);
   clientForm.elements.show_source_filters.checked = Boolean(client.show_source_filters);
   clientForm.elements.vm_export_strategy.value = client.vm_export_strategy || "combined";

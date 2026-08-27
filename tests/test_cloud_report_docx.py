@@ -8,6 +8,8 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from docx import Document
+import pytest
+
 
 from tenable_reports.config.profile import load_client_profile
 from tenable_reports.presentation.cloud_editorial_catalog import (
@@ -256,10 +258,10 @@ def test_sanitized_cloud_template_keeps_three_page_families() -> None:
     assert "dc:creator></dc:creator" in all_xml or "dc:creator/>" in all_xml
 
 
-def test_base_cloud_report_keeps_approved_sections_and_detailed_top_five(
+def test_standard_cloud_report_keeps_approved_sections_and_detailed_top_five(
     tmp_path: Path,
 ) -> None:
-    output = tmp_path / "cloud-base.docx"
+    output = tmp_path / "cloud-standard.docx"
     calls: list[str] = []
 
     def translator(text: str, source: str, target: str) -> str:
@@ -268,32 +270,24 @@ def test_base_cloud_report_keeps_approved_sections_and_detailed_top_five(
 
     result = generate_cloud_report(
         template_path=CLOUD_TEMPLATE,
-        dataset_path=_dataset(tmp_path),
+        dataset_path=_expanded_dataset(tmp_path),
         profile=_profile(),
         output_path=output,
-        variant=CloudReportVariant.BASE,
+        variant=CloudReportVariant.EXPANDED,
         translator=translator,
     )
     text = _all_text(output)
 
     assert output.is_file()
-    assert result.variant is CloudReportVariant.BASE
-    assert tuple(result.rendered_sections) == (
-        "cover",
-        "table_of_contents",
-        "document_control",
-        "objective",
-        "cloud_overview",
-        "introduction",
-        "top_hosts",
-        "top_images",
-        "top_critical",
-        "critical_details",
-        "top_correctable",
-        "dashboard",
-        "conclusion",
-        "back_cover",
-    )
+    assert result.variant is CloudReportVariant.EXPANDED
+    assert {
+        "executive_overview",
+        "components_products",
+        "vulnerability_aging",
+        "remediation_performance",
+        "monthly_evolution",
+    }.issubset(set(result.rendered_sections))
+    assert "cloud_inventory" not in result.rendered_sections
     assert "Principais Vulnerabilidades Críticas" in text
     assert "Principais Vulnerabilidades com Correção Disponível" in text
     assert "CVE-2099-1000" in text
@@ -307,7 +301,6 @@ def test_base_cloud_report_keeps_approved_sections_and_detailed_top_five(
     for paragraph in approved_cloud_editorial_paragraphs():
         assert paragraph in text
 
-
 def test_empty_cloud_table_has_monthly_message_not_blank_page(
     tmp_path: Path,
 ) -> None:
@@ -317,7 +310,7 @@ def test_empty_cloud_table_has_monthly_message_not_blank_page(
         dataset_path=_dataset(tmp_path, populated=False),
         profile=_profile(),
         output_path=output,
-        variant=CloudReportVariant.BASE,
+        variant=CloudReportVariant.EXPANDED,
     )
 
     text = _all_text(output)
@@ -335,7 +328,7 @@ def test_empty_translation_preserves_original_with_explicit_notice(
         dataset_path=_dataset(tmp_path),
         profile=_profile(),
         output_path=output,
-        variant=CloudReportVariant.BASE,
+        variant=CloudReportVariant.EXPANDED,
         translator=lambda *_: "",
     )
 
@@ -422,39 +415,15 @@ def _expanded_dataset(
     return path
 
 
-def test_expanded_cloud_report_adds_analysis_without_changing_base(
-    tmp_path: Path,
-) -> None:
-    dataset = _expanded_dataset(tmp_path)
-    base_output = tmp_path / "cloud-base.docx"
-    expanded_output = tmp_path / "cloud-expanded.docx"
-
-    base = generate_cloud_report(
-        template_path=CLOUD_TEMPLATE,
-        dataset_path=dataset,
-        profile=_profile(),
-        output_path=base_output,
-        variant=CloudReportVariant.BASE,
-    )
-    expanded = generate_cloud_report(
-        template_path=CLOUD_TEMPLATE,
-        dataset_path=dataset,
-        profile=_profile(),
-        output_path=expanded_output,
-        variant=CloudReportVariant.EXPANDED,
-    )
-
-    base_text = _all_text(base_output)
-    expanded_text = _all_text(expanded_output)
-    assert "Componentes e Produtos em Maior Risco" not in base_text
-    assert "Componentes e Produtos em Maior Risco" in expanded_text
-    assert "Evolução Mensal" in expanded_text
-    assert "CVE-2099-1000" in base_text and "CVE-2099-1000" in expanded_text
-    assert "VPR: 0" in base_text and "VPR: 0" in expanded_text
-    assert base.dataset_sha256 == expanded.dataset_sha256
-    assert "components_products" in expanded.rendered_sections
-    assert len(expanded.rendered_sections) > len(base.rendered_sections)
-
+def test_legacy_base_variant_is_not_renderable(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="base"):
+        generate_cloud_report(
+            template_path=CLOUD_TEMPLATE,
+            dataset_path=_expanded_dataset(tmp_path),
+            profile=_profile(),
+            output_path=tmp_path / "legacy-base.docx",
+            variant="base",
+        )
 
 def test_expanded_cloud_report_omits_unavailable_conditional_posture(
     tmp_path: Path,
@@ -475,10 +444,11 @@ def test_expanded_cloud_report_omits_unavailable_conditional_posture(
     assert "cloud_posture" in result.omitted_sections
 
 
-def test_expanded_cloud_report_handles_missing_history_without_fake_chart(
+
+def test_expanded_cloud_report_uses_current_period_when_history_is_missing(
     tmp_path: Path,
 ) -> None:
-    output = tmp_path / "cloud-expanded-no-history.docx"
+    output = tmp_path / "cloud-expanded-no-history-current-period.docx"
     result = generate_cloud_report(
         template_path=CLOUD_TEMPLATE,
         dataset_path=_expanded_dataset(tmp_path, with_history=False),
@@ -488,6 +458,62 @@ def test_expanded_cloud_report_handles_missing_history_without_fake_chart(
     )
 
     text = _all_text(output)
-    assert "Evolução Mensal" in text
-    assert "histórico mensal compatível" in text
-    assert "monthly_evolution_chart" in result.omitted_sections
+    assert "3.11. Evolu\u00e7\u00e3o Mensal" in text
+    assert "Jul/26" in text
+    assert "hist\u00f3rico mensal compat\u00edvel" not in text
+    assert "monthly_evolution_chart" not in result.omitted_sections
+    document = Document(output)
+    monthly_heading = next(
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.text.startswith("3.11.")
+    )
+    assert monthly_heading._p.getprevious().xpath('.//w:br[@w:type="page"]')
+
+
+
+def test_expanded_cloud_report_is_the_approved_standard_editorial_model(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "cloud-standard.docx"
+    result = generate_cloud_report(
+        template_path=CLOUD_TEMPLATE,
+        dataset_path=_expanded_dataset(tmp_path),
+        profile=_profile(),
+        output_path=output,
+        variant=CloudReportVariant.EXPANDED,
+    )
+
+    document = Document(output)
+    text = _all_text(output)
+    assert "cloud_inventory" not in result.rendered_sections
+    assert "Invent\u00e1rio Cloud" not in text
+    assert "3.12. Evolu\u00e7\u00e3o Mensal" not in text
+    assert "3.11. Evolu\u00e7\u00e3o Mensal" in text
+    assert any(
+        table.cell(0, 0).text == "CVE"
+        and "A\u00e7\u00e3o recomendada"
+        not in [cell.text for cell in table.rows[0].cells]
+        for table in document.tables
+    )
+    assert "Inserir print da plataforma aqui" in text
+
+    cve_heading = next(
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.text.startswith("3.4.1.")
+    )
+    assert cve_heading.style.name == "Heading 3"
+    vpr_paragraph = next(
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.text.startswith("VPR: ")
+    )
+    assert any(run.font.size and run.font.size.pt == 9 for run in vpr_paragraph.runs)
+
+    monthly_heading = next(
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.text.startswith("3.11.")
+    )
+    assert not monthly_heading._p.getprevious().xpath('.//w:br[@w:type="page"]')

@@ -112,6 +112,42 @@ class CloudDocumentBuilder:
         outline.set(qn("w:val"), str(max(0, min(level, 9) - 1)))
         return paragraph
 
+    def standard_paragraph(
+        self,
+        text: str = "",
+        *,
+        bold: bool = False,
+        color: str = NAVY,
+        align: int = WD_ALIGN_PARAGRAPH.JUSTIFY,
+    ) -> Any:
+        paragraph = self.document.add_paragraph()
+        paragraph.alignment = align
+        run = paragraph.add_run(str(text))
+        base._set_run_font(run, size=9, color=color, bold=bold)
+        base._set_language(run)
+        self._move(paragraph._p)
+        return paragraph
+
+    def standard_heading(self, text: str, level: int = 1) -> Any:
+        paragraph = self.document.add_paragraph(
+            str(text),
+            style=f"Heading {level}",
+        )
+        paragraph.paragraph_format.space_before = Pt(8)
+        paragraph.paragraph_format.space_after = Pt(4)
+        paragraph.paragraph_format.keep_with_next = True
+        size = {1: 14, 2: 11, 3: 10, 4: 9}.get(level, 9)
+        for run in paragraph.runs:
+            base._set_run_font(
+                run,
+                size=size,
+                color=base.NAVY,
+                bold=True,
+            )
+            base._set_language(run)
+        self._move(paragraph._p)
+        return paragraph
+
     def bullet(self, text: str) -> Any:
         return self.paragraph(
             f"• {text}",
@@ -407,8 +443,8 @@ def render_critical_details(
     }
     for index, item in enumerate(critical[:5], start=1):
         cve = str(item.get("cve") or "CVE não informada")
-        builder.heading(f"3.4.{index}. {cve}", 3)
-        builder.paragraph(
+        builder.standard_heading(f"3.4.{index}. {cve}", 3)
+        builder.standard_paragraph(
             " | ".join(
                 (
                     f"VPR: {item.get('vpr_display') or 'N/D'}",
@@ -423,51 +459,51 @@ def render_critical_details(
             bold=True,
             align=WD_ALIGN_PARAGRAPH.LEFT,
         )
-        builder.paragraph(
+        builder.standard_paragraph(
             "Componente / produto: "
             + (", ".join(item.get("components") or ()) or "N/D"),
             align=WD_ALIGN_PARAGRAPH.LEFT,
         )
-        builder.heading("Descrição:", 4)
+        builder.standard_heading("Descrição:", 4)
         description = str(item.get("description") or "").strip()
         if description:
             chunks, failed = _translated_description(description, translator)
             for chunk in chunks:
-                builder.paragraph(chunk)
+                builder.standard_paragraph(chunk)
             if failed:
-                builder.paragraph(
+                builder.standard_paragraph(
                     copy.TRANSLATION_UNAVAILABLE,
                     color=MID_GRAY,
                     align=WD_ALIGN_PARAGRAPH.LEFT,
                 )
         else:
-            builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+            builder.standard_paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
         correction = corrections.get(cve)
-        builder.heading("Correção ou contramedida recomendada:", 4)
+        builder.standard_heading("Correção ou contramedida recomendada:", 4)
         if correction and correction.get("recommended_action"):
             action_chunks, action_failed = _translated_description(
                 str(correction["recommended_action"]),
                 translator,
             )
             for chunk in action_chunks:
-                builder.paragraph(chunk)
+                builder.standard_paragraph(chunk)
             if action_failed:
-                builder.paragraph(
+                builder.standard_paragraph(
                     copy.TRANSLATION_UNAVAILABLE,
                     color=MID_GRAY,
                     align=WD_ALIGN_PARAGRAPH.LEFT,
                 )
-            builder.paragraph(
+            builder.standard_paragraph(
                 "Tipo de correção: "
                 + str(correction.get("correction_type_display") or "Não determinado"),
                 align=WD_ALIGN_PARAGRAPH.LEFT,
             )
         else:
-            builder.paragraph(
+            builder.standard_paragraph(
                 "Não determinada pelos dados coletados neste mês.",
                 color=MID_GRAY,
             )
-        builder.heading("Ativos afetados:", 4)
+        builder.standard_heading("Ativos afetados:", 4)
         asset_rows = []
         for asset in item.get("assets") or ():
             if not isinstance(asset, Mapping):
@@ -508,22 +544,34 @@ def render_top_correctable(
             item.get("cve") or "",
             item.get("vpr_display") or "N/D",
             item.get("cvss_display") or "N/D",
-            SEVERITY_LABELS.get(str(item.get("severity") or ""), item.get("severity") or ""),
+            SEVERITY_LABELS.get(
+                str(item.get("severity") or ""),
+                item.get("severity") or "",
+            ),
             item.get("affected_assets", 0),
             item.get("correction_type_display") or "Não determinado",
-            " ".join(_translated_description(str(item.get("recommended_action") or ""), translator)[0]),
         )
         for item in dataset.get("top_correctable_vulnerabilities") or ()
     ]
     builder.table(
-        ("CVE", "VPR", "CVSS", "Severidade", "Ativos afetados", "Tipo de correção", "Ação recomendada"),
+        (
+            "CVE",
+            "VPR",
+            "CVSS",
+            "Severidade",
+            "Ativos afetados",
+            "Tipo de correção",
+        ),
         rows,
-        widths=(1250, 650, 650, 1000, 1150, 1800, 2700),
-        left_columns=frozenset({0, 5, 6}),
+        widths=(1250, 700, 700, 1200, 1450, 3900),
+        left_columns=frozenset({0, 5}),
         empty_message=copy.EMPTY_CORRECTABLE_MONTH,
     )
-    builder.source_note(dataset, "cloud_top_correctable", enabled=show_source_filters)
-
+    builder.source_note(
+        dataset,
+        "cloud_top_correctable",
+        enabled=show_source_filters,
+    )
 
 def render_dashboard(builder: CloudDocumentBuilder, dataset: Mapping[str, Any]) -> None:
     builder.heading("3.6. Painel de Controle (Dashboards) – Informações Rápidas", 2)
@@ -550,7 +598,10 @@ def render_dashboard(builder: CloudDocumentBuilder, dataset: Mapping[str, Any]) 
         )
     builder.heading("3.6.2. Status dos Sistemas Operacionais", 3)
     builder.paragraph(copy.OPERATING_SYSTEM_STATUS)
-    builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+    builder.paragraph(
+        "Inserir print da plataforma aqui",
+        align=WD_ALIGN_PARAGRAPH.LEFT,
+    )
 
 
 def _source_status(
@@ -751,50 +802,39 @@ def render_remediation_performance(
     )
 
 
-def render_cloud_inventory(
-    builder: CloudDocumentBuilder,
-    dataset: Mapping[str, Any],
-    *,
-    show_source_filters: bool,
-) -> None:
-    builder.heading("3.11. Inventário Cloud", 2)
-    builder.paragraph(copy.CLOUD_INVENTORY)
-    if _source_status(dataset, "inventory") == "UNAVAILABLE":
-        builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
-        return
-    inventory = dataset.get("inventory")
-    if not isinstance(inventory, Mapping):
-        builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
-        return
-    builder.table(
-        ("Indicador", "Resultado"),
-        (("Total de recursos inventariados", inventory.get("total_resources", 0)),),
-        widths=(6500, 2700),
-        left_columns=frozenset({0}),
-    )
-    builder.heading("3.11.1. Recursos por Provedor", 3)
-    builder.table(
-        ("Provedor", "Recursos"),
-        [
-            (item.get("provider") or "Não informado", item.get("resources", 0))
-            for item in inventory.get("by_provider") or ()
-            if isinstance(item, Mapping)
-        ],
-        widths=(6500, 2700),
-        left_columns=frozenset({0}),
-    )
-    builder.heading("3.11.2. Recursos por Região", 3)
-    builder.table(
-        ("Região", "Recursos"),
-        [
-            (item.get("region") or "Não informada", item.get("resources", 0))
-            for item in inventory.get("by_region") or ()
-            if isinstance(item, Mapping)
-        ],
-        widths=(6500, 2700),
-        left_columns=frozenset({0}),
-    )
-    builder.source_note(dataset, "cloud_inventory", enabled=show_source_filters)
+def _current_period_history(dataset: Mapping[str, Any]) -> Mapping[str, Any]:
+    period = dataset.get("period")
+    period = period if isinstance(period, Mapping) else {}
+    overview = dataset.get("overview")
+    overview = overview if isinstance(overview, Mapping) else {}
+    period_id = str(period.get("period_id") or "").strip()
+    label = period_id or "Período atual"
+    parts = period_id.split("-", maxsplit=1)
+    if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+        month = int(parts[1])
+        month_labels = (
+            "",
+            "Jan",
+            "Fev",
+            "Mar",
+            "Abr",
+            "Mai",
+            "Jun",
+            "Jul",
+            "Ago",
+            "Set",
+            "Out",
+            "Nov",
+            "Dez",
+        )
+        if 1 <= month <= 12:
+            label = f"{month_labels[month]}/{parts[0][-2:]}"
+    return {
+        "period_id": period_id,
+        "label": label,
+        "availability": "AVAILABLE",
+        "overview": overview,
+    }
 
 
 def render_monthly_evolution(
@@ -803,13 +843,22 @@ def render_monthly_evolution(
     *,
     chart_dir: str | Path,
 ) -> bool:
-    builder.heading("3.12. Evolução Mensal", 2)
-    builder.paragraph(copy.MONTHLY_EVOLUTION)
     history = [
         item
         for item in dataset.get("history") or ()
         if isinstance(item, Mapping)
     ]
+    if not history:
+        builder.page_break()
+    builder.heading("3.11. Evolução Mensal", 2)
+    builder.paragraph(copy.MONTHLY_EVOLUTION)
+    if not history:
+        history = [_current_period_history(dataset)]
+        builder.paragraph(
+            "Sem histórico mensal anterior, este primeiro ponto representa "
+            "somente a fotografia atual do período.",
+            color=MID_GRAY,
+        )
     points = normalize_history_series(history)
     if not points:
         builder.paragraph(copy.HISTORY_UNAVAILABLE, color=MID_GRAY)
@@ -840,7 +889,6 @@ def render_monthly_evolution(
     )
     return True
 
-
 def render_conclusion(builder: CloudDocumentBuilder) -> None:
     builder.heading("4. Conclusão", 1)
     builder.paragraph(copy.CONCLUSION_OVERVIEW)
@@ -854,7 +902,6 @@ def render_conclusion(builder: CloudDocumentBuilder) -> None:
 __all__ = [
     "CloudDocumentBuilder",
     "cloud_posture_available",
-    "render_cloud_inventory",
     "render_cloud_overview",
     "render_cloud_posture",
     "render_components_products",

@@ -201,7 +201,7 @@ def render_monthly_history_chart(
     path: str | Path,
 ) -> Path | None:
     points = normalize_history_series(history)
-    if sum(point.value is not None for point in points) < 2:
+    if sum(point.value is not None for point in points) < 1:
         return None
     image, draw = _base_canvas("Evolução mensal das ocorrências")
     left, top, right, bottom = 120, 150, 1330, 610
@@ -222,7 +222,10 @@ def render_monthly_history_chart(
         )
     coordinates: list[tuple[int, int] | None] = []
     for index, point in enumerate(points):
-        x = left + int((right - left) * index / max(len(points) - 1, 1))
+        if len(points) == 1:
+            x = (left + right) // 2
+        else:
+            x = left + int((right - left) * index / (len(points) - 1))
         draw.text(
             (x, bottom + 26),
             point.label,
