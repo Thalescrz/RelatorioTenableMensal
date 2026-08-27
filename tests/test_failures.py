@@ -42,3 +42,16 @@ def test_remote_cancelled_export_is_a_retryable_tenable_failure() -> None:
 
     assert failure.code is FailureCode.TENABLE_TEMPORARY
     assert failure.retryable is True
+
+def test_cloud_rate_limit_error_uses_structured_retryability() -> None:
+    import importlib
+
+    cloud = importlib.import_module(
+        "tenable_reports.infrastructure.tenable_cloud.client"
+    )
+    failure = classify_failure(
+        cloud.CloudRateLimitError("Cloud temporariamente limitada.", status_code=429)
+    )
+
+    assert failure.code is FailureCode.TENABLE_RATE_LIMIT
+    assert failure.retryable is True

@@ -79,6 +79,17 @@ def _code_from_text(value: str) -> FailureCode:
 
 
 def classify_failure(value: Any) -> OperationalFailure:
+    structured_code = str(getattr(value, "failure_code", "") or "")
+    if structured_code:
+        try:
+            code = FailureCode(structured_code)
+        except ValueError:
+            code = _code_from_text(structured_code)
+        return OperationalFailure(
+            code=code,
+            message=sanitize_failure_message(value),
+            retryable=bool(getattr(value, "retryable", code in RETRYABLE_CODES)),
+        )
     if isinstance(value, ExportTimeoutError):
         return OperationalFailure(
             code=FailureCode.TENABLE_TEMPORARY,
