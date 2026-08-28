@@ -100,6 +100,8 @@ from tenable_reports.application.was_recovery import (
     CHECKPOINT_SCHEMA_VERSION,
     WasDecisionRequired,
     WasRecoveryCheckpoint,
+    WasRecoveryDecision,
+    load_was_recovery_checkpoint,
     write_was_recovery_checkpoint,
 )
 from tenable_reports.application.retention import (
@@ -1287,6 +1289,69 @@ def _execute_period(
                 client_id=profile.client_id,
                 failure=was_failure,
             )
+    return _assemble_period_from_existing(
+        args,
+        profile=profile,
+        output_root=output_root,
+        actual_run_id=actual_run_id,
+        period=period,
+        execution_type=execution_type,
+        normalized_findings_path=normalized.findings_path,
+        selected_tag_count=selected_tag_count,
+        was_collection_status=was_collection_status,
+        vm_export_mode=vm_export_mode,
+        vm_export_outcome=vm_export_outcome,
+        vm_export_comparison_path=vm_export_comparison_path,
+        collection_route=collection_route,
+        reconstruction_status=reconstruction_status,
+        collection_sources=tuple(collection_sources),
+        collection_warnings=tuple(collection_warnings),
+    )
+
+
+def _assemble_period_from_existing(
+    args: argparse.Namespace,
+    *,
+    profile: ClientProfile,
+    output_root: Path,
+    actual_run_id: str,
+    period: ReportingPeriod,
+    execution_type: str,
+    normalized_findings_path: Path,
+    was_collection_status: str,
+    collection_warnings: tuple[Mapping[str, Any], ...] = (),
+    selected_tag_count: int | None = None,
+    vm_export_mode: str = "was_recovery",
+    vm_export_outcome: str = "REUSED",
+    vm_export_comparison_path: Path | None = None,
+    collection_route: str | None = None,
+    reconstruction_status: str | None = None,
+    collection_sources: tuple[str, ...] = (),
+) -> _CollectedPeriodExecution:
+    if (
+        selected_tag_count is None
+        or collection_route is None
+        or reconstruction_status is None
+        or not collection_sources
+    ):
+        existing_inputs = load_report_dataset_inputs(
+            profile=profile,
+            run_id=actual_run_id,
+            output_root=output_root,
+        )
+        tag_scope = existing_inputs.tag_scope or {}
+        if selected_tag_count is None:
+            selected_tag_count = len(tag_scope.get("selected_tags") or ())
+        provenance = existing_inputs.collection_provenance
+        collection_route = collection_route or str(
+            provenance.get("collection_route") or "legacy_vm"
+        )
+        reconstruction_status = reconstruction_status or str(
+            provenance.get("reconstruction_status") or "CURRENT_WINDOW"
+        )
+        collection_sources = collection_sources or tuple(
+            provenance.get("sources") or ("tenable_vm_vulnerabilities",)
+        )
     artifact = build_report_dataset_from_snapshot(
         profile=profile,
         run_id=actual_run_id,
@@ -1318,7 +1383,7 @@ def _execute_period(
         history_publication = prepare_dataset_history(
             profile=profile,
             dataset_path=artifact.dataset_path,
-            normalized_findings_path=normalized.findings_path,
+            normalized_findings_path=normalized_findings_path,
             tag_dataset_paths=tag_dataset_paths,
             database_path=history_database,
             output_path=artifact.directory / "report-dataset-with-history.json",
@@ -1568,6 +1633,23 @@ def command_run_client(args: argparse.Namespace) -> int:
             "was_failure": pending.failure.to_dict(),
         }, ensure_ascii=False))
         return WAS_DECISION_EXIT_CODE
+    return _publish_collected_period(
+        args=args,
+        profile=profile,
+        period=period,
+        execution_type=execution_type,
+        collected=collected,
+    )
+
+
+def _publish_collected_period(
+    *,
+    args: argparse.Namespace,
+    profile: ClientProfile,
+    period: ReportingPeriod,
+    execution_type: str,
+    collected: _CollectedPeriodExecution,
+) -> int:
     period_slug = _safe_filename_component(str(period.period_id))
     report_directory = (
         collected.output_root
@@ -1812,7 +1894,9 @@ def command_run_client(args: argparse.Namespace) -> int:
     payload.update({
         "status": (
             "complete_with_warnings"
-            if tag_reports_failed or cloud_has_warnings
+            if tag_reports_failed
+            or cloud_has_warnings
+            or bool(getattr(collected, "warnings", ()))
             else "complete"
         ),
         "base_document": str(base_result.output_path.resolve()),
@@ -1835,6 +1919,151 @@ def command_run_client(args: argparse.Namespace) -> int:
     })
     print(json.dumps(payload, ensure_ascii=False))
     return 0
+
+
+def _period_from_was_checkpoint(
+    checkpoint: WasRecoveryCheckpoint,
+) -> ReportingPeriod:
+    payload = checkpoint.period
+    timezone_name = str(payload.get("timezone") or "America/Fortaleza")
+    try:
+        mode = PeriodMode(str(payload.get("mode") or "EXPLICIT_RANGE"))
+    except ValueError:
+        mode = PeriodMode.EXPLICIT_RANGE
+    reference_at = payload.get("reference_at") or payload.get("end_at")
+    trailing_days = payload.get("trailing_days")
+    return ReportingPeriod(
+        start_at=parse_datetime(str(payload["start_at"]), timezone_name),
+        end_at=parse_datetime(str(payload["end_at"]), timezone_name),
+        timezone=timezone_name,
+        mode=mode,
+        reference_at=parse_datetime(str(reference_at), timezone_name),
+        trailing_days=(int(trailing_days) if trailing_days is not None else None),
+    )
+
+
+def _was_warning_from_checkpoint(
+    checkpoint: WasRecoveryCheckpoint,
+) -> tuple[Mapping[str, Any], ...]:
+    if checkpoint.was_failure is None:
+        return ()
+    failure = checkpoint.was_failure
+    return ({
+        "code": failure.code,
+        "message": failure.message,
+        "retryable": failure.retryable,
+        "source": "tenable_was",
+    },)
+
+
+def command_resume_was(args: argparse.Namespace) -> int:
+    checkpoint_path = Path(args.checkpoint)
+    checkpoint = load_was_recovery_checkpoint(checkpoint_path)
+    profile = load_client_profile(args.profile or checkpoint.profile_path)
+    if (
+        profile.client_id != checkpoint.client_id
+        or profile.tenant_id != checkpoint.tenant_id
+    ):
+        raise ValueError("Perfil incompatível com o checkpoint WAS.")
+    decision = WasRecoveryDecision(args.decision)
+    if decision is WasRecoveryDecision.RETRY_WAS and not args.confirm_live_api:
+        raise ValueError(
+            "A retentativa WAS exige --confirm-live-api; ela pode iniciar um export real."
+        )
+
+    period = _period_from_was_checkpoint(checkpoint)
+    output_root = Path(checkpoint.output_root)
+    was_collection_status = checkpoint.was_status
+    warnings = _was_warning_from_checkpoint(checkpoint)
+    if decision is WasRecoveryDecision.RETRY_WAS:
+        credentials = _load_credentials(args.env_file)
+        was_client = _was_client_from_environment(credentials)
+        previous_failure = checkpoint.was_failure
+        reusable_statuses = {"FINISHED", "QUEUED", "PROCESSING"}
+        export_uuid = (
+            previous_failure.export_uuid
+            if previous_failure is not None
+            and previous_failure.remote_status in reusable_statuses
+            else None
+        )
+        attempt = collect_optional_was_snapshot(
+            client=was_client,
+            profile=profile,
+            request=WasExportRequest(
+                filters={
+                    "since": period.start_epoch,
+                    "state": ["OPEN", "REOPENED", "FIXED"],
+                    "severity": ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+                    **(
+                        {"asset_uuid": list(profile.was_scope.application_ids)}
+                        if profile.was_scope.application_ids
+                        else {}
+                    ),
+                },
+                num_assets=args.was_num_assets,
+                include_unlicensed=False,
+            ),
+            output_root=output_root,
+            run_id=checkpoint.run_id,
+            export_uuid=export_uuid,
+            progress_callback=_emit_progress_event,
+        )
+        if attempt.result is not None:
+            normalize_was_collection(
+                profile=profile,
+                collection=attempt.result,
+                output_root=output_root,
+            )
+        if attempt.failure is not None:
+            updated = replace(
+                checkpoint,
+                was_status=attempt.status,
+                was_failure=attempt.failure,
+            )
+            write_was_recovery_checkpoint(checkpoint_path, updated)
+            pending = WasDecisionRequired(
+                checkpoint_path=checkpoint_path,
+                run_id=checkpoint.run_id,
+                client_id=checkpoint.client_id,
+                failure=attempt.failure,
+            )
+            print(json.dumps({
+                "status": "waiting_was_decision",
+                "run_id": pending.run_id,
+                "client_id": pending.client_id,
+                "checkpoint": str(pending.checkpoint_path.resolve()),
+                "was_failure": pending.failure.to_dict(),
+            }, ensure_ascii=False))
+            return WAS_DECISION_EXIT_CODE
+        was_collection_status = attempt.status
+        warnings = tuple(attempt.warnings)
+
+    setattr(args, "include_output", checkpoint.include_output)
+    normalized_findings_path = (
+        output_root
+        / "normalized"
+        / profile.client_id
+        / checkpoint.run_id
+        / "findings.jsonl.gz"
+    )
+    collected = _assemble_period_from_existing(
+        args,
+        profile=profile,
+        output_root=output_root,
+        actual_run_id=checkpoint.run_id,
+        period=period,
+        execution_type=checkpoint.execution_type,
+        normalized_findings_path=normalized_findings_path,
+        was_collection_status=was_collection_status,
+        collection_warnings=tuple(warnings),
+    )
+    return _publish_collected_period(
+        args=args,
+        profile=profile,
+        period=period,
+        execution_type=checkpoint.execution_type,
+        collected=collected,
+    )
 
 
 def _retry_output_root(manifest: Path) -> Path:
@@ -2563,6 +2792,50 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_client.set_defaults(cleanup_after_publish=True)
     run_client.set_defaults(handler=command_run_client)
+
+    resume_was = subparsers.add_parser(
+        "resume-was",
+        help="Retoma uma execução pendente sem repetir a coleta VM.",
+    )
+    resume_was.add_argument("--checkpoint", required=True)
+    resume_was.add_argument(
+        "--decision",
+        choices=tuple(item.value for item in WasRecoveryDecision),
+        required=True,
+    )
+    resume_was.add_argument("--profile")
+    resume_was.add_argument("--env-file", default=".env")
+    resume_was.add_argument(
+        "--database-env-file", default="credentials/database.env"
+    )
+    resume_was.add_argument("--was-num-assets", type=int, default=1000)
+    resume_was.add_argument("--template", default="templates/corporate/base-v1.docx")
+    resume_was.add_argument(
+        "--cloud-template", default="templates/corporate/cloud-base-v1.docx"
+    )
+    resume_was.add_argument("--assets-dir", default="templates/corporate/assets")
+    resume_was.add_argument("--base-output")
+    resume_was.add_argument("--custom-output")
+    resume_was.add_argument("--history-database")
+    resume_was.add_argument("--history-export-csv")
+    resume_was.add_argument("--skip-history", action="store_true")
+    resume_was.add_argument("--mask-sensitive", action="store_true")
+    resume_was.add_argument("--force-cloud-refresh", action="store_true")
+    resume_was.add_argument("--logical-job-id")
+    resume_was.add_argument("--attempt-number", type=int, default=1)
+    resume_was.add_argument(
+        "--origin",
+        choices=("SCHEDULED", "AUTOMATIC_RETRY", "MANUAL"),
+        default="MANUAL",
+    )
+    resume_was.add_argument("--confirm-live-api", action="store_true")
+    resume_was.add_argument(
+        "--no-cleanup-after-publish",
+        dest="cleanup_after_publish",
+        action="store_false",
+    )
+    resume_was.set_defaults(cleanup_after_publish=True)
+    resume_was.set_defaults(handler=command_resume_was)
 
     retry_cloud = subparsers.add_parser(
         "retry-cloud",
