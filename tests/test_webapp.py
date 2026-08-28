@@ -1418,6 +1418,66 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("Continuar sem WEB", javascript)
         self.assertIn("Tentar WEB novamente", javascript)
         self.assertIn("/api/was-recoveries/", javascript)
+        self.assertIn('was_recovery?.status === "RETRY_AVAILABLE"', javascript)
+
+    def test_published_automatic_was_recovery_rejects_continue_without_was(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = WasRecoveryCheckpoint(
+                schema_version=1,
+                run_id="run-was-publicado",
+                client_id="cliente-was",
+                tenant_id="cliente-was",
+                execution_type="AUTOMATIC_MONTHLY",
+                period={
+                    "start_at": "2026-07-01T03:00:00Z",
+                    "end_at": "2026-08-01T03:00:00Z",
+                    "reference_at": "2026-08-01T03:00:00Z",
+                    "timezone": "America/Fortaleza",
+                    "mode": "PREVIOUS_CALENDAR_MONTH",
+                },
+                profile_path=str(root / "clients" / "managed" / "cliente-was.json"),
+                output_root=str(root / "data" / "automatic-monthly"),
+                include_output=False,
+                was_status="UNAVAILABLE",
+                was_failure=WasFailureDetails(
+                    code="WAS_COLLECTION_UNAVAILABLE",
+                    retryable=True,
+                ),
+            )
+            checkpoint_path = write_was_recovery_checkpoint(
+                root / "was-recovery.json", checkpoint
+            )
+            record = WasRecoveryRecord(
+                run_id=checkpoint.run_id,
+                client_id=checkpoint.client_id,
+                tenant_id=checkpoint.tenant_id,
+                status=WasRecoveryStatus.RETRY_AVAILABLE,
+                checkpoint_path=str(checkpoint_path),
+                checkpoint=checkpoint,
+            )
+            repository = Mock()
+            repository.get.return_value = record
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                was_recovery_repository=repository,
+            )
+            app.config.add_client({
+                "client_id": "cliente-was",
+                "display_name": "Cliente WAS",
+                "tenant_id": "cliente-was",
+                "was_enabled": True,
+                "access_key": "test-access-key",
+                "secret_key": "test-secret-key",
+            })
+
+            with self.assertRaisesRegex(ValueError, "somente.*retentativa WEB"):
+                app.recover_was_report(
+                    run_id=checkpoint.run_id,
+                    action="continue",
+                    confirmation=f"CONTINUAR SEM WAS {checkpoint.run_id}",
+                )
 
     def test_job_queue_preserves_waiting_was_decision_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

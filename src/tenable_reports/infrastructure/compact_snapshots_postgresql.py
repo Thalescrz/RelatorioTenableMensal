@@ -109,3 +109,44 @@ class PostgresCompactSnapshotRepository:
             record_counts={str(key): int(value) for key, value in (row[12] or {}).items()},
             document_references={str(key): str(value) for key, value in (row[13] or {}).items()},
         )
+
+    def find_run(
+        self,
+        *,
+        client_id: str,
+        tenant_id: str,
+        run_id: str,
+    ) -> CompactFindingSnapshot | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                select snapshot_id, schema_version, client_id, tenant_id, run_id,
+                       execution_type, period_mode, period_start_at, period_end_at,
+                       created_at, content_sha256, payload_gzip, record_counts,
+                       document_references
+                from {SCHEMA_NAME}.compact_finding_snapshots
+                where client_id = %s and tenant_id = %s and run_id = %s
+                order by published_at desc, created_at desc
+                limit 1
+                """,
+                (client_id, tenant_id, run_id),
+            ).fetchone()
+        if row is None:
+            return None
+        iso = lambda value: value.isoformat().replace("+00:00", "Z")
+        return CompactFindingSnapshot(
+            snapshot_id=str(row[0]),
+            schema_version=int(row[1]),
+            client_id=str(row[2]),
+            tenant_id=str(row[3]),
+            run_id=str(row[4]),
+            execution_type=str(row[5]),
+            period_mode=str(row[6]),
+            period_start_at=iso(row[7]),
+            period_end_at=iso(row[8]),
+            created_at=iso(row[9]),
+            content_sha256=str(row[10]),
+            payload_gzip=bytes(row[11]),
+            record_counts={str(key): int(value) for key, value in (row[12] or {}).items()},
+            document_references={str(key): str(value) for key, value in (row[13] or {}).items()},
+        )

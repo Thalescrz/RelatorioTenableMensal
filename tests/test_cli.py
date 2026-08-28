@@ -167,6 +167,75 @@ class CliTests(unittest.TestCase):
             self.assertEqual(result["status"], "complete_with_warnings")
             self.assertEqual(result["warnings"][0]["code"], "WAS_COLLECTION_UNAVAILABLE")
 
+    def test_automatic_was_failure_becomes_retryable_only_after_compact_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            period, profile, collected, args = self._tag_run_fixture(directory)
+            failure = WasFailureDetails(
+                code="WAS_COLLECTION_UNAVAILABLE",
+                message="Falha isolada no WAS.",
+                retryable=True,
+                export_uuid="was-job",
+            )
+            checkpoint = WasRecoveryCheckpoint(
+                schema_version=1,
+                run_id=collected.run_id,
+                client_id=profile.client_id,
+                tenant_id=profile.tenant_id,
+                execution_type="AUTOMATIC_MONTHLY",
+                period=period.to_dict(),
+                profile_path=str(directory / "profile.json"),
+                output_root=str(directory),
+                include_output=False,
+                was_status="UNAVAILABLE",
+                was_failure=failure,
+            )
+            checkpoint_path = write_was_recovery_checkpoint(
+                directory / "recovery" / "was-recovery.json",
+                checkpoint,
+            )
+            collected.warnings = ({
+                "code": failure.code,
+                "message": failure.message,
+                "retryable": True,
+            },)
+            collected.was_recovery_checkpoint = checkpoint
+            collected.was_recovery_checkpoint_path = checkpoint_path
+            manifest = directory / "publication.json"
+            manifest.write_text("{}", encoding="utf-8")
+            recovery_repository = Mock()
+            compact_repository = object()
+            cloud_result = CloudComponentResult(
+                status=CloudExecutionStatus.DISABLED,
+                cleanup_ready=True,
+            )
+
+            with (
+                patch.object(cli_module, "generate_full_base_report", return_value=SimpleNamespace(output_path=directory / "base.docx")),
+                patch.object(cli_module, "generate_customizations_report", return_value=SimpleNamespace(output_path=directory / "custom.docx", rendered_modules=(), omitted_modules=())),
+                patch.object(cli_module, "generate_tag_report", side_effect=lambda **kwargs: SimpleNamespace(output_path=Path(kwargs["output_path"]))),
+                patch.object(cli_module, "_run_cloud_for_client", return_value=cloud_result),
+                patch.object(cli_module, "create_publication_manifest", return_value=manifest),
+                patch.object(cli_module, "_postgres_operations", return_value=None),
+                patch.object(cli_module, "_compact_snapshot_repository", return_value=compact_repository),
+                patch.object(cli_module, "publish_compact_run_snapshot", return_value=SimpleNamespace(snapshot_id="compact-a")),
+                patch.object(cli_module, "_was_recovery_repository", return_value=recovery_repository),
+                patch("builtins.print"),
+            ):
+                result = cli_module._publish_collected_period(
+                    args=args,
+                    profile=profile,
+                    period=period,
+                    execution_type="AUTOMATIC_MONTHLY",
+                    collected=collected,
+                )
+
+            self.assertEqual(result, 0)
+            recovery_repository.upsert.assert_called_once()
+            record = recovery_repository.upsert.call_args.args[0]
+            self.assertEqual(record.status, WasRecoveryStatus.RETRY_AVAILABLE)
+            self.assertEqual(record.checkpoint, checkpoint)
+
     def test_retry_cloud_reuses_run_context_without_general_collection(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -1069,6 +1138,103 @@ class CliTests(unittest.TestCase):
                 "run-was-pendente",
                 client_id="cliente-was",
             )
+
+    def test_published_automatic_retry_uses_compact_context_and_never_runs_cloud_or_vm(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            checkpoint = WasRecoveryCheckpoint(
+                schema_version=1,
+                run_id="run-was-publicado",
+                client_id="cliente-was",
+                tenant_id="tenant-was",
+                execution_type="AUTOMATIC_MONTHLY",
+                period={
+                    "start_at": "2026-07-01T03:00:00Z",
+                    "end_at": "2026-08-01T03:00:00Z",
+                    "reference_at": "2026-08-01T03:00:00Z",
+                    "timezone": "America/Fortaleza",
+                    "mode": "PREVIOUS_CALENDAR_MONTH",
+                },
+                profile_path=str(directory / "cliente.json"),
+                output_root=str(directory / "automatic-monthly"),
+                include_output=False,
+                was_status="UNAVAILABLE",
+                was_failure=WasFailureDetails(
+                    code="WAS_COLLECTION_UNAVAILABLE",
+                    message="Falha WAS sanitizada.",
+                    retryable=True,
+                    export_uuid="was-job",
+                    origin="created",
+                    remote_status="PROCESSING",
+                ),
+            )
+            checkpoint_path = write_was_recovery_checkpoint(
+                directory / "was-recovery.json", checkpoint
+            )
+            profile = SimpleNamespace(
+                client_id="cliente-was",
+                tenant_id="tenant-was",
+                was_scope=SimpleNamespace(enabled=True, application_ids=()),
+            )
+            recovery_repository = Mock()
+            recovery_repository.get.return_value = SimpleNamespace(
+                status=WasRecoveryStatus.RETRY_AVAILABLE
+            )
+            context = SimpleNamespace(work_run_id="run-was-publicado-was-recovery")
+            attempt = SimpleNamespace(
+                result=SimpleNamespace(), status="COMPLETE", warnings=(), failure=None
+            )
+            args = SimpleNamespace(
+                checkpoint=checkpoint_path,
+                decision="retry_was",
+                profile=str(directory / "cliente.json"),
+                env_file=directory / "cliente.env",
+                database_env_file=directory / "database.env",
+                was_num_assets=1000,
+                confirm_live_api=True,
+            )
+            stdout = io.StringIO()
+
+            with (
+                patch.object(cli_module, "load_client_profile", return_value=profile),
+                patch.object(cli_module, "_was_recovery_repository", return_value=recovery_repository),
+                patch.object(cli_module, "_load_credentials", return_value=object()),
+                patch.object(cli_module, "_was_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_prepare_published_was_recovery", return_value=context) as prepare,
+                patch.object(cli_module, "collect_optional_was_snapshot", return_value=attempt) as collect_was,
+                patch.object(cli_module, "normalize_was_collection"),
+                patch.object(cli_module, "_retry_published_was_documents", return_value={
+                    "status": "complete",
+                    "run_id": checkpoint.run_id,
+                    "client_id": checkpoint.client_id,
+                    "general_collection_repeated": False,
+                    "cloud_collection_repeated": False,
+                    "before_vm_metrics_sha256": "a" * 64,
+                    "after_vm_metrics_sha256": "a" * 64,
+                }) as repair,
+                patch.object(cli_module, "_assemble_period_from_existing", side_effect=AssertionError("montagem manual nao deve ser usada")),
+                patch.object(cli_module, "_publish_collected_period", side_effect=AssertionError("publicacao completa nao deve ser usada")),
+                patch.object(cli_module, "_run_cloud_for_client", side_effect=AssertionError("Cloud nao pode ser chamado")),
+                patch.object(cli_module, "_execute_period", side_effect=AssertionError("VM nao pode ser chamada")),
+                contextlib.redirect_stdout(stdout),
+            ):
+                result = cli_module.command_resume_was(args)
+
+            self.assertEqual(result, 0)
+            prepare.assert_called_once()
+            collect_was.assert_called_once()
+            self.assertEqual(
+                collect_was.call_args.kwargs["run_id"],
+                "run-was-publicado-was-recovery",
+            )
+            repair.assert_called_once()
+            recovery_repository.mark_complete.assert_called_once_with(
+                checkpoint.run_id,
+                client_id=checkpoint.client_id,
+            )
+            payload = json.loads(stdout.getvalue())
+            self.assertFalse(payload["general_collection_repeated"])
+            self.assertFalse(payload["cloud_collection_repeated"])
 
     def test_build_report_dataset_command_uses_requested_run_id_for_tag_datasets(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:

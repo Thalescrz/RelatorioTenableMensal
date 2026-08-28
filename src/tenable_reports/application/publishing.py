@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from zipfile import BadZipFile, ZipFile
 from xml.etree import ElementTree
 
@@ -45,6 +46,12 @@ class PublicationDocument:
             "tag_category": str(self.tag_category or "").strip() or None,
             "tag_value": str(self.tag_value or "").strip() or None,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationDocumentReplacement:
+    staged_path: str | Path
+    destination: PublicationDocument
 
 
 def sha256_file(path: str | Path) -> str:
@@ -268,3 +275,118 @@ def upsert_publication_documents(
     updated["source_datasets"] = merged_datasets
     updated["updated_at"] = datetime.now(timezone.utc).isoformat()
     return write_json_atomic(source, updated)
+
+
+def replace_publication_documents_atomically(
+    *,
+    manifest_path: str | Path,
+    dataset_path: str | Path,
+    replacements: Sequence[PublicationDocumentReplacement],
+    commit_callback: Callable[[], None] | None = None,
+) -> Path:
+    """Replace validated VM documents and commit their manifest last."""
+
+    source = Path(manifest_path).resolve()
+    if not source.is_file():
+        raise ValueError(f"Manifesto de publicacao nao encontrado: {source}")
+    try:
+        original = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Manifesto de publicacao invalido.") from exc
+    if not isinstance(original, Mapping):
+        raise ValueError("Manifesto de publicacao invalido.")
+    existing_documents = original.get("documents")
+    if not isinstance(existing_documents, list):
+        raise ValueError("Manifesto sem documentos validos.")
+    dataset = Path(dataset_path).resolve()
+    if not dataset.is_file():
+        raise ValueError(f"Dataset de publicacao nao encontrado: {dataset}")
+    if not replacements:
+        raise ValueError("Nenhum documento foi informado para substituicao.")
+
+    prepared: list[tuple[Path, Path, dict[str, Any]]] = []
+    replacement_keys: set[tuple[str, str | None]] = set()
+    destinations: set[Path] = set()
+    for replacement in replacements:
+        staged = Path(replacement.staged_path).resolve()
+        destination = Path(replacement.destination.path).resolve()
+        metadata = replacement.destination.metadata()
+        kind = str(metadata["document_kind"])
+        if kind == "cloud":
+            raise ValueError("Documentos Cloud nao pertencem a reparacao VM/WAS.")
+        if staged == destination:
+            raise ValueError("Documento staged precisa ser diferente do destino.")
+        if staged.anchor.lower() != destination.anchor.lower():
+            raise ValueError("Staging e destino precisam estar no mesmo volume.")
+        if destination in destinations:
+            raise ValueError(f"Destino de documento duplicado: {destination}")
+        destinations.add(destination)
+        identity = metadata["tag_uuid"] if kind == "tag" else None
+        key = (kind, identity)
+        if key in replacement_keys:
+            raise ValueError(f"Documento de substituicao duplicado: {key}")
+        replacement_keys.add(key)
+        validated = validate_docx_package(staged)
+        validated["path"] = str(destination)
+        validated.update(metadata)
+        prepared.append((staged, destination, validated))
+
+    preserved = []
+    for item in existing_documents:
+        if not isinstance(item, Mapping):
+            continue
+        kind = str(item.get("document_kind") or "").lower()
+        identity = str(item.get("tag_uuid") or "") or None if kind == "tag" else None
+        if (kind, identity) not in replacement_keys:
+            preserved.append(dict(item))
+
+    source_dataset = {
+        "path": str(dataset),
+        "size_bytes": dataset.stat().st_size,
+        "sha256": sha256_file(dataset),
+    }
+    updated = dict(original)
+    updated["source_dataset"] = source_dataset
+    source_datasets = updated.get("source_datasets")
+    merged_datasets = (
+        dict(source_datasets) if isinstance(source_datasets, Mapping) else {}
+    )
+    merged_datasets["vm"] = source_dataset
+    updated["source_datasets"] = merged_datasets
+    updated["documents"] = [
+        *preserved,
+        *(validated for _, _, validated in prepared),
+    ]
+    updated["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    transaction_id = uuid.uuid4().hex
+    backups: list[tuple[Path, Path | None]] = []
+    committed_destinations: list[Path] = []
+    try:
+        for _, destination, _ in prepared:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            backup = None
+            if destination.exists():
+                backup = destination.with_name(
+                    f".{destination.name}.was-backup-{transaction_id}"
+                )
+                destination.replace(backup)
+            backups.append((destination, backup))
+        for staged, destination, _ in prepared:
+            staged.replace(destination)
+            committed_destinations.append(destination)
+        write_json_atomic(source, updated)
+        if commit_callback is not None:
+            commit_callback()
+    except Exception:
+        for destination, backup in reversed(backups):
+            if backup is not None and backup.exists():
+                backup.replace(destination)
+            elif destination in committed_destinations:
+                destination.unlink(missing_ok=True)
+        write_json_atomic(source, original)
+        raise
+    for _, backup in backups:
+        if backup is not None:
+            backup.unlink(missing_ok=True)
+    return source

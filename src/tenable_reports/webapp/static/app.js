@@ -395,8 +395,11 @@ function renderAlerts() {
     const wasCopy = a.was_recovery
       ? `<p><small>Export WEB: ${escapeHtml(wasFailure.export_uuid || "UUID não informado")} · ${Number(wasFailure.completed_chunks || 0)}/${Number(wasFailure.total_chunks || 0)} chunks · origem ${escapeHtml(wasFailure.origin || "desconhecida")}</small></p>`
       : "";
+    const automaticWasRetry = a.was_recovery?.status === "RETRY_AVAILABLE";
     const action = a.was_recovery
-      ? `<p><button class="mini-button" data-was-continue-run="${escapeHtml(a.run_id)}" type="button">Continuar sem WEB</button> <button class="mini-button" data-was-retry-run="${escapeHtml(a.run_id)}" type="button">Tentar WEB novamente</button></p>`
+      ? automaticWasRetry
+        ? `<p><button class="mini-button" data-was-retry-run="${escapeHtml(a.run_id)}" type="button">Tentar WEB novamente</button></p>`
+        : `<p><button class="mini-button" data-was-continue-run="${escapeHtml(a.run_id)}" type="button">Continuar sem WEB</button> <button class="mini-button" data-was-retry-run="${escapeHtml(a.run_id)}" type="button">Tentar WEB novamente</button></p>`
       : a.cloud_retry
       ? `<p><button class="mini-button" data-retry-cloud-run="${escapeHtml(a.run_id)}" type="button">Tentar Cloud novamente</button></p>`
       : !a.job_id ? "" : stuck

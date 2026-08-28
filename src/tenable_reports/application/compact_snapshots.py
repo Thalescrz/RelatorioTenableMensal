@@ -60,6 +60,14 @@ class CompactSnapshotRepository(Protocol):
         period_end_at: str,
     ) -> CompactFindingSnapshot | None: ...
 
+    def find_run(
+        self,
+        *,
+        client_id: str,
+        tenant_id: str,
+        run_id: str,
+    ) -> CompactFindingSnapshot | None: ...
+
 
 class MemoryCompactSnapshotRepository:
     def __init__(self) -> None:
@@ -91,6 +99,21 @@ class MemoryCompactSnapshotRepository:
             and item.period_end_at == period_end_at
         ]
         return max(matches, key=lambda item: (item.created_at, item.run_id), default=None)
+
+    def find_run(
+        self,
+        *,
+        client_id: str,
+        tenant_id: str,
+        run_id: str,
+    ) -> CompactFindingSnapshot | None:
+        return next((
+            item
+            for item in self._snapshots.values()
+            if item.client_id == client_id
+            and item.tenant_id == tenant_id
+            and item.run_id == run_id
+        ), None)
 
 
 def _canonical_json(value: Mapping[str, Any]) -> bytes:
@@ -272,3 +295,20 @@ def replay_compact_snapshot(
         was_findings=was_findings,
         tag_scope=tag_scope,
     )
+
+
+def compact_vm_content_sha256(snapshot: CompactFindingSnapshot) -> str:
+    """Hash only the VM/assets/TAG evidence, excluding WAS and documents."""
+
+    replay = replay_compact_snapshot(snapshot)
+    payload = {
+        "assets": [item.to_dict() for item in replay.assets],
+        "findings": [item.to_dict() for item in replay.findings],
+        "quality_issues": [item.to_dict() for item in replay.quality_issues],
+        "tag_asset_ids": {
+            str(tag): sorted(str(asset_id) for asset_id in asset_ids)
+            for tag, asset_ids in sorted(replay.tag_asset_ids.items())
+        },
+        "tag_scope": dict(replay.tag_scope) if replay.tag_scope is not None else None,
+    }
+    return hashlib.sha256(_canonical_json(payload)).hexdigest()

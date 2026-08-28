@@ -11,6 +11,7 @@ from pathlib import Path
 from tenable_reports.application.compact_snapshots import (
     MemoryCompactSnapshotRepository,
     build_compact_snapshot,
+    compact_vm_content_sha256,
     replay_compact_snapshot,
 )
 from tenable_reports.application.history import finalize_compact_snapshot
@@ -20,6 +21,7 @@ from tenable_reports.domain.normalization import (
     QualitySeverity,
     normalize_and_link,
 )
+from tenable_reports.domain.was import normalize_was_findings
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +54,45 @@ def normalized_fixture():
 
 
 class CompactSnapshotTests(unittest.TestCase):
+    def test_vm_hash_is_unchanged_when_only_was_and_documents_change(self) -> None:
+        normalized = normalized_fixture()
+        was = normalize_was_findings([{
+            "finding_id": "was-a",
+            "asset": {"uuid": "web-a"},
+            "plugin": {"id": 200001, "name": "WEB A"},
+            "state": "OPEN",
+            "severity": "HIGH",
+            "last_found": "2026-07-20T12:00:00Z",
+        }], client_id="client-a").findings
+        common = {
+            "client_id": "client-a",
+            "tenant_id": "tenant-a",
+            "execution_type": "AUTOMATIC_MONTHLY",
+            "period_mode": "PREVIOUS_CALENDAR_MONTH",
+            "period_start_at": "2026-07-01T03:00:00Z",
+            "period_end_at": "2026-08-01T03:00:00Z",
+            "assets": normalized.assets,
+            "findings": normalized.findings,
+            "quality_issues": normalized.issues,
+            "tag_asset_ids": {"tag-a": ("asset-a",)},
+        }
+        before = build_compact_snapshot(
+            **common,
+            run_id="run-before",
+            document_references={"base": "C:/reports/base-before.docx"},
+        )
+        after = build_compact_snapshot(
+            **common,
+            run_id="run-after",
+            document_references={"base": "C:/reports/base-after.docx"},
+            was_findings=was,
+        )
+
+        self.assertEqual(
+            compact_vm_content_sha256(before),
+            compact_vm_content_sha256(after),
+        )
+        self.assertNotEqual(before.content_sha256, after.content_sha256)
     def test_migration_stores_compressed_payload_and_exact_period_index(self) -> None:
         sql = (
             ROOT
@@ -143,6 +184,39 @@ class CompactSnapshotTests(unittest.TestCase):
         )
         self.assertEqual(repository.count, 2)
         self.assertEqual(exact.run_id, "run-b")
+
+    def test_repository_finds_the_original_snapshot_by_run_id(self) -> None:
+        normalized = normalized_fixture()
+        repository = MemoryCompactSnapshotRepository()
+
+        def snapshot(run_id: str):
+            return build_compact_snapshot(
+                client_id="client-a",
+                tenant_id="tenant-a",
+                run_id=run_id,
+                execution_type="AUTOMATIC_MONTHLY",
+                period_mode="PREVIOUS_CALENDAR_MONTH",
+                period_start_at="2026-07-01T03:00:00Z",
+                period_end_at="2026-08-01T03:00:00Z",
+                assets=normalized.assets,
+                findings=normalized.findings,
+                quality_issues=(),
+                tag_asset_ids={},
+                document_references={"base": f"C:/reports/{run_id}.docx"},
+            )
+
+        original = snapshot("run-original")
+        repaired = snapshot("run-original-was-recovered")
+        repository.publish(original)
+        repository.publish(repaired)
+
+        found = repository.find_run(
+            client_id="client-a",
+            tenant_id="tenant-a",
+            run_id="run-original",
+        )
+
+        self.assertEqual(found, original)
 
     def test_replay_recovers_hostname_from_legacy_blank_display_name(self) -> None:
         normalized = normalized_fixture()

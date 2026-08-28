@@ -2337,6 +2337,13 @@ class DashboardApplication:
             WasRecoveryStatus.RETRY_AVAILABLE,
         }:
             raise ValueError("Esta recuperacao WAS nao aceita uma nova decisao.")
+        if (
+            record.status is WasRecoveryStatus.RETRY_AVAILABLE
+            and decision is not WasRecoveryDecision.RETRY_WAS
+        ):
+            raise ValueError(
+                "Uma publicacao automatica concluida aceita somente a retentativa WEB."
+            )
         clients = {item["client_id"]: item for item in self.config.list_clients()}
         client = clients.get(record.client_id)
         if client is None:

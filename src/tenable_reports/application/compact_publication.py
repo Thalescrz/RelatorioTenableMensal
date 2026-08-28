@@ -55,6 +55,49 @@ def _tag_asset_ids(tag_scope: Mapping[str, object] | None) -> dict[str, tuple[st
     return result
 
 
+def prepare_compact_run_snapshot(
+    *,
+    profile: ClientProfile,
+    source_run_id: str,
+    snapshot_run_id: str | None = None,
+    execution_type: str,
+    period: ReportingPeriod,
+    output_root: str | Path,
+    document_references: Mapping[str, str],
+) -> CompactFindingSnapshot:
+    references = {
+        str(key): str(value)
+        for key, value in document_references.items()
+        if str(key).strip() and str(value).strip()
+    }
+    if not references or any(not Path(value).is_file() for value in references.values()):
+        raise ValueError("Os documentos publicados precisam existir antes do snapshot.")
+
+    root = Path(output_root)
+    inputs = load_report_dataset_inputs(
+        profile=profile,
+        run_id=source_run_id,
+        output_root=root,
+    )
+    normalized_directory = root / "normalized" / profile.client_id / source_run_id
+    return build_compact_snapshot(
+        client_id=profile.client_id,
+        tenant_id=profile.tenant_id,
+        run_id=snapshot_run_id or source_run_id,
+        execution_type=execution_type,
+        period_mode=period.mode.value,
+        period_start_at=period.to_dict()["start_at"],
+        period_end_at=period.to_dict()["end_at"],
+        assets=inputs.assets,
+        findings=inputs.findings,
+        quality_issues=_quality_issues(normalized_directory),
+        tag_asset_ids=_tag_asset_ids(inputs.tag_scope),
+        tag_scope=inputs.tag_scope,
+        was_findings=inputs.was_findings,
+        document_references=references,
+    )
+
+
 def publish_compact_run_snapshot(
     *,
     repository: CompactSnapshotRepository,
@@ -69,36 +112,13 @@ def publish_compact_run_snapshot(
 ) -> CompactFindingSnapshot:
     if not publication_validated or not documents_validated:
         raise ValueError("Publicacao e documentos precisam estar confirmados.")
-    references = {
-        str(key): str(value)
-        for key, value in document_references.items()
-        if str(key).strip() and str(value).strip()
-    }
-    if not references or any(not Path(value).is_file() for value in references.values()):
-        raise ValueError("Os documentos publicados precisam existir antes do snapshot.")
-
-    root = Path(output_root)
-    inputs = load_report_dataset_inputs(
+    snapshot = prepare_compact_run_snapshot(
         profile=profile,
-        run_id=run_id,
-        output_root=root,
-    )
-    normalized_directory = root / "normalized" / profile.client_id / run_id
-    snapshot = build_compact_snapshot(
-        client_id=profile.client_id,
-        tenant_id=profile.tenant_id,
-        run_id=run_id,
+        source_run_id=run_id,
         execution_type=execution_type,
-        period_mode=period.mode.value,
-        period_start_at=period.to_dict()["start_at"],
-        period_end_at=period.to_dict()["end_at"],
-        assets=inputs.assets,
-        findings=inputs.findings,
-        quality_issues=_quality_issues(normalized_directory),
-        tag_asset_ids=_tag_asset_ids(inputs.tag_scope),
-        tag_scope=inputs.tag_scope,
-        was_findings=inputs.was_findings,
-        document_references=references,
+        period=period,
+        output_root=output_root,
+        document_references=document_references,
     )
     finalize_compact_snapshot(
         repository=repository,

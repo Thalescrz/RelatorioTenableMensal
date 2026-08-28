@@ -13,6 +13,7 @@ from tenable_reports import __version__
 from tenable_reports.application.collect import (
     CollectionResult,
     StoredChunk,
+    _load_resume_chunks,
     _write_exclusive,
     _write_json_replace,
     store_chunk_atomic,
@@ -190,6 +191,22 @@ def collect_was_snapshot(
     partial_manifest_path = raw_directory / "manifest.partial.json"
     manifest_path = raw_directory / "manifest.json"
     stored_chunks: dict[int, StoredChunk] = {}
+    if partial_manifest_path.is_file():
+        try:
+            partial_payload = json.loads(
+                partial_manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            partial_payload = {}
+        if partial_payload.get("query_sha256") == query_sha256:
+            resumed_uuid, resumed_chunks = _load_resume_chunks(
+                partial_manifest_path,
+                source="tenable_was_findings",
+                client_id=profile.client_id,
+                tenant_id=profile.tenant_id,
+            )
+            if resumed_uuid == actual_export_uuid:
+                stored_chunks.update(resumed_chunks)
 
     def manifest_payload(*, status: str) -> dict[str, Any]:
         return {
