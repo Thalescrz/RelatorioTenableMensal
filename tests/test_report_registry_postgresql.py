@@ -144,6 +144,30 @@ class PostgresReportRegistryHardDeleteTests(unittest.TestCase):
         )
         self.assertLess(cloud_delete_index, report_delete_index)
 
+    def test_hard_delete_can_clear_main_before_removing_the_only_run(self) -> None:
+        database = _Database()
+        registry = PostgresReportRegistry(database, migrate=False)
+
+        registry.hard_delete(
+            "run-old",
+            actor="analista",
+            reason="conjunto inválido",
+            allow_gap=True,
+        )
+
+        statements = [item[0] for item in database.connection_value.statements]
+        main_delete_index = next(
+            index for index, statement in enumerate(statements)
+            if statement.startswith(
+                "delete from tenable_reports.report_main_references"
+            )
+        )
+        report_delete_index = next(
+            index for index, statement in enumerate(statements)
+            if statement.startswith("delete from tenable_reports.report_runs")
+        )
+        self.assertLess(main_delete_index, report_delete_index)
+
 
 if __name__ == "__main__":
     unittest.main()

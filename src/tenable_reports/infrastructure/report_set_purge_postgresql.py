@@ -121,10 +121,12 @@ class PostgresReportSetPurgeRepository:
         actor: str,
         reason: str,
         replacement_run_id: str | None,
+        allow_main_gap: bool = False,
     ) -> None:
         self.registry.hard_delete(
             run_id,
             actor=actor,
             reason=reason,
             replacement_run_id=replacement_run_id,
+            allow_gap=allow_main_gap,
         )

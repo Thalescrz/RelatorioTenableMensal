@@ -143,7 +143,9 @@ Depois da publicação:
 
 Automático válido vira `MAIN` por padrão quando aplicável. Após uma reexecução
 melhor, promova manualmente a versão correta. Antes de excluir um `MAIN`, defina a
-referência substituta ou aceite conscientemente a ausência de comparativo futuro.
+referência substituta. Se não houver substituta compatível, a interface alerta que o
+período ficará sem referência; prossiga somente após aceitar conscientemente a
+ausência de comparativo futuro e confirmar a exclusão permanente.
 
 ## Armazenamento
 

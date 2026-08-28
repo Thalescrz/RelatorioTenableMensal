@@ -154,6 +154,30 @@ class PostgresReportSetPurgeRepositoryTests(unittest.TestCase):
                 registry.get_report(old.run_id)
             self.assertEqual(registry.get_main(key).run_id, replacement.run_id)
 
+    def test_purge_can_explicitly_leave_the_period_without_main(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            registry = InMemoryReportRegistry()
+            old = _candidate("run-a")
+            key = reference_key_for_candidate(old)
+            registry.register_report(old)
+            registry.promote_main(key, old.run_id, actor="sistema", reason="automático")
+            repository = PostgresReportSetPurgeRepository(
+                database=_Database(Path(directory) / "data"),
+                registry=registry,
+            )
+
+            repository.purge(
+                old.run_id,
+                actor="analista",
+                reason="conjunto inválido",
+                replacement_run_id=None,
+                allow_main_gap=True,
+            )
+
+            with self.assertRaises(KeyError):
+                registry.get_report(old.run_id)
+            self.assertIsNone(registry.get_main(key))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -208,9 +208,16 @@ Para excluir um conjunto:
 
 1. clique em **Excluir conjunto**;
 2. confira período, quantidade de documentos, arquivos e espaço ocupado;
-3. informe o motivo e digite exatamente `EXCLUIR`;
-4. se a geração for `MAIN`, escolha uma substituta compatível dentre as opções
-   apresentadas.
+3. se a geração for o único `MAIN` do período, leia o alerta de que a exclusão
+   deixará aquele período sem referência para comparações futuras e decida se quer
+   continuar;
+4. informe o motivo e digite exatamente `EXCLUIR`;
+5. se houver outra geração compatível, escolha obrigatoriamente uma substituta.
+
+Quando não existe substituta compatível, continuar após o alerta autoriza somente
+aquela exclusão a deixar o período sem `MAIN`. Cancelar o alerta não altera arquivos
+nem banco. A API também exige essa autorização explícita; a confirmação visual não
+é apenas informativa.
 
 A exclusão não prossegue se existir geração ativa para o cliente ou se algum alvo
 estiver fora da raiz `data`. Quando concluída, remove do disco os DOCX gerais,

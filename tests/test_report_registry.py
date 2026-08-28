@@ -134,6 +134,29 @@ class ReportRegistryTests(unittest.TestCase):
             for event in registry.reference_events()
         ))
 
+    def test_hard_delete_main_can_leave_an_explicit_gap(self) -> None:
+        module = _registry_module()
+        registry = module.InMemoryReportRegistry()
+        old = _candidate("run-old")
+        key = reference_key_for_candidate(old)
+        registry.register_report(old)
+        registry.promote_main(key, old.run_id, actor="sistema", reason="automatico")
+
+        registry.hard_delete(
+            old.run_id,
+            actor="analista",
+            reason="conjunto de teste obsoleto",
+            allow_gap=True,
+        )
+
+        with self.assertRaises(KeyError):
+            registry.get_report(old.run_id)
+        self.assertIsNone(registry.get_main(key))
+        self.assertTrue(all(
+            event.previous_run_id != old.run_id and event.new_run_id != old.run_id
+            for event in registry.reference_events()
+        ))
+
     def test_hard_delete_rejects_an_incompatible_replacement(self) -> None:
         module = _registry_module()
         registry = module.InMemoryReportRegistry()

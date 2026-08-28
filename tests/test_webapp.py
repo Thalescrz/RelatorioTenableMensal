@@ -86,12 +86,14 @@ class _WebPurgeRepository:
         actor: str,
         reason: str,
         replacement_run_id: str | None,
+        allow_main_gap: bool = False,
     ) -> None:
         self.registry.hard_delete(
             run_id,
             actor=actor,
             reason=reason,
             replacement_run_id=replacement_run_id,
+            allow_gap=allow_main_gap,
         )
 
 
@@ -565,6 +567,16 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("cancel-export-and-retry", source)
         self.assertIn("window.confirm", source)
 
+    def test_frontend_warns_before_leaving_a_period_without_main(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "src/tenable_reports/webapp/static/app.js"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("requires_main_gap_confirmation", source)
+        self.assertIn("sem referência para comparações futuras", source)
+        self.assertIn("body.allow_main_gap = true", source)
+
     def test_backfill_routes_analyze_and_apply_only_safe_promotions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -772,6 +784,69 @@ class WebDashboardTests(unittest.TestCase):
                     registry.get_main(reference_key_for_candidate(valid_run("run-b"))).run_id,
                     "run-b",
                 )
+            finally:
+                client.close()
+
+    def test_report_endpoint_requires_explicit_permission_to_delete_the_only_main(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_root = root / "data"
+            document = data_root / "manual" / "reports" / "cliente-a" / "run-a" / "base.docx"
+            document.parent.mkdir(parents=True, exist_ok=True)
+            document.write_bytes(b"doc")
+            registry = InMemoryReportRegistry()
+            report = valid_run("run-a")
+            key = reference_key_for_candidate(report)
+            registry.register_report(report)
+            registry.promote_main(key, report.run_id, actor="system", reason="primeiro")
+            records = {
+                "run-a": ReportSetPurgeRecord(
+                    run_id="run-a",
+                    client_id="cliente-a",
+                    period_id="2026-07",
+                    disk_paths=(str(document),),
+                    document_count=1,
+                    is_main=True,
+                ),
+            }
+            purger = ReportSetPurgeService(
+                data_root=data_root,
+                repository=_WebPurgeRepository(registry, records),
+                active_jobs=lambda: (),
+            )
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=registry,
+                report_set_purger=purger,
+            )
+            client = LocalClient(app)
+            try:
+                status, preview = client.request(
+                    "GET", "/api/reports/run-a/purge-preview"
+                )
+                self.assertEqual(status, 200)
+                self.assertTrue(preview["requires_main_gap_confirmation"])
+
+                payload = {
+                    "actor": "analista",
+                    "reason": "incompleto",
+                    "confirmation": "EXCLUIR",
+                }
+                status, _ = client.request("DELETE", "/api/reports/run-a", payload)
+                self.assertEqual(status, 409)
+                self.assertTrue(document.exists())
+
+                payload["allow_main_gap"] = True
+                status, deleted = client.request(
+                    "DELETE", "/api/reports/run-a", payload
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(deleted["deleted_files"], 1)
+                self.assertFalse(document.exists())
+                with self.assertRaises(KeyError):
+                    registry.get_report("run-a")
+                self.assertIsNone(registry.get_main(key))
             finally:
                 client.close()
 
