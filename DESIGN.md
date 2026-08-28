@@ -1,6 +1,6 @@
 # Design da solução
 
-**Status:** arquitetura vigente em 2026-08-23  
+**Status:** arquitetura vigente em 2026-08-28  
 **Escopo:** decisões estruturais que devem permanecer estáveis enquanto o produto
 evolui. Detalhes operacionais ficam nos guias em `docs`.
 
@@ -166,9 +166,17 @@ compacto permanecem. Falhas conservam staging por janela curta para retomada.
 
 ### Módulos opcionais isolados
 
-WAS possui coleta e normalização próprias. Ausência de licença, permissão ou achados
-vira aviso e mensagem editorial, não falha do núcleo VM. O mesmo padrão deve orientar
-futuras capacidades opcionais.
+WAS possui coleta, normalização e checkpoint próprios. Na execução manual, uma
+falha retentável pausa antes da publicação e oferece continuar sem WEB ou retentar
+somente WAS. Na execução mensal automática, VM é publicada com alerta e a
+retentativa WAS permanece disponível. O reparo de uma publicação reconstrói o
+contexto pelo snapshot compacto, não repete VM, assets, TAG ou Cloud, valida que o
+hash das métricas VM permaneceu igual e substitui os DOCX e o manifesto de forma
+atômica.
+
+Ausência de achados é diferente de coleta indisponível. `NO_DATA` permite a mensagem
+mensal de ausência; `NOT_COLLECTED` exibe um alerta editorial e não pode ser
+apresentado como zero vulnerabilidades.
 
 ## Estados importantes
 
@@ -194,6 +202,14 @@ planned -> running -> succeeded
 
 Falha WAS pode produzir sucesso VM com alerta. Falha de publicação não autoriza
 limpeza dos dados necessários à recuperação.
+
+```text
+WAS manual falhou -> aguardando decisão -> continuar sem WEB
+                                     \-> retentar somente WAS
+
+WAS mensal falhou -> VM publicada com alerta -> retentar somente WAS
+                                           \-> reparo atômico dos DOCX VM/TAG
+```
 
 ### Documento
 

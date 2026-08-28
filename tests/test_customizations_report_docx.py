@@ -175,6 +175,35 @@ def test_first_month_renders_current_baseline_and_explicit_no_data_messages() ->
         assert "Neste mês não foram identificadas tecnologias WEB sem suporte." in text
 
 
+def test_unavailable_was_customization_is_not_presented_as_no_occurrences() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        source = json.loads(
+            (ROOT / "tests/fixtures/report-dataset-phase5.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        source.setdefault("customizations", {})["was_unsupported_tech"] = []
+        source["customizations"].setdefault("customization_statuses", {})[
+            "was_unsupported_tech"
+        ] = "DATA_UNAVAILABLE"
+        dataset = Path(directory) / "was-unavailable.json"
+        dataset.write_text(json.dumps(source), encoding="utf-8")
+
+        result = generate_customizations_report(
+            template_path=ROOT / "templates/corporate/base-v1.docx",
+            dataset_path=dataset,
+            profile=load_client_profile(
+                ROOT / "clients/examples/client-profile-all-customizations.json"
+            ),
+            output_path=Path(directory) / "custom.docx",
+            mask_sensitive=True,
+        )
+
+        text = _text(Document(result.output_path))
+        assert "Não foi possível concluir a coleta WEB" in text
+        assert "Neste mês não foram identificadas tecnologias WEB sem suporte." not in text
+
+
 def test_source_filter_notes_cover_custom_data_tables() -> None:
     with tempfile.TemporaryDirectory() as directory:
         source = json.loads(

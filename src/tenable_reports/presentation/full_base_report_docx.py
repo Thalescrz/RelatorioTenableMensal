@@ -623,8 +623,13 @@ def _web_vulnerability_details(
 
 def _was_section(document: DocxDocument, dataset: Mapping[str, Any], profile: ClientProfile, mask_sensitive: bool, translator: TextTranslator | None = None) -> None:
     was = dataset.get("was") if isinstance(dataset.get("was"), Mapping) else {}
+    # Datasets legados anteriores ao campo tipado representam coleta concluída.
+    # Somente o valor explícito NOT_COLLECTED autoriza o alerta de indisponibilidade.
+    was_available = str(was.get("availability") or "AVAILABLE") != "NOT_COLLECTED"
     _heading(document, "SENSOR WAS")
     _paragraph(document, copy.WAS_SENSOR)
+    if not was_available:
+        _paragraph(document, copy.WAS_COLLECTION_UNAVAILABLE, bold=True)
     _heading(document, "6.1. Saúde Global das aplicações", 2)
     _paragraph(document, copy.WAS_GLOBAL_HEALTH)
     _paragraph(document, copy.WAS_HEALTH_FACTORS)
@@ -646,6 +651,7 @@ def _was_section(document: DocxDocument, dataset: Mapping[str, Any], profile: Cl
         widths=(3900, 1050, 1050, 1050, 1050, 1100),
         left_columns=frozenset({0}),
         header_fills=(base.BLUE, base.CRITICAL, base.HIGH, base.MEDIUM, base.LOW, base.BLUE),
+        empty_message=copy.EMPTY_TABLE_MONTH if was_available else None,
     )
     add_source_filter_note(
         document,
@@ -662,6 +668,7 @@ def _was_section(document: DocxDocument, dataset: Mapping[str, Any], profile: Cl
         plugin_rows,
         widths=(900, 3000, 2050, 1050, 850, 850),
         left_columns=frozenset({1, 2}),
+        empty_message=copy.EMPTY_TABLE_MONTH if was_available else None,
     )
     add_source_filter_note(
         document,
@@ -692,7 +699,7 @@ def _was_section(document: DocxDocument, dataset: Mapping[str, Any], profile: Cl
                 enabled=profile.presentation.show_source_filters,
                 extra_filters={"OWASP 2021": category},
             )
-        else:
+        elif was_available:
             _paragraph(document, copy.OWASP_EMPTY_MONTH)
     _heading(document, "6.4. Vulnerabilidades WEB e Suas Correções e/ou Contramedidas Recomendadas", 2)
     _paragraph(document, copy.TOP5_WEB_INTRO)
@@ -705,7 +712,7 @@ def _was_section(document: DocxDocument, dataset: Mapping[str, Any], profile: Cl
         include_output=profile.presentation.was_top5_include_output,
         translator=translator,
     )
-    if rendered_web_details == 0:
+    if rendered_web_details == 0 and was_available:
         _paragraph(document, copy.TOP5_WEB_EMPTY_MONTH)
 
 
