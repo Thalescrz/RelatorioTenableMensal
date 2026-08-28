@@ -1011,7 +1011,13 @@ def _was_unsupported(
     faithful._heading(document, "WAS Vulnerabilidades WEB – Principais Aplicações “Unsupported”", 3)
     faithful._paragraph(document, WAS_UNSUPPORTED)
     if not items:
-        faithful._paragraph(document, NO_DATA_MESSAGES["was_unsupported_tech"])
+        faithful._paragraph(
+            document,
+            editorial.WAS_COLLECTION_UNAVAILABLE
+            if isinstance(statuses, Mapping)
+            and statuses.get("was_unsupported_tech") == "DATA_UNAVAILABLE"
+            else NO_DATA_MESSAGES["was_unsupported_tech"],
+        )
         rendered.append("was_unsupported_tech")
         return
     rows = []

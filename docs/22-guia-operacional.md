@@ -166,6 +166,23 @@ Estados importantes:
 Um export com `total_chunks=1` ainda pode estar processando. Não considere o número
 de chunks como confirmação de término.
 
+### Falha isolada no WAS
+
+Na execução manual, a interface mantém VM, assets, TAG e Cloud já coletados e
+solicita uma decisão:
+
+- **Continuar sem WEB** conclui a publicação com alerta;
+- **Tentar WEB novamente** executa somente WAS e reutiliza chunks já persistidos.
+
+Na execução mensal automática, os documentos VM são publicados para não bloquear a
+carteira. O alerta oferece apenas **Tentar WEB novamente**. Se a publicação já
+existir, a aplicação reconstrói o contexto pelo histórico compacto e substitui os
+DOCX VM/TAG sem repetir VM ou Cloud. Uma nova falha mantém a ação disponível.
+
+No Word, “não foram identificadas vulnerabilidades WEB” significa coleta concluída
+sem ocorrências. A mensagem “não foi possível concluir a coleta WEB” indica dados
+indisponíveis e não deve ser validada na plataforma como zero.
+
 Para uma execução com coleta nova, confirme também:
 
 - indicação de coleta forçada no card;
@@ -276,6 +293,7 @@ Para intervenção controlada, consulte a ajuda atual:
 .\.venv\Scripts\python.exe -m tenable_reports --help
 .\.venv\Scripts\python.exe -m tenable_reports run-client --help
 .\.venv\Scripts\python.exe -m tenable_reports orchestrate --help
+.\.venv\Scripts\python.exe -m tenable_reports resume-was --help
 .\.venv\Scripts\python.exe -m tenable_reports retry-cloud --help
 ```
 

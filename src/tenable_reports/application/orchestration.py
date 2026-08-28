@@ -176,6 +176,7 @@ class OrchestrationResult:
                 "COMPLETE",
                 "COMPLETE_WITH_WARNINGS",
                 "PLANNED",
+                "WAITING_WAS_DECISION",
             }
             for item in self.clients
         )
@@ -196,6 +197,9 @@ class OrchestrationResult:
             ),
             "failed": self.failed_count,
             "planned": sum(item.status == "PLANNED" for item in self.clients),
+            "waiting_was_decision": sum(
+                item.status == "WAITING_WAS_DECISION" for item in self.clients
+            ),
             "clients": [item.to_dict() for item in self.clients],
             "retention_candidates": list(self.retention_candidates),
             "retention_removed": list(self.retention_removed),
@@ -536,6 +540,8 @@ def build_client_command(
         "--minimum-free-gb",
         str(config.minimum_free_gb),
         "--confirm-live-api",
+        "--was-failure-policy",
+        "continue" if request.mode == "automatic" else "wait",
     ]
     if request.force_live_collection:
         command.append("--force-live-collection")
@@ -743,6 +749,7 @@ def _execute_client(
         duration = round(time.monotonic() - monotonic_started, 3)
         if completed.returncode != 0:
             failure_input: Any = completed.stderr or completed.stdout
+            stdout_payload: Mapping[str, Any] | None = None
             if completed.stdout.strip():
                 try:
                     stdout_payload = _payload_from_stdout(completed.stdout)
@@ -759,32 +766,57 @@ def _execute_client(
                         or stdout_status in {"error", "failed", "failure"}
                     ):
                         failure_input = stdout_payload
-            failure = classify_failure(failure_input)
-            error = _safe_error(failure.message)
-            error_code = failure.code.value
-            retryable = failure.retryable
-            events.append({
-                "timestamp": ended.isoformat(),
-                "event": "CLIENT_FAILED",
-                "client_id": client.client_id,
-                "exit_code": completed.returncode,
-                "duration_seconds": duration,
-                "error_code": error_code,
-                "retryable": retryable,
-                "error": error,
-            })
-            result = ClientExecutionResult(
-                client_id=client.client_id,
-                status="FAILED",
-                exit_code=completed.returncode,
-                command=command,
-                started_at=started.isoformat(),
-                ended_at=ended.isoformat(),
-                duration_seconds=duration,
-                payload=None,
-                error=error,
-                log_path=log_path,
-            )
+            stdout_status = str(
+                (stdout_payload or {}).get("status") or ""
+            ).strip().lower()
+            if stdout_status == "waiting_was_decision":
+                events.append({
+                    "timestamp": ended.isoformat(),
+                    "event": "CLIENT_WAITING_WAS_DECISION",
+                    "client_id": client.client_id,
+                    "exit_code": completed.returncode,
+                    "duration_seconds": duration,
+                    "result": dict(stdout_payload or {}),
+                })
+                result = ClientExecutionResult(
+                    client_id=client.client_id,
+                    status="WAITING_WAS_DECISION",
+                    exit_code=completed.returncode,
+                    command=command,
+                    started_at=started.isoformat(),
+                    ended_at=ended.isoformat(),
+                    duration_seconds=duration,
+                    payload=stdout_payload,
+                    error=None,
+                    log_path=log_path,
+                )
+            else:
+                failure = classify_failure(failure_input)
+                error = _safe_error(failure.message)
+                error_code = failure.code.value
+                retryable = failure.retryable
+                events.append({
+                    "timestamp": ended.isoformat(),
+                    "event": "CLIENT_FAILED",
+                    "client_id": client.client_id,
+                    "exit_code": completed.returncode,
+                    "duration_seconds": duration,
+                    "error_code": error_code,
+                    "retryable": retryable,
+                    "error": error,
+                })
+                result = ClientExecutionResult(
+                    client_id=client.client_id,
+                    status="FAILED",
+                    exit_code=completed.returncode,
+                    command=command,
+                    started_at=started.isoformat(),
+                    ended_at=ended.isoformat(),
+                    duration_seconds=duration,
+                    payload=None,
+                    error=error,
+                    log_path=log_path,
+                )
         else:
             payload = _payload_from_stdout(completed.stdout)
             payload_status = str(payload.get("status") or "").strip().lower()
@@ -986,7 +1018,11 @@ def _execute_client_with_retry(
         )
         attempts.extend(result.attempts)
         last_result = replace(result, attempts=tuple(attempts))
-        if result.status in {"COMPLETE", "COMPLETE_WITH_WARNINGS"}:
+        if result.status in {
+            "COMPLETE",
+            "COMPLETE_WITH_WARNINGS",
+            "WAITING_WAS_DECISION",
+        }:
             return last_result
         current_attempt = result.attempts[-1]
         if not current_attempt.retryable or attempt_number >= max_attempts:
@@ -1141,6 +1177,7 @@ def run_orchestration(
         else ()
     )
     failed = sum(item.status == "FAILED" for item in results)
+    waiting_was = sum(item.status == "WAITING_WAS_DECISION" for item in results)
     warned = sum(item.status == "COMPLETE_WITH_WARNINGS" for item in results)
     status = (
         "DRY_RUN"
@@ -1148,6 +1185,7 @@ def run_orchestration(
         else (
             "PARTIAL_FAILURE"
             if failed
+            else "WAITING_WAS_DECISION" if waiting_was
             else "COMPLETE_WITH_WARNINGS" if warned else "COMPLETE"
         )
     )

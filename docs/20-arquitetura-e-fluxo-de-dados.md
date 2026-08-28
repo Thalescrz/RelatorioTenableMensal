@@ -135,6 +135,13 @@ Cada chunk é persistido assim que fica disponível. O manifesto parcial registr
 UUID, origem do job, chunks concluídos e progresso. Uma nova tentativa do mesmo
 trabalho pode reutilizar chunks íntegros sem baixá-los novamente.
 
+O manifesto parcial WAS segue a mesma regra. Uma falha manual cria checkpoint e
+interrompe o fluxo antes dos DOCX; uma falha mensal automática é registrada como
+retentável somente depois que a publicação VM e o snapshot compacto foram
+confirmados. A recuperação de uma publicação materializa VM/assets/TAG localmente
+do snapshot compacto, coleta apenas WAS e troca os documentos VM/TAG e o manifesto
+em uma transação com rollback. Cloud é preservado e não é executado novamente.
+
 O cancelamento automático é conservador: somente um job criado pela execução atual,
 sem progresso, pode ser cancelado ao atingir o limite. Job preexistente, fornecido
 ou retomado nunca é cancelado automaticamente. Timeout de export é falha temporária
@@ -187,4 +194,6 @@ A execução registra eventos estruturados por cliente. Falhas são classificada
 para diferenciar credencial, contrato, limite de taxa, indisponibilidade temporária,
 timeout e erro não esperado. A interface mostra progresso e alerta por cliente sem
 expor chaves ou conteúdo sensível dos findings. Falha Cloud é registrada
-separadamente e pode produzir sucesso parcial com retentativa exclusiva.
+separadamente e pode produzir sucesso parcial com retentativa exclusiva. Falha WAS
+usa disponibilidade tipada: `NOT_COLLECTED` produz alerta editorial, enquanto
+`NO_DATA` significa coleta concluída sem ocorrências.

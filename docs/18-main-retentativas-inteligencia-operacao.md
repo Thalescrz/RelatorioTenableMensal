@@ -1,6 +1,6 @@
 # Operação de main, retentativas e inteligência
 
-## Estado atual — 2026-08-24
+## Estado atual — 2026-08-28
 
 A referência `MAIN` também cobre a identidade dos documentos por TAG, garantindo
 comparação da mesma TAG no tempo. Retentativas VM preservam chunks íntegros e
@@ -55,6 +55,20 @@ cliente, o modo e a janela temporal originais e registra o job anterior como ori
 Na automação mensal, somente falhas transitórias são repetidas. Falhas de
 autenticação não são repetidas automaticamente e devem ser resolvidas em
 `credentials/<cliente>.env` antes de uma nova tentativa.
+
+WAS possui uma retentativa independente:
+
+- manual: a execução preserva VM/assets/TAG/Cloud e aguarda **Continuar sem WEB**
+  ou **Tentar WEB novamente**;
+- mensal automática: os documentos VM são publicados com alerta e fica disponível
+  somente **Tentar WEB novamente**;
+- a retentativa reaproveita chunks WAS já persistidos e nunca reinicia os exports
+  VM ou a coleta Cloud;
+- quando o conjunto já foi publicado, o contexto VM é reconstruído pelo snapshot
+  compacto, os DOCX VM/TAG são regenerados em staging e substituídos junto com o
+  manifesto somente após validação e persistência;
+- se o hash das métricas VM mudar, a reparação é recusada e o conjunto anterior
+  permanece intacto.
 
 ## Retenção e recuperação de espaço
 

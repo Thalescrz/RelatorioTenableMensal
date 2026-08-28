@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import re
+import shutil
 import sys
 import uuid
 from dataclasses import dataclass, replace
@@ -31,7 +32,11 @@ from tenable_reports.application.collection_resources import (
 
 from tenable_reports.application.collect_inventory import collect_bounded_historical_findings
 from tenable_reports.application.period_collection import collect_external_period
-from tenable_reports.application.compact_publication import publish_compact_run_snapshot
+from tenable_reports.application.compact_publication import (
+    prepare_compact_run_snapshot,
+    publish_compact_run_snapshot,
+)
+from tenable_reports.application.compact_snapshots import compact_vm_content_sha256
 from tenable_reports.application.historical_materialization import (
     materialize_historical_collection_run,
 )
@@ -75,6 +80,7 @@ from tenable_reports.application.tag_report_dataset import (
 )
 from tenable_reports.application.history import (
     SQLiteSnapshotRepository,
+    finalize_compact_snapshot,
     finalize_history_publication,
     import_history_csv,
     prepare_dataset_history,
@@ -93,8 +99,20 @@ from tenable_reports.application.orchestration import (
 )
 from tenable_reports.application.publishing import (
     PublicationDocument,
+    PublicationDocumentReplacement,
     create_publication_manifest,
+    replace_publication_documents_atomically,
     upsert_publication_documents,
+)
+from tenable_reports.application.was_recovery import (
+    CHECKPOINT_SCHEMA_VERSION,
+    WasDecisionRequired,
+    WasRecoveryCheckpoint,
+    WasRecoveryDecision,
+    WasRecoveryRecord,
+    WasRecoveryStatus,
+    load_was_recovery_checkpoint,
+    write_was_recovery_checkpoint,
 )
 from tenable_reports.application.retention import (
     apply_cleanup_plan,
@@ -153,6 +171,9 @@ from tenable_reports.infrastructure.postgresql import (
 from tenable_reports.infrastructure.report_registry_postgresql import (
     PostgresReportRegistry,
 )
+from tenable_reports.infrastructure.was_recovery_postgresql import (
+    PostgresWasRecoveryRepository,
+)
 from tenable_reports.domain.report_reference import (
     READY_STATUS,
     ReportCandidate,
@@ -173,6 +194,8 @@ from tenable_reports.presentation.customizations_report_docx import (
 )
 from tenable_reports.presentation.tag_report_docx import generate_tag_report
 
+
+WAS_DECISION_EXIT_CODE = 3
 
 
 def _emit_progress_event(event: Mapping[str, Any]) -> None:
@@ -202,6 +225,8 @@ class _CollectedPeriodExecution:
     warnings: tuple[Mapping[str, Any], ...] = ()
     snapshot_repository: Any = None
     report_registry: Any = None
+    was_recovery_checkpoint: WasRecoveryCheckpoint | None = None
+    was_recovery_checkpoint_path: Path | None = None
 
     @property
     def dataset_path(self) -> Path:
@@ -272,6 +297,15 @@ class _CollectedPeriodExecution:
             "collection_sources": list(self.collection_sources),
             "quality_issue_codes": [item.code for item in dataset.quality_issues],
         }
+
+
+@dataclass(frozen=True, slots=True)
+class _PublishedWasRecoveryContext:
+    work_run_id: str
+    compact_snapshot: Any
+    compact_repository: Any
+    publication_manifest: Path
+    before_vm_metrics_sha256: str
 
 
 def _configure_logging(verbose: bool) -> None:
@@ -427,6 +461,53 @@ def _postgres_operations(
     if config is None:
         return None
     return PostgresOperationsRepository(PostgresDatabase(config))
+
+
+def _was_recovery_repository(
+    args: argparse.Namespace,
+) -> PostgresWasRecoveryRepository | None:
+    config = _load_database_config(
+        getattr(args, "database_env_file", None),
+        required=False,
+    )
+    if config is None:
+        return None
+    return PostgresWasRecoveryRepository(PostgresDatabase(config))
+
+
+def _was_recovery_record(
+    *,
+    checkpoint: WasRecoveryCheckpoint,
+    checkpoint_path: Path,
+    status: WasRecoveryStatus,
+) -> WasRecoveryRecord:
+    return WasRecoveryRecord(
+        run_id=checkpoint.run_id,
+        client_id=checkpoint.client_id,
+        tenant_id=checkpoint.tenant_id,
+        status=status,
+        checkpoint_path=str(checkpoint_path.resolve()),
+        checkpoint=checkpoint,
+    )
+
+
+def _persist_was_recovery(
+    args: argparse.Namespace,
+    *,
+    checkpoint: WasRecoveryCheckpoint,
+    checkpoint_path: Path,
+    status: WasRecoveryStatus,
+) -> PostgresWasRecoveryRepository | None:
+    repository = _was_recovery_repository(args)
+    if repository is not None:
+        repository.upsert(
+            _was_recovery_record(
+                checkpoint=checkpoint,
+                checkpoint_path=checkpoint_path,
+                status=status,
+            )
+        )
+    return repository
 
 
 def _cloud_snapshot_repository_for_args(
@@ -1145,6 +1226,8 @@ def _execute_period(
     )
     output_root = _scoped_output_root(args.output_root, execution_type)
     actual_run_id = args.run_id or str(uuid.uuid4())
+    was_recovery_checkpoint = None
+    was_recovery_checkpoint_path = None
     compact_repository = _compact_snapshot_repository(args)
     route, compact_snapshot = resolve_execution_collection_route(
         profile=profile,
@@ -1247,6 +1330,111 @@ def _execute_period(
         collection_route = external.collection_route
         reconstruction_status = external.reconstruction_status
         collection_sources = external.collection_sources
+        was_failure = getattr(external, "was_failure", None)
+        if was_failure is not None:
+            checkpoint_path = (
+                output_root
+                / "recovery"
+                / profile.client_id
+                / actual_run_id
+                / "was-recovery.json"
+            )
+            checkpoint = WasRecoveryCheckpoint(
+                schema_version=CHECKPOINT_SCHEMA_VERSION,
+                run_id=actual_run_id,
+                client_id=profile.client_id,
+                tenant_id=profile.tenant_id,
+                execution_type=execution_type,
+                period=period.to_dict(),
+                profile_path=str(Path(args.profile).resolve()),
+                output_root=str(output_root.resolve()),
+                include_output=bool(args.include_output),
+                was_status=was_collection_status,
+                was_failure=was_failure,
+            )
+            write_was_recovery_checkpoint(checkpoint_path, checkpoint)
+            if getattr(args, "was_failure_policy", "continue") == "wait":
+                _persist_was_recovery(
+                    args,
+                    checkpoint=checkpoint,
+                    checkpoint_path=checkpoint_path,
+                    status=WasRecoveryStatus.WAITING_WAS_DECISION,
+                )
+                raise WasDecisionRequired(
+                    checkpoint_path=checkpoint_path,
+                    run_id=actual_run_id,
+                    client_id=profile.client_id,
+                    failure=was_failure,
+                )
+            was_recovery_checkpoint = checkpoint
+            was_recovery_checkpoint_path = checkpoint_path
+    return _assemble_period_from_existing(
+        args,
+        profile=profile,
+        output_root=output_root,
+        actual_run_id=actual_run_id,
+        period=period,
+        execution_type=execution_type,
+        normalized_findings_path=normalized.findings_path,
+        selected_tag_count=selected_tag_count,
+        was_collection_status=was_collection_status,
+        vm_export_mode=vm_export_mode,
+        vm_export_outcome=vm_export_outcome,
+        vm_export_comparison_path=vm_export_comparison_path,
+        collection_route=collection_route,
+        reconstruction_status=reconstruction_status,
+        collection_sources=tuple(collection_sources),
+        collection_warnings=tuple(collection_warnings),
+        was_recovery_checkpoint=was_recovery_checkpoint,
+        was_recovery_checkpoint_path=was_recovery_checkpoint_path,
+    )
+
+
+def _assemble_period_from_existing(
+    args: argparse.Namespace,
+    *,
+    profile: ClientProfile,
+    output_root: Path,
+    actual_run_id: str,
+    period: ReportingPeriod,
+    execution_type: str,
+    normalized_findings_path: Path,
+    was_collection_status: str,
+    collection_warnings: tuple[Mapping[str, Any], ...] = (),
+    selected_tag_count: int | None = None,
+    vm_export_mode: str = "was_recovery",
+    vm_export_outcome: str = "REUSED",
+    vm_export_comparison_path: Path | None = None,
+    collection_route: str | None = None,
+    reconstruction_status: str | None = None,
+    collection_sources: tuple[str, ...] = (),
+    was_recovery_checkpoint: WasRecoveryCheckpoint | None = None,
+    was_recovery_checkpoint_path: Path | None = None,
+) -> _CollectedPeriodExecution:
+    if (
+        selected_tag_count is None
+        or collection_route is None
+        or reconstruction_status is None
+        or not collection_sources
+    ):
+        existing_inputs = load_report_dataset_inputs(
+            profile=profile,
+            run_id=actual_run_id,
+            output_root=output_root,
+        )
+        tag_scope = existing_inputs.tag_scope or {}
+        if selected_tag_count is None:
+            selected_tag_count = len(tag_scope.get("selected_tags") or ())
+        provenance = existing_inputs.collection_provenance
+        collection_route = collection_route or str(
+            provenance.get("collection_route") or "legacy_vm"
+        )
+        reconstruction_status = reconstruction_status or str(
+            provenance.get("reconstruction_status") or "CURRENT_WINDOW"
+        )
+        collection_sources = collection_sources or tuple(
+            provenance.get("sources") or ("tenable_vm_vulnerabilities",)
+        )
     artifact = build_report_dataset_from_snapshot(
         profile=profile,
         run_id=actual_run_id,
@@ -1278,7 +1466,7 @@ def _execute_period(
         history_publication = prepare_dataset_history(
             profile=profile,
             dataset_path=artifact.dataset_path,
-            normalized_findings_path=normalized.findings_path,
+            normalized_findings_path=normalized_findings_path,
             tag_dataset_paths=tag_dataset_paths,
             database_path=history_database,
             output_path=artifact.directory / "report-dataset-with-history.json",
@@ -1322,6 +1510,8 @@ def _execute_period(
         warnings=tuple((*collection_warnings, *tag_dataset_bundle.warnings)),
         snapshot_repository=repository,
         report_registry=report_registry,
+        was_recovery_checkpoint=was_recovery_checkpoint,
+        was_recovery_checkpoint_path=was_recovery_checkpoint_path,
     )
 
 
@@ -1513,11 +1703,38 @@ def command_run_client(args: argparse.Namespace) -> int:
     profile = load_client_profile(args.profile)
     period = _period_for_mode(args, profile)
     execution_type = "MANUAL" if args.mode == "manual" else "AUTOMATIC_MONTHLY"
-    collected = _execute_period(
-        args,
-        execution_type=execution_type,
+    try:
+        collected = _execute_period(
+            args,
+            execution_type=execution_type,
+            period=period,
+        )
+    except WasDecisionRequired as pending:
+        print(json.dumps({
+            "status": "waiting_was_decision",
+            "run_id": pending.run_id,
+            "client_id": pending.client_id,
+            "checkpoint": str(pending.checkpoint_path.resolve()),
+            "was_failure": pending.failure.to_dict(),
+        }, ensure_ascii=False))
+        return WAS_DECISION_EXIT_CODE
+    return _publish_collected_period(
+        args=args,
+        profile=profile,
         period=period,
+        execution_type=execution_type,
+        collected=collected,
     )
+
+
+def _publish_collected_period(
+    *,
+    args: argparse.Namespace,
+    profile: ClientProfile,
+    period: ReportingPeriod,
+    execution_type: str,
+    collected: _CollectedPeriodExecution,
+) -> int:
     period_slug = _safe_filename_component(str(period.period_id))
     report_directory = (
         collected.output_root
@@ -1701,6 +1918,25 @@ def command_run_client(args: argparse.Namespace) -> int:
         )
         compact_snapshot_confirmed = True
         compact_snapshot_id = getattr(compact_snapshot, "snapshot_id", None)
+    recovery_checkpoint = getattr(
+        collected, "was_recovery_checkpoint", None
+    )
+    recovery_checkpoint_path = getattr(
+        collected, "was_recovery_checkpoint_path", None
+    )
+    if (
+        compact_snapshot_confirmed
+        and isinstance(recovery_checkpoint, WasRecoveryCheckpoint)
+        and recovery_checkpoint_path is not None
+        and recovery_checkpoint.was_failure is not None
+        and recovery_checkpoint.was_failure.retryable
+    ):
+        _persist_was_recovery(
+            args,
+            checkpoint=recovery_checkpoint,
+            checkpoint_path=Path(recovery_checkpoint_path),
+            status=WasRecoveryStatus.RETRY_AVAILABLE,
+        )
     if operations is not None:
         operations.record_publication_manifest(publication_manifest)
     cleanup_payload: dict[str, Any] = {
@@ -1762,7 +1998,9 @@ def command_run_client(args: argparse.Namespace) -> int:
     payload.update({
         "status": (
             "complete_with_warnings"
-            if tag_reports_failed or cloud_has_warnings
+            if tag_reports_failed
+            or cloud_has_warnings
+            or bool(getattr(collected, "warnings", ()))
             else "complete"
         ),
         "base_document": str(base_result.output_path.resolve()),
@@ -1785,6 +2023,518 @@ def command_run_client(args: argparse.Namespace) -> int:
     })
     print(json.dumps(payload, ensure_ascii=False))
     return 0
+
+
+def _period_from_was_checkpoint(
+    checkpoint: WasRecoveryCheckpoint,
+) -> ReportingPeriod:
+    payload = checkpoint.period
+    timezone_name = str(payload.get("timezone") or "America/Fortaleza")
+    try:
+        mode = PeriodMode(str(payload.get("mode") or "EXPLICIT_RANGE"))
+    except ValueError:
+        mode = PeriodMode.EXPLICIT_RANGE
+    reference_at = payload.get("reference_at") or payload.get("end_at")
+    trailing_days = payload.get("trailing_days")
+    return ReportingPeriod(
+        start_at=parse_datetime(str(payload["start_at"]), timezone_name),
+        end_at=parse_datetime(str(payload["end_at"]), timezone_name),
+        timezone=timezone_name,
+        mode=mode,
+        reference_at=parse_datetime(str(reference_at), timezone_name),
+        trailing_days=(int(trailing_days) if trailing_days is not None else None),
+    )
+
+
+def _was_warning_from_checkpoint(
+    checkpoint: WasRecoveryCheckpoint,
+) -> tuple[Mapping[str, Any], ...]:
+    if checkpoint.was_failure is None:
+        return ()
+    failure = checkpoint.was_failure
+    return ({
+        "code": failure.code,
+        "message": failure.message,
+        "retryable": failure.retryable,
+        "source": "tenable_was",
+    },)
+
+
+def _prepare_published_was_recovery(
+    *,
+    args: argparse.Namespace,
+    checkpoint: WasRecoveryCheckpoint,
+    profile: ClientProfile,
+) -> _PublishedWasRecoveryContext:
+    repository = _compact_snapshot_repository(args)
+    if repository is None:
+        raise EnvironmentError(
+            "O snapshot compacto no PostgreSQL e obrigatorio para reparar WAS publicado."
+        )
+    snapshot = repository.find_run(
+        client_id=checkpoint.client_id,
+        tenant_id=checkpoint.tenant_id,
+        run_id=checkpoint.run_id,
+    )
+    if snapshot is None:
+        raise ValueError(
+            "Snapshot compacto da publicacao original nao foi encontrado."
+        )
+    output_root = Path(checkpoint.output_root)
+    work_run_id = f"{checkpoint.run_id}-was-recovery"
+    normalized = output_root / "normalized" / checkpoint.client_id / work_run_id
+    required = (normalized / "assets.jsonl.gz", normalized / "findings.jsonl.gz")
+    existing = tuple(path.is_file() for path in required)
+    if any(existing) and not all(existing):
+        raise ValueError("Contexto local da recuperacao WAS esta incompleto.")
+    if not all(existing):
+        materialize_compact_snapshot_run(
+            snapshot=snapshot,
+            profile=profile,
+            run_id=work_run_id,
+            output_root=output_root,
+        )
+    report_root = output_root / "reports" / checkpoint.client_id / checkpoint.run_id
+    manifests = tuple(sorted(report_root.glob("*/publication-manifest.json")))
+    if len(manifests) != 1:
+        raise ValueError(
+            "A publicacao original precisa possuir exatamente um manifesto."
+        )
+    return _PublishedWasRecoveryContext(
+        work_run_id=work_run_id,
+        compact_snapshot=snapshot,
+        compact_repository=repository,
+        publication_manifest=manifests[0],
+        before_vm_metrics_sha256=compact_vm_content_sha256(snapshot),
+    )
+
+
+def _publication_document_from_payload(item: Mapping[str, Any]) -> PublicationDocument:
+    return PublicationDocument(
+        path=str(item.get("path") or ""),
+        document_kind=str(item.get("document_kind") or ""),
+        document_variant=(
+            str(item["document_variant"])
+            if item.get("document_variant") is not None else None
+        ),
+        tag_uuid=(str(item["tag_uuid"]) if item.get("tag_uuid") is not None else None),
+        tag_category=(
+            str(item["tag_category"])
+            if item.get("tag_category") is not None else None
+        ),
+        tag_value=(str(item["tag_value"]) if item.get("tag_value") is not None else None),
+    )
+
+
+def _remove_recovery_report_datasets(
+    *, output_root: Path, client_id: str, run_id: str
+) -> None:
+    root = output_root.resolve()
+    target = (root / "report-datasets" / client_id / run_id).resolve()
+    try:
+        relative = target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("Limpeza de recuperacao recusada fora da raiz permitida.") from exc
+    if relative.parts != ("report-datasets", client_id, run_id):
+        raise ValueError("Limpeza de recuperacao recusada para caminho inesperado.")
+    if target.is_dir():
+        shutil.rmtree(target)
+
+
+def _retry_published_was_documents(
+    *,
+    args: argparse.Namespace,
+    checkpoint: WasRecoveryCheckpoint,
+    profile: ClientProfile,
+    period: ReportingPeriod,
+    context: _PublishedWasRecoveryContext,
+) -> dict[str, Any]:
+    output_root = Path(checkpoint.output_root)
+    _remove_recovery_report_datasets(
+        output_root=output_root,
+        client_id=checkpoint.client_id,
+        run_id=context.work_run_id,
+    )
+    setattr(args, "include_output", checkpoint.include_output)
+    collected = _assemble_period_from_existing(
+        args,
+        profile=profile,
+        output_root=output_root,
+        actual_run_id=context.work_run_id,
+        period=period,
+        execution_type=checkpoint.execution_type,
+        normalized_findings_path=(
+            output_root / "normalized" / profile.client_id
+            / context.work_run_id / "findings.jsonl.gz"
+        ),
+        was_collection_status="COMPLETE",
+        collection_warnings=(),
+    )
+    try:
+        manifest_payload = json.loads(
+            context.publication_manifest.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Manifesto da publicacao original e invalido.") from exc
+    raw_documents = manifest_payload.get("documents")
+    if not isinstance(raw_documents, list):
+        raise ValueError("Manifesto da publicacao original nao possui documentos.")
+    existing_documents = tuple(
+        _publication_document_from_payload(item)
+        for item in raw_documents
+        if isinstance(item, Mapping)
+    )
+    by_kind = {
+        document.document_kind: document
+        for document in existing_documents
+        if document.document_kind in {"base", "custom"}
+    }
+    if set(by_kind) != {"base", "custom"}:
+        raise ValueError("Publicacao original precisa dos documentos base e customizado.")
+
+    staging = context.publication_manifest.parent / f".was-repair-{uuid.uuid4().hex}"
+    staging.mkdir(parents=True, exist_ok=False)
+    replacements: list[PublicationDocumentReplacement] = []
+    try:
+        base_destination = by_kind["base"]
+        base_staged = staging / Path(base_destination.path).name
+        generate_full_base_report(
+            template_path=args.template,
+            dataset_path=collected.dataset_path,
+            profile=profile,
+            output_path=base_staged,
+            assets_dir=args.assets_dir,
+            mask_sensitive=args.mask_sensitive,
+        )
+        replacements.append(PublicationDocumentReplacement(
+            staged_path=base_staged,
+            destination=base_destination,
+        ))
+
+        custom_destination = by_kind["custom"]
+        custom_staged = staging / Path(custom_destination.path).name
+        generate_customizations_report(
+            template_path=args.template,
+            dataset_path=collected.dataset_path,
+            profile=profile,
+            output_path=custom_staged,
+            mask_sensitive=args.mask_sensitive,
+        )
+        replacements.append(PublicationDocumentReplacement(
+            staged_path=custom_staged,
+            destination=custom_destination,
+        ))
+
+        tag_artifacts = {
+            item.tag.uuid: item for item in tuple(collected.tag_artifacts or ())
+        }
+        tag_datasets = dict(collected.tag_enriched_dataset_paths or {})
+        for destination in existing_documents:
+            if destination.document_kind != "tag":
+                continue
+            tag_uuid = str(destination.tag_uuid or "")
+            artifact = tag_artifacts.get(tag_uuid)
+            dataset_path = tag_datasets.get(tag_uuid)
+            if artifact is None or dataset_path is None:
+                raise ValueError(
+                    f"TAG da publicacao original nao foi reconstruida: {tag_uuid}."
+                )
+            staged = staging / Path(destination.path).name
+            generate_tag_report(
+                template_path=args.template,
+                dataset_path=dataset_path,
+                profile=profile,
+                output_path=staged,
+                mask_sensitive=args.mask_sensitive,
+            )
+            replacements.append(PublicationDocumentReplacement(
+                staged_path=staged,
+                destination=destination,
+            ))
+
+        document_references: dict[str, str] = {}
+        for document in existing_documents:
+            metadata = document.metadata()
+            kind = str(metadata["document_kind"])
+            key = (
+                f"tag:{metadata['tag_uuid']}" if kind == "tag"
+                else f"cloud:{metadata['document_variant']}" if kind == "cloud"
+                else kind
+            )
+            document_references[key] = str(Path(document.path).resolve())
+        repaired_snapshot = prepare_compact_run_snapshot(
+            profile=profile,
+            source_run_id=context.work_run_id,
+            snapshot_run_id=f"{checkpoint.run_id}-was-recovered",
+            execution_type=checkpoint.execution_type,
+            period=period,
+            output_root=output_root,
+            document_references=document_references,
+        )
+        after_vm_hash = compact_vm_content_sha256(repaired_snapshot)
+        if after_vm_hash != context.before_vm_metrics_sha256:
+            raise ValueError(
+                "A recuperacao WAS alteraria as metricas VM da publicacao original."
+            )
+        operations = _postgres_operations(args.database_env_file, required=True)
+
+        def confirm_publication() -> None:
+            operations.record_publication_manifest(context.publication_manifest)
+            finalize_compact_snapshot(
+                repository=context.compact_repository,
+                snapshot=repaired_snapshot,
+                publication_validated=True,
+                documents_validated=True,
+            )
+
+        replace_publication_documents_atomically(
+            manifest_path=context.publication_manifest,
+            dataset_path=collected.dataset_path,
+            replacements=tuple(replacements),
+            commit_callback=confirm_publication,
+        )
+        cleanup_plan = plan_published_run_cleanup(
+            scoped_output_root=output_root,
+            client_id=profile.client_id,
+            run_id=context.work_run_id,
+            publication_confirmed=True,
+            history_confirmed=True,
+            compact_snapshot_confirmed=True,
+            cloud_cleanup_ready=True,
+        )
+        cleanup = apply_cleanup_plan(
+            scoped_output_root=output_root,
+            candidates=cleanup_plan.candidates,
+        )
+        return {
+            "status": "complete",
+            "run_id": checkpoint.run_id,
+            "client_id": checkpoint.client_id,
+            "was_status": "COMPLETE",
+            "publication_manifest": str(context.publication_manifest.resolve()),
+            "documents": [str(Path(item.destination.path).resolve()) for item in replacements],
+            "general_collection_repeated": False,
+            "cloud_collection_repeated": False,
+            "before_vm_metrics_sha256": context.before_vm_metrics_sha256,
+            "after_vm_metrics_sha256": after_vm_hash,
+            "cleanup_status": cleanup.status,
+        }
+    finally:
+        if staging.is_dir():
+            shutil.rmtree(staging)
+
+
+def command_resume_was(args: argparse.Namespace) -> int:
+    checkpoint_path = Path(args.checkpoint)
+    checkpoint = load_was_recovery_checkpoint(checkpoint_path)
+    profile = load_client_profile(args.profile or checkpoint.profile_path)
+    if (
+        profile.client_id != checkpoint.client_id
+        or profile.tenant_id != checkpoint.tenant_id
+    ):
+        raise ValueError("Perfil incompatível com o checkpoint WAS.")
+    decision = WasRecoveryDecision(args.decision)
+    if decision is WasRecoveryDecision.RETRY_WAS and not args.confirm_live_api:
+        raise ValueError(
+            "A retentativa WAS exige --confirm-live-api; ela pode iniciar um export real."
+        )
+
+    recovery_repository = _was_recovery_repository(args)
+    existing = None
+    if recovery_repository is not None:
+        existing = recovery_repository.get(
+            checkpoint.run_id,
+            client_id=checkpoint.client_id,
+        )
+        if existing is None:
+            recovery_repository.upsert(
+                _was_recovery_record(
+                    checkpoint=checkpoint,
+                    checkpoint_path=checkpoint_path,
+                    status=WasRecoveryStatus.WAITING_WAS_DECISION,
+                )
+            )
+        recovery_repository.record_decision(
+            checkpoint.run_id,
+            client_id=checkpoint.client_id,
+            decision=decision,
+            idempotency_key=(
+                f"was-recovery:{checkpoint.run_id}:{decision.value}"
+            ),
+        )
+
+    period = _period_from_was_checkpoint(checkpoint)
+    output_root = Path(checkpoint.output_root)
+    published_automatic_retry = (
+        checkpoint.execution_type == "AUTOMATIC_MONTHLY"
+        and decision is WasRecoveryDecision.RETRY_WAS
+        and existing is not None
+        and WasRecoveryStatus(getattr(existing, "status"))
+        is WasRecoveryStatus.RETRY_AVAILABLE
+    )
+    published_context = (
+        _prepare_published_was_recovery(
+            args=args,
+            checkpoint=checkpoint,
+            profile=profile,
+        )
+        if published_automatic_retry else None
+    )
+    was_collection_status = checkpoint.was_status
+    warnings = _was_warning_from_checkpoint(checkpoint)
+    if decision is WasRecoveryDecision.RETRY_WAS:
+        was_run_id = (
+            published_context.work_run_id
+            if published_context is not None else checkpoint.run_id
+        )
+        normalized_was = (
+            output_root / "normalized" / profile.client_id
+            / was_run_id / "was-findings.jsonl.gz"
+        )
+        normalized_was_manifest = normalized_was.with_name("was-manifest.json")
+        previous_failure = checkpoint.was_failure
+        if normalized_was.is_file() and normalized_was_manifest.is_file():
+            attempt = None
+            was_collection_status = "COMPLETE"
+            warnings = ()
+        else:
+            credentials = _load_credentials(args.env_file)
+            was_client = _was_client_from_environment(credentials)
+            reusable_statuses = {"FINISHED", "QUEUED", "PROCESSING"}
+            export_uuid = (
+                previous_failure.export_uuid
+                if previous_failure is not None
+                and previous_failure.remote_status in reusable_statuses
+                else None
+            )
+            attempt = collect_optional_was_snapshot(
+                client=was_client,
+                profile=profile,
+                request=WasExportRequest(
+                    filters={
+                        "since": period.start_epoch,
+                        "state": ["OPEN", "REOPENED", "FIXED"],
+                        "severity": ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+                        **(
+                            {"asset_uuid": list(profile.was_scope.application_ids)}
+                            if profile.was_scope.application_ids
+                            else {}
+                        ),
+                    },
+                    num_assets=args.was_num_assets,
+                    include_unlicensed=False,
+                ),
+                output_root=output_root,
+                run_id=was_run_id,
+                export_uuid=export_uuid,
+                progress_callback=_emit_progress_event,
+            )
+            if attempt.result is not None:
+                normalize_was_collection(
+                    profile=profile,
+                    collection=attempt.result,
+                    output_root=output_root,
+                )
+        if attempt is not None and attempt.failure is not None:
+            updated = replace(
+                checkpoint,
+                was_status=attempt.status,
+                was_failure=attempt.failure,
+            )
+            write_was_recovery_checkpoint(checkpoint_path, updated)
+            if recovery_repository is not None:
+                recovery_repository.upsert(
+                    _was_recovery_record(
+                        checkpoint=updated,
+                        checkpoint_path=checkpoint_path,
+                        status=(
+                            WasRecoveryStatus.RETRY_AVAILABLE
+                            if checkpoint.execution_type == "AUTOMATIC_MONTHLY"
+                            else WasRecoveryStatus.WAITING_WAS_DECISION
+                        ),
+                    )
+                )
+            pending = WasDecisionRequired(
+                checkpoint_path=checkpoint_path,
+                run_id=checkpoint.run_id,
+                client_id=checkpoint.client_id,
+                failure=attempt.failure,
+            )
+            print(json.dumps({
+                "status": (
+                    "was_retry_available"
+                    if checkpoint.execution_type == "AUTOMATIC_MONTHLY"
+                    else "waiting_was_decision"
+                ),
+                "run_id": pending.run_id,
+                "client_id": pending.client_id,
+                "checkpoint": str(pending.checkpoint_path.resolve()),
+                "was_failure": pending.failure.to_dict(),
+            }, ensure_ascii=False))
+            return WAS_DECISION_EXIT_CODE
+        if attempt is not None:
+            was_collection_status = attempt.status
+            warnings = tuple(attempt.warnings)
+
+    if published_context is not None:
+        try:
+            payload = _retry_published_was_documents(
+                args=args,
+                checkpoint=checkpoint,
+                profile=profile,
+                period=period,
+                context=published_context,
+            )
+        except Exception:
+            if recovery_repository is not None:
+                recovery_repository.upsert(
+                    _was_recovery_record(
+                        checkpoint=checkpoint,
+                        checkpoint_path=checkpoint_path,
+                        status=WasRecoveryStatus.RETRY_AVAILABLE,
+                    )
+                )
+            raise
+        if recovery_repository is not None:
+            recovery_repository.mark_complete(
+                checkpoint.run_id,
+                client_id=checkpoint.client_id,
+            )
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
+
+    setattr(args, "include_output", checkpoint.include_output)
+    normalized_findings_path = (
+        output_root
+        / "normalized"
+        / profile.client_id
+        / checkpoint.run_id
+        / "findings.jsonl.gz"
+    )
+    collected = _assemble_period_from_existing(
+        args,
+        profile=profile,
+        output_root=output_root,
+        actual_run_id=checkpoint.run_id,
+        period=period,
+        execution_type=checkpoint.execution_type,
+        normalized_findings_path=normalized_findings_path,
+        was_collection_status=was_collection_status,
+        collection_warnings=tuple(warnings),
+    )
+    result = _publish_collected_period(
+        args=args,
+        profile=profile,
+        period=period,
+        execution_type=checkpoint.execution_type,
+        collected=collected,
+    )
+    if result == 0 and recovery_repository is not None:
+        recovery_repository.mark_complete(
+            checkpoint.run_id,
+            client_id=checkpoint.client_id,
+        )
+    return result
 
 
 def _retry_output_root(manifest: Path) -> Path:
@@ -2116,6 +2866,12 @@ def _add_complete_collection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--minimum-free-gb", type=int, default=10)
     parser.add_argument("--was-export-uuid")
     parser.add_argument("--was-num-assets", type=int, default=1000)
+    parser.add_argument(
+        "--was-failure-policy",
+        choices=("continue", "wait"),
+        default="continue",
+        help="Continua sem WAS ou aguarda uma decisão quando a coleta WEB falhar.",
+    )
     parser.add_argument("--include-software-vulns", action="store_true")
     parser.add_argument("--include-output", action="store_true")
     parser.add_argument("--history-database")
@@ -2507,6 +3263,50 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_client.set_defaults(cleanup_after_publish=True)
     run_client.set_defaults(handler=command_run_client)
+
+    resume_was = subparsers.add_parser(
+        "resume-was",
+        help="Retoma uma execução pendente sem repetir a coleta VM.",
+    )
+    resume_was.add_argument("--checkpoint", required=True)
+    resume_was.add_argument(
+        "--decision",
+        choices=tuple(item.value for item in WasRecoveryDecision),
+        required=True,
+    )
+    resume_was.add_argument("--profile")
+    resume_was.add_argument("--env-file", default=".env")
+    resume_was.add_argument(
+        "--database-env-file", default="credentials/database.env"
+    )
+    resume_was.add_argument("--was-num-assets", type=int, default=1000)
+    resume_was.add_argument("--template", default="templates/corporate/base-v1.docx")
+    resume_was.add_argument(
+        "--cloud-template", default="templates/corporate/cloud-base-v1.docx"
+    )
+    resume_was.add_argument("--assets-dir", default="templates/corporate/assets")
+    resume_was.add_argument("--base-output")
+    resume_was.add_argument("--custom-output")
+    resume_was.add_argument("--history-database")
+    resume_was.add_argument("--history-export-csv")
+    resume_was.add_argument("--skip-history", action="store_true")
+    resume_was.add_argument("--mask-sensitive", action="store_true")
+    resume_was.add_argument("--force-cloud-refresh", action="store_true")
+    resume_was.add_argument("--logical-job-id")
+    resume_was.add_argument("--attempt-number", type=int, default=1)
+    resume_was.add_argument(
+        "--origin",
+        choices=("SCHEDULED", "AUTOMATIC_RETRY", "MANUAL"),
+        default="MANUAL",
+    )
+    resume_was.add_argument("--confirm-live-api", action="store_true")
+    resume_was.add_argument(
+        "--no-cleanup-after-publish",
+        dest="cleanup_after_publish",
+        action="store_false",
+    )
+    resume_was.set_defaults(cleanup_after_publish=True)
+    resume_was.set_defaults(handler=command_resume_was)
 
     retry_cloud = subparsers.add_parser(
         "retry-cloud",

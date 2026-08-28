@@ -1,12 +1,18 @@
 # Coleta e relatório Web App Scanning — Fase 8
 
-## Estado atual — 2026-08-23
+## Estado atual — 2026-08-28
 
 WAS continua geral, opcional e independente de VM; ausência de produto, permissão
 ou achados não bloqueia os documentos VM. TAGs não filtram VM ou WAS gerais. As
 TAGs selecionadas agora podem gerar relatórios operacionais VM próprios, e o
 comparativo temporal opcional fica dentro do documento da mesma TAG. Relatório WEB
 por TAG não faz parte do escopo atual.
+
+Falhas retentáveis agora possuem recuperação durável. O modo manual aguarda a
+decisão do analista entre continuar sem WEB e tentar novamente somente o WAS. O
+modo mensal automático publica VM com alerta e disponibiliza apenas a retentativa
+WEB. Chunks WAS íntegros são reaproveitados; uma reparação publicada usa o snapshot
+compacto e não repete VM, assets, TAG ou Cloud.
 
 ## Resultado
 
@@ -73,6 +79,9 @@ do Word; o renderizador LibreOffice utilizado na homologação não calculou seu
 ## Decisões e limites
 
 - Nenhum valor ausente é convertido em zero ou texto inventado.
+- `NOT_COLLECTED` exibe que a coleta WEB não foi concluída e nunca usa a mensagem
+  de que não houve vulnerabilidades; somente `NO_DATA` representa coleta concluída
+  sem ocorrências.
 - Toda tabela sem registros recebe abaixo uma mensagem explícita de que não houve
   identificação no mês; categorias OWASP usam uma mensagem própria.
 - URI, hostname, IP, cliente e pessoa podem permanecer vazios por anonimização.

@@ -13,10 +13,12 @@ from tenable_reports import __version__
 from tenable_reports.application.collect import (
     CollectionResult,
     StoredChunk,
+    _load_resume_chunks,
     _write_exclusive,
     _write_json_replace,
     store_chunk_atomic,
 )
+from tenable_reports.application.was_recovery import WasFailureDetails
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.domain.models import (
     build_source_snapshot_from_chunk_hashes,
@@ -53,6 +55,7 @@ class WasCollectionAttempt:
     result: CollectionResult | None
     status: str
     warnings: tuple[Mapping[str, Any], ...] = ()
+    failure: WasFailureDetails | None = None
 
 
 def collect_optional_was_snapshot(
@@ -77,25 +80,57 @@ def collect_optional_was_snapshot(
             progress_callback=progress_callback,
         )
     except (ApiError, ExportTimeoutError) as exc:
+        last_status = getattr(exc, "last_status", {})
+        if not isinstance(last_status, Mapping):
+            last_status = {}
         status_code = getattr(exc, "status_code", None)
         if status_code in {401, 403, 404}:
             code = "WAS_NOT_AVAILABLE"
+            retryable = False
             message = (
                 "A API WAS nao esta habilitada ou acessivel para este cliente. "
                 "O relatorio VM continuou normalmente."
             )
         else:
             code = "WAS_COLLECTION_UNAVAILABLE"
+            retryable = isinstance(exc, ExportTimeoutError) or status_code in {
+                408, 409, 429, 500, 502, 503, 504
+            }
             message = (
                 "A coleta WAS ficou indisponivel nesta execucao. "
                 "O relatorio VM continuou normalmente."
             )
-        warning = {"code": code, "message": message, "status_code": status_code}
+        export_uuid = str(getattr(exc, "export_uuid", None) or "").strip() or None
+        origin = str(getattr(exc, "origin", None) or "").strip() or None
+        remote_status = str(last_status.get("status") or "").strip().upper() or None
+        progress_made = bool(
+            getattr(exc, "progress_made", False)
+            or last_status.get("progress_made", False)
+        )
+        failure = WasFailureDetails(
+            code=code,
+            message=message,
+            retryable=retryable,
+            export_uuid=export_uuid,
+            origin=origin,
+            remote_status=remote_status,
+            completed_chunks=max(0, int(last_status.get("completed_chunks") or 0)),
+            total_chunks=max(0, int(last_status.get("total_chunks") or 0)),
+            timeout_phase=str(getattr(exc, "timeout_phase", None) or "").strip() or None,
+            progress_made=progress_made,
+            safe_cancel_available=bool(
+                export_uuid and origin == "created"
+                and remote_status in {"QUEUED", "PROCESSING"}
+                and not progress_made
+            ),
+        )
+        warning = {"code": code, "message": message, "status_code": status_code, "retryable": retryable}
         LOGGER.warning("%s", message, extra={"was_status_code": status_code})
         return WasCollectionAttempt(
             result=None,
             status="UNAVAILABLE",
             warnings=(warning,),
+            failure=failure,
         )
     return WasCollectionAttempt(
         result=result,
@@ -156,6 +191,22 @@ def collect_was_snapshot(
     partial_manifest_path = raw_directory / "manifest.partial.json"
     manifest_path = raw_directory / "manifest.json"
     stored_chunks: dict[int, StoredChunk] = {}
+    if partial_manifest_path.is_file():
+        try:
+            partial_payload = json.loads(
+                partial_manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            partial_payload = {}
+        if partial_payload.get("query_sha256") == query_sha256:
+            resumed_uuid, resumed_chunks = _load_resume_chunks(
+                partial_manifest_path,
+                source="tenable_was_findings",
+                client_id=profile.client_id,
+                tenant_id=profile.tenant_id,
+            )
+            if resumed_uuid == actual_export_uuid:
+                stored_chunks.update(resumed_chunks)
 
     def manifest_payload(*, status: str) -> dict[str, Any]:
         return {

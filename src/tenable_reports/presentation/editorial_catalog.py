@@ -227,6 +227,12 @@ TOP5_WEB_EMPTY_MONTH = (
     "para detalhamento neste item."
 )
 
+WAS_COLLECTION_UNAVAILABLE = (
+    "Não foi possível concluir a coleta WEB neste período. Os dados VM deste "
+    "relatório permanecem válidos; as tabelas desta seção não devem ser "
+    "interpretadas como ausência de vulnerabilidades WEB."
+)
+
 EXPLOIT_FRAMEWORK_EMPTY_MONTH = (
     "Neste mês não foram identificadas vulnerabilidades exploráveis por frameworks "
     "conhecidos."

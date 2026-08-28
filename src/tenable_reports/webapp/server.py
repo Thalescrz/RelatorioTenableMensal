@@ -47,6 +47,11 @@ from tenable_reports.application.report_set_purge import (
 )
 from tenable_reports.application.storage_guard import required_free_bytes
 from tenable_reports.application.vm_export_policy import recovery_vm_strategy
+from tenable_reports.application.was_recovery import (
+    WasRecoveryDecision,
+    WasRecoveryRecord,
+    WasRecoveryStatus,
+)
 from tenable_reports.application.tag_scope import parse_tag_values
 from tenable_reports.application.retention import (
     TRANSIENT_CATEGORIES,
@@ -76,6 +81,9 @@ from tenable_reports.infrastructure.postgresql import (
 from tenable_reports.infrastructure.report_registry_postgresql import PostgresReportRegistry
 from tenable_reports.infrastructure.report_set_purge_postgresql import (
     PostgresReportSetPurgeRepository,
+)
+from tenable_reports.infrastructure.was_recovery_postgresql import (
+    PostgresWasRecoveryRepository,
 )
 from tenable_reports.domain.report_reference import reference_key_for_candidate
 from tenable_reports.infrastructure.tenable_cloud.client import (
@@ -1184,6 +1192,7 @@ class JobQueue:
                     "tag_progress": None,
                     "export_progress": None,
                     "was_export_progress": None,
+                    "was_recovery": None,
                     "cloud_progress": None,
                     "cloud_status": None,
                     "warnings": [],
@@ -1240,6 +1249,7 @@ class JobQueue:
                 "tag_progress": None,
                 "export_progress": None,
                 "was_export_progress": None,
+                "was_recovery": None,
                 "cloud_progress": None,
                 "cloud_status": "RETRY_QUEUED",
                 "warnings": [],
@@ -1251,6 +1261,78 @@ class JobQueue:
                 "_env_path": str(env_path),
                 "_database_env_path": str(database_env_path),
                 "_cloud_template_path": str(cloud_template_path),
+            }
+            self._jobs[job_id] = job
+            self._pending.put(job_id)
+            self._trim()
+            return {
+                key: value for key, value in job.items() if not key.startswith("_")
+            }
+
+    def enqueue_was_recovery(
+        self,
+        *,
+        run_id: str,
+        client_id: str,
+        decision: WasRecoveryDecision,
+        checkpoint_path: Path,
+        profile_path: Path,
+        env_path: Path,
+        database_env_path: Path,
+        template_path: Path,
+        assets_dir: Path,
+    ) -> dict[str, Any]:
+        with self._lock:
+            if any(
+                item["client_id"] == client_id
+                and item["status"] in {"QUEUED", "RUNNING"}
+                for item in self._jobs.values()
+            ):
+                raise ValueError("O cliente ja esta na fila ou em execucao.")
+            retry = decision is WasRecoveryDecision.RETRY_WAS
+            job_id = uuid.uuid4().hex
+            job = {
+                "job_id": job_id,
+                "client_id": client_id,
+                "operation": "was_retry" if retry else "was_continue",
+                "mode": "manual",
+                "days": None,
+                "start_at": None,
+                "end_at": None,
+                "vm_selective_mode": None,
+                "vm_export_strategy": None,
+                "historical_source": None,
+                "force_live_collection": False,
+                "confirm_historical_reconstruction": False,
+                "status": "QUEUED",
+                "progress": 8,
+                "created_at": _utc_now(),
+                "started_at": None,
+                "ended_at": None,
+                "error": None,
+                "run_id": run_id,
+                "tag_progress": None,
+                "export_progress": None,
+                "was_export_progress": None,
+                "was_recovery": {
+                    "run_id": run_id,
+                    "checkpoint": str(checkpoint_path),
+                    "decision": decision.value,
+                },
+                "cloud_progress": None,
+                "cloud_status": None,
+                "warnings": [],
+                "vm_export_validation": None,
+                "collection_route": None,
+                "reconstruction_status": None,
+                "collection_sources": [],
+                "_checkpoint_path": str(checkpoint_path),
+                "_decision": decision.value,
+                "_profile_path": str(profile_path),
+                "_env_path": str(env_path),
+                "_database_env_path": str(database_env_path),
+                "_template_path": str(template_path),
+                "_assets_dir": str(assets_dir),
             }
             self._jobs[job_id] = job
             self._pending.put(job_id)
@@ -1386,6 +1468,29 @@ class JobQueue:
                     str(job["_cloud_template_path"]),
                     "--confirm-live-api",
                 ]
+            elif job.get("operation") in {"was_continue", "was_retry"}:
+                command = [
+                    sys.executable,
+                    "-m",
+                    "tenable_reports",
+                    "resume-was",
+                    "--checkpoint",
+                    str(job["_checkpoint_path"]),
+                    "--decision",
+                    str(job["_decision"]),
+                    "--profile",
+                    str(job["_profile_path"]),
+                    "--env-file",
+                    str(job["_env_path"]),
+                    "--database-env-file",
+                    str(job["_database_env_path"]),
+                    "--template",
+                    str(job["_template_path"]),
+                    "--assets-dir",
+                    str(job["_assets_dir"]),
+                ]
+                if job.get("operation") == "was_retry":
+                    command.append("--confirm-live-api")
             else:
                 command = [
                     sys.executable,
@@ -1523,6 +1628,21 @@ class JobQueue:
                     and isinstance(item.get("payload"), Mapping)
                 ]
                 result_payloads = client_payloads or ([payload] if payload else [])
+                waiting_payload = next(
+                    (
+                        item for item in result_payloads
+                        if str(item.get("status") or "").strip().lower()
+                        == "waiting_was_decision"
+                    ),
+                    None,
+                )
+                if waiting_payload is not None:
+                    job["run_id"] = waiting_payload.get("run_id") or job.get("run_id")
+                    job["was_recovery"] = {
+                        "run_id": waiting_payload.get("run_id"),
+                        "checkpoint": waiting_payload.get("checkpoint"),
+                        "failure": dict(waiting_payload.get("was_failure") or {}),
+                    }
                 job["warnings"] = [
                     dict(warning)
                     for client_payload in result_payloads
@@ -1572,7 +1692,10 @@ class JobQueue:
                     }
                     if validation_payload is not None else None
                 )
-                if completed.returncode == 0:
+                if waiting_payload is not None:
+                    job["status"] = "WAITING_WAS_DECISION"
+                    job["error"] = None
+                elif completed.returncode == 0:
                     job["status"] = "COMPLETE"
                 else:
                     job["status"] = "FAILED"
@@ -1607,6 +1730,7 @@ class DashboardApplication:
         retention_state_provider: Callable[[], Mapping[str, Any]] | None = None,
         cleanup_status_recorder: Callable[..., Any] | None = None,
         cloud_contract_invalidator: Callable[..., int] | None = None,
+        was_recovery_repository: Any | None = None,
     ) -> None:
         self.project_root = project_root.resolve()
         self.config = DashboardConfigStore(project_root=self.project_root, config_path=config_path)
@@ -1633,6 +1757,12 @@ class DashboardApplication:
         if self.report_registry is None and self.database is not None:
             self.report_registry = PostgresReportRegistry(
                 self.database.database, migrate=False
+            )
+        self.was_recovery_repository = was_recovery_repository
+        if self.was_recovery_repository is None and self.database is not None:
+            self.was_recovery_repository = PostgresWasRecoveryRepository(
+                self.database.database,
+                migrate=False,
             )
         self.report_set_purger = report_set_purger
         if (
@@ -2176,6 +2306,80 @@ class DashboardApplication:
             cloud_template_path=cloud_template,
         )
 
+    def recover_was_report(
+        self,
+        *,
+        run_id: str,
+        action: str,
+        confirmation: str,
+    ) -> dict[str, Any]:
+        if self.was_recovery_repository is None:
+            raise RuntimeError("Recuperacao WAS indisponivel sem o PostgreSQL.")
+        decisions = {
+            "continue": WasRecoveryDecision.CONTINUE_WITHOUT_WAS,
+            "retry": WasRecoveryDecision.RETRY_WAS,
+        }
+        decision = decisions.get(action)
+        if decision is None:
+            raise ValueError("Acao de recuperacao WAS invalida.")
+        expected = (
+            f"RETENTAR WAS {run_id}"
+            if decision is WasRecoveryDecision.RETRY_WAS
+            else f"CONTINUAR SEM WAS {run_id}"
+        )
+        if confirmation.strip() != expected:
+            raise ValueError(f'Digite exatamente "{expected}" para confirmar.')
+        record = self.was_recovery_repository.get(run_id)
+        if record is None:
+            raise KeyError("Recuperacao WAS nao encontrada.")
+        if record.status not in {
+            WasRecoveryStatus.WAITING_WAS_DECISION,
+            WasRecoveryStatus.RETRY_AVAILABLE,
+        }:
+            raise ValueError("Esta recuperacao WAS nao aceita uma nova decisao.")
+        if (
+            record.status is WasRecoveryStatus.RETRY_AVAILABLE
+            and decision is not WasRecoveryDecision.RETRY_WAS
+        ):
+            raise ValueError(
+                "Uma publicacao automatica concluida aceita somente a retentativa WEB."
+            )
+        clients = {item["client_id"]: item for item in self.config.list_clients()}
+        client = clients.get(record.client_id)
+        if client is None:
+            raise KeyError("Cliente nao encontrado.")
+        if not client.get("enabled"):
+            raise ValueError("O cliente esta desabilitado.")
+        if decision is WasRecoveryDecision.RETRY_WAS:
+            if not client.get("was_enabled"):
+                raise ValueError("Vulnerabilidades WEB nao estao habilitadas.")
+            if not client.get("credentials_ready"):
+                raise ValueError("O cliente nao possui credenciais Tenable prontas.")
+        checkpoint_path = Path(record.checkpoint_path).resolve()
+        if not checkpoint_path.is_file():
+            raise ValueError("Checkpoint WAS nao encontrado no disco.")
+        defaults = self.config.raw().get("defaults") or {}
+        config_directory = self.config.config_path.parent
+        template_path = (
+            config_directory
+            / str(defaults.get("template") or "../templates/corporate/base-v1.docx")
+        ).resolve()
+        assets_dir = (
+            config_directory
+            / str(defaults.get("assets_dir") or "../templates/corporate/assets")
+        ).resolve()
+        return self.jobs.enqueue_was_recovery(
+            run_id=record.run_id,
+            client_id=record.client_id,
+            decision=decision,
+            checkpoint_path=checkpoint_path,
+            profile_path=self.config.client_profile_path(record.client_id),
+            env_path=self.config.client_env_path(record.client_id),
+            database_env_path=self.config.database_env_path(),
+            template_path=template_path,
+            assets_dir=assets_dir,
+        )
+
     def list_client_tags(self, client_id: str) -> dict[str, Any]:
         clients = {item["client_id"]: item for item in self.config.list_clients()}
         client = clients.get(client_id)
@@ -2254,8 +2458,29 @@ class DashboardApplication:
         latest_alert: dict[str, dict[str, Any]] = {}
         for alert in alerts:
             latest_alert.setdefault(str(alert.get("client_id") or ""), alert)
+        was_recoveries: list[dict[str, Any]] = []
         for client in clients:
             client_id = client["client_id"]
+            client_recoveries: list[dict[str, Any]] = []
+            if self.was_recovery_repository is not None:
+                try:
+                    for record in self.was_recovery_repository.pending(
+                        client_id=client_id
+                    ):
+                        failure = record.checkpoint.was_failure
+                        item = {
+                            "run_id": record.run_id,
+                            "client_id": record.client_id,
+                            "status": record.status.value,
+                            "checkpoint": record.checkpoint_path,
+                            "failure": failure.to_dict() if failure else None,
+                            "updated_at": record.updated_at,
+                        }
+                        client_recoveries.append(item)
+                        was_recoveries.append(item)
+                except Exception as exc:
+                    database_error = _safe_error(str(exc), limit=500)
+            client["was_recoveries"] = client_recoveries
             client["latest_report"] = summaries.get(client_id)
             client["job"] = latest_job.get(client_id)
             client["alert"] = latest_alert.get(client_id)
@@ -2263,6 +2488,7 @@ class DashboardApplication:
             "clients": clients,
             "jobs": jobs,
             "alerts": alerts,
+            "was_recoveries": was_recoveries,
             "database_error": database_error,
             "server_time": _utc_now(),
             "queue_mode": "sequential",
@@ -2450,6 +2676,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if match:
                 job = self.app.retry_cloud_report(
                     run_id=unquote(match.group(1)),
+                    confirmation=str(payload.get("confirmation") or ""),
+                )
+                self._json(HTTPStatus.ACCEPTED, {"job": job})
+                return
+            match = re.fullmatch(
+                r"/api/was-recoveries/([^/]+)/(continue|retry)",
+                parsed.path,
+            )
+            if match:
+                job = self.app.recover_was_report(
+                    run_id=unquote(match.group(1)),
+                    action=match.group(2),
                     confirmation=str(payload.get("confirmation") or ""),
                 )
                 self._json(HTTPStatus.ACCEPTED, {"job": job})

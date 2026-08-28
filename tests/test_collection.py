@@ -231,7 +231,82 @@ class TimedOutWasCollectionClient(FakeWasCollectionClient):
         )
 
 
+class IncrementalTimeoutWasCollectionClient(FakeWasCollectionClient):
+    def __init__(self) -> None:
+        super().__init__({1: b'{"finding_id":"was-partial"}\n'})
+        self.download_calls: list[int] = []
+
+    def wait_for_findings_completion(
+        self,
+        export_uuid: str,
+        progress_callback=None,
+        chunk_callback=None,
+    ) -> tuple[dict[str, Any], list[int]]:
+        if chunk_callback is not None:
+            chunk_callback(1)
+        status = {
+            "status": "PROCESSING",
+            "completed_chunks": 1,
+            "total_chunks": 2,
+            "progress_made": True,
+        }
+        if progress_callback is not None:
+            progress_callback(status)
+        raise ExportTimeoutError(
+            "Tempo maximo excedido aguardando o export WAS.",
+            export_uuid=export_uuid,
+            last_status=status,
+            progress_made=True,
+        )
+
+    def download_findings_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:
+        self.download_calls.append(chunk_id)
+        return self.chunks[chunk_id]
+
+
+class RecordingWasCollectionClient(FakeWasCollectionClient):
+    def __init__(self) -> None:
+        super().__init__({
+            1: b'{"finding_id":"was-partial"}\n',
+            2: b'{"finding_id":"was-final"}\n',
+        })
+        self.download_calls: list[int] = []
+
+    def download_findings_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:
+        self.download_calls.append(chunk_id)
+        return self.chunks[chunk_id]
+
+
 class CollectionTests(unittest.TestCase):
+    def test_was_retry_reuses_chunk_from_partial_manifest(self) -> None:
+        profile = load_client_profile(
+            ROOT / "clients/examples/client-profile-intelligence-expanded.json"
+        )
+        request = WasExportRequest(filters={"state": ["OPEN", "FIXED"]})
+        first = IncrementalTimeoutWasCollectionClient()
+        second = RecordingWasCollectionClient()
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExportTimeoutError):
+                collect_was_snapshot(
+                    client=first,  # type: ignore[arg-type]
+                    profile=profile,
+                    request=request,
+                    output_root=directory,
+                    run_id="run-was-resume",
+                )
+            result = collect_was_snapshot(
+                client=second,  # type: ignore[arg-type]
+                profile=profile,
+                request=request,
+                output_root=directory,
+                run_id="run-was-resume",
+                export_uuid="fixture-was-export",
+            )
+            manifest = json.loads(result.raw_manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(first.download_calls, [1])
+        self.assertEqual(second.download_calls, [2])
+        self.assertEqual([item["chunk_id"] for item in manifest["chunks"]], [1, 2])
     def test_vm_states_use_one_combined_export_by_default(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
         client = SegmentedCollectionClient()
@@ -629,6 +704,10 @@ class CollectionTests(unittest.TestCase):
             self.assertIsNone(attempt.result)
             self.assertEqual(attempt.status, "UNAVAILABLE")
             self.assertEqual(attempt.warnings[0]["code"], "WAS_NOT_AVAILABLE")
+            self.assertIsNotNone(attempt.failure)
+            self.assertEqual(attempt.failure.code, "WAS_NOT_AVAILABLE")
+            self.assertFalse(attempt.failure.retryable)
+            self.assertIsNone(attempt.failure.export_uuid)
 
     def test_optional_was_timeout_reports_progress_and_does_not_raise(self) -> None:
         profile = load_client_profile(
@@ -652,6 +731,16 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(progress[-1]["export_uuid"], "fixture-was-export")
         self.assertEqual(progress[-1]["origin"], "created")
         self.assertEqual(progress[-1]["status"], "TIMED_OUT")
+        self.assertIsNotNone(attempt.failure)
+        self.assertEqual(attempt.failure.code, "WAS_COLLECTION_UNAVAILABLE")
+        self.assertTrue(attempt.failure.retryable)
+        self.assertEqual(attempt.failure.export_uuid, "fixture-was-export")
+        self.assertEqual(attempt.failure.origin, "created")
+        self.assertEqual(attempt.failure.remote_status, "PROCESSING")
+        self.assertEqual(attempt.failure.completed_chunks, 0)
+        self.assertEqual(attempt.failure.total_chunks, 1)
+        self.assertFalse(attempt.failure.progress_made)
+        self.assertTrue(attempt.failure.safe_cancel_available)
 
     def test_was_collection_writes_immutable_dedicated_snapshot(self) -> None:
         profile = load_client_profile(

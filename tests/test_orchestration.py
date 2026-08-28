@@ -517,6 +517,57 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual(statuses["cliente-a-exemplo"], "COMPLETE")
             self.assertEqual(statuses["cliente-b-exemplo"], "FAILED")
 
+    def test_manual_was_decision_is_preserved_as_attention_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            payload = json.loads(EXAMPLE_CONFIG.read_text(encoding="utf-8"))
+            payload["defaults"]["output_root"] = str(Path(directory) / "data")
+            payload["clients"] = payload["clients"][:1]
+            config_path = ROOT / "orchestration" / "clients.test-was-wait.json"
+            try:
+                config_path.write_text(json.dumps(payload), encoding="utf-8")
+                config = load_orchestration_config(config_path)
+
+                def runner(command: list[str], _: Path) -> subprocess.CompletedProcess[str]:
+                    return subprocess.CompletedProcess(
+                        command,
+                        3,
+                        stdout=json.dumps({
+                            "status": "waiting_was_decision",
+                            "run_id": "run-was-pendente",
+                            "client_id": "cliente-a-exemplo",
+                            "checkpoint": "C:/dados/was-recovery.json",
+                            "was_failure": {
+                                "code": "WAS_COLLECTION_UNAVAILABLE",
+                                "message": "Falha WAS sanitizada.",
+                                "retryable": True,
+                                "export_uuid": "was-job",
+                                "origin": "created",
+                                "remote_status": "PROCESSING",
+                                "completed_chunks": 0,
+                                "total_chunks": 1,
+                            },
+                        }, ensure_ascii=False) + "\n",
+                        stderr="",
+                    )
+
+                result = run_orchestration(
+                    config=config,
+                    request=OrchestrationRequest(mode="manual"),
+                    runner=runner,
+                    now=datetime(2026, 8, 13, 12, tzinfo=timezone.utc),
+                )
+            finally:
+                config_path.unlink(missing_ok=True)
+
+            self.assertEqual(result.status, "WAITING_WAS_DECISION")
+            self.assertEqual(result.failed_count, 0)
+            client = result.clients[0]
+            self.assertEqual(client.status, "WAITING_WAS_DECISION")
+            self.assertEqual(client.exit_code, 3)
+            self.assertEqual(client.payload["checkpoint"], "C:/dados/was-recovery.json")
+            self.assertEqual(client.payload["was_failure"]["export_uuid"], "was-job")
+            self.assertIsNone(client.error)
+
     def test_client_command_uses_process_safe_env_path_and_non_interactive_tags(self) -> None:
         config = load_orchestration_config(EXAMPLE_CONFIG)
         command = build_client_command(
@@ -547,6 +598,28 @@ class OrchestrationTests(unittest.TestCase):
 
         index = command.index("--vm-selective-mode")
         self.assertEqual(command[index + 1], "validation")
+
+    def test_client_command_waits_for_was_decision_only_in_manual_mode(self) -> None:
+        config = load_orchestration_config(EXAMPLE_CONFIG)
+
+        manual = build_client_command(
+            config=config,
+            client=config.clients[0],
+            request=OrchestrationRequest(mode="manual"),
+            client_run_id="run-manual",
+        )
+        automatic = build_client_command(
+            config=config,
+            client=config.clients[0],
+            request=OrchestrationRequest(mode="automatic"),
+            client_run_id="run-automatic",
+        )
+
+        manual_index = manual.index("--was-failure-policy")
+        automatic_index = automatic.index("--was-failure-policy")
+        self.assertEqual(manual[manual_index + 1], "wait")
+        self.assertEqual(automatic[automatic_index + 1], "continue")
+
     def test_client_command_propagates_forced_live_collection(self) -> None:
         config = load_orchestration_config(EXAMPLE_CONFIG)
         command = build_client_command(

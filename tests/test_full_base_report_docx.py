@@ -464,6 +464,40 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 all_document_text(Document(output)),
             )
 
+    def test_unavailable_web_collection_is_not_presented_as_zero_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = json.loads(FIXTURE.read_text(encoding="utf-8"))
+            dataset["was"] = {
+                "availability": "NOT_COLLECTED",
+                "applications": [],
+                "top_vulnerabilities": [],
+                "owasp": {},
+            }
+            dataset["top_web_vulnerabilities"] = []
+            dataset_path = Path(directory) / "unavailable-web.json"
+            dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+            output = Path(directory) / "unavailable-web.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=dataset_path,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+            )
+
+            text = all_document_text(Document(output))
+            self.assertEqual(text.count("Não foi possível concluir a coleta WEB"), 1)
+            self.assertNotIn(
+                "Neste mês não foram identificadas vulnerabilidades WEB não mitigadas",
+                text,
+            )
+            self.assertNotIn(
+                "Neste mês não foram identificadas vulnerabilidades relacionadas a esta categoria OWASP.",
+                text,
+            )
+
     def test_every_empty_table_receives_a_monthly_message(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "empty-tables.docx"
