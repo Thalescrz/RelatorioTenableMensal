@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import tenable_reports.cli as cli_module
 from tenable_reports.cli import _period_filters, _scoped_output_root, main
@@ -23,6 +23,7 @@ from tenable_reports.application.tag_scope import VmTag
 from tenable_reports.application.was_recovery import (
     WasFailureDetails,
     WasRecoveryCheckpoint,
+    WasRecoveryStatus,
     load_was_recovery_checkpoint,
     write_was_recovery_checkpoint,
 )
@@ -792,6 +793,7 @@ class CliTests(unittest.TestCase):
                 reconstruction_status="HISTORICAL_RECONSTRUCTION",
                 collection_sources=("tenable_vm_vulnerabilities",),
             )
+            recovery_repository = Mock()
 
             with (
                 patch.object(cli_module, "load_client_profile", return_value=profile),
@@ -805,6 +807,11 @@ class CliTests(unittest.TestCase):
                 patch.object(cli_module, "_period_filters", return_value=({}, {})),
                 patch.object(cli_module, "_plugin_catalog_repository", return_value=None),
                 patch.object(cli_module, "collect_external_period", return_value=external),
+                patch.object(
+                    cli_module,
+                    "_was_recovery_repository",
+                    return_value=recovery_repository,
+                ),
                 patch.object(
                     cli_module,
                     "build_report_dataset_from_snapshot",
@@ -830,6 +837,13 @@ class CliTests(unittest.TestCase):
             checkpoint = load_was_recovery_checkpoint(checkpoint_path)
             self.assertEqual(checkpoint.run_id, "run-was-pendente")
             self.assertEqual(checkpoint.was_failure, failure)
+            recovery_repository.upsert.assert_called_once()
+            recovery_record = recovery_repository.upsert.call_args.args[0]
+            self.assertEqual(
+                recovery_record.status,
+                WasRecoveryStatus.WAITING_WAS_DECISION,
+            )
+            self.assertEqual(recovery_record.checkpoint, checkpoint)
 
     def test_run_client_returns_controlled_waiting_was_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
@@ -907,6 +921,8 @@ class CliTests(unittest.TestCase):
                 profile=str(directory / "cliente.json"),
                 confirm_live_api=False,
             )
+            recovery_repository = Mock()
+            recovery_repository.get.return_value = SimpleNamespace()
 
             with (
                 patch.object(cli_module, "load_client_profile", return_value=profile),
@@ -930,6 +946,11 @@ class CliTests(unittest.TestCase):
                     "_execute_period",
                     side_effect=AssertionError("VM nao pode ser chamada"),
                 ),
+                patch.object(
+                    cli_module,
+                    "_was_recovery_repository",
+                    return_value=recovery_repository,
+                ),
             ):
                 result = cli_module.command_resume_was(args)
 
@@ -937,6 +958,18 @@ class CliTests(unittest.TestCase):
             self.assertEqual(assemble.call_args.kwargs["actual_run_id"], "run-was-pendente")
             self.assertEqual(assemble.call_args.kwargs["was_collection_status"], "UNAVAILABLE")
             publish.assert_called_once()
+            recovery_repository.record_decision.assert_called_once_with(
+                "run-was-pendente",
+                client_id="cliente-was",
+                decision=cli_module.WasRecoveryDecision.CONTINUE_WITHOUT_WAS,
+                idempotency_key=(
+                    "was-recovery:run-was-pendente:continue_without_was"
+                ),
+            )
+            recovery_repository.mark_complete.assert_called_once_with(
+                "run-was-pendente",
+                client_id="cliente-was",
+            )
 
     def test_retry_was_resumes_checkpoint_and_calls_only_was_collector(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
@@ -986,6 +1019,8 @@ class CliTests(unittest.TestCase):
                 was_num_assets=1000,
                 confirm_live_api=True,
             )
+            recovery_repository = Mock()
+            recovery_repository.get.return_value = SimpleNamespace()
 
             with (
                 patch.object(cli_module, "load_client_profile", return_value=profile),
@@ -1018,12 +1053,22 @@ class CliTests(unittest.TestCase):
                     "_execute_period",
                     side_effect=AssertionError("run-client nao pode ser chamado"),
                 ),
+                patch.object(
+                    cli_module,
+                    "_was_recovery_repository",
+                    return_value=recovery_repository,
+                ),
             ):
                 result = cli_module.command_resume_was(args)
 
             self.assertEqual(result, 0)
             collect_was.assert_called_once()
             self.assertEqual(collect_was.call_args.kwargs["export_uuid"], "was-job")
+            recovery_repository.record_decision.assert_called_once()
+            recovery_repository.mark_complete.assert_called_once_with(
+                "run-was-pendente",
+                client_id="cliente-was",
+            )
 
     def test_build_report_dataset_command_uses_requested_run_id_for_tag_datasets(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:

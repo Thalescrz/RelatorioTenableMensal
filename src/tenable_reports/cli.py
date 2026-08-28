@@ -101,6 +101,8 @@ from tenable_reports.application.was_recovery import (
     WasDecisionRequired,
     WasRecoveryCheckpoint,
     WasRecoveryDecision,
+    WasRecoveryRecord,
+    WasRecoveryStatus,
     load_was_recovery_checkpoint,
     write_was_recovery_checkpoint,
 )
@@ -160,6 +162,9 @@ from tenable_reports.infrastructure.postgresql import (
 )
 from tenable_reports.infrastructure.report_registry_postgresql import (
     PostgresReportRegistry,
+)
+from tenable_reports.infrastructure.was_recovery_postgresql import (
+    PostgresWasRecoveryRepository,
 )
 from tenable_reports.domain.report_reference import (
     READY_STATUS,
@@ -437,6 +442,53 @@ def _postgres_operations(
     if config is None:
         return None
     return PostgresOperationsRepository(PostgresDatabase(config))
+
+
+def _was_recovery_repository(
+    args: argparse.Namespace,
+) -> PostgresWasRecoveryRepository | None:
+    config = _load_database_config(
+        getattr(args, "database_env_file", None),
+        required=False,
+    )
+    if config is None:
+        return None
+    return PostgresWasRecoveryRepository(PostgresDatabase(config))
+
+
+def _was_recovery_record(
+    *,
+    checkpoint: WasRecoveryCheckpoint,
+    checkpoint_path: Path,
+    status: WasRecoveryStatus,
+) -> WasRecoveryRecord:
+    return WasRecoveryRecord(
+        run_id=checkpoint.run_id,
+        client_id=checkpoint.client_id,
+        tenant_id=checkpoint.tenant_id,
+        status=status,
+        checkpoint_path=str(checkpoint_path.resolve()),
+        checkpoint=checkpoint,
+    )
+
+
+def _persist_was_recovery(
+    args: argparse.Namespace,
+    *,
+    checkpoint: WasRecoveryCheckpoint,
+    checkpoint_path: Path,
+    status: WasRecoveryStatus,
+) -> PostgresWasRecoveryRepository | None:
+    repository = _was_recovery_repository(args)
+    if repository is not None:
+        repository.upsert(
+            _was_recovery_record(
+                checkpoint=checkpoint,
+                checkpoint_path=checkpoint_path,
+                status=status,
+            )
+        )
+    return repository
 
 
 def _cloud_snapshot_repository_for_args(
@@ -1283,6 +1335,12 @@ def _execute_period(
                 was_failure=was_failure,
             )
             write_was_recovery_checkpoint(checkpoint_path, checkpoint)
+            _persist_was_recovery(
+                args,
+                checkpoint=checkpoint,
+                checkpoint_path=checkpoint_path,
+                status=WasRecoveryStatus.WAITING_WAS_DECISION,
+            )
             raise WasDecisionRequired(
                 checkpoint_path=checkpoint_path,
                 run_id=actual_run_id,
@@ -1971,6 +2029,29 @@ def command_resume_was(args: argparse.Namespace) -> int:
             "A retentativa WAS exige --confirm-live-api; ela pode iniciar um export real."
         )
 
+    recovery_repository = _was_recovery_repository(args)
+    if recovery_repository is not None:
+        existing = recovery_repository.get(
+            checkpoint.run_id,
+            client_id=checkpoint.client_id,
+        )
+        if existing is None:
+            recovery_repository.upsert(
+                _was_recovery_record(
+                    checkpoint=checkpoint,
+                    checkpoint_path=checkpoint_path,
+                    status=WasRecoveryStatus.WAITING_WAS_DECISION,
+                )
+            )
+        recovery_repository.record_decision(
+            checkpoint.run_id,
+            client_id=checkpoint.client_id,
+            decision=decision,
+            idempotency_key=(
+                f"was-recovery:{checkpoint.run_id}:{decision.value}"
+            ),
+        )
+
     period = _period_from_was_checkpoint(checkpoint)
     output_root = Path(checkpoint.output_root)
     was_collection_status = checkpoint.was_status
@@ -2021,6 +2102,14 @@ def command_resume_was(args: argparse.Namespace) -> int:
                 was_failure=attempt.failure,
             )
             write_was_recovery_checkpoint(checkpoint_path, updated)
+            if recovery_repository is not None:
+                recovery_repository.upsert(
+                    _was_recovery_record(
+                        checkpoint=updated,
+                        checkpoint_path=checkpoint_path,
+                        status=WasRecoveryStatus.WAITING_WAS_DECISION,
+                    )
+                )
             pending = WasDecisionRequired(
                 checkpoint_path=checkpoint_path,
                 run_id=checkpoint.run_id,
@@ -2057,13 +2146,19 @@ def command_resume_was(args: argparse.Namespace) -> int:
         was_collection_status=was_collection_status,
         collection_warnings=tuple(warnings),
     )
-    return _publish_collected_period(
+    result = _publish_collected_period(
         args=args,
         profile=profile,
         period=period,
         execution_type=checkpoint.execution_type,
         collected=collected,
     )
+    if result == 0 and recovery_repository is not None:
+        recovery_repository.mark_complete(
+            checkpoint.run_id,
+            client_id=checkpoint.client_id,
+        )
+    return result
 
 
 def _retry_output_root(manifest: Path) -> Path:

@@ -17,6 +17,15 @@ class WasRecoveryDecision(StrEnum):
     RETRY_WAS = "retry_was"
 
 
+class WasRecoveryStatus(StrEnum):
+    WAITING_WAS_DECISION = "WAITING_WAS_DECISION"
+    RETRY_AVAILABLE = "RETRY_AVAILABLE"
+    RETRYING_WAS = "RETRYING_WAS"
+    CONTINUING_WITHOUT_WAS = "CONTINUING_WITHOUT_WAS"
+    COMPLETE = "COMPLETE"
+    EXPIRED = "EXPIRED"
+
+
 class WasDecisionRequired(RuntimeError):
     def __init__(
         self,
@@ -123,6 +132,61 @@ class WasRecoveryCheckpoint:
         return checkpoint
 
 
+@dataclass(frozen=True, slots=True)
+class WasRecoveryRecord:
+    run_id: str
+    client_id: str
+    tenant_id: str
+    status: WasRecoveryStatus
+    checkpoint_path: str
+    checkpoint: WasRecoveryCheckpoint
+    decision: WasRecoveryDecision | None = None
+    idempotency_key: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    decided_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            self.run_id != self.checkpoint.run_id
+            or self.client_id != self.checkpoint.client_id
+            or self.tenant_id != self.checkpoint.tenant_id
+        ):
+            raise ValueError("Registro WAS incompatível com seu checkpoint.")
+
+    @classmethod
+    def from_storage(
+        cls,
+        *,
+        run_id: str,
+        client_id: str,
+        tenant_id: str,
+        status: str,
+        checkpoint_path: str,
+        checkpoint: Mapping[str, Any],
+        decision: Any = None,
+        idempotency_key: Any = None,
+        created_at: str | None = None,
+        updated_at: str | None = None,
+        decided_at: str | None = None,
+    ) -> WasRecoveryRecord:
+        return cls(
+            run_id=str(run_id),
+            client_id=str(client_id),
+            tenant_id=str(tenant_id),
+            status=WasRecoveryStatus(str(status)),
+            checkpoint_path=str(checkpoint_path),
+            checkpoint=WasRecoveryCheckpoint.from_dict(checkpoint),
+            decision=(
+                WasRecoveryDecision(str(decision)) if decision is not None else None
+            ),
+            idempotency_key=_optional_text(idempotency_key),
+            created_at=created_at,
+            updated_at=updated_at,
+            decided_at=decided_at,
+        )
+
+
 def write_was_recovery_checkpoint(
     path: str | Path,
     checkpoint: WasRecoveryCheckpoint,
@@ -186,6 +250,8 @@ __all__ = [
     "WasDecisionRequired",
     "WasRecoveryCheckpoint",
     "WasRecoveryDecision",
+    "WasRecoveryRecord",
+    "WasRecoveryStatus",
     "load_was_recovery_checkpoint",
     "write_was_recovery_checkpoint",
 ]
