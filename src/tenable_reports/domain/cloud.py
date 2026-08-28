@@ -40,6 +40,17 @@ class CloudVulnerabilityOccurrence:
 
 
 @dataclass(frozen=True, slots=True)
+class CloudSoftwareVulnerability:
+    asset: CloudAssetKey
+    vulnerability_id: str
+    severity: str
+    vpr: float | None
+    cvss: float | None
+    software: str
+    fixed_by: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class CloudResourceReference:
     resource_id: str
     name: str
@@ -111,6 +122,7 @@ class NormalizedCloudSnapshot:
     lifecycle: tuple[CloudLifecycleInstance, ...]
     source_status: Mapping[str, str]
     quality_issues: tuple[CloudQualityIssue, ...]
+    software_vulnerabilities: tuple[CloudSoftwareVulnerability, ...] = ()
 
 
 __all__ = [
@@ -122,6 +134,7 @@ __all__ = [
     "CloudLifecycleInstance",
     "CloudQualityIssue",
     "CloudResourceReference",
+    "CloudSoftwareVulnerability",
     "CloudVulnerabilityOccurrence",
     "NormalizedCloudSnapshot",
 ]

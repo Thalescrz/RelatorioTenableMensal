@@ -283,8 +283,11 @@ perfil e falha isolada. Não reutilizar um finding VM como se fosse finding clou
 Quando habilitado, publica um único DOCX padrão. O valor técnico `expanded` é
 mantido no registro somente para compatibilidade; `base` e `comparison` não criam
 novos modelos e são normalizados ao carregar perfis legados. A apresentação inclui
-o Top 5 detalhado no padrão tipográfico do relatório geral, Top 10 corrigível sem a
-coluna de ação extensa, marcador manual em 3.6.2 e evolução mensal em 3.11. O
+o Top 5 detalhado no padrão tipográfico do relatório geral, overview das cinco
+imagens mais vulneráveis com até cinco combinações CVE/software por imagem e Top 10
+corrigível agrupado por CVE/software. `FixedBy` é enriquecimento GraphQL opcional;
+quando indisponível, a apresentação usa `N/D` sem bloquear o relatório. A coluna de
+ação extensa permanece removida, com marcador manual em 3.6.2 e evolução em 3.11. O
 inventário Cloud não é seção do documento. Uma série sem histórico anterior usa
 somente o ponto real da fotografia atual e declara que não há comparação temporal.
 

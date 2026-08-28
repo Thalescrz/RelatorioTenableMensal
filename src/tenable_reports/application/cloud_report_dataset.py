@@ -17,13 +17,14 @@ from tenable_reports.domain.cloud import (
     CloudAsset,
     CloudAssetKey,
     CloudAssetKind,
+    CloudSoftwareVulnerability,
     NormalizedCloudSnapshot,
 )
 from tenable_reports.domain.reporting import ReportingPeriod, parse_utc
 
 
 CLOUD_DATASET_SCHEMA_VERSION = 1
-CLOUD_METRIC_DEFINITION_VERSION = "cloud-metrics-v1"
+CLOUD_METRIC_DEFINITION_VERSION = "cloud-metrics-v2"
 
 _CORRECTION_LABELS = {
     "patch_update": "Patch/Atualização",
@@ -228,6 +229,74 @@ def _top_assets(
     )[:10]
 
 
+def _software_vulnerabilities(
+    snapshot: NormalizedCloudSnapshot,
+) -> tuple[CloudSoftwareVulnerability, ...]:
+    if snapshot.software_vulnerabilities:
+        return snapshot.software_vulnerabilities
+    return tuple(
+        CloudSoftwareVulnerability(
+            asset=item.asset,
+            vulnerability_id=item.vulnerability_id,
+            severity=item.severity,
+            vpr=item.vpr,
+            cvss=item.cvss,
+            software=item.software,
+            fixed_by=None,
+        )
+        for item in snapshot.occurrences
+    )
+
+
+def _software_vulnerability_rank(
+    values: Mapping[str, Any],
+) -> tuple[Any, ...]:
+    vpr = values.get("vpr")
+    cvss = values.get("cvss")
+    return (
+        vpr is None,
+        -(float(vpr) if vpr is not None else 0.0),
+        -_SEVERITY_RANK.get(str(values.get("severity") or ""), -1),
+        cvss is None,
+        -(float(cvss) if cvss is not None else 0.0),
+        str(values.get("cve") or ""),
+        str(values.get("software") or ""),
+    )
+
+
+def _container_image_vulnerability_overview(
+    *,
+    snapshot: NormalizedCloudSnapshot,
+    top_images: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    by_asset: dict[str, list[dict[str, Any]]] = {}
+    for item in _software_vulnerabilities(snapshot):
+        if item.asset.kind is not CloudAssetKind.CONTAINER_IMAGE:
+            continue
+        by_asset.setdefault(item.asset.asset_id, []).append(
+            {
+                "cve": item.vulnerability_id,
+                "severity": item.severity,
+                "vpr": item.vpr,
+                "vpr_display": _score_display(item.vpr),
+                "cvss": item.cvss,
+                "cvss_display": _score_display(item.cvss),
+                "software": item.software or "N/D",
+                "fixed_by": item.fixed_by,
+                "fixed_by_display": item.fixed_by or "N/D",
+            }
+        )
+
+    overview = []
+    for image in top_images[:5]:
+        rows = sorted(
+            by_asset.get(str(image.get("asset_id") or ""), ()),
+            key=_software_vulnerability_rank,
+        )[:5]
+        overview.append({"asset": dict(image), "rows": rows})
+    return overview
+
+
 def _top_components(
     snapshot: NormalizedCloudSnapshot,
 ) -> list[dict[str, Any]]:
@@ -415,56 +484,105 @@ def _inventory_summary(
 
 def _correctable(
     *,
-    cves: Mapping[str, Mapping[str, Any]],
+    snapshot: NormalizedCloudSnapshot,
     enrichments: Sequence[CloudVulnerabilityEnrichment],
 ) -> list[dict[str, Any]]:
-    grouped: dict[str, dict[str, Any]] = {}
+    remediation_by_occurrence: dict[
+        tuple[CloudAssetKey, str],
+        list[CloudVulnerabilityEnrichment],
+    ] = {}
     for enrichment in enrichments:
-        if not enrichment.remediation_steps or enrichment.cve not in cves:
+        if not enrichment.remediation_steps:
             continue
+        remediation_by_occurrence.setdefault(
+            (enrichment.asset, enrichment.cve),
+            [],
+        ).append(enrichment)
+
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in _software_vulnerabilities(snapshot):
+        corrections = remediation_by_occurrence.get(
+            (item.asset, item.vulnerability_id),
+            (),
+        )
+        if not item.fixed_by and not corrections:
+            continue
+        key = (item.vulnerability_id, item.software)
         values = grouped.setdefault(
-            enrichment.cve,
+            key,
             {
+                "cve": item.vulnerability_id,
+                "software": item.software or "N/D",
+                "severity": item.severity,
+                "vpr": item.vpr,
+                "cvss": item.cvss,
                 "assets": set(),
+                "fixed_by": set(),
                 "steps": [],
                 "types": [],
                 "origins": [],
                 "finding_keys": set(),
             },
         )
-        values["assets"].add(enrichment.asset)
-        values["steps"].extend(enrichment.remediation_steps)
-        values["types"].append(enrichment.correction.correction_type)
-        values["origins"].append(enrichment.correction.origin)
-        values["finding_keys"].update(enrichment.source_finding_keys)
+        values["severity"] = _worst_severity(
+            values["severity"],
+            item.severity,
+        )
+        values["vpr"] = _max_optional(values["vpr"], item.vpr)
+        values["cvss"] = _max_optional(values["cvss"], item.cvss)
+        values["assets"].add(item.asset)
+        if item.fixed_by:
+            values["fixed_by"].add(item.fixed_by)
+        for correction in corrections:
+            values["steps"].extend(correction.remediation_steps)
+            values["types"].append(
+                correction.correction.correction_type
+            )
+            values["origins"].append(correction.correction.origin)
+            values["finding_keys"].update(
+                correction.source_finding_keys
+            )
 
     rows: list[dict[str, Any]] = []
-    for cve, correction in grouped.items():
-        values = cves[cve]
+    for correction in grouped.values():
         types = tuple(dict.fromkeys(correction["types"]))
         origins = tuple(dict.fromkeys(correction["origins"]))
         correction_type = (
-            types[0] if len(types) == 1 else "undetermined"
+            types[0]
+            if len(types) == 1
+            else "version_upgrade"
+            if not types and correction["fixed_by"]
+            else "undetermined"
         )
         steps = tuple(dict.fromkeys(correction["steps"]))
+        fixed_by = tuple(sorted(correction["fixed_by"]))
         rows.append(
             {
-                **_cve_row(values),
+                **_cve_row(correction),
                 "affected_assets": len(correction["assets"]),
+                "software": correction["software"],
+                "fixed_by": list(fixed_by),
+                "fixed_by_display": ", ".join(fixed_by) or "N/D",
                 "correction_type": correction_type,
                 "correction_type_display": _CORRECTION_LABELS[
                     correction_type
                 ],
                 "correction_origin": (
-                    origins[0] if len(origins) == 1 else "mixed"
+                    origins[0]
+                    if len(origins) == 1
+                    else "graphql_fixed_by"
+                    if not origins and fixed_by
+                    else "mixed"
                 ),
                 "recommended_action": steps[0] if steps else None,
                 "remediation_steps": list(steps),
                 "correlated_findings": len(correction["finding_keys"]),
             }
         )
-    return sorted(rows, key=_cve_rank)[:10]
-
+    return sorted(
+        rows,
+        key=lambda row: (*_cve_rank(row), row["software"]),
+    )[:10]
 
 def _provenance(
     *,
@@ -522,6 +640,14 @@ def _provenance(
                 "limit": 10,
                 "rule": "CVE deduplicada por imagem",
             },
+            "cloud_container_image_vulnerability_overview": {
+                **vulnerability_base,
+                "group_by": (
+                    "Container Image Id, Vulnerability Id, Software Name"
+                ),
+                "limit": "5 imagens; 5 combinações CVE/software por imagem",
+                "rule": "VPR desc, severidade desc, CVSS desc; FixedBy opcional",
+            },
             "cloud_top_components": {
                 **vulnerability_base,
                 "group_by": "Software Name",
@@ -562,9 +688,12 @@ def _provenance(
                     ),
                     "Status": "Open",
                 },
-                "group_by": "Vulnerability Id",
+                "group_by": "Vulnerability Id, Software Name",
                 "limit": 10,
-                "rule": "remediação não vazia correlacionada ao recurso e à CVE",
+                "rule": (
+                    "FixedBy estruturado ou remediação não vazia "
+                    "correlacionada ao recurso e à CVE"
+                ),
             },
             "cloud_inventory": {
                 **snapshot_base,
@@ -606,6 +735,10 @@ def build_cloud_dataset(
             "O período solicitado não possui fotografia Cloud exata; "
             "as tabelas de estado representam a coleta atual."
         )
+    top_vulnerable_images = _top_assets(
+        snapshot,
+        CloudAssetKind.CONTAINER_IMAGE,
+    )
     return {
         "schema_version": CLOUD_DATASET_SCHEMA_VERSION,
         "document_kind": "cloud",
@@ -643,15 +776,18 @@ def build_cloud_dataset(
             snapshot,
             CloudAssetKind.VIRTUAL_MACHINE,
         ),
-        "top_vulnerable_images": _top_assets(
-            snapshot,
-            CloudAssetKind.CONTAINER_IMAGE,
+        "top_vulnerable_images": top_vulnerable_images,
+        "container_image_vulnerability_overview": (
+            _container_image_vulnerability_overview(
+                snapshot=snapshot,
+                top_images=top_vulnerable_images,
+            )
         ),
         "workload_status": _workload_status(snapshot),
         "top_components": _top_components(snapshot),
         "top_posture_findings": _top_posture(snapshot),
         "top_correctable_vulnerabilities": _correctable(
-            cves=cves,
+            snapshot=snapshot,
             enrichments=enrichments,
         ),
         "aging": _aging(snapshot),

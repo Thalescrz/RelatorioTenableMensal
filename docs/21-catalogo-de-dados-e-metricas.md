@@ -80,12 +80,19 @@ ocorrências de vulnerabilidade, recursos de inventário e findings de postura. 
 identidade usa o ID estável retornado pela API e inclui o tipo do recurso; nome,
 IP, conta, repositório e digest são atributos de exibição.
 
-O dataset `cloud-metrics-v1` conserva:
+Os totais continuam deduplicados por tipo de ativo, UUID e CVE. Uma coleção
+paralela preserva tipo de ativo, UUID, CVE, `Software.Name` e `FixedBy` para tabelas
+em que a versão corrigida depende do pacote. A mesma CVE pode aparecer novamente
+quando o software for diferente, sem inflar os totais gerais.
+
+O dataset `cloud-metrics-v2` conserva:
 
 - contexto da fotografia, horário de coleta, competência e aviso histórico;
 - totais de ativos, workloads, imagens, CVEs e ocorrências por severidade;
 - Top 5 de CVEs críticas com VPR, CVSS, componentes e ativos afetados;
-- Top 10 com correção, tipo, origem da classificação e ação recomendada;
+- overview das cinco imagens mais vulneráveis, com até cinco combinações
+  CVE/software e versão `Fixed by` por imagem;
+- Top 10 com correção agrupado por CVE/software, incluindo `Fixed by` quando houver;
 - aging, resolvidas e tempo médio de remediação quando o ciclo de vida existe;
 - inventário por provedor e região;
 - findings de postura e capacidades observadas no tenant;
@@ -95,6 +102,8 @@ O dataset `cloud-metrics-v1` conserva:
 VPR `0` é zero e aparece como `0`. VPR ausente é `N/D` e não recebe pontuação
 inventada no ranking. O tipo de correção prefere campo explícito; a regra local
 determinística registra sua origem e, sem evidência, retorna `Não determinado`.
+`FixedBy` ausente, nulo ou não suportado permanece `N/D`; versões nunca são
+inferidas de texto livre.
 
 ## Janela temporal
 
@@ -147,11 +156,15 @@ e Low.
 
 - Principais hosts e imagens: ranking por ocorrências e severidade dentro da
   fotografia, sem misturar as duas populações.
+- Overview por imagem: cinco imagens do ranking e até cinco combinações
+  CVE/software por imagem, ordenadas por VPR, severidade e CVSS. `Fixed by` é
+  opcional e `N/D` não elimina a linha.
 - Top 5 críticas: CVEs críticas ordenadas por VPR real, CVSS e ativos afetados,
   acompanhadas de descrição, correção e tabela de ativos.
-- Top 10 com correção: apenas vulnerabilidades com remediação correlacionada e tipo
-  de correção rastreável; o documento não repete a ação recomendada extensa nessa
-  tabela.
+- Top 10 com correção: combinações CVE/software com `FixedBy` estruturado ou
+  remediação correlacionada ao recurso e à CVE. Uma CVE pode ocupar mais de uma
+  linha quando os softwares forem distintos; `Fixed by` ausente aparece como
+  `N/D`. O documento não repete a ação recomendada extensa nessa tabela.
 - Postura Cloud: findings não relacionados a vulnerabilidade, somente quando a
   capacidade e a população são confirmadas.
 - Aging: ocorrências abertas por idade; data ausente permanece em faixa própria.

@@ -70,8 +70,14 @@ nenhum campo GraphQL não comprovado é incluído silenciosamente.
 A coleta pagina máquinas virtuais, imagens de contêiner, ocorrências de
 vulnerabilidade, inventário, findings de postura e ciclo de vida. Descrição e
 remediação usam consultas enriquecidas somente para os candidatos de Top 5 e Top
-10. Uma fotografia normalizada alimenta o único DOCX Cloud padrão e o snapshot
-compacto PostgreSQL. O valor técnico de variante persistido continua `expanded`
+10. Consultas opcionais e isoladas de máquinas virtuais e imagens solicitam
+`Software.Name` e `Vulnerabilities.FixedBy`. Se o tenant rejeitar esse campo, a
+capacidade fica indisponível sem invalidar as fontes obrigatórias.
+
+A normalização mantém a ocorrência consolidada por tipo de ativo, UUID e CVE para
+os totais aprovados e, em paralelo, preserva combinações por CVE e software para as
+tabelas de correção. Uma fotografia normalizada alimenta o único DOCX Cloud padrão
+e o snapshot compacto PostgreSQL. O valor técnico de variante continua `expanded`
 somente para compatibilidade com o histórico e com a restrição do banco.
 
 O projeto legado `RelatorioCloudTenable` permanece documentado como base técnica

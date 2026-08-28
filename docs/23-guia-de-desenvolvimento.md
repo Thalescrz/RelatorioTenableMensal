@@ -83,6 +83,12 @@ probe mínimo deve ocorrer antes da coleta completa; token nunca entra em perfil
 argumento, log, manifesto ou resposta HTTP. Enriquecimento de descrição e correção
 fica restrito aos candidatos dos rankings para evitar payload desnecessário.
 
+Campos adicionais de versão corrigida devem permanecer em consultas opcionais
+isoladas. Uma rejeição de schema a `FixedBy` marca somente essa fonte como
+indisponível. Preserve a ocorrência consolidada por ativo/CVE usada nos totais e a
+coleção paralela por ativo/CVE/software usada nas tabelas; não conte a mesma CVE
+duas vezes nos indicadores gerais apenas porque ela afeta pacotes diferentes.
+
 ## PostgreSQL
 
 Mudanças de esquema entram como nova migration numerada em
@@ -109,7 +115,8 @@ Depois de alterar apresentação:
 1. gere um DOCX com fixture determinística;
 2. confirme estrutura por teste;
 3. renderize com LibreOffice;
-4. inspecione páginas críticas, tabelas, cortes e campos vazios;
+4. inspecione páginas críticas, tabelas, cortes e campos vazios; no Cloud, confirme
+   também os blocos por imagem e as colunas `Software` e `Fixed by` da seção 3.5;
 5. mantenha a prova fora do Git quando contiver dados reais.
 
 Para o relatório Cloud padrão sanitizado:

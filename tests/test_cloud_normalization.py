@@ -135,6 +135,67 @@ def test_duplicate_occurrence_preserves_worst_severity_and_highest_scores() -> N
     assert occurrence.cvss == 9.8
 
 
+def test_software_specific_vulnerabilities_preserve_duplicates_and_optional_fixed_by() -> None:
+    shared_vulnerability = {
+        "Id": "CVE-2026-0100",
+        "Severity": "High",
+        "VprScore": 7.5,
+        "CvssScore": 8.1,
+    }
+    snapshot = _snapshot(
+        container_images=[
+            {
+                "Id": "image-001",
+                "Name": "fixture-image",
+                "Digest": "sha256:fixture",
+                "Software": [
+                    {
+                        "Name": "fixture-library-a",
+                        "Vulnerabilities": [shared_vulnerability],
+                    },
+                    {
+                        "Name": "fixture-library-b",
+                        "Vulnerabilities": [shared_vulnerability],
+                    },
+                ],
+            }
+        ],
+        container_image_fix_versions=[
+            {
+                "Id": "image-001",
+                "Software": [
+                    {
+                        "Name": "fixture-library-a",
+                        "Vulnerabilities": [
+                            {
+                                **shared_vulnerability,
+                                "FixedBy": "2.0.1",
+                            }
+                        ],
+                    },
+                    {
+                        "Name": "fixture-library-b",
+                        "Vulnerabilities": [
+                            {
+                                **shared_vulnerability,
+                                "FixedBy": None,
+                            }
+                        ],
+                    },
+                ],
+            }
+        ],
+    )
+
+    assert len(snapshot.occurrences) == 1
+    assert len(snapshot.software_vulnerabilities) == 2
+    by_software = {
+        item.software: item for item in snapshot.software_vulnerabilities
+    }
+    assert by_software["fixture-library-a"].fixed_by == "2.0.1"
+    assert by_software["fixture-library-b"].fixed_by is None
+
+
 def test_compute_ip_is_joined_only_by_remote_id() -> None:
     snapshot = _snapshot(
         virtual_machines=[

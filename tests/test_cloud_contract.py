@@ -123,6 +123,22 @@ def test_required_queries_stay_light_and_enrichment_is_separate() -> None:
     assert details.page_size <= virtual_machines.page_size
 
 
+def test_fix_version_queries_are_optional_and_isolated_from_required_sources() -> None:
+    queries = _queries_module()
+
+    expected = {
+        "virtual_machine_fix_versions": "VirtualMachines",
+        "container_image_fix_versions": "ContainerImages",
+    }
+    for name, root_field in expected.items():
+        definition = queries.CLOUD_SOURCE_QUERIES[name]
+        assert definition.required is False
+        assert definition.root_field == root_field
+        assert "Software" in definition.query
+        assert "FixedBy" in definition.query
+        assert definition.page_size <= 50
+
+
 
 
 def test_vulnerability_remediation_query_keeps_documented_correlation_fields() -> None:

@@ -17,6 +17,7 @@ from tenable_reports.domain.cloud import (
     CloudLifecycleInstance,
     CloudQualityIssue,
     CloudResourceReference,
+    CloudSoftwareVulnerability,
     CloudVulnerabilityOccurrence,
     NormalizedCloudSnapshot,
 )
@@ -155,17 +156,39 @@ def _merge_occurrence(
     )
 
 
+def _merge_software_vulnerability(
+    current: CloudSoftwareVulnerability | None,
+    candidate: CloudSoftwareVulnerability,
+) -> CloudSoftwareVulnerability:
+    if current is None:
+        return candidate
+    return CloudSoftwareVulnerability(
+        asset=current.asset,
+        vulnerability_id=current.vulnerability_id,
+        severity=_worse_severity(current.severity, candidate.severity),
+        vpr=_max_number(current.vpr, candidate.vpr),
+        cvss=_max_number(current.cvss, candidate.cvss),
+        software=current.software,
+        fixed_by=current.fixed_by or candidate.fixed_by,
+    )
+
+
 def _normalize_assets(
     sources: Mapping[str, Iterable[Mapping[str, Any]]],
     issues: list[CloudQualityIssue],
 ) -> tuple[
     dict[CloudAssetKey, CloudAsset],
     dict[tuple[CloudAssetKind, str, str], CloudVulnerabilityOccurrence],
+    dict[tuple[CloudAssetKind, str, str, str], CloudSoftwareVulnerability],
 ]:
     assets: dict[CloudAssetKey, CloudAsset] = {}
     occurrences: dict[
         tuple[CloudAssetKind, str, str],
         CloudVulnerabilityOccurrence,
+    ] = {}
+    software_vulnerabilities: dict[
+        tuple[CloudAssetKind, str, str, str],
+        CloudSoftwareVulnerability,
     ] = {}
     source_kinds = (
         ("virtual_machines", CloudAssetKind.VIRTUAL_MACHINE),
@@ -223,7 +246,98 @@ def _normalize_assets(
                         occurrences.get(occurrence_key),
                         occurrence,
                     )
-    return assets, occurrences
+                    software_vulnerability = CloudSoftwareVulnerability(
+                        asset=key,
+                        vulnerability_id=vulnerability_id,
+                        severity=_severity(vulnerability.get("Severity")),
+                        vpr=_number(vulnerability.get("VprScore")),
+                        cvss=_number(vulnerability.get("CvssScore")),
+                        software=software_name,
+                        fixed_by=_optional_text(vulnerability.get("FixedBy")),
+                    )
+                    software_key = (
+                        kind,
+                        asset_id,
+                        vulnerability_id,
+                        software_name,
+                    )
+                    software_vulnerabilities[software_key] = (
+                        _merge_software_vulnerability(
+                            software_vulnerabilities.get(software_key),
+                            software_vulnerability,
+                        )
+                    )
+    return assets, occurrences, software_vulnerabilities
+
+
+def _enrich_fixed_by(
+    *,
+    assets: Mapping[CloudAssetKey, CloudAsset],
+    software_vulnerabilities: dict[
+        tuple[CloudAssetKind, str, str, str],
+        CloudSoftwareVulnerability,
+    ],
+    sources: Mapping[str, Iterable[Mapping[str, Any]]],
+    issues: list[CloudQualityIssue],
+) -> None:
+    source_kinds = (
+        (
+            "virtual_machine_fix_versions",
+            CloudAssetKind.VIRTUAL_MACHINE,
+        ),
+        (
+            "container_image_fix_versions",
+            CloudAssetKind.CONTAINER_IMAGE,
+        ),
+    )
+    for source, kind in source_kinds:
+        for raw in sources.get(source, ()):
+            asset_id = _text(raw.get("Id"))
+            asset_key = CloudAssetKey(kind=kind, asset_id=asset_id)
+            if not asset_id or asset_key not in assets:
+                _issue(
+                    issues,
+                    code="ORPHAN_FIX_VERSION_METADATA",
+                    source=source,
+                    message=(
+                        "Versao corrigida Cloud sem ativo correspondente por Id."
+                    ),
+                    record_id=asset_id or None,
+                )
+                continue
+            for software in _mappings(raw.get("Software")):
+                software_name = _text(software.get("Name"))
+                for vulnerability in _mappings(
+                    software.get("Vulnerabilities")
+                ):
+                    vulnerability_id = _text(vulnerability.get("Id"))
+                    key = (
+                        kind,
+                        asset_id,
+                        vulnerability_id,
+                        software_name,
+                    )
+                    current = software_vulnerabilities.get(key)
+                    if not vulnerability_id or current is None:
+                        continue
+                    software_vulnerabilities[key] = (
+                        _merge_software_vulnerability(
+                            current,
+                            CloudSoftwareVulnerability(
+                                asset=asset_key,
+                                vulnerability_id=vulnerability_id,
+                                severity=_severity(
+                                    vulnerability.get("Severity")
+                                ),
+                                vpr=_number(vulnerability.get("VprScore")),
+                                cvss=_number(vulnerability.get("CvssScore")),
+                                software=software_name,
+                                fixed_by=_optional_text(
+                                    vulnerability.get("FixedBy")
+                                ),
+                            ),
+                        )
+                    )
 
 
 def _extract_ips(raw: Mapping[str, Any]) -> tuple[str, ...]:
@@ -575,7 +689,16 @@ def normalize_cloud_sources(
         for name, records in sources.items()
     }
     issues: list[CloudQualityIssue] = []
-    assets, occurrences = _normalize_assets(materialized, issues)
+    assets, occurrences, software_vulnerabilities = _normalize_assets(
+        materialized,
+        issues,
+    )
+    _enrich_fixed_by(
+        assets=assets,
+        software_vulnerabilities=software_vulnerabilities,
+        sources=materialized,
+        issues=issues,
+    )
     _enrich_compute_ips(
         assets=assets,
         records=materialized.get("compute_ips", ()),
@@ -603,6 +726,10 @@ def normalize_cloud_sources(
         ),
         source_status=_normalized_status(source_status),
         quality_issues=tuple(issues),
+        software_vulnerabilities=tuple(
+            software_vulnerabilities[key]
+            for key in sorted(software_vulnerabilities)
+        ),
     )
 
 

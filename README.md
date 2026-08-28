@@ -91,8 +91,12 @@ perfis antigos e normalizados internamente para o modelo atual; não há seletor
 modelo na interface nem sufixo de variante no nome do arquivo.
 
 O documento padrão reúne resumo executivo, hosts e imagens vulneráveis, Top 5 de
-CVEs críticas detalhadas, Top 10 com correção disponível, dashboard, componentes,
-postura quando suportada, aging, desempenho de remediação e evolução mensal. Sem
+CVEs críticas detalhadas, overview das principais vulnerabilidades por imagem de
+contêiner e Top 10 com correção disponível agrupado por CVE e software. As duas
+tabelas exibem `Fixed by` quando o tenant fornece a versão corrigida; ausência ou
+schema não suportado aparece como `N/D` e não bloqueia o documento. Dashboard,
+componentes, postura quando suportada, aging, desempenho de remediação e evolução
+mensal também permanecem no modelo. Sem
 histórico anterior, a evolução mostra apenas a fotografia atual, sem simular uma
 comparação. O item de inventário Cloud não faz parte do documento.
 

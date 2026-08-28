@@ -92,6 +92,44 @@ query CloudVulnerableContainerImages($first: Int, $after: String) {
 }
 """.strip()
 
+_VIRTUAL_MACHINE_FIX_VERSIONS = r"""
+query CloudVirtualMachineFixVersions($first: Int, $after: String) {
+  VirtualMachines(
+    first: $first
+    after: $after
+    filter: { VulnerabilitySeverities: [Critical, High, Medium, Low] }
+  ) {
+    nodes {
+      Id
+      Software {
+        Name
+        Vulnerabilities { Id Severity CvssScore VprScore FixedBy }
+      }
+    }
+    pageInfo { endCursor hasNextPage }
+  }
+}
+""".strip()
+
+_CONTAINER_IMAGE_FIX_VERSIONS = r"""
+query CloudContainerImageFixVersions($first: Int, $after: String) {
+  ContainerImages(
+    first: $first
+    after: $after
+    filter: { VulnerabilitySeverities: [Critical, High, Medium, Low] }
+  ) {
+    nodes {
+      Id
+      Software {
+        Name
+        Vulnerabilities { Id Severity CvssScore VprScore FixedBy }
+      }
+    }
+    pageInfo { endCursor hasNextPage }
+  }
+}
+""".strip()
+
 _COMPUTE_IPS = r"""
 query CloudComputeAssetIps($first: Int, $after: String) {
   Entities(
@@ -259,6 +297,20 @@ CLOUD_SOURCE_QUERIES = {
         root_field="ContainerImages",
         query=_CONTAINER_IMAGES,
         required=True,
+        page_size=50,
+    ),
+    "virtual_machine_fix_versions": CloudQueryDefinition(
+        name="virtual_machine_fix_versions",
+        root_field="VirtualMachines",
+        query=_VIRTUAL_MACHINE_FIX_VERSIONS,
+        required=False,
+        page_size=50,
+    ),
+    "container_image_fix_versions": CloudQueryDefinition(
+        name="container_image_fix_versions",
+        root_field="ContainerImages",
+        query=_CONTAINER_IMAGE_FIX_VERSIONS,
+        required=False,
         page_size=50,
     ),
     "compute_ips": CloudQueryDefinition(

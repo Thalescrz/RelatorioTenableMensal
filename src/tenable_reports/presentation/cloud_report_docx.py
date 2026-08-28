@@ -22,6 +22,7 @@ from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation.cloud_report_sections import (
     CloudDocumentBuilder,
     cloud_posture_available,
+    render_container_image_vulnerability_overview,
     render_cloud_overview,
     render_cloud_posture,
     render_components_products,
@@ -53,6 +54,7 @@ STANDARD_SECTION_IDS = (
     "executive_overview",
     "top_hosts",
     "top_images",
+    "container_image_vulnerability_overview",
     "top_critical",
     "critical_details",
     "top_correctable",
@@ -192,6 +194,7 @@ def _toc_entries(*, include_posture: bool) -> tuple[str, ...]:
         "3.1.1. Resumo Executivo do Período",
         "3.2. Principais Hosts Vulneráveis",
         "3.3. Imagens de Contêineres Mais Vulneráveis",
+        "3.3.1. Overview das Vulnerabilidades das Imagens de Contêiner",
         "3.4. Principais Vulnerabilidades Críticas (TOP 5 CVEs)",
         "3.5. Principais Vulnerabilidades com Correção Disponível",
         "3.6. Painel de Controle (Dashboards)",
@@ -291,6 +294,11 @@ def generate_cloud_report(
         )
         render_top_hosts(builder, dataset, show_source_filters=show_filters)
         render_top_images(builder, dataset, show_source_filters=show_filters)
+        render_container_image_vulnerability_overview(
+            builder,
+            dataset,
+            show_source_filters=show_filters,
+        )
         render_top_critical(builder, dataset, show_source_filters=show_filters)
         render_critical_details(builder, dataset, translator=translator)
         render_top_correctable(
