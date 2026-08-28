@@ -32,6 +32,7 @@ function statusFor(client) {
   if (!client.enabled) return { key: "disabled", label: "Desabilitado" };
   if (job?.status === "RUNNING") return { key: "running", label: "Gerando" };
   if (job?.status === "QUEUED") return { key: "queued", label: `Fila ${job.queue_position || ""}` };
+  if (job?.status === "WAITING_WAS_DECISION") return { key: "failed", label: "Decisão WEB" };
   if (job?.status === "FAILED") return { key: "failed", label: "Falha recente" };
   if (!client.credentials_ready || client.profile_error) return { key: "failed", label: "Configurar" };
   return { key: "ready", label: "Pronto" };
@@ -142,7 +143,8 @@ function render() {
   const stalledExportCount = (state.data.jobs || []).filter(
     job => job.export_progress?.stalled || job.was_export_progress?.stalled
   ).length;
-  $("#metric-alerts").textContent = (state.data.alerts || []).length + jobWarningCount + stalledExportCount + (state.data.database_error ? 1 : 0);
+  const wasRecoveryCount = (state.data.was_recoveries || []).length;
+  $("#metric-alerts").textContent = (state.data.alerts || []).length + jobWarningCount + stalledExportCount + wasRecoveryCount + (state.data.database_error ? 1 : 0);
   $("#connection-label").textContent = state.data.database_error ? "banco indisponível" : "PostgreSQL online";
   $(".connection").classList.toggle("online", !state.data.database_error);
   const firstJobWarning = (state.data.jobs || []).find(job => job.warnings?.length)?.warnings?.[0];
@@ -154,7 +156,10 @@ function render() {
         wasExportProgressCopy(stalledExport) || exportProgressCopy(stalledExport)
       )
     : null;
-  const alert = state.data.database_error || state.data.alerts?.[0]?.message || firstJobWarning?.message || stalledExportAlert;
+  const wasRecoveryAlert = state.data.was_recoveries?.[0]
+    ? `${state.data.was_recoveries[0].client_id}: decisão necessária sobre a coleta WEB.`
+    : null;
+  const alert = state.data.database_error || state.data.alerts?.[0]?.message || firstJobWarning?.message || stalledExportAlert || wasRecoveryAlert;
   $("#global-alert").classList.toggle("hidden", !alert);
   $("#global-alert-text").textContent = alert || "";
   $("#run-all-button").disabled = !clients.some(c => c.enabled && c.credentials_ready);
@@ -172,7 +177,7 @@ function render() {
     const progress = job?.progress ?? (client.latest_report ? 100 : 0);
     const report = client.latest_report;
     const connectionCheck = state.connectionChecks[client.client_id];
-    const warning = client.alert || job?.error || job?.warnings?.length || job?.export_progress?.stalled || job?.was_export_progress?.stalled || !client.credentials_ready || client.profile_error || connectionCheck?.ok === false || connectionCheck?.cloud?.ok === false || (client.cloud_enabled && !client.cloud_token_saved);
+    const warning = client.alert || job?.error || job?.warnings?.length || job?.status === "WAITING_WAS_DECISION" || client.was_recoveries?.length || job?.export_progress?.stalled || job?.was_export_progress?.stalled || !client.credentials_ready || client.profile_error || connectionCheck?.ok === false || connectionCheck?.cloud?.ok === false || (client.cloud_enabled && !client.cloud_token_saved);
     const runningCopy = job?.vm_selective_mode === "validation"
       ? "Validando export completo x otimizado"
       : cloudProgressCopy(job) || tagProgressCopy(job) || wasExportProgressCopy(job) || exportProgressCopy(job) || "Coletando e gerando documentos";
@@ -191,7 +196,7 @@ function render() {
       <div class="card-top"><span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? '<span class="warning-badge" title="Há um alerta">!</span>' : ""}</div>
       <h3>${escapeHtml(client.display_name)}</h3><p class="client-meta">${escapeHtml(client.client_id)}<br>${escapeHtml(client.tenant_id || "tenant não informado")}</p>
       <div class="card-report"><span>Último relatório</span><strong>${report ? escapeHtml(report.period_id || formatDate(report.ended_at)) : "Ainda não gerado"}</strong></div>
-      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(displayRunningCopy) : job?.status === "QUEUED" ? queuedCopy : job?.status === "FAILED" ? "Execução interrompida" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div>${componentProgress.length ? `<div class="component-progress">${componentProgress.map(item => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}</div>
+      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(displayRunningCopy) : job?.status === "QUEUED" ? queuedCopy : job?.status === "FAILED" ? "Execução interrompida" : job?.status === "WAITING_WAS_DECISION" ? "VM concluído · escolha como tratar o WEB" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div>${componentProgress.length ? `<div class="component-progress">${componentProgress.map(item => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}</div>
     </article>`;
   }).join("");
   document.querySelectorAll(".client-card").forEach(card => {
@@ -348,6 +353,23 @@ async function testConnections(clientIds, button) {
 function renderAlerts() {
   if (!state.data) return; const alerts = [...(state.data.alerts || [])];
   const failedJobs = (state.data.jobs || []).filter(j => j.status === "FAILED").map(j => ({client_id:j.client_id, message:j.error, at:j.ended_at, run_id:j.run_id, job_id:j.job_id, export:j.export_progress}));
+  const waitingWasJobs = (state.data.jobs || []).filter(j => j.status === "WAITING_WAS_DECISION").map(j => ({
+    client_id: j.client_id,
+    message: j.was_recovery?.failure?.message || "A coleta VM foi preservada, mas a coleta WEB precisa de uma decisão.",
+    at: j.ended_at,
+    run_id: j.was_recovery?.run_id || j.run_id,
+    was_recovery: j.was_recovery,
+  }));
+  const waitingRunIds = new Set(waitingWasJobs.map(item => item.run_id));
+  const durableWasRecoveries = (state.data.was_recoveries || [])
+    .filter(item => !waitingRunIds.has(item.run_id))
+    .map(item => ({
+      client_id: item.client_id,
+      message: item.failure?.message || "A coleta WEB precisa de uma decisão.",
+      at: item.updated_at,
+      run_id: item.run_id,
+      was_recovery: { ...item, failure: item.failure || {} },
+    }));
   const componentWarnings = (state.data.jobs || []).flatMap(job => (job.warnings || []).map(warning => {
     const cloud = String(warning.code || "").startsWith("CLOUD_");
     return {
@@ -361,7 +383,7 @@ function renderAlerts() {
     };
   }));
   if (state.data.database_error) alerts.unshift({client_id:"Sistema", message:state.data.database_error, at:state.data.server_time});
-  const items = [...failedJobs, ...componentWarnings, ...alerts];
+  const items = [...waitingWasJobs, ...durableWasRecoveries, ...failedJobs, ...componentWarnings, ...alerts];
   $("#alerts-list").innerHTML = items.length ? items.map(a => {
     const stuck = a.export?.status === "TIMED_OUT" && !a.export?.auto_cancelled;
     const segmentCopy = a.export?.segment ? ` · segmento ${a.export.segment === "fixed" ? "corrigidas / last_fixed" : "ativas e reabertas / last_found"}` : "";
@@ -369,12 +391,18 @@ function renderAlerts() {
     const limitCopy = a.export?.no_progress_timeout_seconds ? ` · limite ${Math.max(1, Math.floor(Number(a.export.no_progress_timeout_seconds) / 60))} min` : "";
     const routeCopy = a.export?.date_field ? ` · filtro ${escapeHtml(a.export.date_field)}` : "";
     const exportCopy = a.export?.export_uuid ? `<p><small>Export VM: ${escapeHtml(a.export.export_uuid)} · ${Number(a.export.completed_chunks || 0)}/${Number(a.export.total_chunks || 0)} chunks · origem ${escapeHtml(a.export.origin || "desconhecida")}${segmentCopy}${routeCopy}${idleCopy}${limitCopy}</small></p>` : "";
-    const action = a.cloud_retry
+    const wasFailure = a.was_recovery?.failure || {};
+    const wasCopy = a.was_recovery
+      ? `<p><small>Export WEB: ${escapeHtml(wasFailure.export_uuid || "UUID não informado")} · ${Number(wasFailure.completed_chunks || 0)}/${Number(wasFailure.total_chunks || 0)} chunks · origem ${escapeHtml(wasFailure.origin || "desconhecida")}</small></p>`
+      : "";
+    const action = a.was_recovery
+      ? `<p><button class="mini-button" data-was-continue-run="${escapeHtml(a.run_id)}" type="button">Continuar sem WEB</button> <button class="mini-button" data-was-retry-run="${escapeHtml(a.run_id)}" type="button">Tentar WEB novamente</button></p>`
+      : a.cloud_retry
       ? `<p><button class="mini-button" data-retry-cloud-run="${escapeHtml(a.run_id)}" type="button">Tentar Cloud novamente</button></p>`
       : !a.job_id ? "" : stuck
         ? `<p><button class="mini-button danger" data-cancel-export-job="${escapeHtml(a.job_id)}" data-export-uuid="${escapeHtml(a.export.export_uuid)}" type="button">Cancelar export e tentar novamente</button></p>`
         : `<p><button class="mini-button" data-retry-job="${escapeHtml(a.job_id)}" type="button">Tentar novamente</button></p>`;
-    return `<div class="alert-row"><span class="alert-sign">!</span><div><strong>${escapeHtml(a.client_id || "Sistema")}</strong><p>${escapeHtml(a.message || "Falha sem detalhes.")}</p>${exportCopy}<small>${formatDate(a.at)}${a.run_id ? ` · ${escapeHtml(a.run_id)}` : ""}</small>${action}</div></div>`;
+    return `<div class="alert-row"><span class="alert-sign">!</span><div><strong>${escapeHtml(a.client_id || "Sistema")}</strong><p>${escapeHtml(a.message || "Falha sem detalhes.")}</p>${exportCopy}${wasCopy}<small>${formatDate(a.at)}${a.run_id ? ` · ${escapeHtml(a.run_id)}` : ""}</small>${action}</div></div>`;
   }).join("") : '<div class="loading">Nenhum alerta registrado.</div>';
   document.querySelectorAll("[data-retry-job]").forEach(button => button.addEventListener("click", async () => {
     try { await api(`/api/jobs/${encodeURIComponent(button.dataset.retryJob)}/retry`, { method: "POST", body: {} }); await refresh(); toast("Nova tentativa adicionada à fila."); }
@@ -390,6 +418,28 @@ function renderAlerts() {
         method: "POST", body: { confirmation: `RETENTAR CLOUD ${runId}` },
       });
       await refresh(); toast("Retentativa Cloud adicionada à fila.");
+    } catch (error) { toast(error.message, "error"); button.disabled = false; }
+  }));
+  document.querySelectorAll("[data-was-continue-run]").forEach(button => button.addEventListener("click", async () => {
+    const runId = button.dataset.wasContinueRun;
+    if (!window.confirm(`Os dados VM, assets, TAG e Cloud já coletados serão preservados. O relatório será concluído sem a seção WEB.\n\nExecução: ${runId}\n\nDeseja continuar?`)) return;
+    button.disabled = true;
+    try {
+      await api(`/api/was-recoveries/${encodeURIComponent(runId)}/continue`, {
+        method: "POST", body: { confirmation: `CONTINUAR SEM WAS ${runId}` },
+      });
+      await refresh(); toast("Conclusão sem WEB adicionada à fila.");
+    } catch (error) { toast(error.message, "error"); button.disabled = false; }
+  }));
+  document.querySelectorAll("[data-was-retry-run]").forEach(button => button.addEventListener("click", async () => {
+    const runId = button.dataset.wasRetryRun;
+    if (!window.confirm(`Somente a coleta WEB será tentada novamente. VM, assets, TAG e Cloud não serão repetidos.\n\nExecução: ${runId}\n\nDeseja continuar?`)) return;
+    button.disabled = true;
+    try {
+      await api(`/api/was-recoveries/${encodeURIComponent(runId)}/retry`, {
+        method: "POST", body: { confirmation: `RETENTAR WAS ${runId}` },
+      });
+      await refresh(); toast("Retentativa WEB adicionada à fila.");
     } catch (error) { toast(error.message, "error"); button.disabled = false; }
   }));
   document.querySelectorAll("[data-cancel-export-job]").forEach(button => button.addEventListener("click", async () => {

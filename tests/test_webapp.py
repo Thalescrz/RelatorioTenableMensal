@@ -7,7 +7,7 @@ import tempfile
 import threading
 import unittest
 import os
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from pathlib import Path
@@ -20,6 +20,13 @@ from tenable_reports.application.report_set_purge import (
     ReportSetPurgeService,
 )
 from tenable_reports.application.postgresql_migration import MainBackfillSourceState
+from tenable_reports.application.was_recovery import (
+    WasFailureDetails,
+    WasRecoveryCheckpoint,
+    WasRecoveryRecord,
+    WasRecoveryStatus,
+    write_was_recovery_checkpoint,
+)
 from tenable_reports.config.profile import load_client_profile
 from tenable_reports.domain.report_reference import READY_STATUS, ReportCandidate, ReportOrigin, reference_key_for_candidate
 from tenable_reports.webapp.server import (
@@ -1400,6 +1407,173 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("Tentar Cloud novamente", javascript)
         self.assertIn("TENABLE_CLOUD_PROGRESS", javascript)
         self.assertIn("/retry-cloud", javascript)
+
+    def test_was_recovery_controls_are_exposed(self) -> None:
+        static_root = (
+            Path(__file__).resolve().parents[1]
+            / "src" / "tenable_reports" / "webapp" / "static"
+        )
+        javascript = (static_root / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn("Continuar sem WEB", javascript)
+        self.assertIn("Tentar WEB novamente", javascript)
+        self.assertIn("/api/was-recoveries/", javascript)
+
+    def test_job_queue_preserves_waiting_was_decision_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def runner(command, cwd, progress_callback=None):
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({
+                        "status": "WAITING_WAS_DECISION",
+                        "run_id": "orchestration-run",
+                        "clients": [{
+                            "client_id": "cliente-was",
+                            "status": "WAITING_WAS_DECISION",
+                            "payload": {
+                                "status": "waiting_was_decision",
+                                "run_id": "run-was-pendente",
+                                "client_id": "cliente-was",
+                                "checkpoint": str(root / "was-recovery.json"),
+                                "was_failure": {
+                                    "code": "WAS_COLLECTION_UNAVAILABLE",
+                                    "message": "Falha WAS sanitizada.",
+                                    "retryable": True,
+                                    "export_uuid": "was-job",
+                                    "origin": "created",
+                                    "remote_status": "PROCESSING",
+                                    "completed_chunks": 0,
+                                    "total_chunks": 1,
+                                },
+                            },
+                        }],
+                    }, ensure_ascii=False) + "\n",
+                    stderr="",
+                )
+
+            jobs = JobQueue(root, root / "orchestration" / "clients.json", runner)
+            jobs.enqueue(["cliente-was"], {"mode": "manual", "days": 30})
+            jobs._pending.join()
+            job = jobs.snapshot()[0]
+
+            self.assertEqual(job["status"], "WAITING_WAS_DECISION")
+            self.assertEqual(job["run_id"], "run-was-pendente")
+            self.assertEqual(job["was_recovery"]["checkpoint"], str(root / "was-recovery.json"))
+            self.assertEqual(job["was_recovery"]["failure"]["export_uuid"], "was-job")
+
+    def test_was_recovery_routes_require_confirmation_and_run_only_resume_was(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            observed: list[list[str]] = []
+            checkpoint = WasRecoveryCheckpoint(
+                schema_version=1,
+                run_id="run-was-pendente",
+                client_id="cliente-was",
+                tenant_id="cliente-was",
+                execution_type="MANUAL",
+                period={
+                    "start_at": "2026-07-01T03:00:00Z",
+                    "end_at": "2026-08-01T03:00:00Z",
+                    "reference_at": "2026-08-12T13:00:00Z",
+                    "timezone": "America/Fortaleza",
+                    "mode": "EXPLICIT_RANGE",
+                },
+                profile_path=str(root / "clients" / "managed" / "cliente-was.json"),
+                output_root=str(root / "data" / "manual"),
+                include_output=False,
+                was_status="UNAVAILABLE",
+                was_failure=WasFailureDetails(
+                    code="WAS_COLLECTION_UNAVAILABLE",
+                    message="Falha WAS sanitizada.",
+                    retryable=True,
+                    export_uuid="was-job",
+                ),
+            )
+            checkpoint_path = write_was_recovery_checkpoint(
+                root / "data" / "manual" / "recovery" / "cliente-was"
+                / "run-was-pendente" / "was-recovery.json",
+                checkpoint,
+            )
+            record = WasRecoveryRecord(
+                run_id=checkpoint.run_id,
+                client_id=checkpoint.client_id,
+                tenant_id=checkpoint.tenant_id,
+                status=WasRecoveryStatus.WAITING_WAS_DECISION,
+                checkpoint_path=str(checkpoint_path),
+                checkpoint=checkpoint,
+            )
+            repository = Mock()
+            repository.get.return_value = record
+            repository.pending.return_value = (record,)
+
+            def runner(command, cwd, progress_callback=None):
+                observed.append(list(command))
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({
+                        "status": "complete_with_warnings",
+                        "run_id": "run-was-pendente",
+                        "client_id": "cliente-was",
+                        "warnings": [{
+                            "code": "WAS_COLLECTION_UNAVAILABLE",
+                            "message": "Relatório concluído sem WEB.",
+                        }],
+                    }, ensure_ascii=False) + "\n",
+                    stderr="",
+                )
+
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                runner=runner,
+                was_recovery_repository=repository,
+            )
+            app.config.add_client({
+                "client_id": "cliente-was",
+                "display_name": "Cliente WAS",
+                "tenant_id": "cliente-was",
+                "was_enabled": True,
+                "access_key": "test-access-key",
+                "secret_key": "test-secret-key",
+            })
+            client = LocalClient(app)
+            try:
+                bad_status, _ = client.request(
+                    "POST",
+                    "/api/was-recoveries/run-was-pendente/continue",
+                    {"confirmation": "sim"},
+                )
+                continue_status, continue_payload = client.request(
+                    "POST",
+                    "/api/was-recoveries/run-was-pendente/continue",
+                    {"confirmation": "CONTINUAR SEM WAS run-was-pendente"},
+                )
+                app.jobs._pending.join()
+                retry_status, retry_payload = client.request(
+                    "POST",
+                    "/api/was-recoveries/run-was-pendente/retry",
+                    {"confirmation": "RETENTAR WAS run-was-pendente"},
+                )
+                app.jobs._pending.join()
+            finally:
+                client.close()
+
+            self.assertEqual(bad_status, 400)
+            self.assertEqual(continue_status, 202)
+            self.assertEqual(retry_status, 202)
+            self.assertEqual(continue_payload["job"]["operation"], "was_continue")
+            self.assertEqual(retry_payload["job"]["operation"], "was_retry")
+            self.assertEqual(len(observed), 2)
+            for command in observed:
+                self.assertIn("resume-was", command)
+                self.assertNotIn("orchestrate", command)
+                self.assertIn("--checkpoint", command)
+            self.assertNotIn("--confirm-live-api", observed[0])
+            self.assertIn("--confirm-live-api", observed[1])
 
     def test_job_queue_exposes_cloud_progress_separately(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
