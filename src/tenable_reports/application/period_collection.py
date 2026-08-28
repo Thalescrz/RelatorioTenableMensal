@@ -27,6 +27,7 @@ from tenable_reports.application.vm_export_policy import (
     collect_vm_snapshot_with_policy,
     selective_vm_properties,
 )
+from tenable_reports.application.was_recovery import WasFailureDetails
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.domain.normalization import normalize_assets
 from tenable_reports.domain.reporting import ReportingPeriod
@@ -43,6 +44,7 @@ class ExternalPeriodCollection:
     collection_route: str
     reconstruction_status: str
     collection_sources: tuple[str, ...]
+    was_failure: WasFailureDetails | None = None
 
 
 def collect_external_period(
@@ -205,6 +207,7 @@ def collect_external_period(
         )
 
     was_collection_status = "DISABLED"
+    was_failure = None
     if profile.was_scope.enabled:
         was_attempt = collect_optional_was_snapshot(
             client=was_client,
@@ -235,6 +238,7 @@ def collect_external_period(
                 output_root=output_root,
             )
         was_collection_status = was_attempt.status
+        was_failure = was_attempt.failure
         warnings.extend(was_attempt.warnings)
 
     return ExternalPeriodCollection(
@@ -247,4 +251,5 @@ def collect_external_period(
         collection_route=collection_route,
         reconstruction_status=reconstruction_status,
         collection_sources=tuple(collection_sources),
+        was_failure=was_failure,
     )

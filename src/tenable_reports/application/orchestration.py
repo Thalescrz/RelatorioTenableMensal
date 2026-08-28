@@ -536,6 +536,8 @@ def build_client_command(
         "--minimum-free-gb",
         str(config.minimum_free_gb),
         "--confirm-live-api",
+        "--was-failure-policy",
+        "continue" if request.mode == "automatic" else "wait",
     ]
     if request.force_live_collection:
         command.append("--force-live-collection")

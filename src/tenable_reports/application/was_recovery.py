@@ -17,6 +17,24 @@ class WasRecoveryDecision(StrEnum):
     RETRY_WAS = "retry_was"
 
 
+class WasDecisionRequired(RuntimeError):
+    def __init__(
+        self,
+        *,
+        checkpoint_path: str | Path,
+        run_id: str,
+        client_id: str,
+        failure: WasFailureDetails,
+    ) -> None:
+        self.checkpoint_path = Path(checkpoint_path)
+        self.run_id = str(run_id)
+        self.client_id = str(client_id)
+        self.failure = failure
+        super().__init__(
+            "A execução aguarda a decisão do analista sobre a falha WAS."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class WasFailureDetails:
     code: str
@@ -30,6 +48,9 @@ class WasFailureDetails:
     timeout_phase: str | None = None
     progress_made: bool = False
     safe_cancel_available: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> WasFailureDetails:
@@ -162,6 +183,7 @@ def _optional_text(value: Any) -> str | None:
 __all__ = [
     "CHECKPOINT_SCHEMA_VERSION",
     "WasFailureDetails",
+    "WasDecisionRequired",
     "WasRecoveryCheckpoint",
     "WasRecoveryDecision",
     "load_was_recovery_checkpoint",

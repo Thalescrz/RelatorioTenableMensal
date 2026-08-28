@@ -629,6 +629,10 @@ class CollectionTests(unittest.TestCase):
             self.assertIsNone(attempt.result)
             self.assertEqual(attempt.status, "UNAVAILABLE")
             self.assertEqual(attempt.warnings[0]["code"], "WAS_NOT_AVAILABLE")
+            self.assertIsNotNone(attempt.failure)
+            self.assertEqual(attempt.failure.code, "WAS_NOT_AVAILABLE")
+            self.assertFalse(attempt.failure.retryable)
+            self.assertIsNone(attempt.failure.export_uuid)
 
     def test_optional_was_timeout_reports_progress_and_does_not_raise(self) -> None:
         profile = load_client_profile(
@@ -652,6 +656,16 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(progress[-1]["export_uuid"], "fixture-was-export")
         self.assertEqual(progress[-1]["origin"], "created")
         self.assertEqual(progress[-1]["status"], "TIMED_OUT")
+        self.assertIsNotNone(attempt.failure)
+        self.assertEqual(attempt.failure.code, "WAS_COLLECTION_UNAVAILABLE")
+        self.assertTrue(attempt.failure.retryable)
+        self.assertEqual(attempt.failure.export_uuid, "fixture-was-export")
+        self.assertEqual(attempt.failure.origin, "created")
+        self.assertEqual(attempt.failure.remote_status, "PROCESSING")
+        self.assertEqual(attempt.failure.completed_chunks, 0)
+        self.assertEqual(attempt.failure.total_chunks, 1)
+        self.assertFalse(attempt.failure.progress_made)
+        self.assertTrue(attempt.failure.safe_cancel_available)
 
     def test_was_collection_writes_immutable_dedicated_snapshot(self) -> None:
         profile = load_client_profile(

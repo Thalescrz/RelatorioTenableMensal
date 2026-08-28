@@ -96,6 +96,12 @@ from tenable_reports.application.publishing import (
     create_publication_manifest,
     upsert_publication_documents,
 )
+from tenable_reports.application.was_recovery import (
+    CHECKPOINT_SCHEMA_VERSION,
+    WasDecisionRequired,
+    WasRecoveryCheckpoint,
+    write_was_recovery_checkpoint,
+)
 from tenable_reports.application.retention import (
     apply_cleanup_plan,
     plan_published_run_cleanup,
@@ -173,6 +179,8 @@ from tenable_reports.presentation.customizations_report_docx import (
 )
 from tenable_reports.presentation.tag_report_docx import generate_tag_report
 
+
+WAS_DECISION_EXIT_CODE = 3
 
 
 def _emit_progress_event(event: Mapping[str, Any]) -> None:
@@ -1247,6 +1255,38 @@ def _execute_period(
         collection_route = external.collection_route
         reconstruction_status = external.reconstruction_status
         collection_sources = external.collection_sources
+        was_failure = getattr(external, "was_failure", None)
+        if (
+            was_failure is not None
+            and getattr(args, "was_failure_policy", "continue") == "wait"
+        ):
+            checkpoint_path = (
+                output_root
+                / "recovery"
+                / profile.client_id
+                / actual_run_id
+                / "was-recovery.json"
+            )
+            checkpoint = WasRecoveryCheckpoint(
+                schema_version=CHECKPOINT_SCHEMA_VERSION,
+                run_id=actual_run_id,
+                client_id=profile.client_id,
+                tenant_id=profile.tenant_id,
+                execution_type=execution_type,
+                period=period.to_dict(),
+                profile_path=str(Path(args.profile).resolve()),
+                output_root=str(output_root.resolve()),
+                include_output=bool(args.include_output),
+                was_status=was_collection_status,
+                was_failure=was_failure,
+            )
+            write_was_recovery_checkpoint(checkpoint_path, checkpoint)
+            raise WasDecisionRequired(
+                checkpoint_path=checkpoint_path,
+                run_id=actual_run_id,
+                client_id=profile.client_id,
+                failure=was_failure,
+            )
     artifact = build_report_dataset_from_snapshot(
         profile=profile,
         run_id=actual_run_id,
@@ -1513,11 +1553,21 @@ def command_run_client(args: argparse.Namespace) -> int:
     profile = load_client_profile(args.profile)
     period = _period_for_mode(args, profile)
     execution_type = "MANUAL" if args.mode == "manual" else "AUTOMATIC_MONTHLY"
-    collected = _execute_period(
-        args,
-        execution_type=execution_type,
-        period=period,
-    )
+    try:
+        collected = _execute_period(
+            args,
+            execution_type=execution_type,
+            period=period,
+        )
+    except WasDecisionRequired as pending:
+        print(json.dumps({
+            "status": "waiting_was_decision",
+            "run_id": pending.run_id,
+            "client_id": pending.client_id,
+            "checkpoint": str(pending.checkpoint_path.resolve()),
+            "was_failure": pending.failure.to_dict(),
+        }, ensure_ascii=False))
+        return WAS_DECISION_EXIT_CODE
     period_slug = _safe_filename_component(str(period.period_id))
     report_directory = (
         collected.output_root
@@ -2116,6 +2166,12 @@ def _add_complete_collection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--minimum-free-gb", type=int, default=10)
     parser.add_argument("--was-export-uuid")
     parser.add_argument("--was-num-assets", type=int, default=1000)
+    parser.add_argument(
+        "--was-failure-policy",
+        choices=("continue", "wait"),
+        default="continue",
+        help="Continua sem WAS ou aguarda uma decisão quando a coleta WEB falhar.",
+    )
     parser.add_argument("--include-software-vulns", action="store_true")
     parser.add_argument("--include-output", action="store_true")
     parser.add_argument("--history-database")

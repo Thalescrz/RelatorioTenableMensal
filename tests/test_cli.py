@@ -20,6 +20,10 @@ from tenable_reports.application.cloud_execution import (
     CloudGeneratedDocument,
 )
 from tenable_reports.application.tag_scope import VmTag
+from tenable_reports.application.was_recovery import (
+    WasFailureDetails,
+    load_was_recovery_checkpoint,
+)
 from tests.test_report_main_backfill import valid_run as valid_backfill_run
 
 
@@ -692,6 +696,139 @@ class CliTests(unittest.TestCase):
             )
             self.assertEqual(result.tag_artifacts, ())
             self.assertEqual(result.tag_enriched_dataset_paths, {})
+
+    def test_manual_wait_policy_stops_before_dataset_and_writes_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            period = previous_calendar_month(
+                reference_at="2026-08-12T10:00:00-03:00",
+                timezone_name="America/Fortaleza",
+            )
+            profile = SimpleNamespace(
+                client_id="cliente-was",
+                tenant_id="tenant-was",
+                reporting=SimpleNamespace(
+                    vm_export=SimpleNamespace(
+                        strategy="combined",
+                        num_assets_per_chunk=1000,
+                        selective_properties="disabled",
+                        manual_no_progress_seconds=900,
+                    ),
+                ),
+                report=SimpleNamespace(
+                    tag_reports=SimpleNamespace(enabled=False, tags=()),
+                ),
+            )
+            args = SimpleNamespace(
+                env_file=directory / "cliente.env",
+                profile=directory / "cliente.json",
+                output_root=directory,
+                run_id="run-was-pendente",
+                num_assets=None,
+                vm_export_strategy=None,
+                vm_selective_mode=None,
+                historical_source=None,
+                force_live_collection=False,
+                include_output=False,
+                skip_history=True,
+                was_failure_policy="wait",
+            )
+            failure = WasFailureDetails(
+                code="WAS_COLLECTION_UNAVAILABLE",
+                message="Falha WAS sanitizada.",
+                retryable=True,
+                export_uuid="was-job",
+                origin="created",
+                remote_status="PROCESSING",
+                total_chunks=1,
+                safe_cancel_available=True,
+            )
+            external = SimpleNamespace(
+                normalized=SimpleNamespace(findings_path=directory / "findings.jsonl.gz"),
+                was_collection_status="UNAVAILABLE",
+                was_failure=failure,
+                vm_export_mode="disabled",
+                vm_export_outcome="FULL",
+                vm_export_comparison_path=None,
+                warnings=(),
+                collection_route="legacy_vm",
+                reconstruction_status="HISTORICAL_RECONSTRUCTION",
+                collection_sources=("tenable_vm_vulnerabilities",),
+            )
+
+            with (
+                patch.object(cli_module, "load_client_profile", return_value=profile),
+                patch.object(cli_module, "_compact_snapshot_repository", return_value=None),
+                patch.object(cli_module, "resolve_execution_collection_route", return_value=(SimpleNamespace(source=SimpleNamespace(value="legacy_vm"), accuracy=SimpleNamespace(value="historical_reconstruction")), None)),
+                patch.object(cli_module, "_load_credentials", return_value=object()),
+                patch.object(cli_module, "_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_was_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_inventory_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_selected_tags", return_value=()),
+                patch.object(cli_module, "_period_filters", return_value=({}, {})),
+                patch.object(cli_module, "_plugin_catalog_repository", return_value=None),
+                patch.object(cli_module, "collect_external_period", return_value=external),
+                patch.object(
+                    cli_module,
+                    "build_report_dataset_from_snapshot",
+                    side_effect=AssertionError("dataset nao pode ser montado antes da decisao"),
+                ) as build_dataset,
+            ):
+                with self.assertRaises(RuntimeError):
+                    cli_module._execute_period(
+                        args,
+                        execution_type="MANUAL",
+                        period=period,
+                    )
+
+            build_dataset.assert_not_called()
+            checkpoint_path = (
+                directory
+                / "manual"
+                / "recovery"
+                / "cliente-was"
+                / "run-was-pendente"
+                / "was-recovery.json"
+            )
+            checkpoint = load_was_recovery_checkpoint(checkpoint_path)
+            self.assertEqual(checkpoint.run_id, "run-was-pendente")
+            self.assertEqual(checkpoint.was_failure, failure)
+
+    def test_run_client_returns_controlled_waiting_was_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            checkpoint_path = directory / "was-recovery.json"
+            failure = WasFailureDetails(
+                code="WAS_COLLECTION_UNAVAILABLE",
+                retryable=True,
+                export_uuid="was-job",
+            )
+            pending = cli_module.WasDecisionRequired(
+                checkpoint_path=checkpoint_path,
+                run_id="run-was-pendente",
+                client_id="cliente-was",
+                failure=failure,
+            )
+            args = SimpleNamespace(
+                confirm_live_api=True,
+                profile=directory / "cliente.json",
+                mode="manual",
+            )
+            stdout = io.StringIO()
+
+            with (
+                patch.object(cli_module, "load_client_profile", return_value=SimpleNamespace()),
+                patch.object(cli_module, "_period_for_mode", return_value=object()),
+                patch.object(cli_module, "_execute_period", side_effect=pending),
+                contextlib.redirect_stdout(stdout),
+            ):
+                result = cli_module.command_run_client(args)
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(result, cli_module.WAS_DECISION_EXIT_CODE)
+            self.assertEqual(payload["status"], "waiting_was_decision")
+            self.assertEqual(payload["run_id"], "run-was-pendente")
+            self.assertEqual(payload["was_failure"]["export_uuid"], "was-job")
 
     def test_build_report_dataset_command_uses_requested_run_id_for_tag_datasets(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:

@@ -17,6 +17,7 @@ from tenable_reports.application.collect import (
     _write_json_replace,
     store_chunk_atomic,
 )
+from tenable_reports.application.was_recovery import WasFailureDetails
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.domain.models import (
     build_source_snapshot_from_chunk_hashes,
@@ -53,6 +54,7 @@ class WasCollectionAttempt:
     result: CollectionResult | None
     status: str
     warnings: tuple[Mapping[str, Any], ...] = ()
+    failure: WasFailureDetails | None = None
 
 
 def collect_optional_was_snapshot(
@@ -77,25 +79,57 @@ def collect_optional_was_snapshot(
             progress_callback=progress_callback,
         )
     except (ApiError, ExportTimeoutError) as exc:
+        last_status = getattr(exc, "last_status", {})
+        if not isinstance(last_status, Mapping):
+            last_status = {}
         status_code = getattr(exc, "status_code", None)
         if status_code in {401, 403, 404}:
             code = "WAS_NOT_AVAILABLE"
+            retryable = False
             message = (
                 "A API WAS nao esta habilitada ou acessivel para este cliente. "
                 "O relatorio VM continuou normalmente."
             )
         else:
             code = "WAS_COLLECTION_UNAVAILABLE"
+            retryable = isinstance(exc, ExportTimeoutError) or status_code in {
+                408, 409, 429, 500, 502, 503, 504
+            }
             message = (
                 "A coleta WAS ficou indisponivel nesta execucao. "
                 "O relatorio VM continuou normalmente."
             )
-        warning = {"code": code, "message": message, "status_code": status_code}
+        export_uuid = str(getattr(exc, "export_uuid", None) or "").strip() or None
+        origin = str(getattr(exc, "origin", None) or "").strip() or None
+        remote_status = str(last_status.get("status") or "").strip().upper() or None
+        progress_made = bool(
+            getattr(exc, "progress_made", False)
+            or last_status.get("progress_made", False)
+        )
+        failure = WasFailureDetails(
+            code=code,
+            message=message,
+            retryable=retryable,
+            export_uuid=export_uuid,
+            origin=origin,
+            remote_status=remote_status,
+            completed_chunks=max(0, int(last_status.get("completed_chunks") or 0)),
+            total_chunks=max(0, int(last_status.get("total_chunks") or 0)),
+            timeout_phase=str(getattr(exc, "timeout_phase", None) or "").strip() or None,
+            progress_made=progress_made,
+            safe_cancel_available=bool(
+                export_uuid and origin == "created"
+                and remote_status in {"QUEUED", "PROCESSING"}
+                and not progress_made
+            ),
+        )
+        warning = {"code": code, "message": message, "status_code": status_code, "retryable": retryable}
         LOGGER.warning("%s", message, extra={"was_status_code": status_code})
         return WasCollectionAttempt(
             result=None,
             status="UNAVAILABLE",
             warnings=(warning,),
+            failure=failure,
         )
     return WasCollectionAttempt(
         result=result,

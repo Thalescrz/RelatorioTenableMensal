@@ -547,6 +547,28 @@ class OrchestrationTests(unittest.TestCase):
 
         index = command.index("--vm-selective-mode")
         self.assertEqual(command[index + 1], "validation")
+
+    def test_client_command_waits_for_was_decision_only_in_manual_mode(self) -> None:
+        config = load_orchestration_config(EXAMPLE_CONFIG)
+
+        manual = build_client_command(
+            config=config,
+            client=config.clients[0],
+            request=OrchestrationRequest(mode="manual"),
+            client_run_id="run-manual",
+        )
+        automatic = build_client_command(
+            config=config,
+            client=config.clients[0],
+            request=OrchestrationRequest(mode="automatic"),
+            client_run_id="run-automatic",
+        )
+
+        manual_index = manual.index("--was-failure-policy")
+        automatic_index = automatic.index("--was-failure-policy")
+        self.assertEqual(manual[manual_index + 1], "wait")
+        self.assertEqual(automatic[automatic_index + 1], "continue")
+
     def test_client_command_propagates_forced_live_collection(self) -> None:
         config = load_orchestration_config(EXAMPLE_CONFIG)
         command = build_client_command(
