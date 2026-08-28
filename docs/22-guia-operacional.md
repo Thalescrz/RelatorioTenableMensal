@@ -70,6 +70,11 @@ progresso e falha próprios. A coleta representa o estado no instante da execuç
 Solicitar um período passado não reconstrói o fechamento histórico sem uma
 fotografia Cloud compatível já preservada.
 
+As colunas `Fixed by` dependem de uma fonte GraphQL opcional do tenant. Quando a
+fonte não existir, não houver permissão ou a vulnerabilidade não informar versão, o
+relatório usa `N/D` e continua. Isso não deve ser tratado como falha da coleta Cloud
+obrigatória nem preenchido manualmente por inferência de texto.
+
 Uma fotografia exata pode ser reutilizada. Outra coleta Cloud completa dentro de
 24 horas é bloqueada por padrão para evitar consumo repetido; atualização forçada
 exige ação manual explícita. Se Cloud falhar, os demais documentos permanecem

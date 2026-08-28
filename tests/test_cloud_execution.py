@@ -63,7 +63,7 @@ def _dataset(period=None) -> dict:
     return {
         "schema_version": 1,
         "document_kind": "cloud",
-        "metric_definition_version": "cloud-metrics-v1",
+        "metric_definition_version": "cloud-metrics-v2",
         "connector_version": "cloud-graphql-v1",
         "period": selected_period.to_dict(),
         "collected_at": "2026-08-01T12:00:00Z",

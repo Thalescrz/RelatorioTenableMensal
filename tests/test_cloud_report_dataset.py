@@ -62,6 +62,28 @@ def _occurrence(
     )
 
 
+def _software_vulnerability(
+    asset: Any,
+    cve: str,
+    *,
+    software: str,
+    fixed_by: str | None,
+    severity: str = "CRITICAL",
+    vpr: float | None = 9.0,
+    cvss: float | None = 9.8,
+) -> Any:
+    domain = _domain()
+    return domain.CloudSoftwareVulnerability(
+        asset=asset.key,
+        vulnerability_id=cve,
+        severity=severity,
+        vpr=vpr,
+        cvss=cvss,
+        software=software,
+        fixed_by=fixed_by,
+    )
+
+
 def _period() -> Any:
     return explicit_reporting_period(
         start_at="2026-07-01T00:00:00Z",
@@ -79,6 +101,7 @@ def _snapshot(
     inventory: tuple[Any, ...] = (),
     lifecycle: tuple[Any, ...] = (),
     source_status: dict[str, str] | None = None,
+    software_vulnerabilities: tuple[Any, ...] = (),
 ) -> Any:
     domain = _domain()
     return domain.NormalizedCloudSnapshot(
@@ -90,6 +113,7 @@ def _snapshot(
         lifecycle=lifecycle,
         source_status=source_status or {},
         quality_issues=(),
+        software_vulnerabilities=software_vulnerabilities,
     )
 
 
@@ -173,6 +197,78 @@ def test_top_correctable_requires_correlated_remediation() -> None:
         row["cve"]
         for row in dataset["top_correctable_vulnerabilities"]
     ] == ["CVE-2099-1000"]
+    assert dataset["top_correctable_vulnerabilities"][0]["software"] == "fixture-component"
+    assert dataset["top_correctable_vulnerabilities"][0]["fixed_by_display"] == "N/D"
+
+
+def test_correctable_rows_are_software_specific_and_use_fixed_by() -> None:
+    image = _asset("image-correctable", image=True)
+    occurrence = _occurrence(image, "CVE-2026-0200")
+    dataset = _dataset_module().build_cloud_dataset(
+        snapshot=_snapshot(
+            assets=(image,),
+            occurrences=(occurrence,),
+            software_vulnerabilities=(
+                _software_vulnerability(
+                    image,
+                    occurrence.vulnerability_id,
+                    software="fixture-library-a",
+                    fixed_by="2.0.1",
+                ),
+                _software_vulnerability(
+                    image,
+                    occurrence.vulnerability_id,
+                    software="fixture-library-b",
+                    fixed_by="3.4.5",
+                ),
+            ),
+        ),
+        period=_period(),
+    )
+
+    rows = dataset["top_correctable_vulnerabilities"]
+    assert [(row["cve"], row["software"]) for row in rows] == [
+        ("CVE-2026-0200", "fixture-library-a"),
+        ("CVE-2026-0200", "fixture-library-b"),
+    ]
+    assert [row["fixed_by_display"] for row in rows] == ["2.0.1", "3.4.5"]
+
+
+def test_container_image_overview_keeps_cve_per_software_and_missing_fix() -> None:
+    image = _asset("image-overview", image=True)
+    occurrence = _occurrence(image, "CVE-2026-0300", vpr=8.5)
+    dataset = _dataset_module().build_cloud_dataset(
+        snapshot=_snapshot(
+            assets=(image,),
+            occurrences=(occurrence,),
+            software_vulnerabilities=(
+                _software_vulnerability(
+                    image,
+                    occurrence.vulnerability_id,
+                    software="fixture-library-a",
+                    fixed_by="4.0.0",
+                    vpr=8.5,
+                ),
+                _software_vulnerability(
+                    image,
+                    occurrence.vulnerability_id,
+                    software="fixture-library-b",
+                    fixed_by=None,
+                    vpr=8.5,
+                ),
+            ),
+        ),
+        period=_period(),
+    )
+
+    overview = dataset["container_image_vulnerability_overview"]
+    assert len(overview) == 1
+    assert overview[0]["asset"]["asset_id"] == "image-overview"
+    assert [(row["cve"], row["software"]) for row in overview[0]["rows"]] == [
+        ("CVE-2026-0300", "fixture-library-a"),
+        ("CVE-2026-0300", "fixture-library-b"),
+    ]
+    assert overview[0]["rows"][1]["fixed_by_display"] == "N/D"
 
 
 def test_resolved_metrics_use_exclusive_period_end() -> None:

@@ -65,8 +65,12 @@ execução publica um único DOCX padrão; perfis legados com `base`, `expanded`
 `comparison` são normalizados para esse modelo e não expõem seleção na interface.
 
 O conteúdo inclui resumo executivo, principais hosts e imagens, Top 5 de CVEs
-críticas com detalhamento, scores, correção e ativos afetados, Top 10 com correção
-disponível sem a coluna extensa de ação recomendada, dashboard, componentes,
+críticas com detalhamento, scores, correção e ativos afetados, overview das cinco
+imagens mais vulneráveis com até cinco linhas por combinação CVE/software e Top 10
+com correção disponível também agrupado por CVE/software. As tabelas exibem
+`Software` e `Fixed by`; versão ausente ou fonte opcional não suportada aparece como
+`N/D`, sem impedir o restante do documento. A coluna extensa de ação recomendada
+permanece removida. O relatório segue com dashboard, componentes,
 postura quando suportada, envelhecimento, remediação e evolução mensal. O item de
 inventário Cloud foi removido. Em 3.6.2 permanece o marcador editorial para inserir
 a captura da plataforma. Sem histórico anterior, 3.11 apresenta tabela e gráfico

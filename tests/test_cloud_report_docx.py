@@ -133,11 +133,14 @@ def _dataset(tmp_path: Path, *, populated: bool = True) -> Path:
         "recommended_action": "Apply the vendor security patch.",
         "remediation_steps": ["Apply the vendor security patch."],
         "correlated_findings": 2,
+        "software": "fixture-component",
+        "fixed_by": ["2.0.1"],
+        "fixed_by_display": "2.0.1",
     }
     payload = {
         "schema_version": 1,
         "document_kind": "cloud",
-        "metric_definition_version": "cloud-metrics-v1",
+        "metric_definition_version": "cloud-metrics-v2",
         "connector_version": "cloud-graphql-v1",
         "period": {
             "start_at": "2026-07-01T00:00:00+00:00",
@@ -168,6 +171,24 @@ def _dataset(tmp_path: Path, *, populated: bool = True) -> Path:
         "top_critical_cves": [cve] if populated else [],
         "top_vulnerable_hosts": hosts if populated else [],
         "top_vulnerable_images": images if populated else [],
+        "container_image_vulnerability_overview": (
+            [
+                {
+                    "asset": images[0],
+                    "rows": [
+                        {
+                            "cve": "CVE-2099-1000",
+                            "severity": "CRITICAL",
+                            "vpr_display": "0",
+                            "software": "fixture-component",
+                            "fixed_by_display": "2.0.1",
+                        }
+                    ],
+                }
+            ]
+            if populated
+            else []
+        ),
         "workload_status": {
             "total_virtual_machines": 1 if populated else 0,
             "by_max_severity": {
@@ -180,7 +201,19 @@ def _dataset(tmp_path: Path, *, populated: bool = True) -> Path:
         },
         "top_components": [],
         "top_posture_findings": [],
-        "top_correctable_vulnerabilities": [correctable] if populated else [],
+        "top_correctable_vulnerabilities": (
+            [
+                correctable,
+                {
+                    **correctable,
+                    "software": "fixture-component-without-text-action",
+                    "fixed_by": ["3.0.0"],
+                    "fixed_by_display": "3.0.0",
+                    "recommended_action": None,
+                    "remediation_steps": [],
+                },
+            ] if populated else []
+        ),
         "aging": {
             "0-30": 1 if populated else 0,
             "31-60": 0,
@@ -277,7 +310,7 @@ def test_standard_cloud_report_keeps_approved_sections_and_detailed_top_five(
         translator=translator,
     )
     text = _all_text(output)
-
+    document = Document(output)
     assert output.is_file()
     assert result.variant is CloudReportVariant.EXPANDED
     assert {
@@ -292,6 +325,28 @@ def test_standard_cloud_report_keeps_approved_sections_and_detailed_top_five(
     assert "Principais Vulnerabilidades com Correção Disponível" in text
     assert "CVE-2099-1000" in text
     assert "Tipo de correção" in text
+    assert "3.3.1. Overview das Vulnerabilidades das Imagens de Contêiner" in text
+    assert "2.0.1" in text
+    table_headers = [
+        [cell.text for cell in table.rows[0].cells]
+        for table in document.tables
+    ]
+    assert [
+        "CVE",
+        "Severidade",
+        "VPR",
+        "Software",
+        "Fixed by",
+    ] in table_headers
+    assert [
+        "CVE",
+        "VPR",
+        "CVSS",
+        "Severidade",
+        "Ativos afetados",
+        "Software",
+        "Fixed by",
+    ] in table_headers
     assert "Ativos afetados" in text
     assert "VPR: 0" in text
     assert "TRADUZIDO:" in text

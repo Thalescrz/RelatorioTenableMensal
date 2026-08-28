@@ -178,8 +178,39 @@ def _correctable(
                 "Executar nova verificação.",
             ],
             "correlated_findings": 1 + index,
+            "software": f"demo-component-{index % 4 + 1}",
+            "fixed_by": ([] if index == 3 else [f"{index + 2}.0.1"]),
+            "fixed_by_display": (
+                "N/D" if index == 3 else f"{index + 2}.0.1"
+            ),
         })
     return rows
+
+
+def _container_image_overview(
+    images: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    severities = ("CRITICAL", "HIGH", "HIGH", "MEDIUM", "MEDIUM")
+    overview = []
+    for image_index, image in enumerate(images[:5], start=1):
+        rows = []
+        for row_index, severity in enumerate(severities, start=1):
+            cve_index = 4000 + image_index * 10 + min(row_index, 2)
+            vpr = round(9.8 - image_index * 0.2 - row_index * 0.3, 1)
+            fixed_by = None if row_index == 5 else f"{row_index + 1}.2.0"
+            rows.append(
+                {
+                    "cve": f"CVE-2099-{cve_index}",
+                    "severity": severity,
+                    "vpr": vpr,
+                    "vpr_display": f"{vpr:.1f}",
+                    "software": f"demo-library-{row_index}",
+                    "fixed_by": fixed_by,
+                    "fixed_by_display": fixed_by or "N/D",
+                }
+            )
+        overview.append({"asset": image, "rows": rows})
+    return overview
 
 
 def sanitized_cloud_dataset() -> dict[str, Any]:
@@ -189,7 +220,7 @@ def sanitized_cloud_dataset() -> dict[str, Any]:
     return {
         "schema_version": 1,
         "document_kind": "cloud",
-        "metric_definition_version": "cloud-metrics-v1",
+        "metric_definition_version": "cloud-metrics-v2",
         "connector_version": "cloud-graphql-v1",
         "period": {
             "start_at": "2026-07-01T03:00:00+00:00",
@@ -220,6 +251,7 @@ def sanitized_cloud_dataset() -> dict[str, Any]:
         "top_critical_cves": critical,
         "top_vulnerable_hosts": hosts,
         "top_vulnerable_images": images,
+        "container_image_vulnerability_overview": _container_image_overview(images),
         "workload_status": {
             "total_virtual_machines": 6,
             "by_max_severity": {

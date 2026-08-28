@@ -15,7 +15,7 @@ def _dataset() -> dict:
     return {
         "schema_version": 1,
         "document_kind": "cloud",
-        "metric_definition_version": "cloud-metrics-v1",
+        "metric_definition_version": "cloud-metrics-v2",
         "overview": {"assets": 2, "unique_cves": 3},
         "top_critical_cves": [{"cve": "CVE-2026-0001"}],
     }
@@ -50,7 +50,7 @@ def _compatibility() -> object:
         period_mode="PREVIOUS_CALENDAR_MONTH",
         timezone="America/Fortaleza",
         scope_hash="scope-cloud-v1",
-        metric_definition_version="cloud-metrics-v1",
+        metric_definition_version="cloud-metrics-v2",
         connector_version="cloud-graphql-v1",
         normalizer_version="cloud-normalizer-v1",
         schema_version=1,

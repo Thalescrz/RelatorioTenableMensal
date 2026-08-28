@@ -386,6 +386,65 @@ def render_top_images(
     builder.source_note(dataset, "cloud_top_images", enabled=show_source_filters)
 
 
+def render_container_image_vulnerability_overview(
+    builder: CloudDocumentBuilder,
+    dataset: Mapping[str, Any],
+    *,
+    show_source_filters: bool,
+) -> None:
+    builder.heading(
+        "3.3.1. Overview das Vulnerabilidades das Imagens de Contêiner",
+        3,
+    )
+    overview = tuple(
+        item
+        for item in dataset.get("container_image_vulnerability_overview") or ()
+        if isinstance(item, Mapping)
+    )
+    if not overview:
+        builder.paragraph(
+            copy.EMPTY_TABLE_MONTH,
+            color=MID_GRAY,
+            align=WD_ALIGN_PARAGRAPH.LEFT,
+        )
+    for index, item in enumerate(overview[:5], start=1):
+        asset = item.get("asset")
+        if not isinstance(asset, Mapping):
+            asset = {}
+        identity = (
+            asset.get("repository_uri")
+            or asset.get("name")
+            or asset.get("digest")
+            or "Imagem não informada"
+        )
+        builder.standard_heading(f"Imagem {index}: {identity}", 4)
+        rows = [
+            (
+                row.get("cve") or "",
+                SEVERITY_LABELS.get(
+                    str(row.get("severity") or ""),
+                    row.get("severity") or "",
+                ),
+                row.get("vpr_display") or "N/D",
+                row.get("software") or "N/D",
+                row.get("fixed_by_display") or "N/D",
+            )
+            for row in item.get("rows") or ()
+            if isinstance(row, Mapping)
+        ]
+        builder.table(
+            ("CVE", "Severidade", "VPR", "Software", "Fixed by"),
+            rows,
+            widths=(1450, 1300, 800, 2700, 2950),
+            left_columns=frozenset({0, 3, 4}),
+        )
+    builder.source_note(
+        dataset,
+        "cloud_container_image_vulnerability_overview",
+        enabled=show_source_filters,
+    )
+
+
 def render_top_critical(
     builder: CloudDocumentBuilder,
     dataset: Mapping[str, Any],
@@ -436,11 +495,17 @@ def render_critical_details(
     translator: TextTranslator | None,
 ) -> None:
     critical = dataset.get("top_critical_cves") or ()
-    corrections = {
-        str(item.get("cve") or ""): item
-        for item in dataset.get("top_correctable_vulnerabilities") or ()
-        if isinstance(item, Mapping)
-    }
+    corrections: dict[str, Mapping[str, Any]] = {}
+    for item in dataset.get("top_correctable_vulnerabilities") or ():
+        if not isinstance(item, Mapping):
+            continue
+        cve = str(item.get("cve") or "")
+        current = corrections.get(cve)
+        if current is None or (
+            not current.get("recommended_action")
+            and item.get("recommended_action")
+        ):
+            corrections[cve] = item
     for index, item in enumerate(critical[:5], start=1):
         cve = str(item.get("cve") or "CVE não informada")
         builder.standard_heading(f"3.4.{index}. {cve}", 3)
@@ -549,7 +614,8 @@ def render_top_correctable(
                 item.get("severity") or "",
             ),
             item.get("affected_assets", 0),
-            item.get("correction_type_display") or "Não determinado",
+            item.get("software") or "N/D",
+            item.get("fixed_by_display") or "N/D",
         )
         for item in dataset.get("top_correctable_vulnerabilities") or ()
     ]
@@ -560,11 +626,12 @@ def render_top_correctable(
             "CVSS",
             "Severidade",
             "Ativos afetados",
-            "Tipo de correção",
+            "Software",
+            "Fixed by",
         ),
         rows,
-        widths=(1250, 700, 700, 1200, 1450, 3900),
-        left_columns=frozenset({0, 5}),
+        widths=(1200, 650, 650, 1050, 1150, 2100, 2400),
+        left_columns=frozenset({0, 5, 6}),
         empty_message=copy.EMPTY_CORRECTABLE_MONTH,
     )
     builder.source_note(
@@ -902,6 +969,7 @@ def render_conclusion(builder: CloudDocumentBuilder) -> None:
 __all__ = [
     "CloudDocumentBuilder",
     "cloud_posture_available",
+    "render_container_image_vulnerability_overview",
     "render_cloud_overview",
     "render_cloud_posture",
     "render_components_products",
