@@ -114,6 +114,7 @@ class ReportRegistry(Protocol):
         actor: str,
         reason: str,
         replacement_run_id: str | None = None,
+        allow_gap: bool = False,
     ) -> None: ...
 
     def restore(self, run_id: str, *, actor: str, reason: str) -> None: ...
@@ -356,6 +357,7 @@ class InMemoryReportRegistry(ReportRegistry):
         actor: str,
         reason: str,
         replacement_run_id: str | None = None,
+        allow_gap: bool = False,
     ) -> None:
         actor = _required(actor, "actor")
         reason = _required(reason, "reason")
@@ -363,25 +365,36 @@ class InMemoryReportRegistry(ReportRegistry):
         key = reference_key_for_candidate(report.candidate)
         current = self.get_main(key)
         is_main = current is not None and current.run_id == run_id
+        if replacement_run_id and allow_gap:
+            raise ValueError(
+                "Escolha uma substituta ou confirme a lacuna de MAIN, não ambos."
+            )
         if is_main:
-            if not replacement_run_id:
+            if replacement_run_id:
+                if replacement_run_id == run_id:
+                    raise MainDeletionRequiresDecision(
+                        "A substituta precisa ser uma geração diferente."
+                    )
+                replacement = self._validate_promotion(key, replacement_run_id)
+                self._set_main(
+                    key,
+                    replacement,
+                    actor=actor,
+                    reason=f"REPLACEMENT_ON_HARD_DELETE: {reason}",
+                )
+            elif allow_gap:
+                self._mains.pop(key.stable_key, None)
+            else:
                 raise MainDeletionRequiresDecision(
                     "Escolha uma geração substituta antes da exclusão permanente."
                 )
-            if replacement_run_id == run_id:
-                raise MainDeletionRequiresDecision(
-                    "A substituta precisa ser uma geração diferente."
-                )
-            replacement = self._validate_promotion(key, replacement_run_id)
-            self._set_main(
-                key,
-                replacement,
-                actor=actor,
-                reason=f"REPLACEMENT_ON_HARD_DELETE: {reason}",
-            )
         elif replacement_run_id:
             raise ValueError(
                 "Uma substituta só deve ser informada ao excluir o relatório MAIN."
+            )
+        elif allow_gap:
+            raise ValueError(
+                "A lacuna de MAIN só pode ser confirmada ao excluir o relatório MAIN."
             )
         del self._reports[run_id]
         self._events = [

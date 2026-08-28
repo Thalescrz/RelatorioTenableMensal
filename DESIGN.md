@@ -202,8 +202,10 @@ rendered -> validated -> registered -> available
                                 \-> MAIN (automático ou promovido)
 ```
 
-Exclusão é explícita e auditável. A remoção de um `MAIN` precisa considerar a base
-do próximo comparativo.
+Exclusão é explícita e auditável. A remoção de um `MAIN` exige uma substituta
+compatível quando ela existe. Se for o único `MAIN` do período, o sistema bloqueia a
+remoção até receber uma autorização explícita para deixar essa lacuna; a interface
+apresenta o impacto antes do motivo e da confirmação permanente.
 
 ## Persistência
 

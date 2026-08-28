@@ -2538,6 +2538,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 replacement_run_id=(
                     str(payload.get("replacement_run_id") or "").strip() or None
                 ),
+                allow_main_gap=payload.get("allow_main_gap") is True,
             )
             self._json(HTTPStatus.OK, result.to_dict())
         except (

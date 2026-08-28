@@ -58,6 +58,9 @@ class ReportSetPurgePreview:
             "file_count": self.file_count,
             "total_bytes": self.total_bytes,
             "is_main": self.is_main,
+            "requires_main_gap_confirmation": (
+                self.is_main and not self.compatible_replacement_run_ids
+            ),
             "compatible_replacement_run_ids": list(
                 self.compatible_replacement_run_ids
             ),
@@ -91,6 +94,7 @@ class ReportSetPurgeRepository(Protocol):
         actor: str,
         reason: str,
         replacement_run_id: str | None,
+        allow_main_gap: bool = False,
     ) -> None: ...
 
 
@@ -184,6 +188,7 @@ class ReportSetPurgeService:
         reason: str,
         confirmation: str,
         replacement_run_id: str | None = None,
+        allow_main_gap: bool = False,
     ) -> ReportSetPurgeResult:
         if confirmation.strip() != "EXCLUIR":
             raise ValueError('Digite exatamente "EXCLUIR" para confirmar.')
@@ -192,9 +197,27 @@ class ReportSetPurgeService:
         record = self.repository.describe(_required(run_id, "run_id"))
         self._ensure_inactive(record)
         replacement = str(replacement_run_id or "").strip() or None
-        if record.is_main and replacement not in record.compatible_replacement_run_ids:
-            raise MainReportReplacementRequired(
-                "Selecione uma geração substituta compatível antes de excluir o MAIN."
+        if replacement and allow_main_gap:
+            raise ValueError(
+                "Escolha uma substituta ou confirme a lacuna de MAIN, não ambos."
+            )
+        if record.is_main:
+            if replacement:
+                if replacement not in record.compatible_replacement_run_ids:
+                    raise MainReportReplacementRequired(
+                        "Selecione uma geração substituta compatível antes de excluir o MAIN."
+                    )
+            elif record.compatible_replacement_run_ids:
+                raise MainReportReplacementRequired(
+                    "Selecione uma geração substituta compatível antes de excluir o MAIN."
+                )
+            elif not allow_main_gap:
+                raise MainReportReplacementRequired(
+                    "Confirme explicitamente a exclusão do único MAIN deste período."
+                )
+        elif allow_main_gap:
+            raise ValueError(
+                "A lacuna de MAIN só pode ser confirmada ao excluir o relatório MAIN."
             )
         paths = self._paths(record)
         existing = tuple(path for path in paths if path.is_file())
@@ -214,6 +237,7 @@ class ReportSetPurgeService:
                 actor=actor,
                 reason=reason,
                 replacement_run_id=replacement,
+                allow_main_gap=allow_main_gap,
             )
         except Exception:
             self._restore(staged)

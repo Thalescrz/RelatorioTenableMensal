@@ -35,6 +35,7 @@ class _MemoryPurgeRepository:
         actor: str,
         reason: str,
         replacement_run_id: str | None,
+        allow_main_gap: bool = False,
     ) -> None:
         if self.fail_purge:
             raise RuntimeError("falha transacional simulada")
@@ -42,9 +43,12 @@ class _MemoryPurgeRepository:
         if not actor or not reason:
             raise ValueError("ator e motivo são obrigatórios")
         if record.is_main:
-            if replacement_run_id not in record.compatible_replacement_run_ids:
+            if replacement_run_id in record.compatible_replacement_run_ids:
+                self.main_by_period[record.period_id] = str(replacement_run_id)
+            elif allow_main_gap and not record.compatible_replacement_run_ids:
+                self.main_by_period.pop(record.period_id, None)
+            else:
                 raise MainReportReplacementRequired("Selecione uma geração substituta.")
-            self.main_by_period[record.period_id] = str(replacement_run_id)
         self.records.pop(run_id)
         self.snapshots.discard(run_id)
 
@@ -136,6 +140,15 @@ class ReportSetPurgeTests(unittest.TestCase):
                     confirmation="EXCLUIR",
                 )
 
+            with self.assertRaises(MainReportReplacementRequired):
+                service.purge(
+                    main.run_id,
+                    actor="analista-web",
+                    reason="nova coleta aprovada",
+                    confirmation="EXCLUIR",
+                    allow_main_gap=True,
+                )
+
             result = service.purge(
                 main.run_id,
                 actor="analista-web",
@@ -145,6 +158,48 @@ class ReportSetPurgeTests(unittest.TestCase):
             )
             self.assertEqual(result.replacement_run_id, "run-b")
             self.assertEqual(repository.main_by_period[main.period_id], "run-b")
+
+    def test_only_main_requires_explicit_gap_confirmation_before_purge(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory) / "data"
+            main = _record(
+                data_root,
+                is_main=True,
+                paths=(data_root / "manual" / "reports" / "main.docx",),
+            )
+            document = Path(main.disk_paths[0])
+            document.parent.mkdir(parents=True, exist_ok=True)
+            document.write_bytes(b"main")
+            repository = _MemoryPurgeRepository(main)
+            service = ReportSetPurgeService(
+                data_root=data_root,
+                repository=repository,
+                active_jobs=lambda: (),
+            )
+
+            preview = service.preview(main.run_id).to_dict()
+            self.assertTrue(preview["requires_main_gap_confirmation"])
+
+            with self.assertRaises(MainReportReplacementRequired):
+                service.purge(
+                    main.run_id,
+                    actor="analista-web",
+                    reason="conjunto de teste obsoleto",
+                    confirmation="EXCLUIR",
+                )
+
+            result = service.purge(
+                main.run_id,
+                actor="analista-web",
+                reason="conjunto de teste obsoleto",
+                confirmation="EXCLUIR",
+                allow_main_gap=True,
+            )
+
+            self.assertEqual(result.deleted_files, 1)
+            self.assertFalse(document.exists())
+            self.assertNotIn(main.run_id, repository.records)
+            self.assertNotIn(main.period_id, repository.main_by_period)
 
     def test_purge_blocks_paths_outside_the_configured_data_root(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

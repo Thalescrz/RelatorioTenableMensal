@@ -258,7 +258,14 @@ function bindReportActions() {
         await api(`/api/reports/${encodeURIComponent(runId)}/restore`, { method: "POST", body: { actor: "analista-web", reason } });
       } else {
         const preview = await api(`/api/reports/${encodeURIComponent(runId)}/purge-preview`);
-        const summary = `Esta exclusão é permanente e não poderá ser desfeita.\n\nPeríodo: ${preview.period_id}\nDocumentos: ${preview.document_count}\nArquivos no disco: ${preview.file_count}\nEspaço: ${formatBytes(preview.total_bytes)}\n\nDeseja continuar?`;
+        const replacementIds = preview.compatible_replacement_run_ids || [];
+        const requiresMainGapConfirmation = Boolean(
+          preview.requires_main_gap_confirmation ?? (preview.is_main && !replacementIds.length)
+        );
+        const mainGapWarning = requiresMainGapConfirmation
+          ? `ATENÇÃO: este é o único relatório MAIN do período ${preview.period_id}. A exclusão deixará esse período sem referência para comparações futuras.\n\n`
+          : "";
+        const summary = `${mainGapWarning}Esta exclusão é permanente e não poderá ser desfeita.\n\nPeríodo: ${preview.period_id}\nDocumentos: ${preview.document_count}\nArquivos no disco: ${preview.file_count}\nEspaço: ${formatBytes(preview.total_bytes)}\n\nDeseja continuar?`;
         if (!window.confirm(summary)) return;
         const reason = prompt("Motivo da exclusão permanente:"); if (!reason?.trim()) return;
         const confirmation = prompt('Digite EXCLUIR para remover o conjunto do banco e do disco:');
@@ -268,20 +275,20 @@ function bindReportActions() {
         }
         const body = { actor: "analista-web", reason, confirmation };
         if (preview.is_main) {
-          const replacementIds = preview.compatible_replacement_run_ids || [];
-          if (!replacementIds.length) {
-            throw new Error("Este conjunto é MAIN e não existe uma geração compatível para substituí-lo.");
+          if (replacementIds.length) {
+            const replacementLines = replacementIds.map(id => {
+              const candidate = state.currentReports.find(item => item.run_id === id);
+              return `${id}${candidate?.period_id ? ` · ${candidate.period_id}` : ""}`;
+            });
+            const selected = prompt(`Esta geração é MAIN. Informe o ID da substituta:\n${replacementLines.join("\n")}`);
+            if (!selected || !replacementIds.includes(selected.trim())) {
+              toast("Selecione exatamente um dos IDs de geração apresentados.", "error");
+              return;
+            }
+            body.replacement_run_id = selected.trim();
+          } else if (requiresMainGapConfirmation) {
+            body.allow_main_gap = true;
           }
-          const replacementLines = replacementIds.map(id => {
-            const candidate = state.currentReports.find(item => item.run_id === id);
-            return `${id}${candidate?.period_id ? ` · ${candidate.period_id}` : ""}`;
-          });
-          const selected = prompt(`Esta geração é MAIN. Informe o ID da substituta:\n${replacementLines.join("\n")}`);
-          if (!selected || !replacementIds.includes(selected.trim())) {
-            toast("Selecione exatamente um dos IDs de geração apresentados.", "error");
-            return;
-          }
-          body.replacement_run_id = selected.trim();
         }
         const deleted = await api(`/api/reports/${encodeURIComponent(runId)}`, { method: "DELETE", body });
         successMessage = `Conjunto excluído: ${deleted.deleted_files} arquivo(s), ${formatBytes(deleted.deleted_bytes)}.`;
