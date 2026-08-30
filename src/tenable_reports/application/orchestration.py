@@ -91,6 +91,7 @@ class OrchestrationRequest:
     vm_export_strategy: str | None = None
     historical_source: str | None = None
     force_live_collection: bool = False
+    was_failure_policy: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -480,6 +481,15 @@ def _validate_request(request: OrchestrationRequest) -> None:
         raise ValueError(
             "historical_source deve ser legacy ou inventory-beta."
         )
+    if request.was_failure_policy not in {
+        None,
+        "wait",
+        "continue",
+        "retry_then_continue",
+    }:
+        raise ValueError(
+            "was_failure_policy deve ser wait, continue ou retry_then_continue."
+        )
 
 
 def _select_clients(
@@ -510,6 +520,9 @@ def build_client_command(
     origin: str | None = None,
 ) -> tuple[str, ...]:
     actual_origin = origin or ("SCHEDULED" if request.mode == "automatic" else "MANUAL")
+    was_failure_policy = request.was_failure_policy or (
+        "retry_then_continue" if request.mode == "automatic" else "wait"
+    )
     command = [
         sys.executable,
         "-m",
@@ -541,7 +554,7 @@ def build_client_command(
         str(config.minimum_free_gb),
         "--confirm-live-api",
         "--was-failure-policy",
-        "continue" if request.mode == "automatic" else "wait",
+        was_failure_policy,
     ]
     if request.force_live_collection:
         command.append("--force-live-collection")

@@ -81,6 +81,12 @@ gerados. O Cloud registra uma fotografia atual compacta no PostgreSQL e mantém 
 staging quando uma retentativa isolada ainda pode aproveitá-lo. Tradução por
 provedor externo continua sem integração automática.
 
+No botão **Gerar todos** e no automático mensal, uma falha WAS inicia uma única
+retentativa apenas do componente WEB. Se ela também falhar, os relatórios são
+publicados sem WAS e recebem o alerta `WAS_RETRY_EXHAUSTED`; VM, assets, TAG e
+Cloud não são repetidos. A geração manual individual continua oferecendo ao
+analista a decisão entre tentar novamente ou continuar sem WEB.
+
 ## Cloud Security
 
 Quando habilitado no cliente, o Cloud inicia junto com a execução normal e usa a

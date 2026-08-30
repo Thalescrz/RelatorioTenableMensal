@@ -1125,11 +1125,19 @@ class WebDashboardTests(unittest.TestCase):
             def runner(command, cwd):
                 return subprocess.CompletedProcess(command, 1, stdout="", stderr="falha")
             jobs = JobQueue(root, root / "orchestration" / "clients.json", runner)
-            original = jobs.enqueue(["cliente-a"], {"mode": "manual", "days": 15})[0]
+            original = jobs.enqueue(["cliente-a"], {
+                "mode": "manual",
+                "days": 15,
+                "was_failure_policy": "retry_then_continue",
+            })[0]
             jobs._pending.join()
             retried = jobs.retry(original["job_id"])
             self.assertEqual(retried["mode"], "manual")
             self.assertEqual(retried["days"], 15)
+            self.assertEqual(
+                retried["was_failure_policy"],
+                "retry_then_continue",
+            )
             self.assertEqual(retried["retry_of_job_id"], original["job_id"])
 
     def test_forced_live_collection_reaches_command_and_retry(self) -> None:
@@ -1763,6 +1771,60 @@ class WebDashboardTests(unittest.TestCase):
             self.assertEqual(snapshot[0]["run_id"], "run-web-1")
             self.assertIn("cliente-teste", observed[0])
             self.assertIn("15", observed[0])
+
+    def test_run_all_retries_was_automatically_but_individual_run_waits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            observed: list[list[str]] = []
+
+            def runner(command, cwd, progress_callback=None):
+                observed.append(list(command))
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({
+                        "status": "COMPLETE",
+                        "run_id": f"run-{len(observed)}",
+                    }) + "\n",
+                    stderr="",
+                )
+
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                runner=runner,
+            )
+            for client_id in ("cliente-a", "cliente-b"):
+                app.config.add_client({
+                    "client_id": client_id,
+                    "display_name": client_id.upper(),
+                    "access_key": "access",
+                    "secret_key": "secret",
+                })
+
+            app.enqueue_jobs(
+                ["cliente-a", "cliente-b"],
+                {"mode": "manual", "run_scope": "all"},
+            )
+            app.jobs._pending.join()
+
+            self.assertEqual(len(observed), 2)
+            for command in observed:
+                policy_index = command.index("--was-failure-policy")
+                self.assertEqual(
+                    command[policy_index + 1],
+                    "retry_then_continue",
+                )
+
+            observed.clear()
+            app.enqueue_jobs(
+                ["cliente-a"],
+                {"mode": "manual", "run_scope": "single"},
+            )
+            app.jobs._pending.join()
+
+            self.assertEqual(len(observed), 1)
+            self.assertNotIn("--was-failure-policy", observed[0])
 
 
 if __name__ == "__main__":

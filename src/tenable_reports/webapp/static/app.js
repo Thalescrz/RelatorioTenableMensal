@@ -1,4 +1,4 @@
-const state = { data: null, selectedClient: null, runClientIds: [], filter: "", connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "" };
+const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "" };
 const CLOUD_PROGRESS_EVENT = "TENABLE_CLOUD_PROGRESS";
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
@@ -497,9 +497,10 @@ async function analyzeBackfill() {
   }
 }
 
-function openRun(clientIds) {
+function openRun(clientIds, runScope = "single") {
   state.runClientIds = clientIds;
-  const all = clientIds.length !== 1; $("#run-title").textContent = all ? "Gerar todos os clientes" : "Gerar relatório";
+  state.runScope = runScope;
+  const all = runScope === "all"; $("#run-title").textContent = all ? "Gerar todos os clientes" : "Gerar relatório";
   $("#run-subtitle").textContent = all ? `${clientIds.length} clientes serão adicionados à fila.` : state.data.clients.find(c => c.client_id === clientIds[0])?.display_name || "";
   $("#run-dialog").showModal();
 }
@@ -540,7 +541,7 @@ $("#cleanup-button").addEventListener("click", async event => {
   } catch (error) { toast(error.message, "error"); }
   finally { event.currentTarget.disabled = false; }
 });
-$("#run-all-button").addEventListener("click", () => openRun(state.data.clients.filter(c => c.enabled && c.credentials_ready).map(c => c.client_id)));
+$("#run-all-button").addEventListener("click", () => openRun(state.data.clients.filter(c => c.enabled && c.credentials_ready).map(c => c.client_id), "all"));
 $("#detail-run-button").addEventListener("click", () => { $("#client-dialog").close(); openRun([state.selectedClient]); });
 $("#detail-check-button").addEventListener("click", event => testConnections([state.selectedClient], event.currentTarget));
 $("#detail-edit-button").addEventListener("click", () => { const clientId = state.selectedClient; $("#client-dialog").close(); $("#manage-dialog").showModal(); editClient(clientId); });
@@ -762,7 +763,7 @@ clientForm.addEventListener("submit", async event => {
 });
 
 $("#run-form").addEventListener("submit", async event => {
-  event.preventDefault(); const form = new FormData(event.currentTarget); const type = form.get("period_type"); const payload = { client_ids: state.runClientIds, mode: "manual" };
+  event.preventDefault(); const form = new FormData(event.currentTarget); const type = form.get("period_type"); const payload = { client_ids: state.runClientIds, mode: "manual", run_scope: state.runScope };
   if (type === "days") payload.days = Number(form.get("days"));
   payload.force_live_collection = form.has("force_live_collection");
   if (type === "range") {

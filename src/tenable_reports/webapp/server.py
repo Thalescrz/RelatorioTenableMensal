@@ -1121,6 +1121,17 @@ class JobQueue:
         )
         if historical_source not in {None, "legacy", "inventory-beta"}:
             raise ValueError("Fonte historica invalida.")
+        was_failure_policy = (
+            str(request.get("was_failure_policy") or "").strip().lower()
+            or None
+        )
+        if was_failure_policy not in {
+            None,
+            "wait",
+            "continue",
+            "retry_then_continue",
+        }:
+            raise ValueError("Politica de falha WAS invalida.")
         force_live_collection = request.get("force_live_collection") is True
         days = request.get("days")
         start_at = str(request.get("start_at") or "").strip() or None
@@ -1178,6 +1189,7 @@ class JobQueue:
                     "vm_selective_mode": vm_selective_mode,
                     "vm_export_strategy": vm_export_strategy,
                     "historical_source": historical_source,
+                    "was_failure_policy": was_failure_policy,
                     "force_live_collection": force_live_collection,
                     "confirm_historical_reconstruction": bool(
                         request.get("confirm_historical_reconstruction", False)
@@ -1395,6 +1407,7 @@ class JobQueue:
                 "vm_selective_mode": original.get("vm_selective_mode"),
                 "vm_export_strategy": original.get("vm_export_strategy"),
                 "historical_source": original.get("historical_source"),
+                "was_failure_policy": original.get("was_failure_policy"),
                 "confirm_historical_reconstruction": original.get(
                     "confirm_historical_reconstruction", False
                 ),
@@ -1520,6 +1533,10 @@ class JobQueue:
                 if job.get("historical_source"):
                     command.extend((
                         "--historical-source", job["historical_source"]
+                    ))
+                if job.get("was_failure_policy"):
+                    command.extend((
+                        "--was-failure-policy", job["was_failure_policy"]
                     ))
                 if job["days"] is not None:
                     command.extend(("--days", str(job["days"])))
@@ -2095,6 +2112,9 @@ class DashboardApplication:
         client_ids: Sequence[str],
         request: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
+        run_scope = str(request.get("run_scope") or "single").strip().lower()
+        if run_scope not in {"single", "all"}:
+            raise ValueError("Escopo de execucao invalido.")
         clients = {item["client_id"]: item for item in self.config.list_clients()}
         exact_period = bool(
             (request.get("start_at") and request.get("end_at"))
@@ -2122,6 +2142,8 @@ class DashboardApplication:
             if client is None:
                 raise ValueError(f"Cliente nao encontrado: {client_id}")
             client_request = dict(request)
+            if run_scope == "all":
+                client_request["was_failure_policy"] = "retry_then_continue"
             client_request["historical_source"] = str(
                 client.get("historical_source") or "legacy"
             ).replace("_", "-")

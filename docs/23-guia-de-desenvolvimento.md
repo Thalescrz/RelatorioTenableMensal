@@ -60,7 +60,8 @@ frontmatter e links locais. Ele valida estrutura, não redação exata.
 - coleta geral independente de TAG;
 - comparativo da mesma TAG no tempo;
 - WAS opcional sem bloquear VM;
-- decisão manual WAS separada da continuação automática mensal;
+- decisão manual WAS separada da retentativa única com fallback do lote e do
+  automático mensal;
 - retentativa WAS publicada sem repetir VM/assets/TAG/Cloud, com hash VM invariável
   e rollback de documentos/manifesto;
 - `NOT_COLLECTED` WEB distinto de `NO_DATA` no dataset e no texto do DOCX;

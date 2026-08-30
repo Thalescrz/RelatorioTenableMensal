@@ -142,11 +142,20 @@ Use **Gerar todos** para colocar todos os clientes habilitados na fila. A execu�
 sequencial é a configuração segura inicial porque reduz concorrência de exports e
 torna os limites da API mais previsíveis.
 
+Nesse fluxo coletivo, a primeira falha WAS provoca uma única retentativa automática
+somente do componente WEB. Se a segunda tentativa falhar, o cliente continua na
+fila, publica os documentos sem WAS e registra `WAS_RETRY_EXHAUSTED`. A política é
+associada ao botão, inclusive quando houver apenas um cliente habilitado.
+
 ### Automático mensal
 
 A tarefa agendada chama o fluxo automático no primeiro dia do mês e coleta o mês
 anterior completo. O script de instalação é `scripts/install_monthly_task.ps1`; o
 fluxo executado fica em `scripts/run_monthly_orchestration.ps1`.
+
+O automático mensal aplica a mesma política de uma retentativa exclusiva do WAS e
+fallback sem WEB. Ele não aguarda interação e nunca repete VM, assets, TAG ou Cloud
+por causa dessa falha.
 
 ## Acompanhar progresso
 
@@ -168,16 +177,18 @@ de chunks como confirmação de término.
 
 ### Falha isolada no WAS
 
-Na execução manual, a interface mantém VM, assets, TAG e Cloud já coletados e
-solicita uma decisão:
+Na execução manual individual, a interface mantém VM, assets, TAG e Cloud já
+coletados e solicita uma decisão:
 
 - **Continuar sem WEB** conclui a publicação com alerta;
 - **Tentar WEB novamente** executa somente WAS e reutiliza chunks já persistidos.
 
-Na execução mensal automática, os documentos VM são publicados para não bloquear a
-carteira. O alerta oferece apenas **Tentar WEB novamente**. Se a publicação já
-existir, a aplicação reconstrói o contexto pelo histórico compacto e substitui os
-DOCX VM/TAG sem repetir VM ou Cloud. Uma nova falha mantém a ação disponível.
+Em **Gerar todos** e na execução mensal automática, a aplicação tenta o WAS uma
+segunda vez antes da publicação. O sucesso remove o alerta inicial. Uma segunda
+falha publica os documentos sem WEB, registra `WAS_RETRY_EXHAUSTED` e pode manter
+**Tentar WEB novamente** disponível quando a causa continuar classificada como
+retentável. Essa ação posterior reconstrói o contexto pelo histórico compacto e
+substitui os DOCX VM/TAG sem repetir VM ou Cloud.
 
 No Word, “não foram identificadas vulnerabilidades WEB” significa coleta concluída
 sem ocorrências. A mensagem “não foi possível concluir a coleta WEB” indica dados
