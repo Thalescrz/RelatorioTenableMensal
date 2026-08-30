@@ -19,6 +19,7 @@ from tenable_reports.application.cloud_execution import (
     CloudExecutionStatus,
     CloudGeneratedDocument,
 )
+from tenable_reports.application.collect_was import WasCollectionAttempt
 from tenable_reports.application.tag_scope import VmTag
 from tenable_reports.application.was_recovery import (
     WasFailureDetails,
@@ -34,6 +35,37 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliTests(unittest.TestCase):
+    def test_run_client_parser_accepts_retry_then_continue_was_policy(self) -> None:
+        args = cli_module.build_parser().parse_args([
+            "run-client",
+            "--profile",
+            "profile.json",
+            "--was-failure-policy",
+            "retry_then_continue",
+        ])
+
+        self.assertEqual(args.was_failure_policy, "retry_then_continue")
+
+    def test_orchestrate_parser_accepts_explicit_was_policy(self) -> None:
+        args = cli_module.build_parser().parse_args([
+            "orchestrate",
+            "--config",
+            "clients.json",
+            "--was-failure-policy",
+            "retry_then_continue",
+        ])
+
+        self.assertEqual(args.was_failure_policy, "retry_then_continue")
+
+    def test_monthly_parser_uses_execution_default_for_was_policy(self) -> None:
+        args = cli_module.build_parser().parse_args([
+            "collect-monthly",
+            "--profile",
+            "profile.json",
+        ])
+
+        self.assertIsNone(args.was_failure_policy)
+
     def test_complete_run_publishes_one_standard_cloud_document(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -913,6 +945,250 @@ class CliTests(unittest.TestCase):
                 WasRecoveryStatus.WAITING_WAS_DECISION,
             )
             self.assertEqual(recovery_record.checkpoint, checkpoint)
+
+    def test_retry_then_continue_retries_only_was_before_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            period = previous_calendar_month(
+                reference_at="2026-08-12T10:00:00-03:00",
+                timezone_name="America/Fortaleza",
+            )
+            profile = SimpleNamespace(
+                client_id="cliente-was",
+                tenant_id="tenant-was",
+                was_scope=SimpleNamespace(application_ids=()),
+                reporting=SimpleNamespace(
+                    vm_export=SimpleNamespace(
+                        strategy="combined",
+                        num_assets_per_chunk=1000,
+                        selective_properties="disabled",
+                        manual_no_progress_seconds=900,
+                    ),
+                ),
+                report=SimpleNamespace(
+                    tag_reports=SimpleNamespace(enabled=False, tags=()),
+                ),
+            )
+            args = SimpleNamespace(
+                env_file=directory / "cliente.env",
+                profile=directory / "cliente.json",
+                output_root=directory,
+                run_id="run-was-lote",
+                num_assets=None,
+                vm_export_strategy=None,
+                vm_selective_mode=None,
+                historical_source=None,
+                force_live_collection=False,
+                include_output=False,
+                skip_history=True,
+                was_failure_policy="retry_then_continue",
+                was_num_assets=1000,
+            )
+            initial_failure = WasFailureDetails(
+                code="WAS_COLLECTION_UNAVAILABLE",
+                message="Primeira tentativa WAS falhou.",
+                retryable=True,
+                export_uuid="was-job",
+                origin="created",
+                remote_status="PROCESSING",
+                total_chunks=1,
+            )
+            external = SimpleNamespace(
+                normalized=SimpleNamespace(findings_path=directory / "findings.jsonl.gz"),
+                was_collection_status="UNAVAILABLE",
+                was_failure=initial_failure,
+                vm_export_mode="disabled",
+                vm_export_outcome="FULL",
+                vm_export_comparison_path=None,
+                warnings=({
+                    "code": initial_failure.code,
+                    "message": initial_failure.message,
+                    "retryable": True,
+                },),
+                collection_route="legacy_vm",
+                reconstruction_status="HISTORICAL_RECONSTRUCTION",
+                collection_sources=("tenable_vm_vulnerabilities",),
+            )
+            retry_collection = SimpleNamespace()
+            retry_attempt = WasCollectionAttempt(
+                result=retry_collection,
+                status="AVAILABLE",
+            )
+            assembled = object()
+
+            with (
+                patch.object(cli_module, "load_client_profile", return_value=profile),
+                patch.object(cli_module, "_compact_snapshot_repository", return_value=None),
+                patch.object(cli_module, "resolve_execution_collection_route", return_value=(SimpleNamespace(source=SimpleNamespace(value="legacy_vm"), accuracy=SimpleNamespace(value="historical_reconstruction")), None)),
+                patch.object(cli_module, "_load_credentials", return_value=object()),
+                patch.object(cli_module, "_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_was_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_inventory_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_selected_tags", return_value=()),
+                patch.object(cli_module, "_period_filters", return_value=({}, {})),
+                patch.object(cli_module, "_plugin_catalog_repository", return_value=None),
+                patch.object(cli_module, "collect_external_period", return_value=external),
+                patch.object(
+                    cli_module,
+                    "collect_optional_was_snapshot",
+                    return_value=retry_attempt,
+                ) as collect_was,
+                patch.object(cli_module, "normalize_was_collection") as normalize_was,
+                patch.object(
+                    cli_module,
+                    "_assemble_period_from_existing",
+                    return_value=assembled,
+                ) as assemble,
+            ):
+                result = cli_module._execute_period(
+                    args,
+                    execution_type="MANUAL",
+                    period=period,
+                )
+
+            self.assertIs(result, assembled)
+            collect_was.assert_called_once()
+            normalize_was.assert_called_once_with(
+                profile=profile,
+                collection=retry_collection,
+                output_root=directory / "manual",
+            )
+            self.assertEqual(
+                collect_was.call_args.kwargs["export_uuid"],
+                "was-job",
+            )
+            self.assertEqual(
+                assemble.call_args.kwargs["was_collection_status"],
+                "AVAILABLE",
+            )
+            self.assertEqual(
+                assemble.call_args.kwargs["collection_warnings"],
+                (),
+            )
+            self.assertIsNone(
+                assemble.call_args.kwargs["was_recovery_checkpoint"],
+            )
+
+    def test_retry_then_continue_publishes_without_was_after_second_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            period = previous_calendar_month(
+                reference_at="2026-08-12T10:00:00-03:00",
+                timezone_name="America/Fortaleza",
+            )
+            profile = SimpleNamespace(
+                client_id="cliente-was",
+                tenant_id="tenant-was",
+                reporting=SimpleNamespace(
+                    vm_export=SimpleNamespace(
+                        strategy="combined",
+                        num_assets_per_chunk=1000,
+                        selective_properties="disabled",
+                        automatic_no_progress_seconds=1800,
+                    ),
+                ),
+                report=SimpleNamespace(
+                    tag_reports=SimpleNamespace(enabled=False, tags=()),
+                ),
+            )
+            args = SimpleNamespace(
+                env_file=directory / "cliente.env",
+                profile=directory / "cliente.json",
+                output_root=directory,
+                run_id="run-was-mensal",
+                num_assets=None,
+                vm_export_strategy=None,
+                vm_selective_mode=None,
+                historical_source=None,
+                force_live_collection=False,
+                include_output=False,
+                skip_history=True,
+                was_failure_policy=None,
+            )
+            first_failure = WasFailureDetails(
+                code="WAS_COLLECTION_UNAVAILABLE",
+                message="Primeira tentativa WAS falhou.",
+                retryable=True,
+                export_uuid="was-job-1",
+            )
+            second_failure = WasFailureDetails(
+                code="WAS_COLLECTION_UNAVAILABLE",
+                message="Segunda tentativa WAS falhou.",
+                retryable=True,
+                export_uuid="was-job-2",
+            )
+            external = SimpleNamespace(
+                normalized=SimpleNamespace(findings_path=directory / "findings.jsonl.gz"),
+                was_collection_status="UNAVAILABLE",
+                was_failure=first_failure,
+                vm_export_mode="disabled",
+                vm_export_outcome="FULL",
+                vm_export_comparison_path=None,
+                warnings=({
+                    "code": first_failure.code,
+                    "message": first_failure.message,
+                    "retryable": True,
+                },),
+                collection_route="legacy_vm",
+                reconstruction_status="CURRENT_WINDOW",
+                collection_sources=("tenable_vm_vulnerabilities",),
+            )
+            retry_attempt = WasCollectionAttempt(
+                result=None,
+                status="UNAVAILABLE",
+                warnings=({
+                    "code": second_failure.code,
+                    "message": second_failure.message,
+                    "retryable": True,
+                },),
+                failure=second_failure,
+            )
+            assembled = object()
+
+            with (
+                patch.object(cli_module, "load_client_profile", return_value=profile),
+                patch.object(cli_module, "_compact_snapshot_repository", return_value=None),
+                patch.object(cli_module, "resolve_execution_collection_route", return_value=(SimpleNamespace(source=SimpleNamespace(value="legacy_vm"), accuracy=SimpleNamespace(value="current_window")), None)),
+                patch.object(cli_module, "_load_credentials", return_value=object()),
+                patch.object(cli_module, "_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_was_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_inventory_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_selected_tags", return_value=()),
+                patch.object(cli_module, "_period_filters", return_value=({}, {})),
+                patch.object(cli_module, "_plugin_catalog_repository", return_value=None),
+                patch.object(cli_module, "collect_external_period", return_value=external),
+                patch.object(
+                    cli_module,
+                    "_retry_was_once_before_publication",
+                    return_value=retry_attempt,
+                ),
+                patch.object(
+                    cli_module,
+                    "_assemble_period_from_existing",
+                    return_value=assembled,
+                ) as assemble,
+            ):
+                result = cli_module._execute_period(
+                    args,
+                    execution_type="AUTOMATIC_MONTHLY",
+                    period=period,
+                )
+
+            self.assertIs(result, assembled)
+            warning = assemble.call_args.kwargs["collection_warnings"]
+            self.assertEqual(len(warning), 1)
+            self.assertEqual(warning[0]["code"], "WAS_RETRY_EXHAUSTED")
+            self.assertIn("gerado sem WAS", warning[0]["message"])
+            checkpoint = assemble.call_args.kwargs["was_recovery_checkpoint"]
+            self.assertEqual(checkpoint.was_failure, second_failure)
+            self.assertEqual(checkpoint.was_status, "UNAVAILABLE")
+            checkpoint_path = Path(
+                assemble.call_args.kwargs["was_recovery_checkpoint_path"]
+            )
+            self.assertEqual(
+                load_was_recovery_checkpoint(checkpoint_path).was_failure,
+                second_failure,
+            )
 
     def test_run_client_returns_controlled_waiting_was_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:

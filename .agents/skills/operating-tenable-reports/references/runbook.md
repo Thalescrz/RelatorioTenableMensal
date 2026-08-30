@@ -90,6 +90,12 @@ Para VM, registre UUID, origem (`created`, `resumed` ou equivalente), estado,
 chunks persistidos e última mudança. Só `FINISHED` com chunks tratados encerra a
 etapa.
 
+**Gerar todos** usa `retry_then_continue`: a primeira falha WAS retenta somente o
+WEB; a segunda publica sem WAS e registra `WAS_RETRY_EXHAUSTED`. O automático
+mensal usa a mesma política sem interação. A execução individual permanece em
+`wait`, com decisão do analista. Nenhuma dessas retomadas repete VM, assets, TAG ou
+Cloud.
+
 Ao validar **Forçar nova coleta pela API**, encerre a conferência somente depois
 de confirmar:
 
@@ -131,6 +137,10 @@ rate limit e timeout permanecem visíveis.
 WAS roda separadamente e é best effort. Ausência de licença, permissão ou findings
 gera aviso/mensagem de ausência e não bloqueia VM. Diferencie progresso VM de
 progresso WAS; chunks VM finalizados não dizem nada sobre WAS.
+
+No lote e no mensal, espere no máximo duas tentativas WAS durante a execução. Se a
+segunda falhar, confirme a publicação sem WEB e o alerta `WAS_RETRY_EXHAUSTED`. No
+individual, aguarde a decisão explícita entre continuar sem WEB e retentar.
 
 ## Documentos e `MAIN`
 

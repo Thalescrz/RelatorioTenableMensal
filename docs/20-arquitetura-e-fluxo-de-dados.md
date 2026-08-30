@@ -135,12 +135,14 @@ Cada chunk é persistido assim que fica disponível. O manifesto parcial registr
 UUID, origem do job, chunks concluídos e progresso. Uma nova tentativa do mesmo
 trabalho pode reutilizar chunks íntegros sem baixá-los novamente.
 
-O manifesto parcial WAS segue a mesma regra. Uma falha manual cria checkpoint e
-interrompe o fluxo antes dos DOCX; uma falha mensal automática é registrada como
-retentável somente depois que a publicação VM e o snapshot compacto foram
-confirmados. A recuperação de uma publicação materializa VM/assets/TAG localmente
-do snapshot compacto, coleta apenas WAS e troca os documentos VM/TAG e o manifesto
-em uma transação com rollback. Cloud é preservado e não é executado novamente.
+O manifesto parcial WAS segue a mesma regra. Uma falha manual individual cria
+checkpoint e interrompe o fluxo antes dos DOCX para a decisão do analista. No botão
+**Gerar todos** e no mensal automático, a aplicação repete apenas o WAS uma vez; se
+a segunda tentativa falhar, publica sem WEB e registra `WAS_RETRY_EXHAUSTED`.
+VM, assets, TAG e Cloud nunca são repetidos por essa política. Uma recuperação
+posterior materializa VM/assets/TAG localmente do snapshot compacto, coleta apenas
+WAS e troca os documentos VM/TAG e o manifesto em uma transação com rollback.
+Cloud é preservado e não é executado novamente.
 
 O cancelamento automático é conservador: somente um job criado pela execução atual,
 sem progresso, pode ser cancelado ao atingir o limite. Job preexistente, fornecido

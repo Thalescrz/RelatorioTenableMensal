@@ -44,6 +44,7 @@ from tenable_reports.application.plugin_catalog import build_plugin_catalog_entr
 
 
 from tenable_reports.application.collect_was import (
+    WasCollectionAttempt,
     WasExportRequest,
     collect_optional_was_snapshot,
     collect_was_snapshot,
@@ -1214,6 +1215,54 @@ def _effective_vm_export_settings(
     return strategy, num_assets, selective_mode
 
 
+def _retry_was_once_before_publication(
+    args: argparse.Namespace,
+    *,
+    profile: ClientProfile,
+    period: ReportingPeriod,
+    output_root: Path,
+    run_id: str,
+    previous_failure: WasFailureDetails,
+) -> WasCollectionAttempt:
+    credentials = _load_credentials(args.env_file)
+    was_client = _was_client_from_environment(credentials)
+    reusable_statuses = {"FINISHED", "QUEUED", "PROCESSING"}
+    export_uuid = (
+        previous_failure.export_uuid
+        if previous_failure.remote_status in reusable_statuses
+        else None
+    )
+    attempt = collect_optional_was_snapshot(
+        client=was_client,
+        profile=profile,
+        request=WasExportRequest(
+            filters={
+                "since": period.start_epoch,
+                "state": ["OPEN", "REOPENED", "FIXED"],
+                "severity": ["LOW", "MEDIUM", "HIGH", "CRITICAL"],
+                **(
+                    {"asset_uuid": list(profile.was_scope.application_ids)}
+                    if profile.was_scope.application_ids
+                    else {}
+                ),
+            },
+            num_assets=getattr(args, "was_num_assets", 1000),
+            include_unlicensed=False,
+        ),
+        output_root=output_root,
+        run_id=run_id,
+        export_uuid=export_uuid,
+        progress_callback=_emit_progress_event,
+    )
+    if attempt.result is not None:
+        normalize_was_collection(
+            profile=profile,
+            collection=attempt.result,
+            output_root=output_root,
+        )
+    return attempt
+
+
 def _execute_period(
     args: argparse.Namespace,
     *,
@@ -1353,7 +1402,12 @@ def _execute_period(
                 was_failure=was_failure,
             )
             write_was_recovery_checkpoint(checkpoint_path, checkpoint)
-            if getattr(args, "was_failure_policy", "continue") == "wait":
+            was_failure_policy = getattr(args, "was_failure_policy", None) or (
+                "retry_then_continue"
+                if execution_type == "AUTOMATIC_MONTHLY"
+                else "continue"
+            )
+            if was_failure_policy == "wait":
                 _persist_was_recovery(
                     args,
                     checkpoint=checkpoint,
@@ -1366,8 +1420,43 @@ def _execute_period(
                     client_id=profile.client_id,
                     failure=was_failure,
                 )
-            was_recovery_checkpoint = checkpoint
-            was_recovery_checkpoint_path = checkpoint_path
+            if was_failure_policy == "retry_then_continue":
+                retry_attempt = _retry_was_once_before_publication(
+                    args,
+                    profile=profile,
+                    period=period,
+                    output_root=output_root,
+                    run_id=actual_run_id,
+                    previous_failure=was_failure,
+                )
+                was_collection_status = retry_attempt.status
+                non_was_warnings = tuple(
+                    warning for warning in collection_warnings
+                    if warning.get("code") != was_failure.code
+                )
+                if retry_attempt.failure is not None:
+                    collection_warnings = (*non_was_warnings, {
+                        "code": "WAS_RETRY_EXHAUSTED",
+                        "message": (
+                            "A segunda tentativa da coleta WEB também falhou. "
+                            "O relatório foi gerado sem WAS."
+                        ),
+                        "retryable": retry_attempt.failure.retryable,
+                        "export_uuid": retry_attempt.failure.export_uuid,
+                    })
+                    checkpoint = replace(
+                        checkpoint,
+                        was_status=retry_attempt.status,
+                        was_failure=retry_attempt.failure,
+                    )
+                    write_was_recovery_checkpoint(checkpoint_path, checkpoint)
+                    was_recovery_checkpoint = checkpoint
+                    was_recovery_checkpoint_path = checkpoint_path
+                else:
+                    collection_warnings = non_was_warnings
+            else:
+                was_recovery_checkpoint = checkpoint
+                was_recovery_checkpoint_path = checkpoint_path
     return _assemble_period_from_existing(
         args,
         profile=profile,
@@ -2692,6 +2781,7 @@ def command_orchestrate(args: argparse.Namespace) -> int:
             vm_export_strategy=args.vm_export_strategy,
             historical_source=args.historical_source,
             force_live_collection=args.force_live_collection,
+            was_failure_policy=getattr(args, "was_failure_policy", None),
         ),
         run_status=retention_state.get("run_status"),
         history_confirmed_run_ids=retention_state.get(
@@ -2868,9 +2958,12 @@ def _add_complete_collection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--was-num-assets", type=int, default=1000)
     parser.add_argument(
         "--was-failure-policy",
-        choices=("continue", "wait"),
-        default="continue",
-        help="Continua sem WAS ou aguarda uma decisão quando a coleta WEB falhar.",
+        choices=("continue", "wait", "retry_then_continue"),
+        default=None,
+        help=(
+            "Continua sem WAS, aguarda decisão ou tenta uma vez antes de "
+            "continuar quando a coleta WEB falhar."
+        ),
     )
     parser.add_argument("--include-software-vulns", action="store_true")
     parser.add_argument("--include-output", action="store_true")
@@ -3099,6 +3192,11 @@ def build_parser() -> argparse.ArgumentParser:
     monthly.add_argument("--vm-export-uuid")
     monthly.add_argument("--was-export-uuid")
     monthly.add_argument("--was-num-assets", type=int, default=1000)
+    monthly.add_argument(
+        "--was-failure-policy",
+        choices=("continue", "wait", "retry_then_continue"),
+        default=None,
+    )
     monthly.add_argument("--include-software-vulns", action="store_true")
     monthly.add_argument("--include-output", action="store_true")
     monthly.add_argument("--history-database")
@@ -3364,6 +3462,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--historical-source",
         choices=("legacy", "inventory-beta"),
         help="Sobrescreve a fonte historica dos clientes selecionados.",
+    )
+    orchestrate.add_argument(
+        "--was-failure-policy",
+        choices=("wait", "continue", "retry_then_continue"),
+        help=(
+            "Define se uma falha WAS aguarda decisão, continua imediatamente "
+            "ou tenta uma vez antes de continuar."
+        ),
     )
     orchestrate.add_argument(
         "--dry-run",

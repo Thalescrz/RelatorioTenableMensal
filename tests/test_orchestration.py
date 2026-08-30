@@ -599,7 +599,7 @@ class OrchestrationTests(unittest.TestCase):
         index = command.index("--vm-selective-mode")
         self.assertEqual(command[index + 1], "validation")
 
-    def test_client_command_waits_for_was_decision_only_in_manual_mode(self) -> None:
+    def test_client_command_retries_was_for_monthly_and_explicit_batch(self) -> None:
         config = load_orchestration_config(EXAMPLE_CONFIG)
 
         manual = build_client_command(
@@ -614,11 +614,22 @@ class OrchestrationTests(unittest.TestCase):
             request=OrchestrationRequest(mode="automatic"),
             client_run_id="run-automatic",
         )
+        batch = build_client_command(
+            config=config,
+            client=config.clients[0],
+            request=OrchestrationRequest(
+                mode="manual",
+                was_failure_policy="retry_then_continue",
+            ),
+            client_run_id="run-batch",
+        )
 
         manual_index = manual.index("--was-failure-policy")
         automatic_index = automatic.index("--was-failure-policy")
+        batch_index = batch.index("--was-failure-policy")
         self.assertEqual(manual[manual_index + 1], "wait")
-        self.assertEqual(automatic[automatic_index + 1], "continue")
+        self.assertEqual(automatic[automatic_index + 1], "retry_then_continue")
+        self.assertEqual(batch[batch_index + 1], "retry_then_continue")
 
     def test_client_command_propagates_forced_live_collection(self) -> None:
         config = load_orchestration_config(EXAMPLE_CONFIG)
