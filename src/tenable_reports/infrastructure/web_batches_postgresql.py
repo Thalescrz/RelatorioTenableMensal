@@ -6,6 +6,7 @@ from typing import Any, Sequence
 from uuid import UUID
 
 from tenable_reports.application.web_batches import (
+    BatchJobResult,
     WebBatchRepository,
     assert_sanitized_payload,
 )
@@ -256,6 +257,145 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 (job.batch_id, job.id, "JOB_STARTED", _jsonb({"worker_id": normalized_worker})),
             ).fetchone()
         return job
+
+    def complete_job(self, job_id: UUID, result: BatchJobResult) -> None:
+        assert_sanitized_payload(result.payload, path="job.result")
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                update {SCHEMA_NAME}.web_batch_jobs
+                set status = %s, exit_code = %s, error_code = %s,
+                    error_message = %s, payload = payload || %s,
+                    ended_at = case
+                        when %s = 'WAITING_WAS_DECISION' then null
+                        else now()
+                    end
+                where id = %s
+                returning {_JOB_COLUMNS}
+                """,
+                (
+                    result.status.value,
+                    result.exit_code,
+                    result.error_code,
+                    result.error_message,
+                    _jsonb(dict(result.payload)),
+                    result.status.value,
+                    job_id,
+                ),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Trabalho de lote nao encontrado.")
+            job = _job_from_row(row)
+            connection.execute(
+                f"""
+                update {SCHEMA_NAME}.web_batches batch
+                set status = case
+                        when exists (
+                            select 1 from {SCHEMA_NAME}.web_batch_jobs child
+                            where child.batch_id = batch.id
+                              and child.status in ('WAITING_WAS_DECISION', 'INTERRUPTED')
+                        ) then 'PAUSED'
+                        when exists (
+                            select 1 from {SCHEMA_NAME}.web_batch_jobs child
+                            where child.batch_id = batch.id
+                              and child.status in ('QUEUED', 'RUNNING', 'INTERRUPT_REQUESTED')
+                        ) then 'RUNNING'
+                        when exists (
+                            select 1 from {SCHEMA_NAME}.web_batch_jobs child
+                            where child.batch_id = batch.id and child.status = 'FAILED'
+                        ) then 'COMPLETE_WITH_FAILURES'
+                        when exists (
+                            select 1 from {SCHEMA_NAME}.web_batch_jobs child
+                            where child.batch_id = batch.id
+                              and child.status = 'COMPLETE_WITH_WARNINGS'
+                        ) then 'COMPLETE_WITH_WARNINGS'
+                        else 'COMPLETE'
+                    end,
+                    ended_at = case
+                        when exists (
+                            select 1 from {SCHEMA_NAME}.web_batch_jobs child
+                            where child.batch_id = batch.id
+                              and child.status in (
+                                  'QUEUED', 'RUNNING', 'WAITING_WAS_DECISION',
+                                  'INTERRUPT_REQUESTED', 'INTERRUPTED'
+                              )
+                        ) then null
+                        else now()
+                    end,
+                    version = version + 1
+                where id = %s
+                returning {_BATCH_COLUMNS}
+                """,
+                (job.batch_id,),
+            ).fetchone()
+            connection.execute(
+                f"""
+                insert into {SCHEMA_NAME}.web_batch_events (
+                    batch_id, job_id, event_type, payload
+                ) values (%s, %s, %s, %s)
+                returning id
+                """,
+                (
+                    job.batch_id,
+                    job.id,
+                    "JOB_FINISHED",
+                    _jsonb({"status": result.status.value}),
+                ),
+            ).fetchone()
+
+    def reconcile_abandoned_jobs(
+        self,
+        *,
+        active_worker_ids: set[str],
+    ) -> int:
+        active_workers = sorted(
+            str(worker).strip()
+            for worker in active_worker_ids
+            if str(worker).strip()
+        )
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                f"""
+                update {SCHEMA_NAME}.web_batch_jobs
+                set status = 'INTERRUPTED', ended_at = now(),
+                    error_code = 'LOCAL_WORKER_RESTARTED',
+                    error_message = 'Execucao local interrompida por reinicio.'
+                where status = 'RUNNING'
+                  and (worker_id is null or worker_id <> all(%s))
+                returning {_JOB_COLUMNS}
+                """,
+                (active_workers,),
+            ).fetchall()
+            jobs = tuple(_job_from_row(row) for row in rows)
+            for job in jobs:
+                connection.execute(
+                    f"""
+                    update {SCHEMA_NAME}.web_batches
+                    set status = 'PAUSED', version = version + 1
+                    where id = %s
+                      and status not in (
+                          'STOPPED', 'COMPLETE', 'COMPLETE_WITH_FAILURES',
+                          'COMPLETE_WITH_WARNINGS'
+                      )
+                    returning {_BATCH_COLUMNS}
+                    """,
+                    (job.batch_id,),
+                ).fetchone()
+                connection.execute(
+                    f"""
+                    insert into {SCHEMA_NAME}.web_batch_events (
+                        batch_id, job_id, event_type, payload
+                    ) values (%s, %s, %s, %s)
+                    returning id
+                    """,
+                    (
+                        job.batch_id,
+                        job.id,
+                        "JOB_RECOVERED_AS_INTERRUPTED",
+                        _jsonb({"previous_worker_id": job.worker_id}),
+                    ),
+                ).fetchone()
+        return len(jobs)
 
     def append_event(self, event: WebBatchEvent) -> None:
         assert_sanitized_payload(event.payload, path="event.payload")

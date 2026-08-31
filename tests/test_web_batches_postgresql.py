@@ -7,6 +7,8 @@ from uuid import UUID
 
 import pytest
 
+from tenable_reports.application.web_batches import BatchJobResult
+
 from tenable_reports.domain.web_batches import (
     BatchJobStatus,
     BatchStatus,
@@ -294,3 +296,57 @@ def test_database_status_includes_durable_batch_tables() -> None:
         "web_batch_jobs",
         "web_batch_events",
     }.issubset(set(database.connection_value.counted_tables))
+
+
+def test_repository_completes_job_and_derives_terminal_batch() -> None:
+    database = _Database(
+        [
+            _Cursor(one=_job_row(status="COMPLETE")),
+            _Cursor(one=_batch_row(status="COMPLETE")),
+            _Cursor(one=(1,)),
+        ]
+    )
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    repository.complete_job(
+        UUID(int=11),
+        BatchJobResult(
+            status=BatchJobStatus.COMPLETE,
+            exit_code=0,
+            payload={"run_id": "run-fixture"},
+        ),
+    )
+
+    job_sql, job_params = database.connection_value.calls[0]
+    assert "update tenable_reports.web_batch_jobs" in job_sql.lower()
+    assert "payload || %s" in job_sql.lower()
+    assert job_params[0] == "COMPLETE"
+    batch_sql, _ = database.connection_value.calls[1]
+    assert "complete_with_failures" in batch_sql.lower()
+    assert "complete_with_warnings" in batch_sql.lower()
+    event_sql, event_params = database.connection_value.calls[2]
+    assert "insert into tenable_reports.web_batch_events" in event_sql.lower()
+    assert event_params[2] == "JOB_FINISHED"
+
+
+def test_repository_reconciles_jobs_owned_by_inactive_workers() -> None:
+    database = _Database(
+        [
+            _Cursor(many=(_job_row(status="INTERRUPTED"),)),
+            _Cursor(one=_batch_row(status="PAUSED")),
+            _Cursor(one=(1,)),
+        ]
+    )
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    reconciled = repository.reconcile_abandoned_jobs(
+        active_worker_ids={"new-worker"}
+    )
+
+    assert reconciled == 1
+    reconcile_sql, reconcile_params = database.connection_value.calls[0]
+    assert "status = 'interrupted'" in reconcile_sql.lower()
+    assert "worker_id <> all" in reconcile_sql.lower()
+    assert reconcile_params == (["new-worker"],)
+    event_sql, event_params = database.connection_value.calls[2]
+    assert event_params[2] == "JOB_RECOVERED_AS_INTERRUPTED"
