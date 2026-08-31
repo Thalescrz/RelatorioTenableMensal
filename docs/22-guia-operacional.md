@@ -214,6 +214,21 @@ A aplicação cancela automaticamente somente exports criados pela execução at
 que chegam ao limite sem qualquer progresso. Um export reutilizado ou retomado não
 é cancelado automaticamente para evitar destruir trabalho válido de outra execução.
 
+Depois de um timeout, preserve o diretório da tentativa. Mesmo com `0/N` chunks,
+o manifesto parcial contém o UUID necessário para salvar a operação. Na próxima
+tentativa do mesmo período e trabalho lógico, a aplicação consulta esse UUID antes
+de criar outro export:
+
+- `PROCESSING` ou `QUEUED`: continua aguardando o mesmo job;
+- `FINISHED`: baixa os chunks ainda disponíveis e reaproveita os já persistidos;
+- `CANCELLED`, `FAILED`, `ERROR` ou HTTP 404: cria um novo job;
+- `FINISHED` com chunks restantes indisponíveis: considera o conteúdo expirado e
+  cria um novo job.
+
+Falhas de autenticação, rate limit e indisponibilidade da API interrompem a
+tentativa normalmente; elas não autorizam a criação silenciosa de exports
+duplicados.
+
 ## Propriedades seletivas
 
 O padrão seguro é payload completo. A opção seletiva deve ser ativada por cliente

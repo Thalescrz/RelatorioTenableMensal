@@ -24,8 +24,11 @@ from tenable_reports.domain.models import (
 )
 from tenable_reports.application.storage_guard import storage_preflight
 from tenable_reports.infrastructure.tenable_vm.client import (
+    ApiError,
     ExportJob,
     ExportTimeoutError,
+    FAILURE_STATES,
+    SUCCESS_STATES,
     TenableVmClient,
 )
 from tenable_reports.infrastructure.tenable_vm.parser import iter_chunk_records
@@ -308,6 +311,38 @@ def _load_resume_chunks(
     return str(payload.get("export_uuid") or "") or None, reusable
 
 
+def _resumable_export_is_available(
+    client: Any,
+    export_uuid: str,
+    resumed_chunks: Mapping[int, StoredChunk],
+) -> bool:
+    status_loader = getattr(client, "get_export_status", None)
+    if not callable(status_loader):
+        return True
+    try:
+        status = status_loader(export_uuid)
+    except ApiError as exc:
+        if exc.status_code == 404:
+            return False
+        raise
+    state = str(status.get("status") or "").strip().lower()
+    if state in FAILURE_STATES or state == "aborted":
+        return False
+    if state not in SUCCESS_STATES:
+        return True
+
+    available_chunks = set(TenableVmClient.completed_chunk_ids(status))
+    persisted_chunks = {int(chunk_id) for chunk_id in resumed_chunks}
+    total_chunks = max(
+        TenableVmClient.chunk_count(status, "total_chunks"),
+        TenableVmClient.chunk_count(status, "finished_chunks"),
+        TenableVmClient.chunk_count(status, "completed_chunks"),
+    )
+    if total_chunks == 0:
+        return True
+    return len(available_chunks | persisted_chunks) >= total_chunks
+
+
 def find_resumable_vm_manifest(
     output_root: str | Path,
     *,
@@ -363,7 +398,7 @@ def find_resumable_vm_manifest(
             client_id=profile.client_id,
             tenant_id=profile.tenant_id,
         )
-        if export_uuid and reusable:
+        if export_uuid:
             return candidate
     return None
 
@@ -432,6 +467,13 @@ def collect_vm_snapshot(
         client_id=profile.client_id,
         tenant_id=profile.tenant_id,
     )
+    if resumed_export_uuid and not _resumable_export_is_available(
+        client,
+        resumed_export_uuid,
+        resumed_chunks,
+    ):
+        resumed_export_uuid = None
+        resumed_chunks = {}
     start_arguments = {
         "filters": request.filters,
         "num_assets": request.num_assets,
@@ -541,6 +583,10 @@ def collect_vm_snapshot(
             manifest_payload(status="PROCESSING"),
         )
 
+    _write_json_replace(
+        partial_manifest_path,
+        manifest_payload(status="PROCESSING"),
+    )
     emit_progress(
         "STARTED",
         completed_chunks=0,

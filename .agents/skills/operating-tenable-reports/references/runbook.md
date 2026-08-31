@@ -119,8 +119,13 @@ confirmação do UUID e da execução. O cancelamento automático é permitido a
 para job criado pela execução atual que chegou ao limite sem progresso. Preserve
 jobs fornecidos, preexistentes ou retomados.
 
-Se houve chunks persistidos, a tentativa seguinte deve retomá-los. Não apague o
-manifesto parcial antes de diagnosticar.
+Não apague o manifesto parcial antes de diagnosticar, mesmo quando nenhum chunk
+chegou. Ele é criado ao receber o UUID e permite que a tentativa seguinte consulte
+o job remoto antes de abrir outro. Se estiver `PROCESSING` ou `QUEUED`, retome a
+espera; se estiver `FINISHED`, baixe os chunks ainda disponíveis e reutilize os
+locais. Só abra um novo export quando o anterior estiver terminal, retornar HTTP
+404 ou tiver finalizado com chunks restantes já expirados. Não transforme
+autenticação, rate limit ou erro de servidor em um novo POST.
 
 ## Propriedades seletivas
 

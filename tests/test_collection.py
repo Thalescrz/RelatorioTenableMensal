@@ -164,6 +164,43 @@ class IncrementalTimeoutCollectionClient(TimedOutCollectionClient):
         return b'{"id":"finding-partial","state":"OPEN"}\n'
 
 
+class ProgressWithoutChunkTimeoutCollectionClient(TimedOutCollectionClient):
+    def __init__(self) -> None:
+        super().__init__(origin="created")
+
+    def wait_for_completion(self, export_uuid: str, *, progress_callback=None):
+        status = {
+            "export_uuid": export_uuid,
+            "status": "PROCESSING",
+            "chunks_available": [],
+            "completed_chunks": 0,
+            "total_chunks": 1,
+            "progress_made": True,
+        }
+        if progress_callback is not None:
+            progress_callback(status)
+        raise ExportTimeoutError(
+            "Tempo maximo excedido durante o processamento do export VM.",
+            export_uuid=export_uuid,
+            last_status=status,
+            progress_made=True,
+            timeout_phase="processing",
+        )
+
+
+class StatusAwareResumeClient(FakeCollectionClient):
+    def __init__(self, status: dict[str, Any] | ApiError) -> None:
+        super().__init__({1: b'{"id":"finding-recovered","state":"OPEN"}\n'})
+        self.status = status
+        self.status_calls: list[str] = []
+
+    def get_export_status(self, export_uuid: str) -> dict[str, Any]:
+        self.status_calls.append(export_uuid)
+        if isinstance(self.status, ApiError):
+            raise self.status
+        return dict(self.status)
+
+
 class FakeWasCollectionClient:
     def __init__(self, chunks: dict[int, bytes]) -> None:
         self.chunks = chunks
@@ -490,6 +527,187 @@ class CollectionTests(unittest.TestCase):
                 partial_path,
             )
 
+    def test_progress_without_available_chunk_preserves_resumable_uuid(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        request = VulnerabilityExportRequest(filters={"state": ["OPEN"]})
+        client = ProgressWithoutChunkTimeoutCollectionClient()
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExportTimeoutError) as caught:
+                collect_vm_snapshot(
+                    client=client,  # type: ignore[arg-type]
+                    profile=profile,
+                    request=request,
+                    output_root=directory,
+                    run_id="run-progress-no-chunk",
+                    logical_job_id="logical-july",
+                )
+            partial_path = next(Path(directory).rglob("manifest.partial.json"))
+            manifest = json.loads(partial_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(manifest["export_uuid"], "fixture-stuck-export")
+            self.assertEqual(manifest["chunks"], [])
+            self.assertEqual(client.cancelled, [])
+            self.assertEqual(
+                Path(caught.exception.last_status["partial_manifest"]),
+                partial_path,
+            )
+            self.assertEqual(
+                find_resumable_vm_manifest(
+                    directory,
+                    profile=profile,
+                    request=request,
+                    logical_job_id="logical-july",
+                ),
+                partial_path,
+            )
+
+    def test_finished_resumed_uuid_is_checked_and_downloaded_without_new_export(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        with tempfile.TemporaryDirectory() as directory:
+            resume_manifest = Path(directory) / "resume.json"
+            resume_manifest.write_text(json.dumps({
+                "schema_version": 3,
+                "run_id": "old-run",
+                "logical_job_id": "logical-july",
+                "client_id": profile.client_id,
+                "tenant_id": profile.tenant_id,
+                "source": "tenable_vm_vulnerabilities",
+                "export_uuid": "old-export",
+                "chunks": [],
+            }), encoding="utf-8")
+            client = StatusAwareResumeClient({
+                "status": "FINISHED",
+                "chunks_available": [1],
+                "finished_chunks": 1,
+                "total_chunks": 1,
+            })
+
+            result = collect_vm_snapshot(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                output_root=Path(directory) / "retry",
+                run_id="run-retry-finished",
+                logical_job_id="logical-july",
+                resume_from=resume_manifest,
+            )
+
+            manifest = json.loads(result.raw_manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(client.status_calls, ["old-export"])
+            self.assertEqual(client.start_arguments, {})
+            self.assertEqual(manifest["export_uuid"], "old-export")
+            self.assertEqual(manifest["origin"], "resumed")
+            self.assertEqual(result.snapshot.record_count, 1)
+
+    def test_active_resumed_uuid_continues_without_new_export(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        with tempfile.TemporaryDirectory() as directory:
+            resume_manifest = Path(directory) / "resume.json"
+            resume_manifest.write_text(json.dumps({
+                "schema_version": 3,
+                "run_id": "old-run",
+                "logical_job_id": "logical-july",
+                "client_id": profile.client_id,
+                "tenant_id": profile.tenant_id,
+                "source": "tenable_vm_vulnerabilities",
+                "export_uuid": "active-export",
+                "chunks": [],
+            }), encoding="utf-8")
+            client = StatusAwareResumeClient({
+                "status": "PROCESSING",
+                "chunks_available": [],
+                "total_chunks": 1,
+            })
+
+            result = collect_vm_snapshot(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                output_root=Path(directory) / "retry",
+                run_id="run-retry-active",
+                logical_job_id="logical-july",
+                resume_from=resume_manifest,
+            )
+
+            manifest = json.loads(result.raw_manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(client.status_calls, ["active-export"])
+            self.assertEqual(client.start_arguments, {})
+            self.assertEqual(manifest["export_uuid"], "active-export")
+            self.assertEqual(manifest["origin"], "resumed")
+
+    def test_resume_status_error_other_than_not_found_remains_visible(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        with tempfile.TemporaryDirectory() as directory:
+            resume_manifest = Path(directory) / "resume.json"
+            resume_manifest.write_text(json.dumps({
+                "schema_version": 3,
+                "run_id": "old-run",
+                "logical_job_id": "logical-july",
+                "client_id": profile.client_id,
+                "tenant_id": profile.tenant_id,
+                "source": "tenable_vm_vulnerabilities",
+                "export_uuid": "protected-export",
+                "chunks": [],
+            }), encoding="utf-8")
+            client = StatusAwareResumeClient(
+                ApiError("Limite da API.", status_code=429)
+            )
+
+            with self.assertRaises(ApiError):
+                collect_vm_snapshot(
+                    client=client,  # type: ignore[arg-type]
+                    profile=profile,
+                    request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                    output_root=Path(directory) / "retry",
+                    run_id="run-retry-rate-limit",
+                    logical_job_id="logical-july",
+                    resume_from=resume_manifest,
+                )
+
+            self.assertEqual(client.status_calls, ["protected-export"])
+            self.assertEqual(client.start_arguments, {})
+
+    def test_terminal_or_expired_resumed_uuid_starts_new_export(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        cases = (
+            {"status": "CANCELLED", "chunks_available": [], "total_chunks": 1},
+            ApiError("Export nao encontrado.", status_code=404),
+            {"status": "FINISHED", "chunks_available": [], "total_chunks": 1},
+        )
+        for index, remote_status in enumerate(cases):
+            with self.subTest(remote_status=remote_status):
+                with tempfile.TemporaryDirectory() as directory:
+                    resume_manifest = Path(directory) / "resume.json"
+                    resume_manifest.write_text(json.dumps({
+                        "schema_version": 3,
+                        "run_id": "old-run",
+                        "logical_job_id": "logical-july",
+                        "client_id": profile.client_id,
+                        "tenant_id": profile.tenant_id,
+                        "source": "tenable_vm_vulnerabilities",
+                        "export_uuid": f"old-export-{index}",
+                        "chunks": [],
+                    }), encoding="utf-8")
+                    client = StatusAwareResumeClient(remote_status)
+
+                    result = collect_vm_snapshot(
+                        client=client,  # type: ignore[arg-type]
+                        profile=profile,
+                        request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                        output_root=Path(directory) / "retry",
+                        run_id=f"run-retry-new-{index}",
+                        logical_job_id="logical-july",
+                        resume_from=resume_manifest,
+                    )
+
+                    manifest = json.loads(
+                        result.raw_manifest_path.read_text(encoding="utf-8")
+                    )
+                    self.assertEqual(client.status_calls, [f"old-export-{index}"])
+                    self.assertNotEqual(client.start_arguments, {})
+                    self.assertEqual(manifest["export_uuid"], "fixture-export")
+                    self.assertEqual(manifest["origin"], "created")
+
     def test_partial_manifest_reuses_downloaded_chunk_on_retry(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
         first_client = IncrementalTimeoutCollectionClient()
@@ -741,6 +959,25 @@ class CollectionTests(unittest.TestCase):
         self.assertEqual(attempt.failure.total_chunks, 1)
         self.assertFalse(attempt.failure.progress_made)
         self.assertTrue(attempt.failure.safe_cancel_available)
+
+    def test_was_timeout_without_chunks_preserves_uuid_in_partial_manifest(self) -> None:
+        profile = load_client_profile(
+            ROOT / "clients/examples/client-profile-intelligence-expanded.json"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            attempt = collect_optional_was_snapshot(
+                client=TimedOutWasCollectionClient({}),  # type: ignore[arg-type]
+                profile=profile,
+                request=WasExportRequest(filters={"state": ["OPEN"]}),
+                output_root=directory,
+                run_id="run-was-timeout-no-chunks",
+            )
+            partial_path = next(Path(directory).rglob("manifest.partial.json"))
+            manifest = json.loads(partial_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(attempt.failure.export_uuid, "fixture-was-export")
+        self.assertEqual(manifest["export_uuid"], "fixture-was-export")
+        self.assertEqual(manifest["chunks"], [])
 
     def test_was_collection_writes_immutable_dedicated_snapshot(self) -> None:
         profile = load_client_profile(

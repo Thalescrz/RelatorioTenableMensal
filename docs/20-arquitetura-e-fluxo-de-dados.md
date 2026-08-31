@@ -131,11 +131,22 @@ O export VM é assíncrono. `total_chunks` maior que zero não significa conclus
 job só está completo quando o estado remoto é `FINISHED` e os chunks disponíveis
 foram tratados.
 
-Cada chunk é persistido assim que fica disponível. O manifesto parcial registra
-UUID, origem do job, chunks concluídos e progresso. Uma nova tentativa do mesmo
-trabalho pode reutilizar chunks íntegros sem baixá-los novamente.
+O manifesto parcial é criado assim que a API fornece o UUID, mesmo antes do
+primeiro chunk. Cada chunk é persistido assim que fica disponível. O checkpoint
+registra UUID, origem do job, consulta e chunks concluídos, permitindo retomar
+também um export que ainda estava em processamento sem criar uma operação
+duplicada.
 
-O manifesto parcial WAS segue a mesma regra. Uma falha manual individual cria
+Antes de abrir um novo export VM para o mesmo trabalho lógico, a aplicação consulta
+o UUID preservado. Estados ativos continuam em acompanhamento; um estado
+`FINISHED` reutiliza os chunks ainda disponíveis e os já persistidos. Um novo
+export só é aberto quando o anterior está terminal (`CANCELLED`, `FAILED` ou
+`ERROR`), não existe mais (HTTP 404) ou terminou sem que todos os chunks restantes
+continuem disponíveis. Erros de autenticação, limite ou servidor não são
+convertidos silenciosamente em um novo job.
+
+O manifesto parcial WAS também nasce antes do primeiro chunk, preservando o UUID
+para a retomada já controlada pelo checkpoint. Uma falha manual individual cria
 checkpoint e interrompe o fluxo antes dos DOCX para a decisão do analista. No botão
 **Gerar todos** e no mensal automático, a aplicação repete apenas o WAS uma vez; se
 a segunda tentativa falhar, publica sem WEB e registra `WAS_RETRY_EXHAUSTED`.
