@@ -21,6 +21,35 @@ class BatchJobResult:
     error_message: str | None = None
     payload: Mapping[str, Any] = field(default_factory=dict)
 
+_SENSITIVE_PAYLOAD_KEYS = frozenset({
+    "access_key",
+    "secret_key",
+    "api_key",
+    "api_secret",
+    "api_token",
+    "cloud_token",
+    "token",
+    "password",
+    "credential",
+    "credentials",
+    "authorization",
+    "bearer_token",
+})
+
+
+def assert_sanitized_payload(value: Any, *, path: str = "payload") -> None:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            normalized_key = str(key).strip().casefold().replace("-", "_")
+            if normalized_key in _SENSITIVE_PAYLOAD_KEYS:
+                raise ValueError(
+                    f"O campo {path}.{key} pode conter credencial e nao pode ser persistido."
+                )
+            assert_sanitized_payload(nested, path=f"{path}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, nested in enumerate(value):
+            assert_sanitized_payload(nested, path=f"{path}[{index}]")
 
 class WebBatchRepository(Protocol):
     def create_batch(

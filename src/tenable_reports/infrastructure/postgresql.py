@@ -265,6 +265,9 @@ class PostgresDatabase:
             "compact_finding_snapshots",
             "cloud_report_snapshots",
             "cloud_contract_checks",
+            "web_batches",
+            "web_batch_jobs",
+            "web_batch_events",
         )
         with self.connection() as connection:
             server = connection.execute(

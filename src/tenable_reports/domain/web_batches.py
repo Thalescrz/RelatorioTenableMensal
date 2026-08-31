@@ -166,6 +166,10 @@ class WebBatch:
     options: Mapping[str, Any] = field(default_factory=dict)
     source_batch_id: UUID | None = None
     requested_action: BatchAction | None = None
+    version: int = 0
+    created_at: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "options", MappingProxyType(dict(self.options)))
@@ -181,6 +185,18 @@ class WebBatchJob:
     attempt_number: int
     payload: Mapping[str, Any] = field(default_factory=dict)
     retry_of_batch_job_id: UUID | None = None
+    worker_id: str | None = None
+    process_id: int | None = None
+    control_file: str | None = None
+    orchestration_run_id: str | None = None
+    logical_job_id: str | None = None
+    run_id: str | None = None
+    exit_code: int | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    created_at: str | None = None
+    started_at: str | None = None
+    ended_at: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", MappingProxyType(dict(self.payload)))
@@ -192,6 +208,9 @@ class WebBatchEvent:
     event_type: str
     payload: Mapping[str, Any] = field(default_factory=dict)
     job_id: UUID | None = None
+    actor: str | None = None
+    idempotency_key: str | None = None
+    created_at: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "payload", MappingProxyType(dict(self.payload)))
