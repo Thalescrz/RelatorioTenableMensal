@@ -262,6 +262,10 @@ def collect_was_snapshot(
             manifest_payload(status="PROCESSING"),
         )
 
+    _write_json_replace(
+        partial_manifest_path,
+        manifest_payload(status="PROCESSING"),
+    )
     emit_progress(
         "STARTED",
         completed_chunks=0,
