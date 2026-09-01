@@ -153,6 +153,30 @@ def test_frontend_exposes_contextual_durable_batch_controls() -> None:
     assert ".batch-actions" in css
 
 
+def test_frontend_exposes_component_status_and_selective_retry_controls() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+    css = (STATIC / "app.css").read_text(encoding="utf-8")
+
+    for element_id in (
+        "component-retry-dialog",
+        "component-retry-list",
+        "confirm-component-retry",
+    ):
+        assert f'id="{element_id}"' in html
+    assert (
+        "Tentar componentes com falha" in html
+        or "Tentar componentes com falha" in javascript
+    )
+    assert "Selecionar componentes" in html or "Selecionar componentes" in javascript
+    assert "/components" in javascript
+    assert "/retry-components" in javascript
+    assert "component-status-chip" in javascript
+    assert ".component-status-chip" in css
+    assert "Tentar Cloud novamente" in javascript
+    assert "/retry-cloud" in javascript
+
+
 def test_frontend_offers_retry_instead_of_resume_for_recovered_paused_batch() -> None:
     javascript = (STATIC / "app.js").read_text(encoding="utf-8")
 

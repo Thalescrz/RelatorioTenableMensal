@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 from datetime import datetime, timedelta, timezone
 from dataclasses import replace
 from pathlib import Path
+from uuid import UUID
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -35,6 +36,12 @@ from tenable_reports.application.was_recovery import (
     write_was_recovery_checkpoint,
 )
 from tenable_reports.config.profile import load_client_profile
+from tenable_reports.domain.report_components import (
+    ComponentAttempt,
+    ComponentStage,
+    ComponentStatus,
+    ReportComponent,
+)
 from tenable_reports.domain.report_reference import READY_STATUS, ReportCandidate, ReportOrigin, reference_key_for_candidate
 from tenable_reports.webapp.server import (
     DashboardApplication,
@@ -156,6 +163,28 @@ class LocalClient:
         except HTTPError as exc:
             return exc.code, dict(exc.headers), exc.read()
         return response.status, dict(response.headers), response.read()
+
+
+class _InMemoryComponentRepository:
+    def __init__(self, attempts: tuple[ComponentAttempt, ...]) -> None:
+        self.attempts = list(attempts)
+
+    def create_attempt(self, attempt: ComponentAttempt) -> ComponentAttempt:
+        self.attempts.append(attempt)
+        return attempt
+
+    def latest_attempts(
+        self,
+        *,
+        source_run_id: str,
+        client_id: str,
+    ) -> tuple[ComponentAttempt, ...]:
+        return tuple(
+            attempt
+            for attempt in self.attempts
+            if attempt.source_run_id == source_run_id
+            and attempt.client_id == client_id
+        )
 
 
 class _ArchiveDashboardDatabase:
@@ -2386,6 +2415,213 @@ class WebDashboardTests(unittest.TestCase):
             self.assertEqual(job["cloud_progress"]["stage"], "COLLECTION")
             self.assertEqual(job["cloud_progress"]["source"], "findings")
             self.assertEqual(job["cloud_status"], "COMPLETE")
+
+    def test_deleted_report_cannot_expose_or_enqueue_component_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = InMemoryReportRegistry()
+            registry.register_report(
+                valid_run("run-deleted", client_id="client-deleted")
+            )
+            registry.soft_delete(
+                "run-deleted",
+                actor="analista",
+                reason="conjunto removido",
+                allow_gap=True,
+            )
+            component_repository = _InMemoryComponentRepository(
+                (
+                    ComponentAttempt(
+                        id=UUID(int=804),
+                        client_id="client-deleted",
+                        source_run_id="run-deleted",
+                        component=ReportComponent.CLOUD,
+                        status=ComponentStatus.FAILED,
+                        stage=ComponentStage.RENDER,
+                        attempt_number=1,
+                        retryable=True,
+                        failure_code="CLOUD_RENDER_FAILED",
+                        failure_message="Falha sanitizada ao renderizar Cloud.",
+                    ),
+                )
+            )
+            enqueued: list[dict[str, object]] = []
+
+            def enqueue_component_retry(**values: object) -> dict[str, object]:
+                enqueued.append(dict(values))
+                return {"job_id": "unexpected-component-retry"}
+
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=registry,
+                component_repository=component_repository,
+                component_retry_enqueuer=enqueue_component_retry,
+            )
+            app.config.add_client({
+                "client_id": "client-deleted",
+                "display_name": "Cliente Excluído",
+            })
+            client = LocalClient(app)
+            try:
+                retry_status, _ = client.request(
+                    "POST",
+                    "/api/reports/run-deleted/retry-components",
+                    {"confirmation": "RETENTAR COMPONENTES run-deleted"},
+                )
+            finally:
+                client.close()
+            rows = app.report_rows("client-deleted", include_deleted=True)
+
+            with self.subTest("retry route rejects deleted report"):
+                self.assertEqual(retry_status, 400)
+                self.assertEqual(enqueued, [])
+            with self.subTest("deleted report hides component retry metadata"):
+                self.assertEqual(len(rows), 1)
+                self.assertIsNotNone(rows[0]["deleted_at"])
+                self.assertNotIn("component_state", rows[0])
+
+    def test_component_retry_routes_expose_status_and_enqueue_only_retryable_failures(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            registry = InMemoryReportRegistry()
+            registry.register_report(valid_run("run-a", client_id="client-a"))
+            component_repository = _InMemoryComponentRepository(
+                (
+                    ComponentAttempt(
+                        id=UUID(int=801),
+                        client_id="client-a",
+                        source_run_id="run-a",
+                        component=ReportComponent.VM_CORE,
+                        status=ComponentStatus.COMPLETE,
+                        stage=ComponentStage.REPORT_PUBLICATION,
+                        attempt_number=1,
+                        artifact_references={"documents": ["vm.docx"]},
+                    ),
+                    ComponentAttempt(
+                        id=UUID(int=802),
+                        client_id="client-a",
+                        source_run_id="run-a",
+                        component=ReportComponent.WAS,
+                        status=ComponentStatus.COMPLETE,
+                        stage=ComponentStage.REPORT_PUBLICATION,
+                        attempt_number=1,
+                        artifact_references={"documents": ["was.docx"]},
+                    ),
+                    ComponentAttempt(
+                        id=UUID(int=803),
+                        client_id="client-a",
+                        source_run_id="run-a",
+                        component=ReportComponent.CLOUD,
+                        status=ComponentStatus.FAILED,
+                        stage=ComponentStage.RENDER,
+                        attempt_number=1,
+                        retryable=True,
+                        failure_code="CLOUD_RENDER_FAILED",
+                        failure_message="Falha sanitizada ao renderizar Cloud.",
+                    ),
+                )
+            )
+            enqueued: list[dict[str, object]] = []
+
+            def enqueue_component_retry(
+                *,
+                run_id: str,
+                client_id: str,
+                selected_components: tuple[ReportComponent, ...],
+                failed_only: bool,
+            ) -> dict[str, object]:
+                record = {
+                    "run_id": run_id,
+                    "client_id": client_id,
+                    "selected_components": [
+                        component.value for component in selected_components
+                    ],
+                    "failed_only": failed_only,
+                }
+                enqueued.append(record)
+                return {
+                    "job_id": "component-retry-1",
+                    "operation": "component_retry",
+                    **record,
+                }
+
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=registry,
+                component_repository=component_repository,
+                component_retry_enqueuer=enqueue_component_retry,
+            )
+            app.config.add_client({
+                "client_id": "client-a",
+                "display_name": "Cliente A",
+            })
+            client = LocalClient(app)
+            try:
+                get_status, component_payload = client.request(
+                    "GET", "/api/reports/run-a/components"
+                )
+                retry_status, retry_payload = client.request(
+                    "POST",
+                    "/api/reports/run-a/retry-components",
+                    {"confirmation": "RETENTAR COMPONENTES run-a"},
+                )
+                complete_status, _ = client.request(
+                    "POST",
+                    "/api/reports/run-a/retry-components",
+                    {
+                        "components": ["VM_CORE"],
+                        "confirmation": "RETENTAR COMPONENTES run-a",
+                    },
+                )
+                unknown_status, _ = client.request(
+                    "POST",
+                    "/api/reports/run-a/retry-components",
+                    {
+                        "components": ["UNKNOWN"],
+                        "confirmation": "RETENTAR COMPONENTES run-a",
+                    },
+                )
+            finally:
+                client.close()
+
+            self.assertEqual(get_status, 200)
+            self.assertEqual(component_payload["status"], "PARTIAL_FAILURE")
+            self.assertEqual(component_payload["components"], [
+                {
+                    "component": "VM_CORE",
+                    "status": "COMPLETE",
+                    "stage": "REPORT_PUBLICATION",
+                    "retryable": False,
+                },
+                {
+                    "component": "WAS",
+                    "status": "COMPLETE",
+                    "stage": "REPORT_PUBLICATION",
+                    "retryable": False,
+                },
+                {
+                    "component": "CLOUD",
+                    "status": "FAILED",
+                    "stage": "RENDER",
+                    "retryable": True,
+                },
+            ])
+            self.assertEqual(component_payload["retryable_components"], ["CLOUD"])
+            self.assertEqual(retry_status, 202)
+            self.assertEqual(retry_payload["job"]["operation"], "component_retry")
+            self.assertEqual(retry_payload["job"]["selected_components"], ["CLOUD"])
+            self.assertEqual(complete_status, 400)
+            self.assertEqual(unknown_status, 400)
+            self.assertEqual(enqueued, [{
+                "run_id": "run-a",
+                "client_id": "client-a",
+                "selected_components": ["CLOUD"],
+                "failed_only": True,
+            }])
 
     def test_cloud_retry_route_requires_exact_confirmation_and_runs_only_retry_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

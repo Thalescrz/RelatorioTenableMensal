@@ -105,6 +105,18 @@
     <div class="report-list" id="report-list"></div>
   </dialog>
 
+  <dialog id="component-retry-dialog" class="dialog component-retry-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">COMPONENTES</p><h2>Selecionar componentes</h2><p>Somente falhas retentáveis podem ser executadas novamente.</p></div>
+      <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
+    </div>
+    <div class="component-retry-list" id="component-retry-list"></div>
+    <div class="component-retry-footer">
+      <button class="button ghost close-dialog" type="button">Cancelar</button>
+      <button class="button primary" id="confirm-component-retry" type="button">Tentar componentes selecionados</button>
+    </div>
+  </dialog>
+
   <dialog id="archive-dialog" class="dialog archive-dialog">
     <div class="dialog-head">
       <div><p class="eyebrow">DOWNLOAD DA CARTEIRA</p><h2>Baixar ZIP mensal</h2><p>O arquivo usa somente o conjunto MAIN de cada cliente.</p></div>

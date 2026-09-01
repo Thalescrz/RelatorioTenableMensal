@@ -57,6 +57,7 @@ from tenable_reports.application.report_registry import (
     MainDeletionRequiresDecision,
     ReportRegistry,
 )
+from tenable_reports.application.report_components import ReportComponentRepository
 from tenable_reports.application.report_set_purge import (
     ActiveReportSetError,
     MainReportReplacementRequired,
@@ -103,6 +104,9 @@ from tenable_reports.infrastructure.postgresql import (
     SCHEMA_NAME,
 )
 from tenable_reports.infrastructure.report_registry_postgresql import PostgresReportRegistry
+from tenable_reports.infrastructure.report_components_postgresql import (
+    PostgresReportComponentRepository,
+)
 from tenable_reports.infrastructure.report_set_purge_postgresql import (
     PostgresReportSetPurgeRepository,
 )
@@ -113,6 +117,12 @@ from tenable_reports.infrastructure.web_batches_postgresql import (
     PostgresWebBatchRepository,
 )
 from tenable_reports.domain.report_reference import reference_key_for_candidate
+from tenable_reports.domain.report_components import (
+    ComponentAttempt,
+    ComponentStatus,
+    ReportComponent,
+    summarize_component_set,
+)
 from tenable_reports.domain.web_batches import BatchAction
 from tenable_reports.infrastructure.tenable_cloud.client import (
     CloudGraphQLClient,
@@ -2091,6 +2101,8 @@ class DashboardApplication:
         cloud_contract_invalidator: Callable[..., int] | None = None,
         was_recovery_repository: Any | None = None,
         batch_repository: WebBatchRepository | None = None,
+        component_repository: ReportComponentRepository | None = None,
+        component_retry_enqueuer: Callable[..., Mapping[str, Any]] | None = None,
         require_durable_batches: bool = False,
     ) -> None:
         self.project_root = project_root.resolve()
@@ -2113,6 +2125,13 @@ class DashboardApplication:
         except Exception as exc:
             self.database = None
             self.database_error = _safe_error(str(exc), limit=500)
+        self.component_repository = component_repository
+        if self.component_repository is None and self.database is not None:
+            self.component_repository = PostgresReportComponentRepository(
+                self.database.database,
+                migrate=False,
+            )
+        self.component_retry_enqueuer = component_retry_enqueuer
         self.batch_repository = batch_repository
         if self.batch_repository is None and self.database is not None:
             self.batch_repository = PostgresWebBatchRepository(
@@ -2214,6 +2233,113 @@ class DashboardApplication:
                 "plan": plan.to_dict(),
             }
 
+    @staticmethod
+    def _component_state_payload(
+        run_id: str,
+        attempts: Sequence[ComponentAttempt],
+    ) -> dict[str, Any]:
+        latest: dict[ReportComponent, ComponentAttempt] = {}
+        for attempt in attempts:
+            current = latest.get(attempt.component)
+            if current is None or attempt.attempt_number > current.attempt_number:
+                latest[attempt.component] = attempt
+        ordered_attempts = tuple(
+            latest[component]
+            for component in ReportComponent
+            if component in latest
+        )
+        summary = summarize_component_set(ordered_attempts)
+        return {
+            "run_id": run_id,
+            "status": summary.status.value,
+            "components": [
+                {
+                    "component": attempt.component.value,
+                    "status": attempt.status.value,
+                    "stage": attempt.stage.value,
+                    "retryable": bool(
+                        attempt.retryable
+                        and attempt.status
+                        in {ComponentStatus.FAILED, ComponentStatus.INTERRUPTED}
+                    ),
+                }
+                for attempt in ordered_attempts
+            ],
+            "retryable_components": [
+                component.value for component in summary.retryable_components
+            ],
+        }
+
+    def report_component_state(self, run_id: str) -> dict[str, Any]:
+        normalized_run_id = str(run_id or "").strip()
+        if not normalized_run_id:
+            raise ValueError("run_id não pode ser vazio.")
+        if self.report_registry is None:
+            raise RuntimeError("Registro de relatórios indisponível.")
+        if self.component_repository is None:
+            raise RuntimeError("Estados de componentes indisponíveis sem o banco.")
+        report = self.report_registry.get_report(normalized_run_id)
+        attempts = self.component_repository.latest_attempts(
+            source_run_id=normalized_run_id,
+            client_id=report.candidate.client_id,
+        )
+        return self._component_state_payload(normalized_run_id, attempts)
+
+    def retry_report_components(
+        self,
+        *,
+        run_id: str,
+        components: Any,
+        confirmation: str,
+    ) -> Mapping[str, Any]:
+        normalized_run_id = str(run_id or "").strip()
+        expected = f"RETENTAR COMPONENTES {normalized_run_id}"
+        if confirmation.strip() != expected:
+            raise ValueError(f'Digite exatamente "{expected}" para confirmar.')
+        if self.report_registry is None:
+            raise RuntimeError("Registro de relatórios indisponível.")
+        report = self.report_registry.get_report(normalized_run_id)
+        if report.deleted:
+            raise ValueError("Relatórios excluídos não podem ser retentados.")
+        state = self.report_component_state(normalized_run_id)
+        retryable = tuple(
+            ReportComponent(value) for value in state["retryable_components"]
+        )
+        if components is None:
+            selected = retryable
+        else:
+            if isinstance(components, (str, bytes)) or not isinstance(
+                components,
+                Sequence,
+            ):
+                raise ValueError("components deve ser uma lista.")
+            try:
+                requested = {ReportComponent(value) for value in components}
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Componente desconhecido.") from exc
+            selected = tuple(
+                component for component in ReportComponent if component in requested
+            )
+        if not selected:
+            raise ValueError("Nenhum componente retentável foi selecionado.")
+        if any(component not in retryable for component in selected):
+            raise ValueError("COMPONENT_NOT_RETRYABLE")
+        if self.component_retry_enqueuer is not None:
+            return self.component_retry_enqueuer(
+                run_id=normalized_run_id,
+                client_id=report.candidate.client_id,
+                selected_components=selected,
+                failed_only=True,
+            )
+        if selected == (ReportComponent.CLOUD,):
+            return self.retry_cloud_report(
+                run_id=normalized_run_id,
+                confirmation=f"RETENTAR CLOUD {normalized_run_id}",
+            )
+        raise RuntimeError(
+            "O executor de retentativas seletivas ainda não está disponível."
+        )
+
     def report_rows(
         self, client_id: str, *, include_deleted: bool = False
     ) -> list[dict[str, Any]]:
@@ -2252,7 +2378,18 @@ class DashboardApplication:
                 and cloud_status == "FAILED"
                 and any(bool(item.get("retryable")) for item in cloud_warnings)
             )
-            rows.append({
+            component_state: dict[str, Any] | None = None
+            if self.component_repository is not None and not report.deleted_at:
+                component_attempts = self.component_repository.latest_attempts(
+                    source_run_id=candidate.run_id,
+                    client_id=candidate.client_id,
+                )
+                if component_attempts:
+                    component_state = self._component_state_payload(
+                        candidate.run_id,
+                        component_attempts,
+                    )
+            row = {
                 "run_id": candidate.run_id,
                 "period_id": key.period_key,
                 "period_start_at": candidate.period_start_at,
@@ -2272,7 +2409,10 @@ class DashboardApplication:
                 "cloud_warnings": cloud_warnings,
                 "cloud_retry_available": cloud_retry_available,
                 "documents": documents,
-            })
+            }
+            if component_state is not None:
+                row["component_state"] = component_state
+            rows.append(row)
         return rows
 
     def _archive_roots(self) -> tuple[Path, Path]:
@@ -3308,6 +3448,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._json_error(HTTPStatus.INTERNAL_SERVER_ERROR, _safe_error(str(exc), limit=500))
             return
+        match = re.fullmatch(r"/api/reports/([^/]+)/components", parsed.path)
+        if match:
+            try:
+                self._json(
+                    HTTPStatus.OK,
+                    self.app.report_component_state(unquote(match.group(1))),
+                )
+            except KeyError as exc:
+                self._json_error(
+                    HTTPStatus.NOT_FOUND,
+                    _safe_error(str(exc), limit=300),
+                )
+            except ValueError as exc:
+                self._json_error(
+                    HTTPStatus.BAD_REQUEST,
+                    _safe_error(str(exc), limit=300),
+                )
+            except RuntimeError as exc:
+                self._json_error(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    _safe_error(str(exc), limit=300),
+                )
+            return
         match = re.fullmatch(r"/api/clients/([^/]+)/tags", parsed.path)
         if match:
             try:
@@ -3546,6 +3709,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if match:
                 job = self.app.retry_cloud_report(
                     run_id=unquote(match.group(1)),
+                    confirmation=str(payload.get("confirmation") or ""),
+                )
+                self._json(HTTPStatus.ACCEPTED, {"job": job})
+                return
+            match = re.fullmatch(
+                r"/api/reports/([^/]+)/retry-components",
+                parsed.path,
+            )
+            if match:
+                job = self.app.retry_report_components(
+                    run_id=unquote(match.group(1)),
+                    components=payload.get("components"),
                     confirmation=str(payload.get("confirmation") or ""),
                 )
                 self._json(HTTPStatus.ACCEPTED, {"job": job})

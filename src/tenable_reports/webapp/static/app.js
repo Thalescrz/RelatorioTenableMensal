@@ -1,5 +1,5 @@
 const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue } = window.TenableClientSelection;
-const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "", selectedBatchId: null };
+const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "", selectedBatchId: null, componentRetryRunId: null, componentRetryState: null };
 const CLOUD_PROGRESS_EVENT = "TENABLE_CLOUD_PROGRESS";
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
@@ -420,6 +420,94 @@ async function openMonthlyArchiveDialog(button) {
   }
 }
 
+const componentLabels = { VM_CORE: "VM", WAS: "WAS", CLOUD: "Cloud" };
+
+function componentStatusChips(componentState) {
+  return (componentState?.components || []).map(component => {
+    const status = String(component.status || "").toUpperCase();
+    const statusClass = status.toLowerCase().replaceAll("_", "-");
+    const label = componentLabels[component.component] || component.component;
+    return '<span class="component-status-chip ' + escapeHtml(statusClass) + '" title="' +
+      escapeHtml(component.stage || "") + '">' + escapeHtml(label) + " · " +
+      escapeHtml(status) + "</span>";
+  }).join("");
+}
+
+async function fetchComponentState(runId) {
+  return api("/api/reports/" + encodeURIComponent(runId) + "/components");
+}
+
+async function submitComponentRetry(runId, components = null) {
+  const body = { confirmation: "RETENTAR COMPONENTES " + runId };
+  if (components !== null) body.components = components;
+  return api("/api/reports/" + encodeURIComponent(runId) + "/retry-components", {
+    method: "POST",
+    body,
+  });
+}
+
+function renderComponentRetryDialog() {
+  const payload = state.componentRetryState;
+  const retryable = new Set(payload?.retryable_components || []);
+  $("#component-retry-list").innerHTML = (payload?.components || []).map(component => {
+    const enabled = retryable.has(component.component);
+    const label = componentLabels[component.component] || component.component;
+    return '<label class="component-retry-row ' + (enabled ? "" : "disabled") + '">' +
+      '<input type="checkbox" data-component-retry="' + escapeHtml(component.component) + '"' +
+      (enabled ? " checked" : " disabled") + ">" +
+      '<span><strong>' + escapeHtml(label) + "</strong><small>" +
+      escapeHtml(component.status) + (component.stage ? " · " + escapeHtml(component.stage) : "") +
+      "</small></span></label>";
+  }).join("");
+  const updateButton = () => {
+    const selected = document.querySelectorAll("[data-component-retry]:checked").length;
+    const button = $("#confirm-component-retry");
+    button.disabled = selected === 0;
+    button.textContent = selected === 1
+      ? "Tentar 1 componente"
+      : "Tentar " + selected + " componentes";
+  };
+  document.querySelectorAll("[data-component-retry]").forEach(input =>
+    input.addEventListener("change", updateButton)
+  );
+  updateButton();
+}
+
+async function openComponentRetry(runId) {
+  state.componentRetryRunId = runId;
+  state.componentRetryState = await fetchComponentState(runId);
+  renderComponentRetryDialog();
+  $("#component-retry-dialog").showModal();
+}
+
+function enhanceComponentActions() {
+  document.querySelectorAll("[data-report-run]").forEach(row => {
+    const runId = row.dataset.reportRun;
+    const report = state.currentReports.find(item => item.run_id === runId);
+    const componentState = report?.component_state;
+    if (!componentState) return;
+    row.querySelector(".report-badges")?.insertAdjacentHTML(
+      "beforeend",
+      componentStatusChips(componentState)
+    );
+    if (!(componentState.retryable_components || []).length) return;
+    const actions = row.querySelector(".report-actions");
+    if (!actions) return;
+    const retryAll = document.createElement("button");
+    retryAll.className = "mini-button";
+    retryAll.type = "button";
+    retryAll.dataset.reportAction = "retry-components";
+    retryAll.textContent = "Tentar componentes com falha";
+    const select = document.createElement("button");
+    select.className = "mini-button";
+    select.type = "button";
+    select.dataset.reportAction = "select-components";
+    select.textContent = "Selecionar componentes";
+    actions.prepend(select);
+    actions.prepend(retryAll);
+  });
+}
+
 async function openClient(clientId) {
   const client = state.data.clients.find(c => c.client_id === clientId); if (!client) return;
   state.selectedClient = clientId;
@@ -448,6 +536,7 @@ async function openClient(clientId) {
         : "";
       return `<div class="report-row ${report.deleted_at ? "deleted" : ""}" data-report-run="${escapeHtml(report.run_id)}"><div><div class="report-badges">${report.is_main ? '<span class="report-badge main">MAIN</span>' : ""}<span class="report-badge">${escapeHtml(report.origin || "MANUAL")}</span><span class="report-badge">${escapeHtml(report.status || "")}</span>${cloudBadge}${report.deleted_at ? '<span class="report-badge">EXCLUÍDO</span>' : ""}</div><strong>${escapeHtml(report.period_id || report.run_id)}</strong><small>${escapeHtml(report.run_id)} · ${formatBytes(report.size_bytes)}${reference}${omitted}</small><div class="report-documents">${documents || '<small>Documentos não localizados no disco.</small>'}</div></div><div class="report-actions">${reportArchiveAction}${cloudRetryAction}${!report.deleted_at && !report.is_main ? '<button class="mini-button" data-report-action="main" type="button">Definir MAIN</button>' : ""}${report.deleted_at ? '<button class="mini-button" data-report-action="restore" type="button">Restaurar</button>' : '<button class="mini-button danger" data-report-action="delete" type="button">Excluir conjunto</button>'}</div></div>`;
     }).join("") : '<div class="loading">Nenhum relatório gerado para este cliente.</div>';
+    enhanceComponentActions();
     bindReportActions();
   } catch (error) { $("#report-list").innerHTML = `<div class="loading">${escapeHtml(error.message)}</div>`; }
 }
@@ -463,6 +552,19 @@ function bindReportActions() {
         button.disabled = true;
         const prepared = await prepareArchive({ run_id: runId });
         toast(`Download preparado: ${prepared.download_name}`);
+        return;
+      } else if (button.dataset.reportAction === "retry-components") {
+        const componentState = await fetchComponentState(runId);
+        const retryable = componentState.retryable_components || [];
+        if (!retryable.length) throw new Error("Não há componentes disponíveis para retentativa.");
+        const names = retryable.map(component => componentLabels[component] || component).join(", ");
+        const message = "Somente os componentes com falha serão executados novamente: " +
+          names + ".\n\nExecução: " + runId + "\n\nDeseja continuar?";
+        if (!window.confirm(message)) return;
+        await submitComponentRetry(runId);
+        successMessage = "Retentativa dos componentes adicionada à fila.";
+      } else if (button.dataset.reportAction === "select-components") {
+        await openComponentRetry(runId);
         return;
       } else if (button.dataset.reportAction === "retry-cloud") {
         const message = `Somente o componente Cloud Security será executado novamente. A coleta VM e os demais documentos não serão repetidos.\n\nExecução: ${runId}\n\nDeseja continuar?`;
@@ -1148,6 +1250,26 @@ $("#run-form").addEventListener("submit", async event => {
   const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
   try { const result = await api("/api/jobs", { method: "POST", body: payload }); $("#run-dialog").close(); await refresh(); toast(`${result.jobs.length} execução(ões) adicionada(s) à fila.`); }
   catch (error) { toast(error.message, "error"); } finally { button.disabled = false; }
+});
+
+$("#confirm-component-retry").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  const runId = state.componentRetryRunId;
+  const selected = [...document.querySelectorAll("[data-component-retry]:checked")]
+    .map(input => input.dataset.componentRetry);
+  if (!runId || !selected.length) return;
+  button.disabled = true;
+  try {
+    await submitComponentRetry(runId, selected);
+    $("#component-retry-dialog").close();
+    toast("Retentativa dos componentes adicionada à fila.");
+    if (state.selectedClient) await openClient(state.selectedClient);
+    await refresh();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    if (button.isConnected) button.disabled = false;
+  }
 });
 
 refresh(false); setInterval(() => refresh(true), 3000);
