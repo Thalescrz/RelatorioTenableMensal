@@ -31,6 +31,16 @@ class BatchJobStatus(StrEnum):
     CANCELLED_BY_USER = "CANCELLED_BY_USER"
 
 
+class BatchJobPhase(StrEnum):
+    LEGACY = "LEGACY"
+    REMOTE_QUEUED = "REMOTE_QUEUED"
+    REMOTE_RUNNING = "REMOTE_RUNNING"
+    REMOTE_WAITING_DECISION = "REMOTE_WAITING_DECISION"
+    READY_FOR_BUILD = "READY_FOR_BUILD"
+    BUILD_RUNNING = "BUILD_RUNNING"
+    TERMINAL = "TERMINAL"
+
+
 class BatchAction(StrEnum):
     PAUSE = "PAUSE"
     RESUME = "RESUME"
@@ -194,6 +204,7 @@ class WebBatchJob:
     position: int
     status: BatchJobStatus
     attempt_number: int
+    phase: BatchJobPhase = BatchJobPhase.LEGACY
     payload: Mapping[str, Any] = field(default_factory=dict)
     retry_of_batch_job_id: UUID | None = None
     worker_id: str | None = None
@@ -205,6 +216,10 @@ class WebBatchJob:
     exit_code: int | None = None
     error_code: str | None = None
     error_message: str | None = None
+    collection_checkpoint_path: str | None = None
+    remote_started_at: str | None = None
+    remote_ended_at: str | None = None
+    build_started_at: str | None = None
     created_at: str | None = None
     started_at: str | None = None
     ended_at: str | None = None

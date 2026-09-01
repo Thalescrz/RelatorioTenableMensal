@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 from uuid import UUID
 
 from tenable_reports.domain.web_batches import (
     BatchAction,
+    BatchJobPhase,
     BatchJobStatus,
     WebBatch,
     WebBatchEvent,
@@ -65,6 +67,57 @@ class BatchJobResult:
     error_code: str | None = None
     error_message: str | None = None
     payload: Mapping[str, Any] = field(default_factory=dict)
+
+
+_CLAIMABLE_PHASES = frozenset(
+    {
+        BatchJobPhase.LEGACY,
+        BatchJobPhase.REMOTE_QUEUED,
+        BatchJobPhase.READY_FOR_BUILD,
+    }
+)
+
+
+def normalize_claim_phases(
+    phases: Sequence[BatchJobPhase] | None,
+) -> tuple[BatchJobPhase, ...]:
+    if phases is None:
+        return (BatchJobPhase.LEGACY,)
+    if isinstance(phases, (str, bytes)):
+        raise ValueError("As fases de reivindicacao devem formar uma sequencia.")
+    normalized: list[BatchJobPhase] = []
+    for value in phases:
+        try:
+            phase = value if isinstance(value, BatchJobPhase) else BatchJobPhase(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Fase de reivindicacao invalida.") from exc
+        if phase not in _CLAIMABLE_PHASES:
+            raise ValueError("A fase informada nao pode ser reivindicada.")
+        if phase not in normalized:
+            normalized.append(phase)
+    if not normalized:
+        raise ValueError("Ao menos uma fase de reivindicacao e obrigatoria.")
+    return tuple(normalized)
+
+
+def claimed_job_phase(phase: BatchJobPhase) -> BatchJobPhase:
+    return {
+        BatchJobPhase.LEGACY: BatchJobPhase.LEGACY,
+        BatchJobPhase.REMOTE_QUEUED: BatchJobPhase.REMOTE_RUNNING,
+        BatchJobPhase.READY_FOR_BUILD: BatchJobPhase.BUILD_RUNNING,
+    }[phase]
+
+
+def validate_collection_checkpoint_path(value: str | Path | None) -> str:
+    if value is None:
+        raise ValueError("O checkpoint de coleta e obrigatorio.")
+    path = Path(value)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("O caminho do checkpoint de coleta e invalido.")
+    resolved = path.resolve()
+    if not resolved.is_file():
+        raise ValueError("O checkpoint de coleta nao foi encontrado.")
+    return str(resolved)
 
 _SENSITIVE_PAYLOAD_KEYS = frozenset({
     "access_key",
@@ -257,7 +310,21 @@ class WebBatchRepository(Protocol):
         excluding_batch_id: UUID,
     ) -> tuple[str, ...]: ...
 
-    def claim_next_job(self, *, worker_id: str) -> WebBatchJob | None: ...
+    def claim_next_job(
+        self,
+        *,
+        worker_id: str,
+        phases: Sequence[BatchJobPhase] | None = None,
+    ) -> WebBatchJob | None: ...
+
+    def advance_job_phase(
+        self,
+        job_id: UUID,
+        *,
+        expected_phase: BatchJobPhase,
+        requested_phase: BatchJobPhase,
+        collection_checkpoint_path: str | Path | None = None,
+    ) -> WebBatchJob: ...
 
     def complete_job(self, job_id: UUID, result: BatchJobResult) -> None: ...
 

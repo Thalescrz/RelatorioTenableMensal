@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Sequence
 from uuid import UUID
 
@@ -12,9 +13,14 @@ from tenable_reports.application.web_batches import (
     BatchJobResult,
     WebBatchRepository,
     assert_sanitized_payload,
+    claimed_job_phase,
+    normalize_claim_phases,
+    validate_collection_checkpoint_path,
 )
 from tenable_reports.domain.web_batches import (
+    BATCH_JOB_TERMINAL_STATUSES,
     BatchAction,
+    BatchJobPhase,
     BatchJobStatus,
     BatchStatus,
     WebBatch,
@@ -251,6 +257,7 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                         self._jobs[job.id] = replace(
                             job,
                             status=BatchJobStatus.CANCELLED_BY_USER,
+                            phase=BatchJobPhase.TERMINAL,
                             ended_at=_now(),
                         )
                 next_status = (
@@ -322,15 +329,22 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 )
             )
 
-    def claim_next_job(self, *, worker_id: str) -> WebBatchJob | None:
+    def claim_next_job(
+        self,
+        *,
+        worker_id: str,
+        phases: Sequence[BatchJobPhase] | None = None,
+    ) -> WebBatchJob | None:
         normalized_worker = str(worker_id or "").strip()
         if not normalized_worker:
             raise ValueError("worker_id nao pode ser vazio.")
+        normalized_phases = normalize_claim_phases(phases)
         with self._lock:
             candidates = [
                 job
                 for job in self._jobs.values()
                 if job.status is BatchJobStatus.QUEUED
+                and job.phase in normalized_phases
                 and self._batches[job.batch_id].status
                 in {BatchStatus.QUEUED, BatchStatus.RUNNING}
                 and self._batches[job.batch_id].requested_action is None
@@ -346,11 +360,23 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 ),
             )
             started_at = _now()
+            next_phase = claimed_job_phase(job.phase)
             claimed = replace(
                 job,
                 status=BatchJobStatus.RUNNING,
+                phase=next_phase,
                 worker_id=normalized_worker,
                 started_at=job.started_at or started_at,
+                remote_started_at=(
+                    job.remote_started_at or started_at
+                    if next_phase is BatchJobPhase.REMOTE_RUNNING
+                    else job.remote_started_at
+                ),
+                build_started_at=(
+                    job.build_started_at or started_at
+                    if next_phase is BatchJobPhase.BUILD_RUNNING
+                    else job.build_started_at
+                ),
             )
             self._jobs[job.id] = claimed
             batch = self._batches[job.batch_id]
@@ -364,12 +390,63 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 WebBatchEvent(
                     batch_id=job.batch_id,
                     job_id=job.id,
-                    event_type="JOB_STARTED",
+                    event_type=(
+                        "BUILD_STARTED"
+                        if next_phase is BatchJobPhase.BUILD_RUNNING
+                        else "JOB_STARTED"
+                    ),
                     payload={"worker_id": normalized_worker},
                     created_at=started_at,
                 )
             )
             return claimed
+
+    def advance_job_phase(
+        self,
+        job_id: UUID,
+        *,
+        expected_phase: BatchJobPhase,
+        requested_phase: BatchJobPhase,
+        collection_checkpoint_path: str | Path | None = None,
+    ) -> WebBatchJob:
+        if (
+            expected_phase is not BatchJobPhase.REMOTE_RUNNING
+            or requested_phase is not BatchJobPhase.READY_FOR_BUILD
+        ):
+            raise ValueError("Transicao de fase de trabalho invalida.")
+        checkpoint_path = validate_collection_checkpoint_path(
+            collection_checkpoint_path
+        )
+        with self._lock:
+            current = self._jobs[job_id]
+            if (
+                current.status is not BatchJobStatus.RUNNING
+                or current.phase is not expected_phase
+            ):
+                raise ValueError("O trabalho nao esta na fase remota esperada.")
+            changed_at = _now()
+            advanced = replace(
+                current,
+                status=BatchJobStatus.QUEUED,
+                phase=requested_phase,
+                collection_checkpoint_path=checkpoint_path,
+                remote_ended_at=changed_at,
+                worker_id=None,
+                process_id=None,
+                control_file=None,
+                ended_at=None,
+            )
+            self._jobs[job_id] = advanced
+            self._events.append(
+                WebBatchEvent(
+                    batch_id=current.batch_id,
+                    job_id=current.id,
+                    event_type="COLLECTION_READY",
+                    payload={"phase": requested_phase.value},
+                    created_at=changed_at,
+                )
+            )
+            return advanced
 
     def complete_job(self, job_id: UUID, result: BatchJobResult) -> None:
         assert_sanitized_payload(result.payload, path="job.result")
@@ -379,6 +456,16 @@ class InMemoryWebBatchRepository(WebBatchRepository):
             completed = replace(
                 current,
                 status=result.status,
+                phase=(
+                    BatchJobPhase.TERMINAL
+                    if result.status in BATCH_JOB_TERMINAL_STATUSES
+                    else (
+                        BatchJobPhase.REMOTE_WAITING_DECISION
+                        if result.status is BatchJobStatus.WAITING_WAS_DECISION
+                        and current.phase is BatchJobPhase.REMOTE_RUNNING
+                        else current.phase
+                    )
+                ),
                 exit_code=result.exit_code,
                 error_code=result.error_code,
                 error_message=result.error_message,
@@ -483,6 +570,31 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 ):
                     continue
                 ended_at = _now()
+                staged_phase = {
+                    BatchJobPhase.REMOTE_RUNNING: BatchJobPhase.REMOTE_QUEUED,
+                    BatchJobPhase.BUILD_RUNNING: BatchJobPhase.READY_FOR_BUILD,
+                }.get(job.phase)
+                if staged_phase is not None:
+                    self._jobs[job_id] = replace(
+                        job,
+                        status=BatchJobStatus.QUEUED,
+                        phase=staged_phase,
+                        worker_id=None,
+                        process_id=None,
+                        control_file=None,
+                        ended_at=None,
+                    )
+                    self._events.append(
+                        WebBatchEvent(
+                            batch_id=job.batch_id,
+                            job_id=job.id,
+                            event_type="JOB_REQUEUED_AFTER_RESTART",
+                            payload={"phase": staged_phase.value},
+                            created_at=ended_at,
+                        )
+                    )
+                    reconciled += 1
+                    continue
                 self._jobs[job_id] = replace(
                     job,
                     status=BatchJobStatus.INTERRUPTED,

@@ -10,6 +10,7 @@ import pytest
 from tenable_reports.application.web_batches import BatchJobResult
 
 from tenable_reports.domain.web_batches import (
+    BatchJobPhase,
     BatchJobStatus,
     BatchStatus,
     WebBatch,
@@ -72,7 +73,12 @@ def _batch_row(*, status: str = "QUEUED") -> tuple[object, ...]:
     )
 
 
-def _job_row(*, status: str = "QUEUED") -> tuple[object, ...]:
+def _job_row(
+    *,
+    status: str = "QUEUED",
+    phase: str = "LEGACY",
+    checkpoint_path: str | None = None,
+) -> tuple[object, ...]:
     return (
         UUID(int=11),
         UUID(int=1),
@@ -94,6 +100,11 @@ def _job_row(*, status: str = "QUEUED") -> tuple[object, ...]:
         "2026-08-31T12:00:00Z",
         "2026-08-31T12:00:01Z" if status == "RUNNING" else None,
         None,
+        phase,
+        checkpoint_path,
+        "2026-08-31T12:00:01Z" if phase == "REMOTE_RUNNING" else None,
+        "2026-08-31T12:10:00Z" if phase == "READY_FOR_BUILD" else None,
+        "2026-08-31T12:10:01Z" if phase == "BUILD_RUNNING" else None,
     )
 
 
@@ -113,6 +124,27 @@ def test_migration_creates_durable_batch_tables_constraints_and_indexes() -> Non
     assert "revoke all on table tenable_reports.web_batches from public" in sql
     assert "revoke all on table tenable_reports.web_batch_jobs from public" in sql
     assert "revoke all on table tenable_reports.web_batch_events from public" in sql
+
+
+def test_phase_migration_preserves_legacy_rows_and_adds_claim_index() -> None:
+    sql = (
+        ROOT
+        / "src/tenable_reports/infrastructure/postgresql_migrations/0011_web_batch_job_phases.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "add column if not exists phase" in sql.lower()
+    assert "default 'LEGACY'" in sql
+    assert "REMOTE_QUEUED" in sql
+    assert "REMOTE_RUNNING" in sql
+    assert "REMOTE_WAITING_DECISION" in sql
+    assert "READY_FOR_BUILD" in sql
+    assert "BUILD_RUNNING" in sql
+    assert "TERMINAL" in sql
+    assert "collection_checkpoint_path" in sql
+    assert "remote_started_at" in sql
+    assert "remote_ended_at" in sql
+    assert "build_started_at" in sql
+    assert "web_batch_jobs_phase_status_created_idx" in sql
 
 
 def test_repository_creates_batch_and_jobs_in_one_connection() -> None:
@@ -150,6 +182,7 @@ def test_repository_creates_batch_and_jobs_in_one_connection() -> None:
     assert batch_params[0] == batch.id
     assert "insert into tenable_reports.web_batch_jobs" in job_sql
     assert job_params[2:5] == ("client-a", 1, "QUEUED")
+    assert job_params[9] == "LEGACY"
 
 
 def test_repository_persists_and_returns_manual_selection_options() -> None:
@@ -226,11 +259,101 @@ def test_repository_claims_one_job_with_skip_locked_and_records_event() -> None:
     assert "returning job.id, job.batch_id" in " ".join(
         claim_sql.lower().split()
     )
-    assert claim_params == ("worker-one",)
+    assert claim_params == (["LEGACY"], "worker-one")
     event_sql, event_params = database.connection_value.calls[2]
     assert "insert into tenable_reports.web_batch_events" in event_sql
     assert event_params[1] == claimed.id
     assert event_params[2] == "JOB_STARTED"
+
+
+def test_repository_claims_only_requested_remote_phase() -> None:
+    database = _Database(
+        [
+            _Cursor(
+                one=_job_row(status="RUNNING", phase="REMOTE_RUNNING")
+            ),
+            _Cursor(one=_batch_row(status="RUNNING")),
+            _Cursor(one=(1,)),
+        ]
+    )
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    claimed = repository.claim_next_job(
+        worker_id="remote-worker",
+        phases=(BatchJobPhase.REMOTE_QUEUED,),
+    )
+
+    assert claimed is not None
+    assert claimed.phase is BatchJobPhase.REMOTE_RUNNING
+    claim_sql, claim_params = database.connection_value.calls[0]
+    assert "job.phase = any(%s)" in " ".join(claim_sql.lower().split())
+    assert "'REMOTE_RUNNING'" in claim_sql
+    assert claim_params == (["REMOTE_QUEUED"], "remote-worker")
+    _, event_params = database.connection_value.calls[2]
+    assert event_params[2] == "JOB_STARTED"
+
+
+def test_repository_claims_ready_job_for_build_and_records_build_event() -> None:
+    database = _Database(
+        [
+            _Cursor(one=_job_row(status="RUNNING", phase="BUILD_RUNNING")),
+            _Cursor(one=_batch_row(status="RUNNING")),
+            _Cursor(one=(1,)),
+        ]
+    )
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    claimed = repository.claim_next_job(
+        worker_id="build-worker",
+        phases=(BatchJobPhase.READY_FOR_BUILD,),
+    )
+
+    assert claimed is not None
+    assert claimed.phase is BatchJobPhase.BUILD_RUNNING
+    _, event_params = database.connection_value.calls[2]
+    assert event_params[2] == "BUILD_STARTED"
+
+
+def test_repository_advances_collection_ready_in_one_transaction(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "collection-checkpoint.json"
+    checkpoint.write_text("{}", encoding="utf-8")
+    database = _Database(
+        [
+            _Cursor(
+                one=_job_row(
+                    status="QUEUED",
+                    phase="READY_FOR_BUILD",
+                    checkpoint_path=str(checkpoint.resolve()),
+                )
+            ),
+            _Cursor(one=(1,)),
+        ]
+    )
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    advanced = repository.advance_job_phase(
+        UUID(int=11),
+        expected_phase=BatchJobPhase.REMOTE_RUNNING,
+        requested_phase=BatchJobPhase.READY_FOR_BUILD,
+        collection_checkpoint_path=checkpoint,
+    )
+
+    assert advanced.status is BatchJobStatus.QUEUED
+    assert advanced.phase is BatchJobPhase.READY_FOR_BUILD
+    assert advanced.collection_checkpoint_path == str(checkpoint.resolve())
+    advance_sql, advance_params = database.connection_value.calls[0]
+    assert "status = 'QUEUED'" in advance_sql
+    assert "remote_ended_at = now()" in advance_sql
+    assert advance_params == (
+        "READY_FOR_BUILD",
+        str(checkpoint.resolve()),
+        UUID(int=11),
+        "REMOTE_RUNNING",
+    )
+    _, event_params = database.connection_value.calls[1]
+    assert event_params[2] == "COLLECTION_READY"
 
 
 def test_repository_appends_and_lists_immutable_events() -> None:
@@ -345,7 +468,7 @@ def test_database_status_includes_durable_batch_tables() -> None:
 def test_repository_completes_job_and_derives_terminal_batch() -> None:
     database = _Database(
         [
-            _Cursor(one=_job_row(status="COMPLETE")),
+            _Cursor(one=_job_row(status="COMPLETE", phase="TERMINAL")),
             _Cursor(one=_batch_row(status="COMPLETE")),
             _Cursor(one=(1,)),
         ]
@@ -364,6 +487,7 @@ def test_repository_completes_job_and_derives_terminal_batch() -> None:
     job_sql, job_params = database.connection_value.calls[0]
     assert "update tenable_reports.web_batch_jobs" in job_sql.lower()
     assert "payload || %s" in job_sql.lower()
+    assert "phase = 'TERMINAL'" in job_sql
     assert job_params[0] == "COMPLETE"
     batch_sql, _ = database.connection_value.calls[1]
     assert "complete_with_failures" in batch_sql.lower()
@@ -390,11 +514,53 @@ def test_repository_reconciles_jobs_owned_by_inactive_workers() -> None:
 
     assert reconciled == 1
     reconcile_sql, reconcile_params = database.connection_value.calls[0]
-    assert "status = 'interrupted'" in reconcile_sql.lower()
+    assert "else 'interrupted'" in reconcile_sql.lower()
     assert "worker_id <> all" in reconcile_sql.lower()
     assert reconcile_params == (["new-worker"],)
     event_sql, event_params = database.connection_value.calls[2]
     assert event_params[2] == "JOB_RECOVERED_AS_INTERRUPTED"
+
+
+def test_repository_requeues_abandoned_remote_and_build_jobs(
+    tmp_path: Path,
+) -> None:
+    checkpoint = tmp_path / "collection-checkpoint.json"
+    checkpoint.write_text("{}", encoding="utf-8")
+    remote_row = _job_row(status="QUEUED", phase="REMOTE_QUEUED")
+    build_row = list(
+        _job_row(
+            status="QUEUED",
+            phase="READY_FOR_BUILD",
+            checkpoint_path=str(checkpoint.resolve()),
+        )
+    )
+    build_row[0] = UUID(int=12)
+    build_row[2] = "client-b"
+    build_row[3] = 2
+    database = _Database(
+        [
+            _Cursor(many=(remote_row, tuple(build_row))),
+            _Cursor(one=(1,)),
+            _Cursor(one=(1,)),
+            _Cursor(many=()),
+        ]
+    )
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    reconciled = repository.reconcile_abandoned_jobs(
+        active_worker_ids={"current-worker"}
+    )
+
+    assert reconciled == 2
+    reconcile_sql, _ = database.connection_value.calls[0]
+    assert "REMOTE_RUNNING" in reconcile_sql
+    assert "BUILD_RUNNING" in reconcile_sql
+    assert "REMOTE_QUEUED" in reconcile_sql
+    assert "READY_FOR_BUILD" in reconcile_sql
+    first_event = database.connection_value.calls[1][1]
+    second_event = database.connection_value.calls[2][1]
+    assert first_event[2] == "JOB_REQUEUED_AFTER_RESTART"
+    assert second_event[2] == "JOB_REQUEUED_AFTER_RESTART"
 
 
 def test_repository_pauses_preexisting_queued_batches_on_startup() -> None:

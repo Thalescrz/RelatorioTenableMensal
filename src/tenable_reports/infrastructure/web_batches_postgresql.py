@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Sequence
 from uuid import UUID
 
@@ -9,9 +10,13 @@ from tenable_reports.application.web_batches import (
     BatchJobResult,
     WebBatchRepository,
     assert_sanitized_payload,
+    normalize_claim_phases,
+    validate_collection_checkpoint_path,
 )
 from tenable_reports.domain.web_batches import (
+    BATCH_JOB_TERMINAL_STATUSES,
     BatchAction,
+    BatchJobPhase,
     BatchJobStatus,
     BatchStatus,
     WebBatch,
@@ -34,7 +39,9 @@ _JOB_COLUMNS = """
     id, batch_id, client_id, position, status, attempt_number, payload,
     retry_of_batch_job_id, worker_id, process_id, control_file,
     orchestration_run_id, logical_job_id, run_id, exit_code, error_code,
-    error_message, created_at, started_at, ended_at
+    error_message, created_at, started_at, ended_at, phase,
+    collection_checkpoint_path, remote_started_at, remote_ended_at,
+    build_started_at
 """
 
 
@@ -95,6 +102,13 @@ def _job_from_row(row: Sequence[Any]) -> WebBatchJob:
         created_at=_iso(row[17]),
         started_at=_iso(row[18]),
         ended_at=_iso(row[19]),
+        phase=BatchJobPhase(str(row[20])),
+        collection_checkpoint_path=(
+            str(row[21]) if row[21] is not None else None
+        ),
+        remote_started_at=_iso(row[22]),
+        remote_ended_at=_iso(row[23]),
+        build_started_at=_iso(row[24]),
     )
 
 
@@ -161,8 +175,12 @@ class PostgresWebBatchRepository(WebBatchRepository):
                     insert into {SCHEMA_NAME}.web_batch_jobs (
                         id, batch_id, client_id, position, status,
                         attempt_number, payload, retry_of_batch_job_id,
-                        logical_job_id
-                    ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        logical_job_id, phase, collection_checkpoint_path,
+                        remote_started_at, remote_ended_at, build_started_at
+                    ) values (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s
+                    )
                     on conflict (id) do nothing
                     returning id
                     """,
@@ -176,6 +194,11 @@ class PostgresWebBatchRepository(WebBatchRepository):
                         _jsonb(dict(job.payload)),
                         job.retry_of_batch_job_id,
                         job.logical_job_id,
+                        job.phase.value,
+                        job.collection_checkpoint_path,
+                        job.remote_started_at,
+                        job.remote_ended_at,
+                        job.build_started_at,
                     ),
                 ).fetchone()
         return _batch_from_row(row)
@@ -477,6 +500,10 @@ class PostgresWebBatchRepository(WebBatchRepository):
                                 then 'CANCELLED_BY_USER'
                             else 'INTERRUPT_REQUESTED'
                         end,
+                        phase = case
+                            when status = 'QUEUED' then 'TERMINAL'
+                            else phase
+                        end,
                         ended_at = case
                             when status = 'QUEUED' then now()
                             else ended_at
@@ -585,10 +612,17 @@ class PostgresWebBatchRepository(WebBatchRepository):
             ).fetchall()
         return tuple(sorted(str(row[0]) for row in rows))
 
-    def claim_next_job(self, *, worker_id: str) -> WebBatchJob | None:
+    def claim_next_job(
+        self,
+        *,
+        worker_id: str,
+        phases: Sequence[BatchJobPhase] | None = None,
+    ) -> WebBatchJob | None:
         normalized_worker = str(worker_id or "").strip()
         if not normalized_worker:
             raise ValueError("worker_id nao pode ser vazio.")
+        normalized_phases = normalize_claim_phases(phases)
+        phase_values = [phase.value for phase in normalized_phases]
         with self.database.connection() as connection:
             row = connection.execute(
                 f"""
@@ -598,6 +632,7 @@ class PostgresWebBatchRepository(WebBatchRepository):
                     join {SCHEMA_NAME}.web_batches batch
                       on batch.id = job.batch_id
                     where job.status = 'QUEUED'
+                      and job.phase = any(%s)
                       and batch.status in ('QUEUED', 'RUNNING')
                       and batch.requested_action is null
                     order by batch.created_at, job.position, job.id
@@ -606,12 +641,27 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 )
                 update {SCHEMA_NAME}.web_batch_jobs job
                 set status = 'RUNNING', worker_id = %s,
-                    started_at = coalesce(job.started_at, now())
+                    phase = case
+                        when job.phase = 'REMOTE_QUEUED' then 'REMOTE_RUNNING'
+                        when job.phase = 'READY_FOR_BUILD' then 'BUILD_RUNNING'
+                        else job.phase
+                    end,
+                    started_at = coalesce(job.started_at, now()),
+                    remote_started_at = case
+                        when job.phase = 'REMOTE_QUEUED'
+                            then coalesce(job.remote_started_at, now())
+                        else job.remote_started_at
+                    end,
+                    build_started_at = case
+                        when job.phase = 'READY_FOR_BUILD'
+                            then coalesce(job.build_started_at, now())
+                        else job.build_started_at
+                    end
                 from next_job
                 where job.id = next_job.id
                 returning {_JOB_COLUMNS_AS_JOB}
                 """,
-                (normalized_worker,),
+                (phase_values, normalized_worker),
             ).fetchone()
             if row is None:
                 return None
@@ -633,17 +683,89 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 ) values (%s, %s, %s, %s)
                 returning id
                 """,
-                (job.batch_id, job.id, "JOB_STARTED", _jsonb({"worker_id": normalized_worker})),
+                (
+                    job.batch_id,
+                    job.id,
+                    (
+                        "BUILD_STARTED"
+                        if job.phase is BatchJobPhase.BUILD_RUNNING
+                        else "JOB_STARTED"
+                    ),
+                    _jsonb({"worker_id": normalized_worker}),
+                ),
+            ).fetchone()
+        return job
+
+    def advance_job_phase(
+        self,
+        job_id: UUID,
+        *,
+        expected_phase: BatchJobPhase,
+        requested_phase: BatchJobPhase,
+        collection_checkpoint_path: str | Path | None = None,
+    ) -> WebBatchJob:
+        if (
+            expected_phase is not BatchJobPhase.REMOTE_RUNNING
+            or requested_phase is not BatchJobPhase.READY_FOR_BUILD
+        ):
+            raise ValueError("Transicao de fase de trabalho invalida.")
+        checkpoint_path = validate_collection_checkpoint_path(
+            collection_checkpoint_path
+        )
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                update {SCHEMA_NAME}.web_batch_jobs
+                set status = 'QUEUED', phase = %s,
+                    collection_checkpoint_path = %s,
+                    remote_ended_at = now(), worker_id = null,
+                    process_id = null, control_file = null, ended_at = null
+                where id = %s and status = 'RUNNING' and phase = %s
+                returning {_JOB_COLUMNS}
+                """,
+                (
+                    requested_phase.value,
+                    checkpoint_path,
+                    job_id,
+                    expected_phase.value,
+                ),
+            ).fetchone()
+            if row is None:
+                raise ValueError("O trabalho nao esta na fase remota esperada.")
+            job = _job_from_row(row)
+            connection.execute(
+                f"""
+                insert into {SCHEMA_NAME}.web_batch_events (
+                    batch_id, job_id, event_type, payload
+                ) values (%s, %s, %s, %s)
+                returning id
+                """,
+                (
+                    job.batch_id,
+                    job.id,
+                    "COLLECTION_READY",
+                    _jsonb({"phase": requested_phase.value}),
+                ),
             ).fetchone()
         return job
 
     def complete_job(self, job_id: UUID, result: BatchJobResult) -> None:
         assert_sanitized_payload(result.payload, path="job.result")
+        if result.status in BATCH_JOB_TERMINAL_STATUSES:
+            phase_sql = "'TERMINAL'"
+        elif result.status is BatchJobStatus.WAITING_WAS_DECISION:
+            phase_sql = (
+                "case when phase = 'REMOTE_RUNNING' "
+                "then 'REMOTE_WAITING_DECISION' else phase end"
+            )
+        else:
+            phase_sql = "phase"
         with self.database.connection() as connection:
             row = connection.execute(
                 f"""
                 update {SCHEMA_NAME}.web_batch_jobs
-                set status = %s, exit_code = %s, error_code = %s,
+                set status = %s, phase = {phase_sql},
+                    exit_code = %s, error_code = %s,
                     error_message = %s, payload = payload || %s,
                     ended_at = case
                         when %s = 'WAITING_WAS_DECISION' then null
@@ -745,10 +867,35 @@ class PostgresWebBatchRepository(WebBatchRepository):
             rows = connection.execute(
                 f"""
                 update {SCHEMA_NAME}.web_batch_jobs
-                set status = 'INTERRUPTED', ended_at = now(),
-                    error_code = 'LOCAL_WORKER_RESTARTED',
-                    error_message = 'Execucao local interrompida por reinicio.'
+                set status = case
+                        when phase in ('REMOTE_RUNNING', 'BUILD_RUNNING')
+                            then 'QUEUED'
+                        else 'INTERRUPTED'
+                    end,
+                    phase = case
+                        when phase = 'REMOTE_RUNNING' then 'REMOTE_QUEUED'
+                        when phase = 'BUILD_RUNNING' then 'READY_FOR_BUILD'
+                        else phase
+                    end,
+                    worker_id = case
+                        when phase in ('REMOTE_RUNNING', 'BUILD_RUNNING') then null
+                        else worker_id
+                    end,
+                    process_id = null, control_file = null,
+                    ended_at = case
+                        when phase = 'LEGACY' then now() else null
+                    end,
+                    error_code = case
+                        when phase = 'LEGACY' then 'LOCAL_WORKER_RESTARTED'
+                        else null
+                    end,
+                    error_message = case
+                        when phase = 'LEGACY'
+                            then 'Execucao local interrompida por reinicio.'
+                        else null
+                    end
                 where status = 'RUNNING'
+                  and phase in ('LEGACY', 'REMOTE_RUNNING', 'BUILD_RUNNING')
                   and (worker_id is null or worker_id <> all(%s))
                 returning {_JOB_COLUMNS}
                 """,
@@ -756,6 +903,25 @@ class PostgresWebBatchRepository(WebBatchRepository):
             ).fetchall()
             jobs = tuple(_job_from_row(row) for row in rows)
             for job in jobs:
+                if job.phase in {
+                    BatchJobPhase.REMOTE_QUEUED,
+                    BatchJobPhase.READY_FOR_BUILD,
+                }:
+                    connection.execute(
+                        f"""
+                        insert into {SCHEMA_NAME}.web_batch_events (
+                            batch_id, job_id, event_type, payload
+                        ) values (%s, %s, %s, %s)
+                        returning id
+                        """,
+                        (
+                            job.batch_id,
+                            job.id,
+                            "JOB_REQUEUED_AFTER_RESTART",
+                            _jsonb({"phase": job.phase.value}),
+                        ),
+                    ).fetchone()
+                    continue
                 connection.execute(
                     f"""
                     update {SCHEMA_NAME}.web_batches

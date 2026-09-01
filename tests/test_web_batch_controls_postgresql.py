@@ -57,6 +57,21 @@ def _job_row(*, status: str) -> tuple[object, ...]:
         "2026-08-31T12:00:00Z",
         "2026-08-31T12:00:01Z",
         "2026-08-31T12:10:00Z",
+        (
+            "TERMINAL"
+            if status in {
+                "COMPLETE",
+                "COMPLETE_WITH_WARNINGS",
+                "FAILED",
+                "INTERRUPTED",
+                "CANCELLED_BY_USER",
+            }
+            else "LEGACY"
+        ),
+        None,
+        None,
+        None,
+        None,
     )
 
 
