@@ -55,6 +55,24 @@ def test_frontend_exposes_contextual_durable_batch_controls() -> None:
     assert ".batch-actions" in css
 
 
+def test_frontend_offers_retry_instead_of_resume_for_recovered_paused_batch() -> None:
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert (
+        'const recoveredPaused = batch.kind === "RECOVERED" '
+        '&& batch.status === "PAUSED";'
+    ) in javascript
+    assert 'batch.kind === "RECOVERED" ? "Lote recuperado"' in javascript
+    assert (
+        'if (!recoveredPaused && batch.status === "PAUSED") '
+        'actions.push(["resume", "Retomar lote", "primary"]);'
+    ) in javascript
+    assert (
+        'if (recoveredPaused && Number(batch.retryable_count || 0) > 0) '
+        'actions.push(["retry-incomplete", "Tentar falhas/interrompidos", "primary"]);'
+    ) in javascript
+
+
 def test_batch_summary_counts_warnings_as_complete_not_retryable(
     tmp_path: Path,
 ) -> None:
@@ -117,4 +135,3 @@ def test_batch_summary_counts_warnings_as_complete_not_retryable(
     assert summary["cancelled_count"] == 1
     assert summary["retryable_count"] == 3
     assert summary["progress_percent"] == 100
-

@@ -200,13 +200,14 @@ function renderBatches() {
   panel.classList.toggle("hidden", !batch);
   if (!batch) return;
   const finished = Number(batch.completed_count || 0) + Number(batch.failed_count || 0) + Number(batch.interrupted_count || 0) + Number(batch.cancelled_count || 0);
-  $("#batch-title").textContent = batch.kind === "GENERATE_ALL" ? "Geração da carteira" : batch.kind === "RETRY_INCOMPLETE" ? "Retentativa de incompletos" : batch.kind === "RERUN_ALL" ? "Nova geração integral" : "Geração individual";
+  const recoveredPaused = batch.kind === "RECOVERED" && batch.status === "PAUSED";
+  $("#batch-title").textContent = batch.kind === "GENERATE_ALL" ? "Geração da carteira" : batch.kind === "RECOVERED" ? "Lote recuperado" : batch.kind === "RETRY_INCOMPLETE" ? "Retentativa de incompletos" : batch.kind === "RERUN_ALL" ? "Nova geração integral" : "Geração individual";
   $("#batch-state").textContent = batchStatusLabel(batch.status);
   $("#batch-state").dataset.status = batch.status;
   $("#batch-progress-copy").textContent = `${finished} de ${batch.total_count} finalizados`;
   $("#batch-progress-percent").textContent = `${batch.progress_percent}%`;
   $("#batch-progress-bar").value = Number(batch.progress_percent || 0);
-  $("#batch-current-copy").textContent = batch.current_client_id ? `Cliente atual: ${batch.current_client_id}` : batch.status === "PAUSED" ? "O lote aguarda retomada manual." : "Nenhum cliente em execução neste instante.";
+  $("#batch-current-copy").textContent = batch.current_client_id ? `Cliente atual: ${batch.current_client_id}` : recoveredPaused ? `${Number(batch.retryable_count || 0)} falha(s) disponível(is) para retentativa controlada.` : batch.status === "PAUSED" ? "O lote aguarda retomada manual." : "Nenhum cliente em execução neste instante.";
   $("#batch-counters").innerHTML = [
     ["Concluídos", batch.completed_count],
     ["Falhas", batch.failed_count],
@@ -216,8 +217,9 @@ function renderBatches() {
 
   const actions = [];
   if (["QUEUED", "RUNNING"].includes(batch.status)) actions.push(["pause", "Pausar após o atual", "ghost"]);
-  if (["QUEUED", "RUNNING", "PAUSE_REQUESTED", "PAUSED"].includes(batch.status)) actions.push(["stop", "Parar lote", "danger"]);
-  if (batch.status === "PAUSED") actions.push(["resume", "Retomar lote", "primary"]);
+  if (!recoveredPaused && ["QUEUED", "RUNNING", "PAUSE_REQUESTED", "PAUSED"].includes(batch.status)) actions.push(["stop", "Parar lote", "danger"]);
+  if (!recoveredPaused && batch.status === "PAUSED") actions.push(["resume", "Retomar lote", "primary"]);
+  if (recoveredPaused && Number(batch.retryable_count || 0) > 0) actions.push(["retry-incomplete", "Tentar falhas/interrompidos", "primary"]);
   if (TERMINAL_BATCH_STATES.has(batch.status) && Number(batch.retryable_count || 0) > 0) actions.push(["retry-incomplete", "Tentar somente falhas e interrompidos", "ghost"]);
   if (TERMINAL_BATCH_STATES.has(batch.status) && batch.kind === "GENERATE_ALL") actions.push(["rerun-all", "Gerar novamente para todos", "ghost"]);
   $("#batch-actions").innerHTML = actions.map(([action, label, tone]) => `<button class="button ${tone}" data-batch-action="${action}" type="button">${label}</button>`).join("");
