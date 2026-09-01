@@ -109,6 +109,53 @@ class ReportSetPurgeTests(unittest.TestCase):
             self.assertNotIn(record.run_id, repository.snapshots)
             self.assertTrue(all(not Path(path).exists() for path in record.disk_paths))
 
+    def test_purge_uses_short_staging_paths_on_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            data_root = Path(directory) / "data"
+            run_id = "20260825T002814Z-sanitized-client-attempt-1"
+            document = (
+                data_root
+                / "manual"
+                / "reports"
+                / "cliente-a"
+                / run_id
+                / "20260701T000000-20260801T000000"
+                / ("relatorio-" + ("x" * 70) + ".docx")
+            )
+            document.parent.mkdir(parents=True, exist_ok=True)
+            document.write_bytes(b"conteudo")
+            record = _record(data_root, run_id=run_id, paths=(document,))
+            repository = _MemoryPurgeRepository(record)
+            staged_destinations: list[Path] = []
+
+            def windows_legacy_move(source: Path, destination: Path) -> None:
+                staged_destinations.append(destination)
+                if len(str(destination)) > 259:
+                    raise OSError("caminho temporario excedeu o limite do Windows")
+                source.replace(destination)
+
+            service = ReportSetPurgeService(
+                data_root=data_root,
+                repository=repository,
+                active_jobs=lambda: (),
+                move_file=windows_legacy_move,
+            )
+
+            result = service.purge(
+                record.run_id,
+                actor="analista-web",
+                reason="conjunto obsoleto",
+                confirmation="EXCLUIR",
+            )
+
+            self.assertEqual(result.deleted_files, 1)
+            self.assertTrue(staged_destinations)
+            self.assertLessEqual(
+                max(len(str(path)) for path in staged_destinations),
+                259,
+            )
+            self.assertFalse(document.exists())
+
     def test_main_requires_a_compatible_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             data_root = Path(directory) / "data"

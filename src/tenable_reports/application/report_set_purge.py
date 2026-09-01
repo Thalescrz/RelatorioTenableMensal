@@ -222,13 +222,11 @@ class ReportSetPurgeService:
         paths = self._paths(record)
         existing = tuple(path for path in paths if path.is_file())
         deleted_bytes = sum(path.stat().st_size for path in existing)
-        quarantine = (
-            self.data_root / ".purge" / f"{record.run_id}-{uuid.uuid4().hex}"
-        )
+        quarantine = self.data_root / ".purge" / uuid.uuid4().hex
         staged: list[tuple[Path, Path]] = []
         try:
-            for original in existing:
-                temporary = quarantine / original.relative_to(self.data_root)
+            for index, original in enumerate(existing, start=1):
+                temporary = quarantine / f"{index:04d}{original.suffix}"
                 temporary.parent.mkdir(parents=True, exist_ok=True)
                 self.move_file(original, temporary)
                 staged.append((original, temporary))
