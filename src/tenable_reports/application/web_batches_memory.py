@@ -234,6 +234,34 @@ class InMemoryWebBatchRepository(WebBatchRepository):
             )
             return updated
 
+    def active_client_conflicts(
+        self,
+        client_ids: Sequence[str],
+        *,
+        excluding_batch_id: UUID,
+    ) -> tuple[str, ...]:
+        requested = {str(client_id) for client_id in client_ids}
+        active_statuses = {
+            BatchJobStatus.QUEUED,
+            BatchJobStatus.RUNNING,
+            BatchJobStatus.WAITING_WAS_DECISION,
+            BatchJobStatus.INTERRUPT_REQUESTED,
+        }
+        with self._lock:
+            return tuple(
+                sorted(
+                    {
+                        job.client_id
+                        for job in self._jobs.values()
+                        if (
+                            job.batch_id != excluding_batch_id
+                            and job.client_id in requested
+                            and job.status in active_statuses
+                        )
+                    }
+                )
+            )
+
     def claim_next_job(self, *, worker_id: str) -> WebBatchJob | None:
         normalized_worker = str(worker_id or "").strip()
         if not normalized_worker:

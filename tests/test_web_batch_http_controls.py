@@ -7,6 +7,7 @@ from uuid import UUID
 
 import pytest
 
+from tenable_reports.application.web_batches import BatchClientConflictError
 from tenable_reports.domain.web_batches import BatchAction
 from tenable_reports.webapp.server import DashboardHTTPServer
 
@@ -14,6 +15,8 @@ from tenable_reports.webapp.server import DashboardHTTPServer
 class _BatchApp:
     def __init__(self) -> None:
         self.actions: list[tuple[UUID, BatchAction]] = []
+        self.derivations = []
+        self.conflict = False
 
     def batch_state(self, batch_id: str):
         return {
@@ -26,6 +29,20 @@ class _BatchApp:
         self.actions.append((UUID(str(batch_id)), action))
         return {
             "batch": {"id": str(batch_id), "status": action.value},
+            "jobs": [],
+            "events": [],
+        }
+
+    def derive_batch(self, request):
+        if self.conflict:
+            raise BatchClientConflictError(("client-fixture",))
+        self.derivations.append(request)
+        return {
+            "batch": {
+                "id": str(UUID(int=902)),
+                "status": "QUEUED",
+                "kind": request.kind.value,
+            },
             "jobs": [],
             "events": [],
         }
@@ -89,3 +106,69 @@ def test_batch_action_routes_are_local_writes(
     assert payload["batch"]["status"] == action.value
     assert app.actions == [(batch_id, action)]
 
+@pytest.mark.parametrize(
+    ("route", "kind"),
+    (
+        ("retry-incomplete", BatchAction.RETRY_INCOMPLETE),
+        ("rerun-all", BatchAction.RERUN_ALL),
+    ),
+)
+def test_batch_derivation_routes_receive_idempotency_and_confirmation(
+    batch_server,
+    route: str,
+    kind: BatchAction,
+) -> None:
+    app, base = batch_server
+    batch_id = UUID(int=903)
+    request = Request(
+        f"{base}/api/batches/{batch_id}/{route}",
+        data=json.dumps(
+            {
+                "idempotency_key": f"fixture:{route}",
+                "confirmation": f"GERAR NOVAMENTE {str(batch_id)[:8]}",
+                "actor": "analista-local",
+                "reason": "teste local",
+            }
+        ).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Tenable-UI": "1",
+        },
+    )
+
+    with urlopen(request, timeout=3) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    assert response.status == 202
+    assert payload["batch"]["kind"] == kind.value
+    assert len(app.derivations) == 1
+    derived = app.derivations[0]
+    assert derived.source_batch_id == batch_id
+    assert derived.kind is kind
+    assert derived.idempotency_key == f"fixture:{route}"
+    assert derived.actor == "analista-local"
+
+
+def test_batch_derivation_conflict_returns_409(batch_server) -> None:
+    from urllib.error import HTTPError
+
+    app, base = batch_server
+    app.conflict = True
+    batch_id = UUID(int=904)
+    request = Request(
+        f"{base}/api/batches/{batch_id}/retry-incomplete",
+        data=json.dumps({"idempotency_key": "fixture:conflict"}).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Tenable-UI": "1",
+        },
+    )
+
+    with pytest.raises(HTTPError) as captured:
+        urlopen(request, timeout=3)
+
+    assert captured.value.code == 409
+    payload = json.loads(captured.value.read().decode("utf-8"))
+    assert "client-fixture" in payload["error"]

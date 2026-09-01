@@ -212,3 +212,25 @@ def test_completing_interrupted_job_finishes_stop_requested_batch() -> None:
     assert "when batch.status = 'stop_requested' then 'stopped'" in normalized
     assert "when batch.status = 'pause_requested'" in normalized
     assert "when batch.status = 'stop_requested' then now()" in normalized
+
+def test_postgresql_lists_active_client_conflicts_for_derived_batch() -> None:
+    database = _Database(
+        [_Cursor(many=(("client-b",), ("client-a",)))]
+    )
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    conflicts = repository.active_client_conflicts(
+        ("client-a", "client-b", "client-c"),
+        excluding_batch_id=UUID(int=1),
+    )
+
+    assert conflicts == ("client-a", "client-b")
+    sql, params = database.connection_value.calls[0]
+    normalized = " ".join(sql.lower().split())
+    assert "select distinct client_id" in normalized
+    assert "interrupt_requested" in normalized
+    assert "batch_id <> %s" in normalized
+    assert params == (
+        ["client-a", "client-b", "client-c"],
+        UUID(int=1),
+    )

@@ -13,6 +13,50 @@ from tenable_reports.domain.web_batches import (
 )
 
 
+class NoEligibleBatchJobsError(ValueError):
+    def __init__(self, source_batch_id: UUID) -> None:
+        self.source_batch_id = source_batch_id
+        super().__init__(
+            "O lote de origem nao possui clientes elegiveis para esta acao."
+        )
+
+
+class BatchConfirmationError(ValueError):
+    pass
+
+
+class BatchClientConflictError(RuntimeError):
+    def __init__(self, client_ids: Sequence[str]) -> None:
+        self.client_ids = tuple(sorted({str(item) for item in client_ids}))
+        super().__init__(
+            "Ha clientes com geracao ativa em outro lote: "
+            + ", ".join(self.client_ids)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DerivedBatchRequest:
+    source_batch_id: UUID
+    kind: BatchAction
+    idempotency_key: str
+    confirmation_token: str | None = None
+    actor: str | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind not in {
+            BatchAction.RETRY_INCOMPLETE,
+            BatchAction.RERUN_ALL,
+        }:
+            raise ValueError("A derivacao exige RETRY_INCOMPLETE ou RERUN_ALL.")
+        normalized_key = str(self.idempotency_key or "").strip()
+        if not normalized_key:
+            raise ValueError("A chave idempotente da derivacao e obrigatoria.")
+        if len(normalized_key) > 200:
+            raise ValueError("A chave idempotente da derivacao e muito longa.")
+        object.__setattr__(self, "idempotency_key", normalized_key)
+
+
 @dataclass(frozen=True, slots=True)
 class BatchJobResult:
     status: BatchJobStatus
@@ -69,6 +113,13 @@ class WebBatchRepository(Protocol):
         batch_id: UUID,
         action: BatchAction,
     ) -> WebBatch: ...
+
+    def active_client_conflicts(
+        self,
+        client_ids: Sequence[str],
+        *,
+        excluding_batch_id: UUID,
+    ) -> tuple[str, ...]: ...
 
     def claim_next_job(self, *, worker_id: str) -> WebBatchJob | None: ...
 

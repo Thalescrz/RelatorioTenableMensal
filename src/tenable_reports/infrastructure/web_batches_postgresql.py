@@ -368,6 +368,38 @@ class PostgresWebBatchRepository(WebBatchRepository):
             ).fetchone()
         return _batch_from_row(updated_row)
 
+    def active_client_conflicts(
+        self,
+        client_ids: Sequence[str],
+        *,
+        excluding_batch_id: UUID,
+    ) -> tuple[str, ...]:
+        normalized = sorted(
+            {
+                str(client_id).strip()
+                for client_id in client_ids
+                if str(client_id).strip()
+            }
+        )
+        if not normalized:
+            return ()
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                f"""
+                select distinct client_id
+                from {SCHEMA_NAME}.web_batch_jobs
+                where client_id = any(%s)
+                  and batch_id <> %s
+                  and status in (
+                      'QUEUED', 'RUNNING', 'WAITING_WAS_DECISION',
+                      'INTERRUPT_REQUESTED'
+                  )
+                order by client_id
+                """,
+                (normalized, excluding_batch_id),
+            ).fetchall()
+        return tuple(sorted(str(row[0]) for row in rows))
+
     def claim_next_job(self, *, worker_id: str) -> WebBatchJob | None:
         normalized_worker = str(worker_id or "").strip()
         if not normalized_worker:

@@ -22,7 +22,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from tenable_reports.application.web_batches import WebBatchRepository
+from tenable_reports.application.web_batches import (
+    BatchClientConflictError,
+    DerivedBatchRequest,
+    WebBatchRepository,
+)
 from tenable_reports.application.cloud_contract import probe_cloud_contract
 from tenable_reports.application.orchestration import SAFE_ID_PATTERN
 from tenable_reports.application.orchestration import load_orchestration_config
@@ -2234,6 +2238,15 @@ class DashboardApplication:
         request_action(batch_id, action)
         return self.batch_state(batch_id)
 
+    def derive_batch(
+        self,
+        request: DerivedBatchRequest,
+    ) -> dict[str, Any]:
+        derive = getattr(self.jobs, "derive_batch", None)
+        if not callable(derive):
+            raise RuntimeError("Derivacao duravel de lotes indisponivel.")
+        return derive(request)
+
     def cancel_export_and_retry(
         self,
         *,
@@ -2728,6 +2741,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             payload = self._request_json()
             match = re.fullmatch(
+                r"/api/batches/([^/]+)/(retry-incomplete|rerun-all)",
+                parsed.path,
+            )
+            if match:
+                action = (
+                    BatchAction.RETRY_INCOMPLETE
+                    if match.group(2) == "retry-incomplete"
+                    else BatchAction.RERUN_ALL
+                )
+                result = self.app.derive_batch(
+                    DerivedBatchRequest(
+                        source_batch_id=uuid.UUID(unquote(match.group(1))),
+                        kind=action,
+                        idempotency_key=str(
+                            payload.get("idempotency_key") or ""
+                        ),
+                        confirmation_token=(
+                            str(payload.get("confirmation") or "") or None
+                        ),
+                        actor=str(payload.get("actor") or "") or None,
+                        reason=str(payload.get("reason") or "") or None,
+                    )
+                )
+                self._json(HTTPStatus.ACCEPTED, result)
+                return
+            match = re.fullmatch(
                 r"/api/batches/([^/]+)/(pause|resume|stop)",
                 parsed.path,
             )
@@ -2877,6 +2916,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, result)
                 return
             self._json_error(HTTPStatus.NOT_FOUND, "Rota nao encontrada.")
+        except BatchClientConflictError as exc:
+            self._json_error(
+                HTTPStatus.CONFLICT,
+                _safe_error(str(exc), limit=500),
+            )
         except (ValueError, KeyError, json.JSONDecodeError) as exc:
             self._json_error(HTTPStatus.BAD_REQUEST, _safe_error(str(exc), limit=500))
         except RuntimeError as exc:

@@ -5,14 +5,20 @@ from __future__ import annotations
 import threading
 from datetime import UTC, datetime
 from typing import Any, Mapping, Sequence
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from tenable_reports.application.execution_control import FileExecutionControl
 from tenable_reports.application.web_batches import (
+    BatchClientConflictError,
+    BatchConfirmationError,
     BatchJobResult,
+    DerivedBatchRequest,
+    NoEligibleBatchJobsError,
     WebBatchRepository,
 )
 from tenable_reports.domain.web_batches import (
+    BATCH_TERMINAL_STATUSES,
+    RETRYABLE_BATCH_JOB_STATUSES,
     BatchAction,
     BatchJobStatus,
     BatchStatus,
@@ -61,6 +67,28 @@ class DurableDashboardJobQueue:
             tuple((client_id, request) for client_id in client_ids)
         )
 
+    def _control_file(
+        self,
+        *,
+        batch_id: UUID,
+        job_id: UUID,
+        mode: str,
+    ) -> str:
+        scope_name = (
+            "automatic-monthly" if mode == "automatic" else "manual"
+        )
+        return str(
+            (
+                self.executor.project_root
+                / "data"
+                / scope_name
+                / "control"
+                / "web-batches"
+                / str(batch_id)
+                / f"{job_id.hex}.json"
+            ).resolve()
+        )
+
     def enqueue_requests(
         self,
         requests: Sequence[tuple[str, Mapping[str, Any]]],
@@ -85,26 +113,17 @@ class DurableDashboardJobQueue:
             options={"requests": normalized_requests},
             created_at=created_at,
         )
-        scope_name = (
-            "automatic-monthly"
-            if str(created[0].get("mode") or "manual") == "automatic"
-            else "manual"
-        )
 
         def durable_job(
             position: int,
             row: Mapping[str, Any],
         ) -> WebBatchJob:
             job_id = UUID(hex=str(row["job_id"]))
-            control_file = (
-                self.executor.project_root
-                / "data"
-                / scope_name
-                / "control"
-                / "web-batches"
-                / str(batch_id)
-                / f"{job_id.hex}.json"
-            ).resolve()
+            control_file = self._control_file(
+                batch_id=batch_id,
+                job_id=job_id,
+                mode=str(row.get("mode") or "manual"),
+            )
             return WebBatchJob(
                 id=job_id,
                 batch_id=batch_id,
@@ -136,6 +155,147 @@ class DurableDashboardJobQueue:
             for row in self.snapshot()
             if UUID(hex=str(row["job_id"])) in created_ids
         ]
+    def derive_batch(
+        self,
+        request: DerivedBatchRequest,
+    ) -> dict[str, Any]:
+        source = self.repository.get_batch(request.source_batch_id)
+        if source is None:
+            raise KeyError("Lote de origem nao encontrado.")
+        if source.status not in BATCH_TERMINAL_STATUSES:
+            raise ValueError(
+                "O lote de origem ainda esta ativo e nao pode ser derivado."
+            )
+        if request.kind is BatchAction.RERUN_ALL:
+            expected = f"GERAR NOVAMENTE {str(source.id)[:8]}"
+            if str(request.confirmation_token or "").strip() != expected:
+                raise BatchConfirmationError(
+                    f'Digite exatamente "{expected}" para confirmar.'
+                )
+
+        batch_key = f"batch:derive:{request.idempotency_key}"
+        batch_id = uuid5(NAMESPACE_URL, batch_key)
+        existing = self.repository.get_batch(batch_id)
+        if existing is not None:
+            return self.batch_snapshot(existing.id)
+
+        source_jobs = self.repository.list_batch_jobs(source.id)
+        selected = tuple(
+            job
+            for job in source_jobs
+            if (
+                request.kind is BatchAction.RERUN_ALL
+                or job.status in RETRYABLE_BATCH_JOB_STATUSES
+            )
+        )
+        if not selected:
+            raise NoEligibleBatchJobsError(source.id)
+
+        selected_clients = {job.client_id for job in selected}
+        conflicts = self.repository.active_client_conflicts(
+            tuple(selected_clients),
+            excluding_batch_id=source.id,
+        )
+        if conflicts:
+            raise BatchClientConflictError(conflicts)
+
+        created_at = _now()
+        derived = WebBatch(
+            id=batch_id,
+            idempotency_key=batch_key,
+            kind=request.kind.value,
+            status=BatchStatus.QUEUED,
+            options={
+                **dict(source.options),
+                "derived_action": request.kind.value,
+            },
+            source_batch_id=source.id,
+            created_at=created_at,
+        )
+        jobs: list[WebBatchJob] = []
+        transient_keys = {
+            "batch_id",
+            "job_id",
+            "status",
+            "progress",
+            "queue_position",
+            "started_at",
+            "ended_at",
+            "run_id",
+            "error",
+            "error_code",
+            "exit_code",
+            "warnings",
+            "export_progress",
+            "was_export_progress",
+            "cloud_progress",
+            "tag_progress",
+            "_job_control_file",
+        }
+        for position, source_job in enumerate(selected, start=1):
+            job_id = uuid5(batch_id, str(source_job.id))
+            payload = {
+                key: value
+                for key, value in dict(source_job.payload).items()
+                if key not in transient_keys
+            }
+            mode = str(payload.get("mode") or "manual")
+            control_file = self._control_file(
+                batch_id=batch_id,
+                job_id=job_id,
+                mode=mode,
+            )
+            payload.update(
+                {
+                    "job_id": job_id.hex,
+                    "batch_id": str(batch_id),
+                    "client_id": source_job.client_id,
+                    "status": BatchJobStatus.QUEUED.value,
+                    "created_at": created_at,
+                    "_job_control_file": control_file,
+                }
+            )
+            is_retry = request.kind is BatchAction.RETRY_INCOMPLETE
+            jobs.append(
+                WebBatchJob(
+                    id=job_id,
+                    batch_id=batch_id,
+                    client_id=source_job.client_id,
+                    position=position,
+                    status=BatchJobStatus.QUEUED,
+                    attempt_number=(
+                        source_job.attempt_number + 1 if is_retry else 1
+                    ),
+                    payload=payload,
+                    retry_of_batch_job_id=source_job.id if is_retry else None,
+                    logical_job_id=source_job.logical_job_id,
+                    control_file=control_file,
+                    created_at=created_at,
+                )
+            )
+        try:
+            self.repository.create_batch(derived, tuple(jobs))
+        except ValueError as exc:
+            raise BatchClientConflictError(
+                tuple(job.client_id for job in jobs)
+            ) from exc
+        self.repository.append_event(
+            WebBatchEvent(
+                batch_id=batch_id,
+                event_type="BATCH_DERIVED",
+                payload={
+                    "source_batch_id": str(source.id),
+                    "kind": request.kind.value,
+                    "job_count": len(jobs),
+                    "reason": str(request.reason or "")[:500],
+                },
+                actor=str(request.actor or "")[:200] or None,
+                idempotency_key=f"event:{batch_key}",
+            )
+        )
+        self._dispatcher.wake()
+        return self.batch_snapshot(batch_id)
+
     def request_action(
         self,
         batch_id: UUID | str,
