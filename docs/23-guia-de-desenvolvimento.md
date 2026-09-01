@@ -173,6 +173,9 @@ sanitizados e remover o ZIP temporário em bloco `finally` após a transmissão.
 download mensal consulta a referência `MAIN` por cliente e período; o download de
 um conjunto preserva a identidade do `run_id` selecionado. Cubra seleção,
 estrutura interna, omissões, caminhos inseguros e limpeza temporária com testes.
+Erros de montagem precisam voltar à interface antes do início do streaming. Use
+token curto, de uso único e com expiração; não materialize o ZIP inteiro na memória
+do navegador.
 
 ## Documentação e instruções
 

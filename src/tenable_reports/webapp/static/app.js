@@ -316,6 +316,18 @@ function startBrowserDownload(url) {
   link.remove();
 }
 
+async function prepareArchive(payload) {
+  const prepared = await api("/api/report-archives/prepare", {
+    method: "POST",
+    body: payload,
+  });
+  if (!/^\/api\/report-archives\/download\/[a-f0-9]{32}$/.test(prepared.download_url || "")) {
+    throw new Error("O servidor devolveu um endereço de download inválido.");
+  }
+  startBrowserDownload(prepared.download_url);
+  return prepared;
+}
+
 function monthlyPeriodLabel(periodId) {
   const [year, month] = periodId.split("-").map(Number);
   if (!year || !month) return periodId;
@@ -370,7 +382,7 @@ async function openClient(clientId) {
         ? '<button class="mini-button" data-report-action="retry-cloud" type="button">Tentar Cloud novamente</button>'
         : "";
       const reportArchiveAction = !report.deleted_at
-        ? `<a class="mini-button archive-download" href="/api/reports/${encodeURIComponent(report.run_id)}/archive" download>Baixar conjunto ZIP</a>`
+        ? '<button class="mini-button archive-download" data-report-action="archive" type="button">Baixar conjunto ZIP</button>'
         : "";
       return `<div class="report-row ${report.deleted_at ? "deleted" : ""}" data-report-run="${escapeHtml(report.run_id)}"><div><div class="report-badges">${report.is_main ? '<span class="report-badge main">MAIN</span>' : ""}<span class="report-badge">${escapeHtml(report.origin || "MANUAL")}</span><span class="report-badge">${escapeHtml(report.status || "")}</span>${cloudBadge}${report.deleted_at ? '<span class="report-badge">EXCLUÍDO</span>' : ""}</div><strong>${escapeHtml(report.period_id || report.run_id)}</strong><small>${escapeHtml(report.run_id)} · ${formatBytes(report.size_bytes)}${reference}${omitted}</small><div class="report-documents">${documents || '<small>Documentos não localizados no disco.</small>'}</div></div><div class="report-actions">${reportArchiveAction}${cloudRetryAction}${!report.deleted_at && !report.is_main ? '<button class="mini-button" data-report-action="main" type="button">Definir MAIN</button>' : ""}${report.deleted_at ? '<button class="mini-button" data-report-action="restore" type="button">Restaurar</button>' : '<button class="mini-button danger" data-report-action="delete" type="button">Excluir conjunto</button>'}</div></div>`;
     }).join("") : '<div class="loading">Nenhum relatório gerado para este cliente.</div>';
@@ -385,7 +397,12 @@ function bindReportActions() {
     if (!report) return;
     try {
       let successMessage = "Registro de relatório atualizado.";
-      if (button.dataset.reportAction === "retry-cloud") {
+      if (button.dataset.reportAction === "archive") {
+        button.disabled = true;
+        const prepared = await prepareArchive({ run_id: runId });
+        toast(`Download preparado: ${prepared.download_name}`);
+        return;
+      } else if (button.dataset.reportAction === "retry-cloud") {
         const message = `Somente o componente Cloud Security será executado novamente. A coleta VM e os demais documentos não serão repetidos.\n\nExecução: ${runId}\n\nDeseja continuar?`;
         if (!window.confirm(message)) return;
         await api(`/api/reports/${encodeURIComponent(runId)}/retry-cloud`, {
@@ -439,7 +456,11 @@ function bindReportActions() {
       toast(successMessage);
       await openClient(state.selectedClient);
       await refresh();
-    } catch (error) { toast(error.message, "error"); }
+    } catch (error) {
+      toast(error.message, "error");
+    } finally {
+      if (button.isConnected) button.disabled = false;
+    }
   }));
 }
 
@@ -666,13 +687,21 @@ $("#apply-backfill-button").addEventListener("click", async event => {
 });
 $("#check-all-button").addEventListener("click", event => testConnections(state.data.clients.filter(c => c.enabled).map(c => c.client_id), event.currentTarget));
 $("#archive-all-button").addEventListener("click", event => openMonthlyArchiveDialog(event.currentTarget));
-$("#archive-form").addEventListener("submit", event => {
+$("#archive-form").addEventListener("submit", async event => {
   event.preventDefault();
   const periodId = $("#archive-month-select").value;
   if (!periodId) return;
-  startBrowserDownload(`/api/report-archives/monthly?period_id=${encodeURIComponent(periodId)}`);
-  $("#archive-dialog").close();
-  toast(`Download mensal de ${monthlyPeriodLabel(periodId)} iniciado.`);
+  const button = $("#archive-download-button");
+  button.disabled = true;
+  try {
+    const prepared = await prepareArchive({ period_id: periodId });
+    $("#archive-dialog").close();
+    toast(`Download mensal preparado: ${prepared.download_name}`);
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
 });
 $("#empty-add-button").addEventListener("click", () => { resetClientForm(); $("#manage-dialog").showModal(); });
 $("#open-alerts-button").addEventListener("click", () => $("#alerts-dialog").showModal());

@@ -311,12 +311,15 @@ O botão **Baixar ZIP mensal**, no topo do painel, solicita o mês e cria uma pa
 somente o conjunto `MAIN` de cada cliente naquele mês. Clientes sem `MAIN` e
 documentos registrados que não estejam mais no disco são omitidos e relacionados
 em `RESUMO.txt`; os demais clientes continuam no download. O mês mais recente fica
-pré-selecionado.
+pré-selecionado. Se existirem referências `MAIN` de contextos diferentes para o
+mesmo cliente e mês, o pacote usa a promoção `MAIN` mais recente e registra a
+decisão no resumo.
 
 O botão **Baixar conjunto ZIP**, dentro do histórico do cliente, baixa exatamente
 a geração escolhida, ainda que ela não seja `MAIN`. Conjuntos excluídos não podem
 ser baixados. Os ZIPs são temporários e não passam a ocupar espaço durável depois
-que a resposta termina.
+que a resposta termina. A preparação expira em cinco minutos quando o download não
+é iniciado.
 
 Para excluir um conjunto:
 

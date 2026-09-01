@@ -219,7 +219,9 @@ pacote mensal seleciona somente o `MAIN` de cada cliente no período, separa os
 arquivos por cliente e registra em `RESUMO.txt` clientes sem `MAIN`, documentos
 ausentes e demais omissões. Caminhos fora da raiz `data` são rejeitados. O ZIP é
 montado em `data/.downloads`, transmitido com `no-store` e removido ao final da
-resposta, inclusive quando o navegador interrompe o download.
+resposta, inclusive quando o navegador interrompe o download. A interface prepara
+o pacote antes de iniciar o streaming; o token é de uso único e um pacote não
+reivindicado expira depois de cinco minutos.
 
 ## Ciclo de vida do armazenamento
 

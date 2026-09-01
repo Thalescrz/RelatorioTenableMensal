@@ -43,6 +43,7 @@ class ArchiveReportSet:
     is_main: bool
     documents: tuple[ArchiveDocument, ...]
     deleted: bool = False
+    main_set_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,7 +63,6 @@ class ReportArchiveResult:
 
 
 _INVALID_COMPONENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-_MONTH_PATTERN = re.compile(r"\d{4}-\d{2}")
 _ALLOWED_DOCUMENT_SUFFIXES = {".docx", ".pdf"}
 _SPACE_RESERVE_BYTES = 16 * 1024 * 1024
 
@@ -137,6 +137,28 @@ def _summary_text(
     return "\n".join(lines) + "\n"
 
 
+def _validate_month(period_id: str) -> None:
+    try:
+        parsed = datetime.strptime(period_id, "%Y-%m")
+    except ValueError as exc:
+        raise ValueError("O período mensal deve usar o formato AAAA-MM.") from exc
+    if parsed.strftime("%Y-%m") != period_id:
+        raise ValueError("O período mensal deve usar o formato AAAA-MM.")
+
+
+def _main_selection_key(report: ArchiveReportSet) -> tuple[datetime, str]:
+    try:
+        selected_at = datetime.fromisoformat(
+            str(report.main_set_at or "").replace("Z", "+00:00")
+        )
+        if selected_at.tzinfo is None:
+            selected_at = selected_at.replace(tzinfo=UTC)
+        selected_at = selected_at.astimezone(UTC)
+    except ValueError:
+        selected_at = datetime.min.replace(tzinfo=UTC)
+    return selected_at, report.run_id
+
+
 def _build_archive(
     *,
     data_root: Path,
@@ -145,6 +167,7 @@ def _build_archive(
     reports: Sequence[ArchiveReportSet],
     initial_omissions: Sequence[str],
     download_name: str,
+    allow_empty: bool = False,
 ) -> ReportArchiveResult:
     root_name = _safe_component(
         f"Relatorios-Tenable-{period_id}",
@@ -187,7 +210,7 @@ def _build_archive(
         else:
             omissions.append(f"{report.display_name}: nenhum documento disponível")
 
-    if not entries:
+    if not entries and not allow_empty:
         raise EmptyReportArchiveError(
             "Nenhum documento disponível para gerar o arquivo ZIP."
         )
@@ -265,8 +288,7 @@ def build_monthly_report_archive(
     period_id: str,
     clients: Sequence[ArchiveClient],
 ) -> ReportArchiveResult:
-    if not _MONTH_PATTERN.fullmatch(period_id):
-        raise ValueError("O período mensal deve usar o formato AAAA-MM.")
+    _validate_month(period_id)
     selected: list[ArchiveReportSet] = []
     omissions: list[str] = []
     for client in clients:
@@ -280,10 +302,12 @@ def build_monthly_report_archive(
                 f"{client.display_name}: sem conjunto MAIN para {period_id}"
             )
             continue
+        candidates.sort(key=_main_selection_key, reverse=True)
         selected.append(candidates[0])
         if len(candidates) > 1:
             omissions.append(
-                f"{client.display_name}: mais de um MAIN encontrado; usado {candidates[0].run_id}"
+                f"{client.display_name}: mais de um MAIN encontrado; "
+                f"usado {candidates[0].run_id} por ser a promoção MAIN mais recente"
             )
     return _build_archive(
         data_root=Path(data_root),
@@ -292,4 +316,5 @@ def build_monthly_report_archive(
         reports=selected,
         initial_omissions=omissions,
         download_name=f"Relatorios-Tenable-{period_id}.zip",
+        allow_empty=True,
     )

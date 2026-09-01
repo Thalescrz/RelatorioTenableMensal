@@ -208,6 +208,109 @@ class ReportArchiveTests(unittest.TestCase):
                     ),
                 )
 
+    def test_monthly_archive_with_only_missing_documents_contains_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_root = root / "data"
+            missing = data_root / "cliente-a" / "ausente.docx"
+
+            result = build_monthly_report_archive(
+                data_root=data_root,
+                temporary_root=root / "temporary",
+                period_id="2026-08",
+                clients=(ArchiveClient(
+                    client_id="cliente-a",
+                    display_name="Cliente A",
+                    reports=(ArchiveReportSet(
+                        client_id="cliente-a",
+                        display_name="Cliente A",
+                        run_id="run-a",
+                        period_id="2026-08",
+                        is_main=True,
+                        documents=(ArchiveDocument(missing),),
+                    ),),
+                ),),
+            )
+
+            with zipfile.ZipFile(result.path) as package:
+                self.assertEqual(
+                    package.namelist(),
+                    ["Relatorios-Tenable-2026-08/RESUMO.txt"],
+                )
+                summary = package.read(
+                    "Relatorios-Tenable-2026-08/RESUMO.txt"
+                ).decode("utf-8")
+
+            self.assertIn("ausente.docx: arquivo ausente", summary)
+            self.assertEqual(result.included_clients, 0)
+            self.assertEqual(result.included_documents, 0)
+
+    def test_monthly_archive_rejects_nonexistent_calendar_month(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(ValueError, "formato AAAA-MM"):
+                build_monthly_report_archive(
+                    data_root=root / "data",
+                    temporary_root=root / "temporary",
+                    period_id="2026-99",
+                    clients=(),
+                )
+
+    def test_monthly_archive_uses_most_recent_main_promotion(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_root = root / "data"
+            older = data_root / "older.docx"
+            newer = data_root / "newer.docx"
+            data_root.mkdir(parents=True)
+            older.write_bytes(b"older")
+            newer.write_bytes(b"newer")
+
+            result = build_monthly_report_archive(
+                data_root=data_root,
+                temporary_root=root / "temporary",
+                period_id="2026-08",
+                clients=(ArchiveClient(
+                    client_id="cliente-a",
+                    display_name="Cliente A",
+                    reports=(
+                        ArchiveReportSet(
+                            client_id="cliente-a",
+                            display_name="Cliente A",
+                            run_id="run-older",
+                            period_id="2026-08",
+                            is_main=True,
+                            documents=(ArchiveDocument(older),),
+                            main_set_at="2026-08-02T10:00:00Z",
+                        ),
+                        ArchiveReportSet(
+                            client_id="cliente-a",
+                            display_name="Cliente A",
+                            run_id="run-newer",
+                            period_id="2026-08",
+                            is_main=True,
+                            documents=(ArchiveDocument(newer),),
+                            main_set_at="2026-08-03T10:00:00Z",
+                        ),
+                    ),
+                ),),
+            )
+
+            with zipfile.ZipFile(result.path) as package:
+                names = package.namelist()
+                summary = package.read(
+                    "Relatorios-Tenable-2026-08/RESUMO.txt"
+                ).decode("utf-8")
+
+            self.assertIn(
+                "Relatorios-Tenable-2026-08/Cliente A/newer.docx", names
+            )
+            self.assertNotIn(
+                "Relatorios-Tenable-2026-08/Cliente A/older.docx", names
+            )
+            self.assertIn("mais de um MAIN", summary)
+            self.assertIn("usado run-newer", summary)
+
 
 if __name__ == "__main__":
     unittest.main()

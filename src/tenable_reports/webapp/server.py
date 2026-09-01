@@ -125,6 +125,7 @@ from tenable_reports.webapp.durable_dashboard_queue import (
 STATIC_DIRECTORY = Path(__file__).with_name("static")
 MAX_REQUEST_BYTES = 64 * 1024
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+PREPARED_ARCHIVE_TTL_SECONDS = 5 * 60
 SECRET_PATTERN = re.compile(
     r"(?i)(TENABLE_(?:ACCESS|SECRET)|TCS_API_SECRET|TENABLE_REPORTS_DB_PASSWORD)\s*=\s*[^\s]+"
 )
@@ -925,6 +926,38 @@ class DashboardDatabase:
         """
         with self.database.connection() as connection:
             rows = connection.execute(query, (client_id, limit)).fetchall()
+        return [{
+            "document_id": int(row[0]),
+            "name": Path(str(row[1])).name,
+            "path": str(row[1]),
+            "size_bytes": int(row[2]),
+            "package_status": row[3],
+            "run_id": row[4],
+            "period_id": row[5],
+            "execution_type": row[6],
+            "ended_at": row[7].isoformat() if row[7] else None,
+            "created_at": row[8].isoformat() if row[8] else None,
+            "document_kind": row[9],
+            "document_variant": row[10],
+            "tag_uuid": row[11],
+            "tag_category": row[12],
+            "tag_value": row[13],
+        } for row in rows]
+
+    def report_documents(self, run_id: str) -> list[dict[str, Any]]:
+        query = f"""
+            select d.document_id, d.path, d.size_bytes, d.package_status,
+                   r.run_id, r.period_id, r.execution_type, r.ended_at, p.created_at,
+                   d.document_kind, d.document_variant,
+                   d.tag_uuid, d.tag_category, d.tag_value
+            from {SCHEMA_NAME}.published_documents d
+            join {SCHEMA_NAME}.publications p on p.publication_id = d.publication_id
+            join {SCHEMA_NAME}.report_runs r on r.run_id = p.run_id
+            where r.run_id = %s
+            order by d.document_id
+        """
+        with self.database.connection() as connection:
+            rows = connection.execute(query, (run_id,)).fetchall()
         return [{
             "document_id": int(row[0]),
             "name": Path(str(row[1])).name,
@@ -1931,6 +1964,8 @@ class DashboardApplication:
     ) -> None:
         self.project_root = project_root.resolve()
         self.config = DashboardConfigStore(project_root=self.project_root, config_path=config_path)
+        self._prepared_archive_lock = threading.RLock()
+        self._prepared_archives: dict[str, ReportArchiveResult] = {}
         self.connection_checker = connection_checker
         self.cloud_connection_checker = cloud_connection_checker
         self.tag_lister = tag_lister
@@ -2091,6 +2126,9 @@ class DashboardApplication:
                 "execution_type": candidate.execution_type,
                 "status": candidate.publication_status,
                 "is_main": bool(main and main.run_id == candidate.run_id),
+                "main_set_at": (
+                    main.set_at if main and main.run_id == candidate.run_id else None
+                ),
                 "deleted_at": report.deleted_at,
                 "reference_run_id": None,
                 "size_bytes": sum(int(item.get("size_bytes") or 0) for item in documents),
@@ -2119,6 +2157,7 @@ class DashboardApplication:
             period_id=str(row.get("period_id") or ""),
             is_main=bool(row.get("is_main")),
             deleted=bool(row.get("deleted_at")),
+            main_set_at=str(row.get("main_set_at") or "") or None,
             documents=tuple(
                 ArchiveDocument(
                     path=Path(str(document.get("path") or "")),
@@ -2161,7 +2200,11 @@ class DashboardApplication:
         )
         if row is None or row.get("deleted_at"):
             raise KeyError("Conjunto de relatórios não encontrado.")
-        row = {**row, "client_id": client_id}
+        row = {
+            **row,
+            "client_id": client_id,
+            "documents": self.database.report_documents(run_id),
+        }
         data_root, temporary_root = self._archive_roots()
         return build_report_set_archive(
             data_root=data_root,
@@ -2181,10 +2224,21 @@ class DashboardApplication:
             display_name = str(client.get("display_name") or client_id)
             reports = tuple(
                 self._archive_report_from_row(
-                    {**row, "client_id": client_id},
+                    {
+                        **row,
+                        "client_id": client_id,
+                        "documents": self.database.report_documents(
+                            str(row.get("run_id") or "")
+                        ),
+                    },
                     display_name=display_name,
                 )
                 for row in self.report_rows(client_id)
+                if (
+                    str(row.get("period_id") or "") == period_id
+                    and bool(row.get("is_main"))
+                    and not row.get("deleted_at")
+                )
             )
             clients.append(ArchiveClient(
                 client_id=client_id,
@@ -2198,6 +2252,52 @@ class DashboardApplication:
             period_id=period_id,
             clients=clients,
         )
+
+    def prepare_report_archive(
+        self,
+        *,
+        run_id: str | None = None,
+        period_id: str | None = None,
+    ) -> dict[str, str]:
+        normalized_run = str(run_id or "").strip()
+        normalized_period = str(period_id or "").strip()
+        if bool(normalized_run) == bool(normalized_period):
+            raise ValueError("Informe run_id ou period_id, mas não ambos.")
+        archive = (
+            self.create_report_set_archive(normalized_run)
+            if normalized_run
+            else self.create_monthly_report_archive(normalized_period)
+        )
+        download_id = uuid.uuid4().hex
+        with self._prepared_archive_lock:
+            self._prepared_archives[download_id] = archive
+        timer = threading.Timer(
+            PREPARED_ARCHIVE_TTL_SECONDS,
+            self._discard_prepared_archive,
+            args=(download_id,),
+        )
+        timer.daemon = True
+        timer.start()
+        return {
+            "download_id": download_id,
+            "download_name": archive.download_name,
+            "download_url": f"/api/report-archives/download/{download_id}",
+        }
+
+    def claim_prepared_archive(self, download_id: str) -> ReportArchiveResult:
+        if not re.fullmatch(r"[a-f0-9]{32}", download_id):
+            raise KeyError("Download preparado não encontrado.")
+        with self._prepared_archive_lock:
+            archive = self._prepared_archives.pop(download_id, None)
+        if archive is None:
+            raise KeyError("Download preparado não encontrado ou expirado.")
+        return archive
+
+    def _discard_prepared_archive(self, download_id: str) -> None:
+        with self._prepared_archive_lock:
+            archive = self._prepared_archives.pop(download_id, None)
+        if archive is not None:
+            archive.path.unlink(missing_ok=True)
 
     def storage_status(self) -> dict[str, Any]:
         payload = self.config.raw()
@@ -2905,7 +3005,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     _safe_error(str(exc), limit=500),
                 )
             return
-        if parsed.path == "/api/report-archives/monthly":
+        prepared_match = re.fullmatch(
+            r"/api/report-archives/download/([a-f0-9]{32})",
+            parsed.path,
+        )
+        if prepared_match:
+            archive_builder = lambda: self.app.claim_prepared_archive(
+                prepared_match.group(1)
+            )
+        elif parsed.path == "/api/report-archives/monthly":
             period_id = str(parse_qs(parsed.query).get("period_id", [""])[0])
             archive_builder = lambda: self.app.create_monthly_report_archive(period_id)
         else:
@@ -2935,9 +3043,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     _safe_error(str(exc), limit=500),
                 )
             except Exception as exc:
+                self.log_message(
+                    "Falha inesperada ao gerar ZIP: %s",
+                    type(exc).__name__,
+                )
                 self._json_error(
                     HTTPStatus.INTERNAL_SERVER_ERROR,
-                    _safe_error(str(exc), limit=500),
+                    "Não foi possível gerar o arquivo ZIP.",
                 )
             return
         if parsed.path == "/api/batches":
@@ -3106,6 +3218,48 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     idempotency_key=idempotency_key[:200],
                 )
                 self._json(HTTPStatus.OK, result)
+                return
+            if parsed.path == "/api/report-archives/prepare":
+                try:
+                    result = self.app.prepare_report_archive(
+                        run_id=str(payload.get("run_id") or "") or None,
+                        period_id=str(payload.get("period_id") or "") or None,
+                    )
+                    self._json(HTTPStatus.CREATED, result)
+                except KeyError as exc:
+                    self._json_error(
+                        HTTPStatus.NOT_FOUND,
+                        _safe_error(str(exc), limit=500),
+                    )
+                except (EmptyReportArchiveError, UnsafeReportArchivePath) as exc:
+                    self._json_error(
+                        HTTPStatus.CONFLICT,
+                        _safe_error(str(exc), limit=500),
+                    )
+                except InsufficientReportArchiveSpace as exc:
+                    self._json_error(
+                        HTTPStatus.INSUFFICIENT_STORAGE,
+                        _safe_error(str(exc), limit=500),
+                    )
+                except ValueError as exc:
+                    self._json_error(
+                        HTTPStatus.BAD_REQUEST,
+                        _safe_error(str(exc), limit=500),
+                    )
+                except RuntimeError as exc:
+                    self._json_error(
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                        _safe_error(str(exc), limit=500),
+                    )
+                except Exception as exc:
+                    self.log_message(
+                        "Falha inesperada ao preparar ZIP: %s",
+                        type(exc).__name__,
+                    )
+                    self._json_error(
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        "Não foi possível preparar o arquivo ZIP.",
+                    )
                 return
             if parsed.path == "/api/clients":
                 client = self.app.config.add_client(payload)

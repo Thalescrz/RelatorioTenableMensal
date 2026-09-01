@@ -18,6 +18,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from tenable_reports.application.report_registry import InMemoryReportRegistry
+from tenable_reports.application.report_archives import ReportArchiveResult
 from tenable_reports.application.report_set_purge import (
     ReportSetPurgeRecord,
     ReportSetPurgeService,
@@ -36,6 +37,7 @@ from tenable_reports.webapp.server import (
     DashboardApplication,
     DashboardConfigStore,
     DashboardDatabase,
+    DashboardHandler,
     DashboardHTTPServer,
     JobQueue,
     slugify_client_id,
@@ -56,6 +58,7 @@ class _RowsConnection:
     def __init__(self, rows):
         self.rows = rows
         self.query = ""
+        self.parameters = None
 
     def __enter__(self):
         return self
@@ -65,6 +68,7 @@ class _RowsConnection:
 
     def execute(self, query, _parameters):
         self.query = query
+        self.parameters = _parameters
         return _RowsCursor(self.rows)
 
 
@@ -152,14 +156,22 @@ class LocalClient:
 
 
 class _ArchiveDashboardDatabase:
-    def __init__(self, documents_by_client: dict[str, list[dict]]) -> None:
+    def __init__(
+        self,
+        documents_by_client: dict[str, list[dict]],
+        documents_by_run: dict[str, list[dict]] | None = None,
+    ) -> None:
         self.documents_by_client = documents_by_client
+        self.documents_by_run = documents_by_run or {}
 
     def reports(self, client_id: str):
         return list(self.documents_by_client.get(client_id, ()))
 
     def cloud_results(self, client_id: str):
         return {}
+
+    def report_documents(self, run_id: str):
+        return list(self.documents_by_run.get(run_id, ()))
 
 
 class WebDashboardTests(unittest.TestCase):
@@ -619,8 +631,8 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn('id="archive-download-button"', html)
         self.assertIn("Baixar conjunto ZIP", javascript)
         self.assertIn("/api/report-archives/months", javascript)
-        self.assertIn("/api/report-archives/monthly?period_id=", javascript)
-        self.assertIn("/archive", javascript)
+        self.assertIn("/api/report-archives/prepare", javascript)
+        self.assertIn('data-report-action="archive"', javascript)
 
     def test_backfill_routes_analyze_and_apply_only_safe_promotions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -943,6 +955,23 @@ class WebDashboardTests(unittest.TestCase):
                         "document_kind": "base",
                     },
                 ]
+            }, {
+                "run-main": [{
+                    "document_id": 1,
+                    "name": "main.docx",
+                    "path": str(main_document),
+                    "size_bytes": 4,
+                    "run_id": "run-main",
+                    "document_kind": "base",
+                }],
+                "run-old": [{
+                    "document_id": 2,
+                    "name": "old.docx",
+                    "path": str(old_document),
+                    "size_bytes": 3,
+                    "run_id": "run-old",
+                    "document_kind": "base",
+                }],
             })
             client = LocalClient(app)
             try:
@@ -981,6 +1010,29 @@ class WebDashboardTests(unittest.TestCase):
                         "Relatorios-Tenable-2026-07/Cliente A/old.docx",
                         names,
                     )
+
+                status, prepared = client.request(
+                    "POST",
+                    "/api/report-archives/prepare",
+                    {"run_id": "run-old"},
+                )
+                self.assertEqual(status, 201)
+                self.assertEqual(
+                    prepared["download_name"],
+                    "Cliente-A-Relatorios-Tenable-2026-07.zip",
+                )
+                self.assertRegex(
+                    prepared["download_url"],
+                    r"^/api/report-archives/download/[a-f0-9]{32}$",
+                )
+                status, _, content = client.download(prepared["download_url"])
+                self.assertEqual(status, 200)
+                with zipfile.ZipFile(io.BytesIO(content)) as package:
+                    self.assertIn(
+                        "Relatorios-Tenable-2026-07/Cliente A/old.docx",
+                        package.namelist(),
+                    )
+
                 deadline = time.monotonic() + 1
                 while (
                     list((data_root / ".downloads").glob("*.zip"))
@@ -988,6 +1040,60 @@ class WebDashboardTests(unittest.TestCase):
                 ):
                     time.sleep(0.01)
                 self.assertEqual(list((data_root / ".downloads").glob("*.zip")), [])
+            finally:
+                client.close()
+
+    def test_report_archive_uses_complete_run_documents_beyond_listing_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_root = root / "data"
+            documents = []
+            for index in range(101):
+                path = data_root / "reports" / f"report-{index:03}.docx"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(str(index).encode("ascii"))
+                documents.append({
+                    "document_id": index + 1,
+                    "name": path.name,
+                    "path": str(path),
+                    "size_bytes": path.stat().st_size,
+                    "run_id": "run-main",
+                    "document_kind": "base",
+                })
+            registry = InMemoryReportRegistry()
+            report = valid_run("run-main")
+            registry.register_report(report)
+            registry.promote_main(
+                reference_key_for_candidate(report),
+                report.run_id,
+                actor="system",
+                reason="principal",
+            )
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=registry,
+            )
+            app.config.add_client({
+                "client_id": "cliente-a",
+                "display_name": "Cliente A",
+            })
+            app.database = _ArchiveDashboardDatabase(
+                {"cliente-a": documents[:100]},
+                {"run-main": documents},
+            )
+            client = LocalClient(app)
+            try:
+                status, _, content = client.download(
+                    "/api/reports/run-main/archive"
+                )
+                self.assertEqual(status, 200)
+                with zipfile.ZipFile(io.BytesIO(content)) as package:
+                    docx_names = [
+                        name for name in package.namelist()
+                        if name.endswith(".docx")
+                    ]
+                self.assertEqual(len(docx_names), 101)
             finally:
                 client.close()
 
@@ -1009,6 +1115,52 @@ class WebDashboardTests(unittest.TestCase):
         self.assertEqual(report["tag_category"], "Equipe")
         self.assertEqual(report["tag_value"], "Infra")
         self.assertIn("d.document_kind", database.database.connection_value.query)
+
+    def test_dashboard_database_report_documents_queries_complete_run(self) -> None:
+        ended_at = datetime(2026, 8, 1, tzinfo=timezone.utc)
+        created_at = datetime(2026, 8, 2, tzinfo=timezone.utc)
+        database = DashboardDatabase.__new__(DashboardDatabase)
+        database.database = _RowsDatabase([(
+            7, "C:/reports/base.docx", 1234, "VALID", "run-a", "2026-07",
+            "MANUAL", ended_at, created_at, "base", None,
+            None, None, None,
+        )])
+
+        documents = database.report_documents("run-a")
+
+        self.assertEqual([item["name"] for item in documents], ["base.docx"])
+        query = database.database.connection_value.query.lower()
+        self.assertIn("where r.run_id = %s", query)
+        self.assertNotIn("limit", query)
+        self.assertEqual(
+            database.database.connection_value.parameters,
+            ("run-a",),
+        )
+
+    def test_archive_download_removes_temporary_zip_when_connection_aborts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive_path = Path(directory) / "prepared.zip"
+            with zipfile.ZipFile(archive_path, "w") as package:
+                package.writestr("report.docx", b"report")
+            handler = DashboardHandler.__new__(DashboardHandler)
+            handler.send_response = Mock()
+            handler.send_header = Mock()
+            handler.end_headers = Mock()
+            handler.wfile = Mock()
+            handler.wfile.write.side_effect = ConnectionAbortedError(
+                "cliente desconectou"
+            )
+
+            with self.assertRaises(ConnectionAbortedError):
+                handler._download_archive(ReportArchiveResult(
+                    path=archive_path,
+                    download_name="reports.zip",
+                    included_clients=1,
+                    included_documents=1,
+                    omissions=(),
+                ))
+
+            self.assertFalse(archive_path.exists())
 
     def test_storage_endpoint_reports_free_space_and_queue_reservation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
