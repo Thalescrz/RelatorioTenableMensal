@@ -35,6 +35,8 @@ e publicação controlada.
    opcional a cada cliente.
 10. Filtrar os cards e a seleção de clientes pelo analista responsável, incluindo
     clientes sem responsável.
+11. Registrar resultado independente para VM, WAS e Cloud e permitir retentar
+    somente componentes que falharam, preservando os componentes válidos.
 
 ## 3. Fora de escopo
 
@@ -49,6 +51,8 @@ e publicação controlada.
   clientes entre analistas.
 - Inserir o nome do analista nos relatórios DOCX; o responsável é metadado
   operacional da interface nesta entrega.
+- Refazer componentes concluídos por meio da ação **Tentar componentes com falha**;
+  uma nova execução completa continua disponível como ação separada.
 
 Este desenho substitui somente a decisão de execução estritamente sequencial das
 seções 2 e 13 de `2026-08-31-controle-duravel-de-lotes-design.md` para novos lotes
@@ -69,6 +73,24 @@ Cada trabalho de cliente passa por duas fases duráveis:
 Um pool remoto pode executar vários clientes. Um único worker local processa a
 fase de montagem. A passagem entre fases é uma transação PostgreSQL: somente um
 checkpoint completo e validado transforma o trabalho em `READY_FOR_BUILD`.
+
+### 4.1. Componentes independentes
+
+Cada trabalho mantém três componentes operacionais:
+
+- `VM_CORE`: assets, findings VM, TAGs e documentos geral/customizado/por TAG;
+- `WAS`: coleta WEB opcional e reparo dos documentos que usam suas seções;
+- `CLOUD`: coleta, dataset, snapshot e documento Cloud Security.
+
+Cada componente tem estado `PENDING`, `RUNNING`, `COMPLETE`,
+`COMPLETE_WITH_WARNINGS`, `FAILED`, `INTERRUPTED` ou `SKIPPED`, além de etapa,
+tentativa, retryable, código de falha e referências aos artefatos. O conjunto pode
+ser publicado parcialmente quando ao menos um componente produziu documentos
+válidos. O estado do conjunto deixa explícito quais componentes faltam.
+
+Cloud é independente de VM. WAS depende de um checkpoint VM íntegro para reparar
+documentos, mas uma falha WAS não invalida VM. A matriz de dependências impede uma
+retentativa de solicitar apenas WAS quando não existe base VM reutilizável.
 
 O comando legado `run-client` continua disponível para diagnóstico e
 compatibilidade. A interface e a automação mensal usam os novos comandos
@@ -124,6 +146,12 @@ A migração PostgreSQL adiciona, no mínimo:
 O `worker_id` atual identifica o reclamante da fase corrente. Os eventos
 `JOB_STARTED`, `COLLECTION_READY` e `BUILD_STARTED` preservam o histórico dos
 workers sem duplicar colunas.
+
+Uma tabela operacional `report_component_attempts` registra `client_id`,
+`source_run_id`, `component`, `status`, `stage`, `attempt_number`, `retryable`,
+`failure_code`, mensagem sanitizada, checkpoint, referências de documentos e
+datas. A unicidade é por execução, componente e tentativa; nenhum secret ou dado
+de finding é persistido nessa tabela.
 
 Nenhuma dessas colunas contém credencial. Caminhos precisam permanecer dentro da
 raiz de dados configurada. Trabalhos antigos recebem fase `LEGACY`; se ainda
@@ -183,6 +211,33 @@ Uma retentativa de `LOCAL_BUILD` reutiliza o mesmo checkpoint e nunca abre expor
 VM/WAS. Arquivo parcial de documento é escrito em staging e somente substitui o
 destino após sucesso, preservando idempotência.
 
+## 9.1. Retentativa seletiva por componente
+
+A ação **Tentar componentes com falha** cria uma tentativa vinculada ao conjunto
+original e seleciona somente componentes `FAILED` ou `INTERRUPTED` marcados como
+retryable. Também existe uma janela explícita para escolher entre os componentes
+elegíveis; componentes concluídos ficam desabilitados nessa ação.
+
+O retry recomeça na primeira etapa não validada:
+
+- raw e dataset Cloud íntegros: repete apenas renderização, validação e publicação;
+- coleta Cloud incompleta: retoma o checkpoint/paginação Cloud;
+- VM com UUID/chunks válidos: retoma o export, sem criar operação duplicada;
+- VM raw completo: normaliza e gera os documentos dependentes sem API;
+- WAS falho com VM válido: repete WAS e repara atomicamente apenas os documentos
+  que contêm as seções WEB.
+
+Documentos válidos do conjunto original não são copiados nem substituídos até que
+os novos documentos passem pela validação. Sucesso adiciona ou troca somente as
+referências afetadas no mesmo manifesto de publicação e mantém a identidade do
+conjunto/`MAIN`. Falha da retentativa remove o staging novo e conserva hashes,
+arquivos e referências anteriores.
+
+Cada exceção registra uma etapa sanitizada entre `COLLECTION`, `DATASET`,
+`RENDER`, `DOCUMENT_VALIDATION`, `SNAPSHOT_PUBLICATION` e
+`REPORT_PUBLICATION`. O alerta amigável continua visível, mas deixa de descartar o
+código e a etapa necessários ao diagnóstico.
+
 ## 10. Timeout, ausência de progresso e cancelamento
 
 O limite total padrão de processamento remoto é 7.200 segundos. A ausência de
@@ -227,6 +282,12 @@ O card do lote mostra:
 O card do cliente mantém UUID, origem e `chunks concluídos/total`, acrescentando a
 fase atual. `0/0` é apresentado como “aguardando a Tenable informar chunks”, sem
 sugerir progresso inexistente.
+
+Quando um conjunto termina parcial, a interface mostra os estados de `VM`, `WAS`
+e `Cloud` separadamente. O botão **Tentar componentes com falha** informa quais
+serão executados. No detalhe do conjunto, **Selecionar componentes** permite
+confirmar apenas os componentes falhos elegíveis, por exemplo **Tentar somente
+Cloud**. A ação **Gerar relatório** permanece uma nova execução completa.
 
 Em **Gerar todos**, o padrão é concorrência automática. A configuração avançada
 permite reduzir o número de coletores remotos, mas a fila local permanece em um.
@@ -307,6 +368,9 @@ Novos campos de configuração, também sem secrets:
 - `responsible_analyst_id` opcional no perfil do cliente;
 - `selected_client_ids`, `excluded_client_ids` e fotografia do responsável nas
   opções persistidas de cada lote manual.
+- `selected_components` e `source_run_id` em tentativas seletivas;
+- estágio e resultado sanitizados por componente em
+  `report_component_attempts`.
 
 Perfis de cliente continuam controlando propriedades seletivas e tamanhos de
 chunk. O servidor não altera esses valores automaticamente.
@@ -348,6 +412,14 @@ chunk. O servidor não altera esses valores automaticamente.
 - checkpoint adulterado, fora da raiz ou com hash inválido;
 - falha Cloud sem perda dos dados VM;
 - retry local sem chamada à API;
+- status independente de VM, WAS e Cloud, inclusive publicação parcial;
+- Cloud com raw/dataset íntegros retomando diretamente em renderização;
+- Cloud sem checkpoint retomando apenas sua coleta;
+- WAS reutilizando VM e reparando somente documentos dependentes;
+- seleção recusada quando a dependência do componente não está disponível;
+- substituição atômica no mesmo conjunto e preservação dos documentos válidos;
+- falha na retentativa preservando manifesto, hashes e `MAIN` anteriores;
+- persistência de `failure_code` e etapa sanitizada sem vazar a exceção;
 - pausa, parada, retry incompleto e rerun completo;
 - estados e contadores novos nos endpoints e na interface;
 - migração PostgreSQL e compatibilidade de lotes `LEGACY`;
@@ -380,3 +452,9 @@ chunk. O servidor não altera esses valores automaticamente.
     catálogo administrável sem contas ou permissões.
 11. O painel e a janela de geração filtram por responsável e por **Sem
     responsável**, mantendo busca e seleção consistentes.
+12. Um conjunto parcial oferece retentativa somente dos componentes falhos e
+    retryable, sem repetir os componentes concluídos.
+13. O TRT8 equivalente ao caso diagnosticado, com dataset Cloud íntegro e falha de
+    renderização, retoma em `RENDER` e preserva VM/WAS já publicados.
+14. Se VM/WAS falhar e Cloud terminar, o documento Cloud permanece disponível e a
+    nova tentativa não consulta Cloud novamente.
