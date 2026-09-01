@@ -1,4 +1,4 @@
-const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "" };
+const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "", selectedBatchId: null };
 const CLOUD_PROGRESS_EVENT = "TENABLE_CLOUD_PROGRESS";
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
@@ -133,9 +133,101 @@ function renderDocumentGroups(documents) {
   }).join("");
 }
 
+const ACTIVE_BATCH_STATES = new Set(["QUEUED", "RUNNING", "PAUSE_REQUESTED", "PAUSED", "STOP_REQUESTED"]);
+const TERMINAL_BATCH_STATES = new Set(["STOPPED", "COMPLETE", "COMPLETE_WITH_FAILURES", "COMPLETE_WITH_WARNINGS"]);
+const BATCH_ACTION_ROUTES = {
+  pause: "/pause",
+  resume: "/resume",
+  stop: "/stop",
+  "retry-incomplete": "/retry-incomplete",
+  "rerun-all": "/rerun-all",
+};
+
+function actionKey(prefix, batchId) {
+  const random = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${prefix}:${batchId}:${random}`;
+}
+
+function batchStatusLabel(status) {
+  return ({
+    QUEUED: "Na fila",
+    RUNNING: "Em execução",
+    PAUSE_REQUESTED: "Pausa solicitada",
+    PAUSED: "Pausado",
+    STOP_REQUESTED: "Parada solicitada",
+    STOPPED: "Parado",
+    COMPLETE: "Concluído",
+    COMPLETE_WITH_FAILURES: "Concluído com falhas",
+    COMPLETE_WITH_WARNINGS: "Concluído com avisos",
+  })[status] || status;
+}
+
+async function runBatchAction(button, batch, action) {
+  if (!batch || button.disabled) return;
+  const body = {
+    idempotency_key: actionKey(action, batch.id),
+    actor: "interface-local",
+    reason: "Ação solicitada pela interface local.",
+  };
+  if (action === "stop") {
+    const message = `O cliente atual será interrompido com checkpoint. O export remoto será preservado para uma tentativa futura.\n\nLote: ${batch.id}\n\nDeseja parar este lote?`;
+    if (!window.confirm(message)) return;
+    body.confirmation = `PARAR ${batch.id.slice(0, 8)}`;
+  } else if (action === "retry-incomplete") {
+    if (!window.confirm(`Somente ${batch.retryable_count} cliente(s) com falha, interrupção ou cancelamento entrarão em um novo lote. Deseja continuar?`)) return;
+  } else if (action === "rerun-all") {
+    if (!window.confirm(`Todos os ${batch.total_count} cliente(s) serão gerados novamente em um novo lote. Deseja continuar?`)) return;
+    body.confirmation = `GERAR NOVAMENTE ${batch.id.slice(0, 8)}`;
+  }
+  button.disabled = true;
+  try {
+    await api(`/api/batches/${encodeURIComponent(batch.id)}${BATCH_ACTION_ROUTES[action]}`, {
+      method: "POST",
+      body,
+    });
+    await refresh();
+    toast(action === "pause" ? "Pausa solicitada após o cliente atual." : action === "resume" ? "Lote retomado." : action === "stop" ? "Parada cooperativa solicitada." : "Novo lote adicionado à fila.");
+  } catch (error) {
+    toast(error.message, "error");
+    button.disabled = false;
+  }
+}
+
+function renderBatches() {
+  const batches = state.data?.batches || [];
+  const batch = batches[0];
+  const panel = $("#batch-panel");
+  panel.classList.toggle("hidden", !batch);
+  if (!batch) return;
+  const finished = Number(batch.completed_count || 0) + Number(batch.failed_count || 0) + Number(batch.interrupted_count || 0) + Number(batch.cancelled_count || 0);
+  $("#batch-title").textContent = batch.kind === "GENERATE_ALL" ? "Geração da carteira" : batch.kind === "RETRY_INCOMPLETE" ? "Retentativa de incompletos" : batch.kind === "RERUN_ALL" ? "Nova geração integral" : "Geração individual";
+  $("#batch-state").textContent = batchStatusLabel(batch.status);
+  $("#batch-state").dataset.status = batch.status;
+  $("#batch-progress-copy").textContent = `${finished} de ${batch.total_count} finalizados`;
+  $("#batch-progress-percent").textContent = `${batch.progress_percent}%`;
+  $("#batch-progress-bar").value = Number(batch.progress_percent || 0);
+  $("#batch-current-copy").textContent = batch.current_client_id ? `Cliente atual: ${batch.current_client_id}` : batch.status === "PAUSED" ? "O lote aguarda retomada manual." : "Nenhum cliente em execução neste instante.";
+  $("#batch-counters").innerHTML = [
+    ["Concluídos", batch.completed_count],
+    ["Falhas", batch.failed_count],
+    ["Interrompidos", batch.interrupted_count],
+    ["Pendentes", Number(batch.queued_count || 0) + Number(batch.cancelled_count || 0)],
+  ].map(([label, value]) => `<div><strong>${Number(value || 0)}</strong><span>${label}</span></div>`).join("");
+
+  const actions = [];
+  if (["QUEUED", "RUNNING"].includes(batch.status)) actions.push(["pause", "Pausar após o atual", "ghost"]);
+  if (["QUEUED", "RUNNING", "PAUSE_REQUESTED", "PAUSED"].includes(batch.status)) actions.push(["stop", "Parar lote", "danger"]);
+  if (batch.status === "PAUSED") actions.push(["resume", "Retomar lote", "primary"]);
+  if (TERMINAL_BATCH_STATES.has(batch.status) && Number(batch.retryable_count || 0) > 0) actions.push(["retry-incomplete", "Tentar somente falhas e interrompidos", "ghost"]);
+  if (TERMINAL_BATCH_STATES.has(batch.status) && batch.kind === "GENERATE_ALL") actions.push(["rerun-all", "Gerar novamente para todos", "ghost"]);
+  $("#batch-actions").innerHTML = actions.map(([action, label, tone]) => `<button class="button ${tone}" data-batch-action="${action}" type="button">${label}</button>`).join("");
+  document.querySelectorAll("[data-batch-action]").forEach(button => button.addEventListener("click", () => runBatchAction(button, batch, button.dataset.batchAction)));
+}
+
 function render() {
   if (!state.data) return;
   const clients = state.data.clients || [];
+  renderBatches();
   const activeJobs = (state.data.jobs || []).filter(j => ["QUEUED", "RUNNING"].includes(j.status));
   $("#metric-clients").textContent = clients.filter(c => c.enabled).length;
   $("#metric-running").textContent = activeJobs.length;
@@ -541,7 +633,33 @@ $("#cleanup-button").addEventListener("click", async event => {
   } catch (error) { toast(error.message, "error"); }
   finally { event.currentTarget.disabled = false; }
 });
-$("#run-all-button").addEventListener("click", () => openRun(state.data.clients.filter(c => c.enabled && c.credentials_ready).map(c => c.client_id), "all"));
+$("#run-all-button").addEventListener("click", () => {
+  const batches = state.data?.batches || [];
+  const active = batches.find(batch => ACTIVE_BATCH_STATES.has(batch.status));
+  if (active) {
+    toast(`O lote ${active.id.slice(0, 8)} ainda está ${batchStatusLabel(active.status).toLowerCase()}. Use os controles do lote antes de iniciar outro.`, "error");
+    return;
+  }
+  const comparable = batches.find(batch => batch.kind === "GENERATE_ALL" && TERMINAL_BATCH_STATES.has(batch.status));
+  if (comparable && Number(comparable.retryable_count || 0) > 0) {
+    state.selectedBatchId = comparable.id;
+    $("#batch-choice-copy").textContent = `O lote ${comparable.id.slice(0, 8)} tem ${comparable.retryable_count} cliente(s) incompleto(s).`;
+    $("#retry-incomplete-copy").textContent = `Reexecuta somente ${comparable.retryable_count} cliente(s); concluídos e avisos ficam de fora.`;
+    $("#batch-choice-dialog").showModal();
+    return;
+  }
+  openRun(state.data.clients.filter(c => c.enabled && c.credentials_ready).map(c => c.client_id), "all");
+});
+$("#retry-incomplete-button").addEventListener("click", async event => {
+  const batch = (state.data?.batches || []).find(item => item.id === state.selectedBatchId);
+  if (!batch) return;
+  await runBatchAction(event.currentTarget, batch, "retry-incomplete");
+  $("#batch-choice-dialog").close();
+});
+$("#rerun-all-button").addEventListener("click", () => {
+  $("#batch-choice-dialog").close();
+  openRun(state.data.clients.filter(c => c.enabled && c.credentials_ready).map(c => c.client_id), "all");
+});
 $("#detail-run-button").addEventListener("click", () => { $("#client-dialog").close(); openRun([state.selectedClient]); });
 $("#detail-check-button").addEventListener("click", event => testConnections([state.selectedClient], event.currentTarget));
 $("#detail-edit-button").addEventListener("click", () => { const clientId = state.selectedClient; $("#client-dialog").close(); $("#manage-dialog").showModal(); editClient(clientId); });

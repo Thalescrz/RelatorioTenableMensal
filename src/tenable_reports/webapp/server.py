@@ -2221,6 +2221,12 @@ class DashboardApplication:
             created.extend(self.jobs.enqueue([client_id], client_request))
         return created
 
+    def batch_list(self) -> dict[str, Any]:
+        snapshot = getattr(self.jobs, "batches_snapshot", None)
+        if not callable(snapshot):
+            raise RuntimeError("Controle duravel de lotes indisponivel.")
+        return {"batches": snapshot()}
+
     def batch_state(self, batch_id: str) -> dict[str, Any]:
         snapshot = getattr(self.jobs, "batch_snapshot", None)
         if not callable(snapshot):
@@ -2600,9 +2606,12 @@ class DashboardApplication:
             client["latest_report"] = summaries.get(client_id)
             client["job"] = latest_job.get(client_id)
             client["alert"] = latest_alert.get(client_id)
+        batches_snapshot = getattr(self.jobs, "batches_snapshot", None)
+        batches = batches_snapshot() if callable(batches_snapshot) else []
         return {
             "clients": clients,
             "jobs": jobs,
+            "batches": batches,
             "alerts": alerts,
             "was_recoveries": was_recoveries,
             "database_error": database_error,
@@ -2636,6 +2645,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/state":
             self._json(HTTPStatus.OK, self.app.state())
+            return
+        if parsed.path == "/api/batches":
+            try:
+                self._json(HTTPStatus.OK, self.app.batch_list())
+            except RuntimeError as exc:
+                self._json_error(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    _safe_error(str(exc), limit=300),
+                )
             return
         match = re.fullmatch(r"/api/batches/([^/]+)", parsed.path)
         if match:
@@ -2771,9 +2789,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 parsed.path,
             )
             if match:
+                batch_id = unquote(match.group(1))
                 action = BatchAction(match.group(2).upper())
+                if action is BatchAction.STOP:
+                    expected = f"PARAR {batch_id[:8]}"
+                    if str(payload.get("confirmation") or "").strip() != expected:
+                        raise ValueError(
+                            f'Digite exatamente "{expected}" para confirmar.'
+                        )
                 result = self.app.request_batch_action(
-                    unquote(match.group(1)),
+                    batch_id,
                     action,
                 )
                 self._json(HTTPStatus.OK, result)

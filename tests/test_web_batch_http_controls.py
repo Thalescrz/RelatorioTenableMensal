@@ -89,9 +89,14 @@ def test_batch_action_routes_are_local_writes(
 ) -> None:
     app, base = batch_server
     batch_id = UUID(int=901)
+    body = (
+        {"confirmation": f"PARAR {str(batch_id)[:8]}"}
+        if action is BatchAction.STOP
+        else {}
+    )
     request = Request(
         f"{base}/api/batches/{batch_id}/{route}",
-        data=b"{}",
+        data=json.dumps(body).encode("utf-8"),
         method="POST",
         headers={
             "Content-Type": "application/json",
@@ -172,3 +177,25 @@ def test_batch_derivation_conflict_returns_409(batch_server) -> None:
     assert captured.value.code == 409
     payload = json.loads(captured.value.read().decode("utf-8"))
     assert "client-fixture" in payload["error"]
+
+def test_stop_requires_short_batch_confirmation(batch_server) -> None:
+    from urllib.error import HTTPError
+
+    _app, base = batch_server
+    batch_id = UUID(int=905)
+    request = Request(
+        f"{base}/api/batches/{batch_id}/stop",
+        data=b"{}",
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-Tenable-UI": "1",
+        },
+    )
+
+    with pytest.raises(HTTPError) as captured:
+        urlopen(request, timeout=3)
+
+    assert captured.value.code == 400
+    payload = json.loads(captured.value.read().decode("utf-8"))
+    assert f"PARAR {str(batch_id)[:8]}" in payload["error"]

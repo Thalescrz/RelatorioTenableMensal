@@ -333,6 +333,92 @@ class DurableDashboardJobQueue:
             self._dispatcher.wake()
         return updated
 
+    def batches_snapshot(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        terminal_jobs = {
+            BatchJobStatus.COMPLETE,
+            BatchJobStatus.COMPLETE_WITH_WARNINGS,
+            BatchJobStatus.FAILED,
+            BatchJobStatus.INTERRUPTED,
+            BatchJobStatus.CANCELLED_BY_USER,
+        }
+        for batch in self.repository.list_batches(limit=limit):
+            jobs = self.repository.list_batch_jobs(batch.id)
+            counts = {
+                status: sum(job.status is status for job in jobs)
+                for status in BatchJobStatus
+            }
+            finished = sum(job.status in terminal_jobs for job in jobs)
+            current = next(
+                (
+                    job
+                    for job in jobs
+                    if job.status
+                    in {
+                        BatchJobStatus.RUNNING,
+                        BatchJobStatus.WAITING_WAS_DECISION,
+                        BatchJobStatus.INTERRUPT_REQUESTED,
+                    }
+                ),
+                None,
+            )
+            requests = list(batch.options.get("requests") or ())
+            first_request = (
+                dict(requests[0].get("request") or {})
+                if requests and isinstance(requests[0], Mapping)
+                else {}
+            )
+            summaries.append(
+                {
+                    "id": str(batch.id),
+                    "kind": batch.kind,
+                    "status": batch.status.value,
+                    "requested_action": (
+                        batch.requested_action.value
+                        if batch.requested_action is not None
+                        else None
+                    ),
+                    "source_batch_id": (
+                        str(batch.source_batch_id)
+                        if batch.source_batch_id is not None
+                        else None
+                    ),
+                    "created_at": batch.created_at,
+                    "started_at": batch.started_at,
+                    "ended_at": batch.ended_at,
+                    "total_count": len(jobs),
+                    "completed_count": (
+                        counts[BatchJobStatus.COMPLETE]
+                        + counts[BatchJobStatus.COMPLETE_WITH_WARNINGS]
+                    ),
+                    "warning_count": counts[
+                        BatchJobStatus.COMPLETE_WITH_WARNINGS
+                    ],
+                    "failed_count": counts[BatchJobStatus.FAILED],
+                    "interrupted_count": counts[BatchJobStatus.INTERRUPTED],
+                    "cancelled_count": counts[
+                        BatchJobStatus.CANCELLED_BY_USER
+                    ],
+                    "queued_count": counts[BatchJobStatus.QUEUED],
+                    "retryable_count": (
+                        counts[BatchJobStatus.FAILED]
+                        + counts[BatchJobStatus.INTERRUPTED]
+                        + counts[BatchJobStatus.CANCELLED_BY_USER]
+                    ),
+                    "progress_percent": (
+                        round(100 * finished / len(jobs)) if jobs else 100
+                    ),
+                    "current_client_id": (
+                        current.client_id if current is not None else None
+                    ),
+                    "mode": str(first_request.get("mode") or ""),
+                    "days": first_request.get("days"),
+                    "start_at": first_request.get("start_at"),
+                    "end_at": first_request.get("end_at"),
+                }
+            )
+        return summaries
+
     def batch_snapshot(self, batch_id: UUID | str) -> dict[str, Any]:
         normalized_id = (
             batch_id if isinstance(batch_id, UUID) else UUID(str(batch_id))

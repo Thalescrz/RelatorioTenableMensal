@@ -50,6 +50,22 @@
       <button class="button ghost" id="cleanup-button" type="button">Revisar limpeza</button>
     </section>
 
+    <section class="batch-panel hidden" id="batch-panel" aria-live="polite">
+      <div class="batch-panel-head">
+        <div><p class="eyebrow">LOTE DE GERAÇÃO</p><h2 id="batch-title">Acompanhamento da carteira</h2></div>
+        <span class="batch-state" id="batch-state">—</span>
+      </div>
+      <div class="batch-panel-body">
+        <div class="batch-progress">
+          <div class="batch-progress-copy"><strong id="batch-progress-copy">0 de 0 finalizados</strong><span id="batch-progress-percent">0%</span></div>
+          <progress id="batch-progress-bar" max="100" value="0" aria-label="Progresso do lote"></progress>
+          <p id="batch-current-copy">Aguardando o próximo cliente.</p>
+        </div>
+        <div class="batch-counters" id="batch-counters"></div>
+        <div class="batch-actions" id="batch-actions"></div>
+      </div>
+    </section>
+
     <section class="workspace">
       <div class="section-head">
         <div><p class="eyebrow">CLIENTES</p><h2>Carteira monitorada</h2></div>
@@ -178,6 +194,23 @@
           <button class="button primary" id="save-client-button" type="submit">Salvar cliente</button>
         </div>
       </form>
+    </div>
+  </dialog>
+
+  <dialog id="batch-choice-dialog" class="dialog batch-choice-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">GERAR TODOS</p><h2>Como deseja continuar?</h2><p id="batch-choice-copy">Existe um lote anterior que pode ser repetido com segurança.</p></div>
+      <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
+    </div>
+    <div class="batch-choice-options">
+      <button class="batch-choice" id="retry-incomplete-button" type="button">
+        <strong>Tentar somente falhas e interrompidos</strong>
+        <span id="retry-incomplete-copy">Reexecuta apenas os clientes incompletos.</span>
+      </button>
+      <button class="batch-choice" id="rerun-all-button" type="button">
+        <strong>Gerar novamente para todos</strong>
+        <span>Cria uma nova coleta integral usando o período escolhido.</span>
+      </button>
     </div>
   </dialog>
 
