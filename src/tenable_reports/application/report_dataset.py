@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,7 +12,11 @@ from typing import Any, Iterable, Mapping
 from tenable_reports import __version__
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.domain.normalization import NormalizedAsset, NormalizedFinding
-from tenable_reports.domain.report_dataset import ReportDatasetResult, build_report_dataset
+from tenable_reports.domain.report_dataset import (
+    METRIC_DEFINITION_VERSION,
+    ReportDatasetResult,
+    build_report_dataset,
+)
 from tenable_reports.domain.reporting import ReportingPeriod, parse_utc
 from tenable_reports.domain.was import NormalizedWasFinding
 from tenable_reports.application.tag_scope import read_tag_scope_snapshot
@@ -62,6 +67,52 @@ def _read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"O artefato precisa conter um objeto JSON: {path}")
     return value
+
+
+def load_published_report_dataset(
+    path: str | Path,
+    *,
+    run_id: str,
+    period: ReportingPeriod,
+    profile: ClientProfile | None = None,
+    client_id: str | None = None,
+) -> dict[str, Any]:
+    """Carrega um dataset já publicado sem reconstruir artefatos imutáveis."""
+    expected_profile_client = (
+        str(profile.client_id).strip() if profile is not None else None
+    )
+    expected_client = str(client_id).strip() if client_id is not None else None
+    if (
+        expected_profile_client
+        and expected_client
+        and expected_profile_client != expected_client
+    ):
+        raise ValueError("Identidade esperada do dataset publicado é incompatível.")
+    expected_client = expected_profile_client or expected_client
+    if not expected_client or not str(run_id).strip():
+        raise ValueError("Identidade esperada do dataset publicado é inválida.")
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Dataset publicado inválido.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Dataset publicado inválido.")
+    if payload.get("schema_version") != 1:
+        raise ValueError("Dataset publicado usa schema incompatível.")
+    if payload.get("metric_definition_version") != METRIC_DEFINITION_VERSION:
+        raise ValueError("Dataset publicado usa definição de métricas incompatível.")
+    if payload.get("client_id") != expected_client:
+        raise ValueError("Dataset publicado pertence a outro cliente.")
+    if payload.get("run_id") != str(run_id).strip():
+        raise ValueError("Dataset publicado pertence a outra execução.")
+    stored_period = payload.get("period")
+    if not isinstance(stored_period, Mapping):
+        raise ValueError("Dataset publicado possui período inválido.")
+    expected_period = period.to_dict()
+    for field_name in ("start_at", "end_at", "timezone", "mode", "period_id"):
+        if stored_period.get(field_name) != expected_period.get(field_name):
+            raise ValueError("Dataset publicado pertence a outro período.")
+    return deepcopy(payload)
 
 
 def _read_jsonl(path: Path, factory: Any) -> tuple[Any, ...]:
