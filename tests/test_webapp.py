@@ -981,36 +981,6 @@ class WebDashboardTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(payload["periods"], ["2026-07"])
 
-                status, headers, content = client.download(
-                    "/api/reports/run-old/archive"
-                )
-                self.assertEqual(status, 200)
-                self.assertEqual(headers["Content-Type"], "application/zip")
-                with zipfile.ZipFile(io.BytesIO(content)) as package:
-                    self.assertIn(
-                        "Relatorios-Tenable-2026-07/Cliente A/old.docx",
-                        package.namelist(),
-                    )
-
-                status, headers, content = client.download(
-                    "/api/report-archives/monthly?period_id=2026-07"
-                )
-                self.assertEqual(status, 200)
-                self.assertIn(
-                    "Relatorios-Tenable-2026-07.zip",
-                    headers["Content-Disposition"],
-                )
-                with zipfile.ZipFile(io.BytesIO(content)) as package:
-                    names = package.namelist()
-                    self.assertIn(
-                        "Relatorios-Tenable-2026-07/Cliente A/main.docx",
-                        names,
-                    )
-                    self.assertNotIn(
-                        "Relatorios-Tenable-2026-07/Cliente A/old.docx",
-                        names,
-                    )
-
                 status, prepared = client.request(
                     "POST",
                     "/api/report-archives/prepare",
@@ -1032,6 +1002,40 @@ class WebDashboardTests(unittest.TestCase):
                         "Relatorios-Tenable-2026-07/Cliente A/old.docx",
                         package.namelist(),
                     )
+
+                status, prepared = client.request(
+                    "POST",
+                    "/api/report-archives/prepare",
+                    {"period_id": "2026-07"},
+                )
+                self.assertEqual(status, 201)
+                status, headers, content = client.download(
+                    prepared["download_url"]
+                )
+                self.assertEqual(status, 200)
+                self.assertIn(
+                    "Relatorios-Tenable-2026-07.zip",
+                    headers["Content-Disposition"],
+                )
+                with zipfile.ZipFile(io.BytesIO(content)) as package:
+                    names = package.namelist()
+                    self.assertIn(
+                        "Relatorios-Tenable-2026-07/Cliente A/main.docx",
+                        names,
+                    )
+                    self.assertNotIn(
+                        "Relatorios-Tenable-2026-07/Cliente A/old.docx",
+                        names,
+                    )
+
+                status, _, _ = client.download(
+                    "/api/reports/run-old/archive"
+                )
+                self.assertEqual(status, 404)
+                status, _, _ = client.download(
+                    "/api/report-archives/monthly?period_id=2026-07"
+                )
+                self.assertEqual(status, 404)
 
                 deadline = time.monotonic() + 1
                 while (
@@ -1084,9 +1088,13 @@ class WebDashboardTests(unittest.TestCase):
             )
             client = LocalClient(app)
             try:
-                status, _, content = client.download(
-                    "/api/reports/run-main/archive"
+                status, prepared = client.request(
+                    "POST",
+                    "/api/report-archives/prepare",
+                    {"run_id": "run-main"},
                 )
+                self.assertEqual(status, 201)
+                status, _, content = client.download(prepared["download_url"])
                 self.assertEqual(status, 200)
                 with zipfile.ZipFile(io.BytesIO(content)) as package:
                     docx_names = [
@@ -1096,6 +1104,57 @@ class WebDashboardTests(unittest.TestCase):
                 self.assertEqual(len(docx_names), 101)
             finally:
                 client.close()
+
+    def test_prepared_archive_claim_rejects_expired_deadline_and_removes_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = root / "data" / ".downloads" / "tenable-reports-expired.zip"
+            archive_path.parent.mkdir(parents=True)
+            archive_path.write_bytes(b"expired")
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=InMemoryReportRegistry(),
+            )
+            download_id = "a" * 32
+            app._prepared_archives[download_id] = (
+                ReportArchiveResult(
+                    path=archive_path,
+                    download_name="expired.zip",
+                    included_clients=1,
+                    included_documents=1,
+                    omissions=(),
+                ),
+                100.0,
+            )
+
+            with patch(
+                "tenable_reports.webapp.server.time.monotonic",
+                return_value=101.0,
+            ):
+                with self.assertRaisesRegex(KeyError, "expirado"):
+                    app.claim_prepared_archive(download_id)
+
+            self.assertFalse(archive_path.exists())
+
+    def test_dashboard_startup_removes_expired_orphan_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive_path = (
+                root / "data" / ".downloads" / "tenable-reports-orphan.zip"
+            )
+            archive_path.parent.mkdir(parents=True)
+            archive_path.write_bytes(b"orphan")
+            old = time.time() - 10 * 60
+            os.utime(archive_path, (old, old))
+
+            DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=InMemoryReportRegistry(),
+            )
+
+            self.assertFalse(archive_path.exists())
 
     def test_dashboard_database_reports_exposes_tag_document_metadata(self) -> None:
         ended_at = datetime(2026, 8, 1, tzinfo=timezone.utc)

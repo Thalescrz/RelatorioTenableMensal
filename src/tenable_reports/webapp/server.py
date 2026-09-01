@@ -1965,7 +1965,11 @@ class DashboardApplication:
         self.project_root = project_root.resolve()
         self.config = DashboardConfigStore(project_root=self.project_root, config_path=config_path)
         self._prepared_archive_lock = threading.RLock()
-        self._prepared_archives: dict[str, ReportArchiveResult] = {}
+        self._prepared_archives: dict[
+            str, tuple[ReportArchiveResult, float]
+        ] = {}
+        self._stale_archive_cleanup_timer: threading.Timer | None = None
+        self._schedule_stale_archive_cleanup()
         self.connection_checker = connection_checker
         self.cloud_connection_checker = cloud_connection_checker
         self.tag_lister = tag_lister
@@ -2146,6 +2150,32 @@ class DashboardApplication:
         data_root = (self.config.config_path.parent / raw_root).resolve()
         return data_root, data_root / ".downloads"
 
+    def _schedule_stale_archive_cleanup(self) -> None:
+        _, temporary_root = self._archive_roots()
+        if not temporary_root.is_dir():
+            return
+        now = time.time()
+        remaining_delays: list[float] = []
+        for path in temporary_root.glob("tenable-reports-*.zip"):
+            try:
+                age_seconds = max(0.0, now - path.stat().st_mtime)
+                if age_seconds >= PREPARED_ARCHIVE_TTL_SECONDS:
+                    path.unlink(missing_ok=True)
+                else:
+                    remaining_delays.append(
+                        PREPARED_ARCHIVE_TTL_SECONDS - age_seconds + 1.0
+                    )
+            except OSError:
+                continue
+        if remaining_delays:
+            timer = threading.Timer(
+                min(remaining_delays),
+                self._schedule_stale_archive_cleanup,
+            )
+            timer.daemon = True
+            self._stale_archive_cleanup_timer = timer
+            timer.start()
+
     @staticmethod
     def _archive_report_from_row(
         row: Mapping[str, Any], *, display_name: str
@@ -2269,15 +2299,22 @@ class DashboardApplication:
             else self.create_monthly_report_archive(normalized_period)
         )
         download_id = uuid.uuid4().hex
+        expires_at = time.monotonic() + PREPARED_ARCHIVE_TTL_SECONDS
         with self._prepared_archive_lock:
-            self._prepared_archives[download_id] = archive
+            self._prepared_archives[download_id] = (archive, expires_at)
         timer = threading.Timer(
             PREPARED_ARCHIVE_TTL_SECONDS,
             self._discard_prepared_archive,
             args=(download_id,),
         )
         timer.daemon = True
-        timer.start()
+        try:
+            timer.start()
+        except Exception:
+            with self._prepared_archive_lock:
+                self._prepared_archives.pop(download_id, None)
+            archive.path.unlink(missing_ok=True)
+            raise
         return {
             "download_id": download_id,
             "download_name": archive.download_name,
@@ -2288,15 +2325,20 @@ class DashboardApplication:
         if not re.fullmatch(r"[a-f0-9]{32}", download_id):
             raise KeyError("Download preparado não encontrado.")
         with self._prepared_archive_lock:
-            archive = self._prepared_archives.pop(download_id, None)
-        if archive is None:
+            prepared = self._prepared_archives.pop(download_id, None)
+        if prepared is None:
+            raise KeyError("Download preparado não encontrado ou expirado.")
+        archive, expires_at = prepared
+        if time.monotonic() >= expires_at:
+            archive.path.unlink(missing_ok=True)
             raise KeyError("Download preparado não encontrado ou expirado.")
         return archive
 
     def _discard_prepared_archive(self, download_id: str) -> None:
         with self._prepared_archive_lock:
-            archive = self._prepared_archives.pop(download_id, None)
-        if archive is not None:
+            prepared = self._prepared_archives.pop(download_id, None)
+        if prepared is not None:
+            archive, _ = prepared
             archive.path.unlink(missing_ok=True)
 
     def storage_status(self) -> dict[str, Any]:
@@ -3013,14 +3055,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             archive_builder = lambda: self.app.claim_prepared_archive(
                 prepared_match.group(1)
             )
-        elif parsed.path == "/api/report-archives/monthly":
-            period_id = str(parse_qs(parsed.query).get("period_id", [""])[0])
-            archive_builder = lambda: self.app.create_monthly_report_archive(period_id)
-        else:
-            archive_match = re.fullmatch(r"/api/reports/([^/]+)/archive", parsed.path)
-            if archive_match:
-                run_id = unquote(archive_match.group(1))
-                archive_builder = lambda: self.app.create_report_set_archive(run_id)
         if archive_builder is not None:
             try:
                 self._download_archive(archive_builder())

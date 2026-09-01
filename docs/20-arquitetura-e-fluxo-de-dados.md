@@ -240,7 +240,8 @@ Temporários:
 - respostas GraphQL, checkpoints e enriquecimentos Cloud;
 - snapshots normalizados completos;
 - datasets intermediários e imagens de montagem.
-- pacotes ZIP de download, somente durante a resposta HTTP.
+- pacotes ZIP de download, do preparo até a reivindicação ou a expiração de cinco
+  minutos; resíduos com o prefixo controlado são removidos na próxima inicialização.
 
 Após sucesso validado, os temporários são descartados. Em falha, permanecem por
 uma janela curta, atualmente orientada a sete dias, para diagnóstico e retomada.
