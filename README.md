@@ -87,6 +87,30 @@ publicados sem WAS e recebem o alerta `WAS_RETRY_EXHAUSTED`; VM, assets, TAG e
 Cloud não são repetidos. A geração manual individual continua oferecendo ao
 analista a decisão entre tentar novamente ou continuar sem WEB.
 
+## Controle durável da carteira
+
+A geração da carteira usa uma fila sequencial persistida no PostgreSQL. Reiniciar a
+interface não transforma trabalhos interrompidos em novas coletas: o painel recupera
+o lote e mostra quantos clientes concluíram, falharam, foram interrompidos ou ainda
+estão pendentes.
+
+No painel do lote:
+
+- **Pausar após o atual** deixa o cliente em execução terminar e mantém os próximos
+  na fila;
+- **Parar lote** pede interrupção cooperativa ao cliente atual, marca os ainda não
+  iniciados como `CANCELLED_BY_USER` e preserva o export remoto;
+- **Retomar lote** libera somente trabalhos que continuavam `QUEUED`;
+- **Tentar falhas/interrompidos** cria outro lote apenas com falhas, interrupções e
+  cancelamentos;
+- **Gerar todos novamente** cria outro lote com todos os clientes e exige confirmação.
+
+Os estados terminais incluem `STOPPED`, `COMPLETE`, `COMPLETE_WITH_FAILURES` e
+`COMPLETE_WITH_WARNINGS`. Se a interrupção cooperativa não encerrar o subprocesso
+local no prazo de tolerância, a aplicação finaliza somente a árvore local e mantém
+o UUID/checkpoint para recuperação; ela não envia cancelamento à Tenable por essa
+ação.
+
 ## Cloud Security
 
 Quando habilitado no cliente, o Cloud inicia junto com a execução normal e usa a

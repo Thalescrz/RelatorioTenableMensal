@@ -108,6 +108,26 @@ Snapshots Cloud usam migration própria, compatibilidade por cliente, tenant, am
 período e versão de métricas. A exclusão permanente remove o snapshot Cloud pelo
 `run_id` dentro da mesma transação que apaga `report_runs`.
 
+## Lotes duráveis
+
+Mudanças na fila precisam preservar estes contratos:
+
+- PostgreSQL é a única fonte dos lotes em produção; não existe fallback silencioso
+  para memória;
+- a fila sequencial usa reivindicação transacional e impede o mesmo cliente ativo
+  em dois lotes;
+- pausa conserva `QUEUED`; retomada não altera `FAILED`, `INTERRUPTED` ou
+  `CANCELLED_BY_USER`;
+- parada tenta cooperação, preserva o export remoto e limita o fallback à árvore de
+  processos local;
+- **Tentar falhas/interrompidos** e **Gerar todos novamente** criam lotes derivados
+  idempotentes e não reescrevem a origem;
+- ações registram ator, motivo, chave idempotente, PID e eventos relevantes.
+
+Teste estado de domínio, repositório em memória, SQL PostgreSQL, subprocesso local,
+rotas HTTP e JavaScript. Para recuperação, cubra `--dry-run`, schema inválido,
+hash idempotente, transação e rollback. Não use coleta real para esses testes.
+
 ## Documentos Word
 
 Preserve o conteúdo editorial dos modelos aprovados. Não introduza parágrafos,

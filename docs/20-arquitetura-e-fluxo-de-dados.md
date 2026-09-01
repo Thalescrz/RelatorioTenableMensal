@@ -165,6 +165,37 @@ configuração é por cliente e possui fallback único para payload completo se 
 rejeição HTTP 400 ou contrato incompleto. Timeout, autenticação e rate limit não são
 ocultados por esse fallback.
 
+## Lotes duráveis e controle local
+
+`web_batches`, `web_batch_jobs` e `web_batch_events` no PostgreSQL guardam o lote,
+cada cliente e a trilha de auditoria. O dispatcher mantém uma fila sequencial: um
+único cliente é reivindicado por vez com bloqueio transacional, e um reinício local
+reconcilia qualquer `RUNNING` abandonado como `INTERRUPTED` e o lote como `PAUSED`.
+
+Pausa e retomada não reclassificam resultados antigos. **Pausar após o atual** espera
+o trabalho ativo; **Retomar lote** libera somente os itens ainda `QUEUED`. **Parar
+lote** muda o ativo para `INTERRUPT_REQUESTED`, os pendentes para
+`CANCELLED_BY_USER` e termina em `STOPPED`. O processo recebe primeiro um arquivo de
+controle cooperativo. O PID é persistido; depois do prazo de tolerância, um fallback
+encerra apenas a árvore local. O export remoto, seu UUID, chunks e manifesto parcial
+são preservados.
+
+`COMPLETE`, `COMPLETE_WITH_WARNINGS`, `FAILED`, `INTERRUPTED` e
+`CANCELLED_BY_USER` são terminais no trabalho. O lote agrega isso em `COMPLETE`,
+`COMPLETE_WITH_WARNINGS`, `COMPLETE_WITH_FAILURES` ou `STOPPED`. Ator, motivo e
+chave idempotente são registrados para cada mutação.
+
+**Tentar falhas/interrompidos** cria um lote derivado somente de `FAILED`,
+`INTERRUPTED` e `CANCELLED_BY_USER`. **Gerar todos novamente** inclui a seleção
+integral e exige a frase de confirmação. Nenhum dos dois altera o lote de origem;
+conflitos com outro trabalho ativo do mesmo cliente retornam HTTP 409.
+
+Um snapshot anterior à fila durável pode ser validado por
+`import-web-batch-recovery --dry-run`. A aplicação mapeia `running` para
+`INTERRUPTED`, cria o lote `RECOVERED` em `PAUSED` e usa o hash do arquivo como
+identidade. `--apply` grava lote, trabalhos e evento na mesma transação. Reaplicar é
+idempotente; erro faz rollback e nunca deixa importação parcial.
+
 ## Histórico e referência `MAIN`
 
 Cada documento publicado possui identidade de cliente, período, tipo, execução e

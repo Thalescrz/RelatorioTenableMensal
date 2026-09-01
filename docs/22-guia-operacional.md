@@ -147,6 +147,30 @@ somente do componente WEB. Se a segunda tentativa falhar, o cliente continua na
 fila, publica os documentos sem WAS e registra `WAS_RETRY_EXHAUSTED`. A política é
 associada ao botão, inclusive quando houver apenas um cliente habilitado.
 
+### Controle durável do lote
+
+O bloco da carteira representa o lote persistido, não somente a memória do servidor.
+A operação permanece em fila sequencial. Use:
+
+- **Pausar após o atual** quando o cliente corrente pode concluir, mas os próximos
+  não devem iniciar;
+- **Parar lote** quando o cliente corrente também deve ser interrompido; confirme o
+  identificador curto mostrado na tela;
+- **Retomar lote** para continuar apenas os trabalhos ainda `QUEUED`;
+- **Tentar falhas/interrompidos** depois do término para criar uma fila somente de
+  `FAILED`, `INTERRUPTED` e `CANCELLED_BY_USER`;
+- **Gerar todos novamente** quando todos os clientes precisam de nova execução.
+
+A pausa não repete cliente concluído. A retomada também não reabre falha ou
+interrupção; essas situações exigem o lote derivado. `COMPLETE_WITH_FAILURES` é um
+resultado terminal do lote, não um estado ainda executando.
+
+Ao parar, o arquivo de controle solicita uma saída cooperativa. O export remoto não
+é cancelado: UUID, manifesto parcial e chunks persistidos ficam disponíveis para uma
+retentativa. Se o subprocesso não responder no prazo, o fallback encerra somente a
+árvore local e registra PID/evento. Depois, use a retentativa de incompletos em vez
+de **Retomar lote**.
+
 ### Automático mensal
 
 A tarefa agendada chama o fluxo automático no primeiro dia do mês e coleta o mês
@@ -228,6 +252,35 @@ de criar outro export:
 Falhas de autenticação, rate limit e indisponibilidade da API interrompem a
 tentativa normalmente; elas não autorizam a criação silenciosa de exports
 duplicados.
+
+### Importar um snapshot de recuperação
+
+Use esta intervenção somente para o snapshot legado criado antes da fila durável e
+com o servidor antigo encerrado. Primeiro faça backup lógico das tabelas
+`web_batches`, `web_batch_jobs` e `web_batch_events` e execute somente a análise:
+
+```powershell
+.\.venv\Scripts\python.exe -m tenable_reports import-web-batch-recovery `
+  --snapshot C:\caminho\recovery-gerar-todos.json `
+  --database-env-file .\credentials\database.env `
+  --dry-run
+```
+
+O retorno mostra apenas totais. Confirme `COMPLETE`, `FAILED`, `INTERRUPTED` e
+`QUEUED`; o lote será criado como `PAUSED`. Depois de revisar:
+
+```powershell
+.\.venv\Scripts\python.exe -m tenable_reports import-web-batch-recovery `
+  --snapshot C:\caminho\recovery-gerar-todos.json `
+  --database-env-file .\credentials\database.env `
+  --apply
+```
+
+A aplicação usa o hash para idempotência. Uma falha provoca rollback da transação;
+não repita manualmente inserts. Se a validação posterior reprovar o resultado,
+restaure o backup lógico antes de iniciar qualquer lote novo. Nunca use **Retomar
+lote** para trabalhos importados como `FAILED` ou `INTERRUPTED`; crie **Tentar
+falhas/interrompidos**.
 
 ## Propriedades seletivas
 

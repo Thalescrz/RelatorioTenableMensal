@@ -149,5 +149,32 @@ class ProjectGuidanceTests(unittest.TestCase):
         ):
             self.assertIn(required, documentation)
 
+    def test_current_guidance_documents_cover_durable_batch_controls(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        documentation = "\n".join(
+            (project_root / relative).read_text(encoding="utf-8")
+            for relative in (
+                "README.md",
+                "docs/20-arquitetura-e-fluxo-de-dados.md",
+                "docs/22-guia-operacional.md",
+                "docs/23-guia-de-desenvolvimento.md",
+                ".agents/skills/operating-tenable-reports/references/runbook.md",
+            )
+        )
+
+        for required in (
+            "Pausar após o atual",
+            "Parar lote",
+            "Retomar lote",
+            "Tentar falhas/interrompidos",
+            "Gerar todos novamente",
+            "COMPLETE_WITH_FAILURES",
+            "CANCELLED_BY_USER",
+            "export remoto",
+            "import-web-batch-recovery",
+            "rollback",
+            "fila sequencial",
+        ):
+            self.assertIn(required, documentation)
 if __name__ == "__main__":
     unittest.main()

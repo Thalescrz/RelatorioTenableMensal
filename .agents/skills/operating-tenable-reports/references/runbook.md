@@ -112,6 +112,27 @@ seletivas desativadas, concluiu em uma tentativa pela rota `legacy_vm`; VM termi
 2/2 chunks e WAS 1/1. Foram gerados base, customizado e um relatório por TAG. O
 tempo observado, próximo de seis minutos, não deve ser tratado como SLA.
 
+## Controlar o lote da carteira
+
+A interface usa uma fila sequencial persistida. O card do lote oferece:
+
+- **Pausar após o atual**: aguarda o cliente corrente e conserva os próximos;
+- **Parar lote**: solicita interrupção local, marca pendentes como
+  `CANCELLED_BY_USER` e preserva o export remoto;
+- **Retomar lote**: continua somente os trabalhos `QUEUED`;
+- **Tentar falhas/interrompidos**: cria outro lote com falhas, interrupções e
+  cancelamentos;
+- **Gerar todos novamente**: recria a carteira inteira após confirmação.
+
+`COMPLETE_WITH_FAILURES` e `STOPPED` são estados terminais. Não use retomada para
+`FAILED` ou `INTERRUPTED`. Se o processo local ignorar a solicitação, o fallback
+encerra somente sua árvore após o prazo e registra o PID; não há DELETE remoto.
+
+Para importar o snapshot legado, encerre o servidor antigo, faça backup lógico e
+execute `import-web-batch-recovery --dry-run`. Revise os totais e só então use
+`--apply`. A gravação é idempotente e transacional; erro faz rollback. O lote entra
+como `PAUSED` e não inicia clientes automaticamente.
+
 ## Export sem progresso
 
 Timeout VM é temporário. Use **Cancelar export e tentar novamente** somente com
