@@ -4,6 +4,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from tenable_reports.application.cloud_execution import (
     CloudExecutionDependencies,
     CloudExecutionRequest,
@@ -18,6 +20,7 @@ from tenable_reports.application.cloud_snapshots import (
 )
 from tenable_reports.config.profile import ClientProfile, CloudSecurityScope
 from tenable_reports.domain.cloud import NormalizedCloudSnapshot
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
 from tenable_reports.domain.reporting import previous_calendar_month
 
 
@@ -296,6 +299,23 @@ def test_retry_cloud_bypasses_recent_guard_without_calling_other_components(
     assert result.status is CloudExecutionStatus.COMPLETE
     assert calls["collect"] == 1
     assert calls["render"] == ["expanded"]
+
+def test_cloud_interruption_is_propagated_instead_of_isolated(tmp_path: Path) -> None:
+    dependencies, calls = _dependencies(tmp_path)
+
+    def interrupt(_request, _progress):
+        calls["collect"] += 1
+        raise ExecutionInterruptedError(
+            "Execucao Cloud interrompida com checkpoint preservado."
+        )
+
+    dependencies = replace(dependencies, collect_live=interrupt)
+
+    with pytest.raises(ExecutionInterruptedError):
+        execute_cloud_component(_request(tmp_path), dependencies=dependencies)
+
+    assert calls["write"] == 0
+    assert calls["render"] == []
 
 def test_cloud_failure_is_isolated_as_a_retryable_component_warning(
     tmp_path: Path,

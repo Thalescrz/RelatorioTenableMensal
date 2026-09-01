@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 
 import tenable_reports.cli as cli_module
 from tenable_reports.cli import _period_filters, _scoped_output_root, main
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
 from tenable_reports.domain.reporting import previous_calendar_month
 from tenable_reports.application.report_registry import InMemoryReportRegistry
 from tenable_reports.application.publishing import PublicationDocument
@@ -35,6 +36,46 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliTests(unittest.TestCase):
+    def test_run_client_parser_accepts_job_control_file(self) -> None:
+        args = cli_module.build_parser().parse_args([
+            "run-client",
+            "--profile",
+            "profile.json",
+            "--job-control-file",
+            "job-control.json",
+        ])
+
+        self.assertEqual(args.job_control_file, "job-control.json")
+
+    def test_run_client_interruption_returns_130_without_publication(self) -> None:
+        args = SimpleNamespace(
+            confirm_live_api=True,
+            profile="profile.json",
+            mode="manual",
+            job_control_file="job-control.json",
+        )
+        stdout = io.StringIO()
+        publish = Mock()
+        interrupted = ExecutionInterruptedError(
+            "Execucao interrompida com checkpoint preservado.",
+            export_uuid="export-fixture",
+            checkpoint="manifest.partial.json",
+        )
+
+        with (
+            patch.object(cli_module, "load_client_profile", return_value=SimpleNamespace()),
+            patch.object(cli_module, "_period_for_mode", return_value=SimpleNamespace()),
+            patch.object(cli_module, "_execute_period", side_effect=interrupted),
+            patch.object(cli_module, "_publish_collected_period", publish),
+            contextlib.redirect_stdout(stdout),
+        ):
+            self.assertEqual(cli_module.command_run_client(args), 130)
+
+        publish.assert_not_called()
+        payload = json.loads(stdout.getvalue().splitlines()[-1])
+        self.assertEqual(payload["status"], "INTERRUPTED")
+        self.assertEqual(payload["export_uuid"], "export-fixture")
+        self.assertEqual(payload["checkpoint"], "manifest.partial.json")
     def test_run_client_parser_accepts_retry_then_continue_was_policy(self) -> None:
         args = cli_module.build_parser().parse_args([
             "run-client",

@@ -71,6 +71,7 @@ class TenableWasClient(TenableVmClient):
         *,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
         chunk_callback: Callable[[int], None] | None = None,
+        cancellation_probe: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         return self._wait_for_completion(
             export_uuid,
@@ -78,6 +79,7 @@ class TenableWasClient(TenableVmClient):
             label="WAS",
             progress_callback=progress_callback,
             chunk_callback=chunk_callback,
+            cancellation_probe=cancellation_probe,
         )
 
     def download_findings_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:

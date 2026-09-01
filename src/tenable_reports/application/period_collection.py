@@ -68,6 +68,18 @@ def collect_external_period(
     plugin_catalog_callback: Any = None,
     progress_callback: Any = None,
 ) -> ExternalPeriodCollection:
+    execution_control = getattr(args, "execution_control", None)
+    cancellation_probe = (
+        execution_control.is_stop_requested
+        if execution_control is not None
+        else None
+    )
+
+    def check_interruption() -> None:
+        if execution_control is not None:
+            execution_control.raise_if_stop_requested()
+
+    check_interruption()
     if selected_tags:
         collect_tag_scope_snapshot(
             client=client,
@@ -76,6 +88,7 @@ def collect_external_period(
             output_root=output_root,
             run_id=run_id,
         )
+    check_interruption()
     assets = collect_asset_snapshot(
         client=client,
         profile=profile,
@@ -86,7 +99,9 @@ def collect_external_period(
         output_root=output_root,
         run_id=run_id,
         export_uuid=getattr(args, "asset_export_uuid", None),
+        cancellation_probe=cancellation_probe,
     )
+    check_interruption()
 
     route_name = route.source.value
     reconstruction_status = route.accuracy.value.upper()
@@ -179,7 +194,9 @@ def collect_external_period(
             strategy=vm_strategy,
             plugin_catalog_callback=plugin_catalog_callback,
             progress_callback=progress_callback,
+            cancellation_probe=cancellation_probe,
         )
+        check_interruption()
         if vm_policy.outcome == "FALLBACK_FULL":
             warnings.append({
                 "code": "VM_SELECTIVE_FALLBACK",
@@ -230,6 +247,7 @@ def collect_external_period(
             run_id=run_id,
             export_uuid=getattr(args, "was_export_uuid", None),
             progress_callback=progress_callback,
+            cancellation_probe=cancellation_probe,
         )
         if was_attempt.result is not None:
             normalize_was_collection(
@@ -241,6 +259,7 @@ def collect_external_period(
         was_failure = was_attempt.failure
         warnings.extend(was_attempt.warnings)
 
+    check_interruption()
     return ExternalPeriodCollection(
         normalized=normalized,
         was_collection_status=was_collection_status,

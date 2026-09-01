@@ -16,6 +16,7 @@ from urllib.request import url2pathname
 
 from tenable_reports import __version__
 from tenable_reports.config.profile import ClientProfile
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
 from tenable_reports.domain.models import (
     SourceSnapshot,
     build_source_snapshot_from_chunk_hashes,
@@ -452,6 +453,7 @@ def collect_vm_snapshot(
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     plugin_catalog_callback: Callable[[Iterable[Mapping[str, Any]]], None] | None = None,
     snapshot_suffix: str | None = None,
+    cancellation_probe: Callable[[], bool] | None = None,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
     started_at = utc_now_iso()
@@ -555,6 +557,12 @@ def collect_vm_snapshot(
         actual_chunk_id = int(chunk_id)
         if actual_chunk_id in stored_chunks:
             return
+        if cancellation_probe is not None and cancellation_probe():
+            raise ExecutionInterruptedError(
+                f"Execucao interrompida com export {actual_export_uuid} preservado para retomada.",
+                export_uuid=actual_export_uuid,
+                checkpoint=str(partial_manifest_path.resolve()),
+            )
         storage_preflight(
             raw_directory,
             last_success_bytes=last_success_bytes,
@@ -616,7 +624,19 @@ def collect_vm_snapshot(
             wait_arguments["progress_callback"] = update_progress
         if "chunk_callback" in parameters:
             wait_arguments["chunk_callback"] = persist_chunk
+        if "cancellation_probe" in parameters:
+            wait_arguments["cancellation_probe"] = cancellation_probe
         _, chunk_ids = wait_method(actual_export_uuid, **wait_arguments)
+    except ExecutionInterruptedError as exc:
+        exc.export_uuid = exc.export_uuid or actual_export_uuid
+        exc.checkpoint = exc.checkpoint or str(partial_manifest_path.resolve())
+        emit_progress(
+            "INTERRUPTED",
+            completed_chunks=len(stored_chunks),
+            total_chunks=len(stored_chunks),
+            progress_made=bool(stored_chunks),
+        )
+        raise
     except ExportTimeoutError as exc:
         exc.export_uuid = actual_export_uuid
         exc.origin = job.origin
@@ -741,6 +761,7 @@ def collect_vm_snapshot_by_state(
     plugin_catalog_callback: Callable[[Iterable[Mapping[str, Any]]], None] | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     snapshot_suffix: str | None = None,
+    cancellation_probe: Callable[[], bool] | None = None,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
     normalized_strategy = str(strategy).strip().lower()
@@ -774,6 +795,7 @@ def collect_vm_snapshot_by_state(
             plugin_catalog_callback=plugin_catalog_callback,
             progress_callback=progress_callback,
             snapshot_suffix=snapshot_suffix,
+            cancellation_probe=cancellation_probe,
         )
 
     segments = (
@@ -816,6 +838,7 @@ def collect_vm_snapshot_by_state(
             plugin_catalog_callback=plugin_catalog_callback,
             progress_callback=forward_progress,
             snapshot_suffix=(f"{snapshot_suffix}-{segment_name}" if snapshot_suffix else segment_name),
+            cancellation_probe=cancellation_probe,
         )
         collected.append((segment_name, date_field, result))
 
@@ -915,6 +938,7 @@ def collect_asset_snapshot(
     resume_from: str | Path | None = None,
     minimum_free_gb: int = 10,
     last_success_bytes: int | None = None,
+    cancellation_probe: Callable[[], bool] | None = None,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
     started_at = utc_now_iso()
@@ -931,7 +955,11 @@ def collect_asset_snapshot(
         include_open_ports=request.include_open_ports,
         include_resource_tags=request.include_resource_tags,
     )
-    _, chunk_ids = client.wait_for_asset_completion(actual_export_uuid)
+    wait_method = client.wait_for_asset_completion
+    wait_arguments: dict[str, Any] = {}
+    if "cancellation_probe" in inspect.signature(wait_method).parameters:
+        wait_arguments["cancellation_probe"] = cancellation_probe
+    _, chunk_ids = wait_method(actual_export_uuid, **wait_arguments)
 
     raw_directory = (
         Path(output_root)
@@ -943,6 +971,11 @@ def collect_asset_snapshot(
     )
     stored_chunks: list[StoredChunk] = []
     for chunk_id in chunk_ids:
+        if cancellation_probe is not None and cancellation_probe():
+            raise ExecutionInterruptedError(
+                f"Execucao interrompida com export {actual_export_uuid} preservado para retomada.",
+                export_uuid=actual_export_uuid,
+            )
         storage_preflight(
             raw_directory,
             last_success_bytes=last_success_bytes,

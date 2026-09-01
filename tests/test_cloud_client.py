@@ -7,6 +7,8 @@ from typing import Any, Mapping
 
 import pytest
 
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
+
 
 QUERY = """
 query VirtualMachines($first: Int!, $after: String) {
@@ -190,6 +192,29 @@ def test_complexity_reduction_keeps_cursor_and_retries_smaller_pages() -> None:
     assert [item["first"] for item in variables] == [20, 10, 5]
     assert [item["after"] for item in variables] == [None, None, None]
 
+
+def test_paginate_stops_before_next_request_and_preserves_remote_operation() -> None:
+    module = _module()
+    transport = ScriptedTransport(
+        module,
+        [ScriptedItem(200, _connection([{"Id": "asset-a"}], True, "c1"))],
+    )
+    client = module.CloudGraphQLClient(
+        _config(module), transport=transport, sleeper=lambda _: None
+    )
+    probes = iter((False, True))
+
+    with pytest.raises(ExecutionInterruptedError):
+        list(
+            client.paginate_pages(
+                QUERY,
+                "VirtualMachines",
+                page_size=20,
+                cancellation_probe=lambda: next(probes),
+            )
+        )
+
+    assert len(transport.requests) == 1
 
 def test_auth_and_contract_errors_are_sanitized() -> None:
     module = _module()

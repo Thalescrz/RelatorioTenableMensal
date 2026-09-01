@@ -9,8 +9,9 @@ import sys
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
+from tenable_reports.application.execution_control import FileExecutionControl
 from tenable_reports.application.collect import (
     AssetExportRequest,
     VulnerabilityExportRequest,
@@ -175,6 +176,7 @@ from tenable_reports.infrastructure.report_registry_postgresql import (
 from tenable_reports.infrastructure.was_recovery_postgresql import (
     PostgresWasRecoveryRepository,
 )
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
 from tenable_reports.domain.report_reference import (
     READY_STATUS,
     ReportCandidate,
@@ -201,6 +203,19 @@ WAS_DECISION_EXIT_CODE = 3
 
 def _emit_progress_event(event: Mapping[str, Any]) -> None:
     print(json.dumps(dict(event), ensure_ascii=False), flush=True)
+
+
+def _raise_if_execution_interrupted(args: argparse.Namespace) -> None:
+    control = getattr(args, "execution_control", None)
+    if control is not None:
+        control.raise_if_stop_requested()
+
+
+def _execution_cancellation_probe(
+    args: argparse.Namespace,
+) -> Callable[[], bool] | None:
+    control = getattr(args, "execution_control", None)
+    return control.is_stop_requested if control is not None else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -564,7 +579,10 @@ def _run_cloud_for_client(
         ),
         dependencies=CloudExecutionDependencies(
             repository=repository,
-            collect_live=TenableCloudLiveCollector(credentials),
+            collect_live=TenableCloudLiveCollector(
+                credentials,
+                cancellation_probe=_execution_cancellation_probe(args),
+            ),
             history_persistent=persistent,
         ),
         progress_callback=_emit_progress_event,
@@ -1253,6 +1271,7 @@ def _retry_was_once_before_publication(
         run_id=run_id,
         export_uuid=export_uuid,
         progress_callback=_emit_progress_event,
+        cancellation_probe=_execution_cancellation_probe(args),
     )
     if attempt.result is not None:
         normalize_was_collection(
@@ -1789,14 +1808,31 @@ def command_run_client(args: argparse.Namespace) -> int:
         raise ValueError(
             "A execucao completa exige --confirm-live-api; ela inicia exports reais no tenant."
         )
+    control = (
+        FileExecutionControl(args.job_control_file)
+        if getattr(args, "job_control_file", None)
+        else None
+    )
+    setattr(args, "execution_control", control)
     profile = load_client_profile(args.profile)
     period = _period_for_mode(args, profile)
     execution_type = "MANUAL" if args.mode == "manual" else "AUTOMATIC_MONTHLY"
     try:
+        if control is not None:
+            control.raise_if_stop_requested()
         collected = _execute_period(
             args,
             execution_type=execution_type,
             period=period,
+        )
+        if control is not None:
+            control.raise_if_stop_requested()
+        return _publish_collected_period(
+            args=args,
+            profile=profile,
+            period=period,
+            execution_type=execution_type,
+            collected=collected,
         )
     except WasDecisionRequired as pending:
         print(json.dumps({
@@ -1807,13 +1843,14 @@ def command_run_client(args: argparse.Namespace) -> int:
             "was_failure": pending.failure.to_dict(),
         }, ensure_ascii=False))
         return WAS_DECISION_EXIT_CODE
-    return _publish_collected_period(
-        args=args,
-        profile=profile,
-        period=period,
-        execution_type=execution_type,
-        collected=collected,
-    )
+    except ExecutionInterruptedError as interrupted:
+        print(json.dumps({
+            "status": "INTERRUPTED",
+            "export_uuid": interrupted.export_uuid,
+            "checkpoint": interrupted.checkpoint,
+            "message": str(interrupted),
+        }, ensure_ascii=False))
+        return 130
 
 
 def _publish_collected_period(
@@ -1824,6 +1861,7 @@ def _publish_collected_period(
     execution_type: str,
     collected: _CollectedPeriodExecution,
 ) -> int:
+    _raise_if_execution_interrupted(args)
     period_slug = _safe_filename_component(str(period.period_id))
     report_directory = (
         collected.output_root
@@ -1838,6 +1876,7 @@ def _publish_collected_period(
     custom_output = Path(args.custom_output) if args.custom_output else (
         report_directory / report_filename(profile.display_name, period, "custom")
     )
+    _raise_if_execution_interrupted(args)
     base_result = generate_full_base_report(
         template_path=args.template,
         dataset_path=collected.dataset_path,
@@ -1846,6 +1885,7 @@ def _publish_collected_period(
         assets_dir=args.assets_dir,
         mask_sensitive=args.mask_sensitive,
     )
+    _raise_if_execution_interrupted(args)
     custom_result = generate_customizations_report(
         template_path=args.template,
         dataset_path=collected.dataset_path,
@@ -1867,6 +1907,7 @@ def _publish_collected_period(
         getattr(collected, "tag_reports_requested", len(tag_artifacts)) or 0
     )
     for index, tag_artifact in enumerate(tag_artifacts, start=1):
+        _raise_if_execution_interrupted(args)
         tag = tag_artifact.tag
         print(json.dumps({
             "event": "TAG_REPORT_PROGRESS",
@@ -1916,6 +1957,7 @@ def _publish_collected_period(
         })
     tag_reports_generated = len(tag_documents)
     tag_reports_failed = max(0, requested_tag_reports - tag_reports_generated)
+    _raise_if_execution_interrupted(args)
     cloud_result = _run_cloud_for_client(
         args=args,
         profile=profile,
@@ -1924,6 +1966,7 @@ def _publish_collected_period(
         execution_type=execution_type,
         report_directory=report_directory,
     )
+    _raise_if_execution_interrupted(args)
     cloud_documents: list[dict[str, str]] = []
     for document in cloud_result.documents:
         publication_documents.append(
@@ -2677,7 +2720,10 @@ def command_retry_cloud(args: argparse.Namespace) -> int:
         ),
         dependencies=CloudExecutionDependencies(
             repository=repository,
-            collect_live=TenableCloudLiveCollector(credentials),
+            collect_live=TenableCloudLiveCollector(
+                credentials,
+                cancellation_probe=_execution_cancellation_probe(args),
+            ),
             history_persistent=persistent,
         ),
         progress_callback=_emit_progress_event,
@@ -3353,6 +3399,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Executa coleta, historico, os dois DOCX e a publicacao controlada de um cliente.",
     )
     _add_complete_collection_arguments(run_client)
+    run_client.add_argument(
+        "--job-control-file",
+        help="Arquivo local usado para solicitar interrupcao cooperativa.",
+    )
     run_client.add_argument(
         "--no-cleanup-after-publish",
         dest="cleanup_after_publish",

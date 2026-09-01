@@ -12,6 +12,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import HTTPSHandler, Request, build_opener
 
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
+
 from .parser import parse_chunk_response
 
 
@@ -628,6 +630,7 @@ class TenableVmClient:
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
         chunk_callback: Callable[[int], None] | None = None,
         no_progress_timeout_seconds: float | None = None,
+        cancellation_probe: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         started = self.monotonic()
         seen: list[int] = []
@@ -639,7 +642,16 @@ class TenableVmClient:
         last_finished_chunks = 0
         last_empty_chunks = 0
         idle_polls = 0
+
+        def raise_if_cancelled() -> None:
+            if cancellation_probe is not None and cancellation_probe():
+                raise ExecutionInterruptedError(
+                    f"Execucao interrompida com export {export_uuid} preservado para retomada.",
+                    export_uuid=export_uuid,
+                )
+
         while True:
+            raise_if_cancelled()
             status = status_loader(export_uuid)
             state = str(status.get("status") or status.get("state") or "").strip().lower()
             current = self.completed_chunk_ids(status)
@@ -686,6 +698,7 @@ class TenableVmClient:
                 for chunk_id in current:
                     if chunk_id in notified:
                         continue
+                    raise_if_cancelled()
                     chunk_callback(chunk_id)
                     notified.add(chunk_id)
 
@@ -795,6 +808,7 @@ class TenableVmClient:
         *,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
         chunk_callback: Callable[[int], None] | None = None,
+        cancellation_probe: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         return self._wait_for_completion(
             export_uuid,
@@ -803,11 +817,18 @@ class TenableVmClient:
             no_progress_timeout_seconds=self.config.no_progress_timeout_seconds,
             progress_callback=progress_callback,
             chunk_callback=chunk_callback,
+            cancellation_probe=cancellation_probe,
         )
 
-    def wait_for_asset_completion(self, export_uuid: str) -> tuple[dict[str, Any], list[int]]:
+    def wait_for_asset_completion(
+        self,
+        export_uuid: str,
+        *,
+        cancellation_probe: Callable[[], bool] | None = None,
+    ) -> tuple[dict[str, Any], list[int]]:
         return self._wait_for_completion(
             export_uuid,
             self.get_asset_export_status,
             label="de ativos",
+            cancellation_probe=cancellation_probe,
         )

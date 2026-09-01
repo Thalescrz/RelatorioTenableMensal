@@ -5,6 +5,8 @@ import unittest
 from collections import deque
 from typing import Any, Mapping
 
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
+
 from tenable_reports.infrastructure.tenable_vm.client import TenableVmConfig, TransportResponse
 from tenable_reports.infrastructure.tenable_was.client import TenableWasClient
 
@@ -117,6 +119,27 @@ class TenableWasClientTests(unittest.TestCase):
         self.assertEqual(chunks, [1, 2])
         self.assertEqual(progress[-1]["status"], "FINISHED")
 
+    def test_was_inherits_cooperative_stop_without_remote_cancel(self) -> None:
+        client, transport = client_with([
+            response(
+                200,
+                {
+                    "status": "PROCESSING",
+                    "chunks_available": [],
+                    "num_total_chunks": 1,
+                },
+            )
+        ])
+        probes = iter((False, True))
+
+        with self.assertRaises(ExecutionInterruptedError):
+            client.wait_for_findings_completion(
+                "was-preserved",
+                cancellation_probe=lambda: next(probes),
+            )
+
+        self.assertEqual(len(transport.calls), 1)
+        self.assertFalse(any(call["method"] == "DELETE" for call in transport.calls))
     def test_lists_v2_filter_metadata_without_exposing_findings(self) -> None:
         client, _ = client_with([response(200, {"filters": [{"field": "severity"}]})])
         self.assertEqual(client.list_vulnerability_filters()[0]["field"], "severity")

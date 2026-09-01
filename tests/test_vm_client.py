@@ -5,6 +5,8 @@ import unittest
 from collections import deque
 from typing import Any, Mapping
 
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
+
 from tenable_reports.infrastructure.tenable_vm.client import (
     ApiError,
     ExportJob,
@@ -439,6 +441,28 @@ class TenableVmClientTests(unittest.TestCase):
         self.assertEqual(received, [2, 3])
         self.assertEqual(chunks, [2, 3])
 
+    def test_cooperative_stop_interrupts_before_next_poll_without_remote_cancel(self) -> None:
+        client, transport = client_with([
+            response(
+                200,
+                {
+                    "status": "PROCESSING",
+                    "chunks_available": [],
+                    "total_chunks": 1,
+                },
+            )
+        ])
+        probes = iter((False, True))
+
+        with self.assertRaises(ExecutionInterruptedError) as caught:
+            client.wait_for_completion(
+                "job-preserved",
+                cancellation_probe=lambda: next(probes),
+            )
+
+        self.assertEqual(caught.exception.export_uuid, "job-preserved")
+        self.assertEqual(len(transport.calls), 1)
+        self.assertFalse(any(call["method"] == "DELETE" for call in transport.calls))
     def test_error_message_never_contains_credentials_or_response_body(self) -> None:
         client, _ = client_with([response(403, {"debug": "secret-fixture access-fixture"})])
         with self.assertRaises(ApiError) as caught:

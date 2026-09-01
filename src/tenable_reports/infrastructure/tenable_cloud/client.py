@@ -10,6 +10,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPSHandler, Request, build_opener
 
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
+
 
 TRANSIENT_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
 AUTH_GRAPHQL_CODES = frozenset({"UNAUTHENTICATED", "UNAUTHORIZED", "FORBIDDEN"})
@@ -358,6 +360,7 @@ class CloudGraphQLClient:
         max_pages: int = 0,
         variables: Mapping[str, Any] | None = None,
         progress: Callable[[Mapping[str, Any]], None] | None = None,
+        cancellation_probe: Callable[[], bool] | None = None,
     ) -> Iterator[CloudGraphQLPage]:
         if page_size < 1:
             raise ValueError("page_size deve ser positivo.")
@@ -372,6 +375,10 @@ class CloudGraphQLClient:
         records = records_completed
         base_variables = dict(variables or {})
         while True:
+            if cancellation_probe is not None and cancellation_probe():
+                raise ExecutionInterruptedError(
+                    "Execucao Cloud interrompida com checkpoint preservado."
+                )
             request_variables = dict(base_variables)
             request_variables.update({"first": current_size, "after": cursor})
             try:
@@ -461,6 +468,7 @@ class CloudGraphQLClient:
         max_pages: int = 0,
         variables: Mapping[str, Any] | None = None,
         progress: Callable[[Mapping[str, Any]], None] | None = None,
+        cancellation_probe: Callable[[], bool] | None = None,
     ) -> Iterator[dict[str, Any]]:
         for page in self.paginate_pages(
             query,
@@ -469,5 +477,6 @@ class CloudGraphQLClient:
             max_pages=max_pages,
             variables=variables,
             progress=progress,
+            cancellation_probe=cancellation_probe,
         ):
             yield from page.nodes

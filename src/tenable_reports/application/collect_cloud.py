@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from tenable_reports.application.cloud_contract import CloudCapabilityReport
 from tenable_reports.application.publishing import write_json_atomic
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
 from tenable_reports.infrastructure.tenable_cloud.client import CloudGraphQLError
 from tenable_reports.infrastructure.tenable_cloud.queries import (
     CLOUD_SOURCE_QUERIES,
@@ -44,6 +45,7 @@ class CloudPageClient(Protocol):
         pages_completed: int = 0,
         records_completed: int = 0,
         progress: Callable[[Mapping[str, Any]], None] | None = None,
+        cancellation_probe: Callable[[], bool] | None = None,
     ) -> Any:
         raise NotImplementedError
 
@@ -287,6 +289,7 @@ def _collect_source(
     client: CloudPageClient,
     directory: Path,
     progress_callback: Callable[[Mapping[str, Any]], None] | None,
+    cancellation_probe: Callable[[], bool] | None,
 ) -> tuple[Path, CloudSourceStatus]:
     checkpoint_path = _checkpoint_path(directory, definition.name)
     if checkpoint_path.is_file():
@@ -351,7 +354,13 @@ def _collect_source(
         after=cursor,
         pages_completed=pages,
         records_completed=records,
+        cancellation_probe=cancellation_probe,
     ):
+        if cancellation_probe is not None and cancellation_probe():
+            raise ExecutionInterruptedError(
+                "Execucao Cloud interrompida com checkpoint preservado.",
+                checkpoint=str(checkpoint_path.resolve()),
+            )
         page_nodes = tuple(dict(item) for item in page.nodes)
         page_number = pages + 1
         chunk_path = _chunk_path(directory, definition.name, page_number)
@@ -478,6 +487,7 @@ def collect_cloud_snapshot(
     clients: Mapping[str, CloudPageClient],
     capabilities: CloudCapabilityReport,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    cancellation_probe: Callable[[], bool] | None = None,
 ) -> CloudCollectionArtifact:
     """Collect every available Cloud source while isolating optional failures."""
 
@@ -539,7 +549,10 @@ def collect_cloud_snapshot(
                 client=client,
                 directory=directory,
                 progress_callback=progress_callback,
+                cancellation_probe=cancellation_probe,
             )
+        except ExecutionInterruptedError:
+            raise
         except CloudGraphQLError as exc:
             if definition.required:
                 checkpoint = _checkpoint_path(directory, definition.name)

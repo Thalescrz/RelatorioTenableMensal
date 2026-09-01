@@ -8,6 +8,8 @@ from typing import Any, Mapping
 
 import pytest
 
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
+
 
 FIXTURES = Path(__file__).parent / "fixtures" / "tenable_cloud"
 
@@ -293,6 +295,52 @@ def test_resume_continues_from_checkpoint_without_duplicate_records(
     assert list(artifact.manifest_path.parent.glob("*.checkpoint.json"))
     assert not list(artifact.manifest_path.parent.glob(".*.page-*.jsonl"))
 
+
+def test_interruption_preserves_cloud_page_checkpoint_for_resume(tmp_path: Path) -> None:
+    collection = _collection_module()
+    calls = 0
+
+    def cancellation_probe() -> bool:
+        nonlocal calls
+        calls += 1
+        return calls >= 2
+
+    first = FakePaginator(
+        [
+            FakePage(
+                nodes=({"Id": "vm-a"},),
+                page=1,
+                records=1,
+                end_cursor="cursor-1",
+                has_next_page=True,
+            ),
+            FakePage(
+                nodes=({"Id": "vm-b"},),
+                page=2,
+                records=2,
+                end_cursor=None,
+                has_next_page=False,
+            ),
+        ]
+    )
+
+    with pytest.raises(ExecutionInterruptedError):
+        collection.collect_cloud_snapshot(
+            request=_request(tmp_path),
+            clients=_clients(virtual_machines=first),
+            capabilities=_capabilities_all(),
+            cancellation_probe=cancellation_probe,
+        )
+
+    directory = tmp_path / "manual" / "raw" / "cliente-fixture" / "run-fixture" / "tenable_cloud"
+    checkpoint = json.loads(
+        (directory / "virtual_machines.checkpoint.json").read_text(encoding="utf-8")
+    )
+    assert checkpoint["status"] == "PROCESSING"
+    assert checkpoint["pages"] == 1
+    assert checkpoint["cursor"] == "cursor-1"
+    assert len(checkpoint["chunks"]) == 1
+    assert not (directory / "manifest.json").exists()
 
 def test_retry_recollects_only_source_with_invalid_consolidated_artifact(
     tmp_path: Path,

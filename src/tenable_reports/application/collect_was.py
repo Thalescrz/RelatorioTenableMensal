@@ -20,6 +20,7 @@ from tenable_reports.application.collect import (
 )
 from tenable_reports.application.was_recovery import WasFailureDetails
 from tenable_reports.config.profile import ClientProfile
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
 from tenable_reports.domain.models import (
     build_source_snapshot_from_chunk_hashes,
     sanitized_mapping,
@@ -67,6 +68,7 @@ def collect_optional_was_snapshot(
     run_id: str | None = None,
     export_uuid: str | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    cancellation_probe: Callable[[], bool] | None = None,
 ) -> WasCollectionAttempt:
     """Tenta o WAS sem permitir que uma capacidade opcional derrube o VM."""
     try:
@@ -78,6 +80,7 @@ def collect_optional_was_snapshot(
             run_id=run_id,
             export_uuid=export_uuid,
             progress_callback=progress_callback,
+            cancellation_probe=cancellation_probe,
         )
     except (ApiError, ExportTimeoutError) as exc:
         last_status = getattr(exc, "last_status", {})
@@ -147,6 +150,7 @@ def collect_was_snapshot(
     run_id: str | None = None,
     export_uuid: str | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    cancellation_probe: Callable[[], bool] | None = None,
 ) -> CollectionResult:
     if not profile.was_scope.enabled:
         raise ValueError("A coleta WAS requer scope.was.enabled=true no perfil.")
@@ -251,6 +255,12 @@ def collect_was_snapshot(
         actual_chunk_id = int(chunk_id)
         if actual_chunk_id in stored_chunks:
             return
+        if cancellation_probe is not None and cancellation_probe():
+            raise ExecutionInterruptedError(
+                f"Execucao interrompida com export {actual_export_uuid} preservado para retomada.",
+                export_uuid=actual_export_uuid,
+                checkpoint=str(partial_manifest_path.resolve()),
+            )
         content = client.download_findings_chunk_bytes(actual_export_uuid, chunk_id)
         stored_chunks[actual_chunk_id] = store_chunk_atomic(
             raw_directory,
@@ -293,9 +303,21 @@ def collect_was_snapshot(
             wait_arguments["progress_callback"] = update_progress
         if "chunk_callback" in parameters:
             wait_arguments["chunk_callback"] = persist_chunk
+        if "cancellation_probe" in parameters:
+            wait_arguments["cancellation_probe"] = cancellation_probe
         _, chunk_ids = wait_method(actual_export_uuid, **wait_arguments)
         for chunk_id in chunk_ids:
             persist_chunk(chunk_id)
+    except ExecutionInterruptedError as exc:
+        exc.export_uuid = exc.export_uuid or actual_export_uuid
+        exc.checkpoint = exc.checkpoint or str(partial_manifest_path.resolve())
+        emit_progress(
+            "INTERRUPTED",
+            completed_chunks=len(stored_chunks),
+            progress_made=bool(stored_chunks),
+            auto_cancelled=False,
+        )
+        raise
     except ExportTimeoutError as exc:
         exc.export_uuid = actual_export_uuid
         exc.origin = job.origin

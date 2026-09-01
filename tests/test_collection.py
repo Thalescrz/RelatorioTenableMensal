@@ -25,6 +25,7 @@ from tenable_reports.application.collect_was import (
 )
 from tenable_reports.application.normalize import _collection_records
 from tenable_reports.config.profile import load_client_profile
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
 from tenable_reports.infrastructure.tenable_vm.client import (
     ApiError,
     ExportJob,
@@ -314,7 +315,48 @@ class RecordingWasCollectionClient(FakeWasCollectionClient):
         return self.chunks[chunk_id]
 
 
+class InterruptedCollectionClient(FakeCollectionClient):
+    def wait_for_completion(
+        self,
+        export_uuid: str,
+        *,
+        progress_callback=None,
+        chunk_callback=None,
+        cancellation_probe=None,
+    ):
+        if cancellation_probe is None:
+            raise AssertionError("cancellation_probe nao foi propagado")
+        if chunk_callback is not None:
+            chunk_callback(1)
+        raise ExecutionInterruptedError(
+            "Execucao interrompida com export preservado.",
+            export_uuid=export_uuid,
+        )
+
 class CollectionTests(unittest.TestCase):
+    def test_vm_interruption_keeps_partial_manifest_and_downloaded_chunk(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = InterruptedCollectionClient(
+            {1: b'{"id":"finding-partial","state":"OPEN"}\n'}
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExecutionInterruptedError) as caught:
+                collect_vm_snapshot(
+                    client=client,  # type: ignore[arg-type]
+                    profile=profile,
+                    request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                    output_root=directory,
+                    run_id="run-interrupted",
+                    cancellation_probe=lambda: False,
+                )
+
+            partial = Path(str(caught.exception.checkpoint))
+            payload = json.loads(partial.read_text(encoding="utf-8"))
+            self.assertEqual(payload["status"], "PROCESSING")
+            self.assertEqual(payload["export_uuid"], "fixture-export")
+            self.assertEqual(len(payload["chunks"]), 1)
+            self.assertFalse((partial.parent / "manifest.json").exists())
+            self.assertEqual(client.download_calls, [1])
     def test_was_retry_reuses_chunk_from_partial_manifest(self) -> None:
         profile = load_client_profile(
             ROOT / "clients/examples/client-profile-intelligence-expanded.json"

@@ -37,6 +37,7 @@ from tenable_reports.application.cloud_snapshots import (
 from tenable_reports.config.environment import CloudCredentialConfig
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.domain.cloud import NormalizedCloudSnapshot
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
 from tenable_reports.domain.reporting import ReportingPeriod
 from tenable_reports.infrastructure.tenable_cloud.client import (
     CloudAuthError,
@@ -154,6 +155,7 @@ class TenableCloudLiveCollector:
     probe: Callable[..., Any] = probe_cloud_contract
     collect: Callable[..., Any] = collect_cloud_snapshot
     normalize: Callable[..., NormalizedCloudSnapshot] = normalize_cloud_artifact
+    cancellation_probe: Callable[[], bool] | None = None
 
     def _client(self, endpoint: str) -> CloudGraphQLClient:
         return CloudGraphQLClient(
@@ -213,6 +215,7 @@ class TenableCloudLiveCollector:
             clients={name: client for name in CLOUD_SOURCE_QUERIES},
             capabilities=capabilities,
             progress_callback=progress_callback,
+            cancellation_probe=self.cancellation_probe,
         )
         normalized = self.normalize(artifact, collected_at=collected_at)
         end = request.period.end_at.astimezone(UTC)
@@ -513,6 +516,8 @@ def execute_cloud_component(
             warnings=tuple(dict(item) for item in live.warnings),
             cleanup_ready=dependencies.history_persistent,
         )
+    except ExecutionInterruptedError:
+        raise
     except Exception as exc:
         retryable = bool(getattr(exc, "retryable", True))
         warning = {
