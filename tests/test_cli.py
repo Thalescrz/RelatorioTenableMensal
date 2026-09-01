@@ -19,8 +19,10 @@ from tenable_reports.application.cloud_execution import (
     CloudComponentResult,
     CloudExecutionStatus,
     CloudGeneratedDocument,
+    CloudResumeContext,
 )
 from tenable_reports.application.collect_was import WasCollectionAttempt
+from tenable_reports.domain.report_components import ComponentStage
 from tenable_reports.application.tag_scope import VmTag
 from tenable_reports.application.was_recovery import (
     WasFailureDetails,
@@ -362,6 +364,8 @@ class CliTests(unittest.TestCase):
                 env_file="client.env",
                 database_env_file="database.env",
                 cloud_template="cloud-template.docx",
+                resume_dataset=None,
+                resume_dataset_sha256=None,
             )
             with (
                 patch.object(cli_module, "load_client_profile", return_value=profile),
@@ -383,6 +387,104 @@ class CliTests(unittest.TestCase):
                 [item.document_variant for item in documents],
                 ["expanded"],
             )
+
+    def test_retry_cloud_resumed_dataset_does_not_require_live_confirmation(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            manifest = directory / "publication-manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+            cloud_dataset = directory / "cloud-report-dataset.json"
+            cloud_dataset.write_text("{}", encoding="utf-8")
+            context = SimpleNamespace(
+                run_id="run-a",
+                client_id="cliente-a",
+                tenant_id="tenant-a",
+                execution_type="MANUAL",
+                period_start_at="2026-07-01T03:00:00Z",
+                period_end_at="2026-08-01T03:00:00Z",
+                period_mode="EXPLICIT_RANGE",
+                timezone="America/Fortaleza",
+                publication_manifest=manifest,
+            )
+            profile = SimpleNamespace(
+                client_id="cliente-a",
+                tenant_id="tenant-a",
+                display_name="CLIENTE A",
+                cloud_security_scope=SimpleNamespace(
+                    enabled=True,
+                    environment="global",
+                    layout="expanded",
+                ),
+                reporting=SimpleNamespace(
+                    include_info_severity=False,
+                    late_collection_grace_days=1,
+                ),
+            )
+            operations = SimpleNamespace(
+                report_run_context=lambda run_id: context,
+                record_publication_manifest=lambda path: None,
+            )
+            result = CloudComponentResult(
+                status=CloudExecutionStatus.COMPLETE,
+                dataset_path=cloud_dataset,
+                snapshot_id="cloud-snapshot",
+                cleanup_ready=True,
+            )
+            args = SimpleNamespace(
+                confirm_live_api=False,
+                run_id="run-a",
+                profile="profile.json",
+                env_file="client.env",
+                database_env_file="database.env",
+                cloud_template="cloud-template.docx",
+                resume_dataset=str(cloud_dataset),
+                resume_dataset_sha256="a" * 64,
+            )
+            with (
+                patch.object(cli_module, "load_client_profile", return_value=profile),
+                patch.object(cli_module, "_postgres_operations", return_value=operations),
+                patch.object(cli_module, "_cloud_snapshot_repository_for_args", return_value=(object(), True)),
+                patch.object(cli_module, "retry_cloud_component", return_value=result) as cloud_call,
+                patch.object(cli_module, "upsert_publication_documents", return_value=manifest),
+                patch.object(cli_module, "load_dotenv_file") as load_env,
+                patch.object(cli_module.CloudCredentialConfig, "from_environment") as credentials,
+                patch("builtins.print"),
+            ):
+                self.assertEqual(cli_module.command_retry_cloud(args), 0)
+
+            load_env.assert_not_called()
+            credentials.assert_not_called()
+            resume = cloud_call.call_args.kwargs["resume"]
+            self.assertIsInstance(resume, CloudResumeContext)
+            self.assertIs(resume.stage, ComponentStage.RENDER)
+            self.assertEqual(resume.dataset_path, cloud_dataset)
+            self.assertEqual(resume.dataset_sha256, "a" * 64)
+
+    def test_retry_cloud_resume_arguments_are_atomic(self) -> None:
+        base = {
+            "confirm_live_api": False,
+            "run_id": "run-a",
+            "profile": "profile.json",
+            "env_file": "client.env",
+            "database_env_file": "database.env",
+            "cloud_template": "cloud-template.docx",
+        }
+        cases = (
+            {"resume_dataset": "cloud.json", "resume_dataset_sha256": None},
+            {"resume_dataset": None, "resume_dataset_sha256": "a" * 64},
+        )
+
+        for values in cases:
+            with self.subTest(values=values):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "--resume-dataset.*--resume-dataset-sha256",
+                ):
+                    cli_module.command_retry_cloud(
+                        SimpleNamespace(**base, **values)
+                    )
     def test_live_collection_flag_is_accepted_by_orchestrator_and_client(self) -> None:
         parser = cli_module.build_parser()
 

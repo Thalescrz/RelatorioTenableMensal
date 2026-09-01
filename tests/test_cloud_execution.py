@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,9 +12,11 @@ from tenable_reports.application.cloud_execution import (
     CloudExecutionRequest,
     CloudExecutionStatus,
     CloudLiveCollection,
+    CloudResumeContext,
     execute_cloud_component,
     retry_cloud_component,
 )
+from tenable_reports.application.publishing import sha256_file
 from tenable_reports.application.cloud_snapshots import (
     MemoryCloudSnapshotRepository,
     build_cloud_snapshot,
@@ -21,6 +24,7 @@ from tenable_reports.application.cloud_snapshots import (
 from tenable_reports.config.profile import ClientProfile, CloudSecurityScope
 from tenable_reports.domain.cloud import NormalizedCloudSnapshot
 from tenable_reports.domain.execution_control import ExecutionInterruptedError
+from tenable_reports.domain.report_components import ComponentStage
 from tenable_reports.domain.reporting import previous_calendar_month
 
 
@@ -167,6 +171,52 @@ def _dependencies(tmp_path: Path, repository=None):
     return dependencies, calls
 
 
+def _resume_context(tmp_path: Path) -> tuple[Path, CloudResumeContext]:
+    dataset_path = tmp_path / "cloud-report-dataset.json"
+    dataset_path.write_text(
+        json.dumps(_dataset(), ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    return dataset_path, CloudResumeContext(
+        stage=ComponentStage.RENDER,
+        dataset_path=dataset_path,
+        dataset_sha256=sha256_file(dataset_path),
+    )
+
+
+def _assert_sanitized_stage_failure(
+    *,
+    result,
+    events: list[dict],
+    marker: str,
+    stage: ComponentStage,
+    failure_code: str,
+) -> None:
+    assert result.status is CloudExecutionStatus.FAILED
+    assert result.failure_stage is stage
+    assert result.failure_code == failure_code
+    assert result.retryable is True
+    assert [event for event in events if event.get("status") == "FAILED"] == [
+        {
+            "event": "TENABLE_CLOUD_PROGRESS",
+            "client_id": "cliente-fixture",
+            "run_id": "run-fixture",
+            "status": "FAILED",
+            "stage": stage.value,
+            "failure_code": failure_code,
+            "retryable": True,
+        }
+    ]
+    evidence = json.dumps(
+        {
+            "events": events,
+            "warnings": [dict(item) for item in result.warnings],
+        },
+        ensure_ascii=False,
+    )
+    assert marker not in evidence
+
+
 def test_disabled_cloud_does_not_call_collection_or_rendering(tmp_path: Path) -> None:
     dependencies, calls = _dependencies(tmp_path)
 
@@ -299,6 +349,197 @@ def test_retry_cloud_bypasses_recent_guard_without_calling_other_components(
     assert result.status is CloudExecutionStatus.COMPLETE
     assert calls["collect"] == 1
     assert calls["render"] == ["expanded"]
+
+
+def test_retry_cloud_with_valid_dataset_resumes_at_render_without_api(
+    tmp_path: Path,
+) -> None:
+    dependencies, calls = _dependencies(tmp_path)
+    dataset_path, resume = _resume_context(tmp_path)
+
+    result = retry_cloud_component(
+        _request(tmp_path),
+        dependencies=dependencies,
+        resume=resume,
+    )
+
+    assert result.status is CloudExecutionStatus.COMPLETE
+    assert result.dataset_path == dataset_path
+    assert result.snapshot_id
+    assert calls["collect"] == 0
+    assert calls["write"] == 0
+    assert calls["render"] == ["expanded"]
+    assert len(calls["validate"]) == 1
+
+
+def test_retry_cloud_render_failure_is_sanitized_and_reports_render_stage(
+    tmp_path: Path,
+) -> None:
+    dependencies, calls = _dependencies(tmp_path)
+    _dataset_path, resume = _resume_context(tmp_path)
+    events: list[dict] = []
+    marker = "token=fixture-sensitive"
+
+    def fail_render(**kwargs):
+        calls["render"].append(str(kwargs["variant"]))
+        raise RuntimeError(marker)
+
+    result = retry_cloud_component(
+        _request(tmp_path),
+        dependencies=replace(dependencies, render_report=fail_render),
+        resume=resume,
+        progress_callback=events.append,
+    )
+
+    assert result.status is CloudExecutionStatus.FAILED
+    assert result.failure_stage is ComponentStage.RENDER
+    assert result.failure_code == "CLOUD_RENDER_FAILED"
+    assert result.retryable is True
+    assert [event for event in events if event.get("status") == "FAILED"] == [
+        {
+            "event": "TENABLE_CLOUD_PROGRESS",
+            "client_id": "cliente-fixture",
+            "run_id": "run-fixture",
+            "status": "FAILED",
+            "stage": "RENDER",
+            "failure_code": "CLOUD_RENDER_FAILED",
+            "retryable": True,
+        }
+    ]
+    evidence = json.dumps(
+        {
+            "events": events,
+            "warnings": [dict(item) for item in result.warnings],
+        },
+        ensure_ascii=False,
+    )
+    assert marker not in evidence
+    assert calls["collect"] == 0
+    assert calls["write"] == 0
+
+
+def test_retry_cloud_rejects_tampered_resume_dataset_without_api(
+    tmp_path: Path,
+) -> None:
+    dependencies, calls = _dependencies(tmp_path)
+    _dataset_path, resume = _resume_context(tmp_path)
+    tampered = replace(resume, dataset_sha256="0" * 64)
+
+    result = retry_cloud_component(
+        _request(tmp_path),
+        dependencies=dependencies,
+        resume=tampered,
+    )
+
+    assert result.status is CloudExecutionStatus.FAILED
+    assert result.failure_stage is ComponentStage.DATASET
+    assert result.failure_code == "CLOUD_RESUME_DATASET_INVALID"
+    assert calls["collect"] == 0
+    assert calls["write"] == 0
+    assert calls["render"] == []
+
+
+def test_cloud_failure_stage_dataset_is_sanitized_and_retryable(
+    tmp_path: Path,
+) -> None:
+    dependencies, _calls = _dependencies(tmp_path)
+    events: list[dict] = []
+    marker = "token=dataset-fixture"
+
+    def fail_write(**_kwargs):
+        raise RuntimeError(marker)
+
+    result = execute_cloud_component(
+        _request(tmp_path),
+        dependencies=replace(dependencies, write_dataset=fail_write),
+        progress_callback=events.append,
+    )
+
+    _assert_sanitized_stage_failure(
+        result=result,
+        events=events,
+        marker=marker,
+        stage=ComponentStage.DATASET,
+        failure_code="CLOUD_DATASET_FAILED",
+    )
+
+
+def test_cloud_failure_stage_render_is_sanitized_and_retryable(
+    tmp_path: Path,
+) -> None:
+    dependencies, _calls = _dependencies(tmp_path)
+    events: list[dict] = []
+    marker = "token=render-fixture"
+
+    def fail_render(**_kwargs):
+        raise RuntimeError(marker)
+
+    result = execute_cloud_component(
+        _request(tmp_path),
+        dependencies=replace(dependencies, render_report=fail_render),
+        progress_callback=events.append,
+    )
+
+    _assert_sanitized_stage_failure(
+        result=result,
+        events=events,
+        marker=marker,
+        stage=ComponentStage.RENDER,
+        failure_code="CLOUD_RENDER_FAILED",
+    )
+
+
+def test_cloud_failure_stage_document_validation_is_sanitized_and_retryable(
+    tmp_path: Path,
+) -> None:
+    dependencies, _calls = _dependencies(tmp_path)
+    events: list[dict] = []
+    marker = "token=validation-fixture"
+
+    def fail_validation(_path):
+        raise RuntimeError(marker)
+
+    result = execute_cloud_component(
+        _request(tmp_path),
+        dependencies=replace(dependencies, validate_document=fail_validation),
+        progress_callback=events.append,
+    )
+
+    _assert_sanitized_stage_failure(
+        result=result,
+        events=events,
+        marker=marker,
+        stage=ComponentStage.DOCUMENT_VALIDATION,
+        failure_code="CLOUD_DOCUMENT_VALIDATION_FAILED",
+    )
+
+
+def test_cloud_failure_stage_snapshot_publication_is_sanitized_and_retryable(
+    tmp_path: Path,
+) -> None:
+    marker = "token=publication-fixture"
+
+    class FailingPublishRepository(MemoryCloudSnapshotRepository):
+        def publish(self, snapshot) -> None:
+            del snapshot
+            raise RuntimeError(marker)
+
+    dependencies, _calls = _dependencies(tmp_path, FailingPublishRepository())
+    events: list[dict] = []
+
+    result = execute_cloud_component(
+        _request(tmp_path),
+        dependencies=dependencies,
+        progress_callback=events.append,
+    )
+
+    _assert_sanitized_stage_failure(
+        result=result,
+        events=events,
+        marker=marker,
+        stage=ComponentStage.SNAPSHOT_PUBLICATION,
+        failure_code="CLOUD_SNAPSHOT_PUBLICATION_FAILED",
+    )
 
 def test_cloud_interruption_is_propagated_instead_of_isolated(tmp_path: Path) -> None:
     dependencies, calls = _dependencies(tmp_path)

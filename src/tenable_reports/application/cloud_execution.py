@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
-from dataclasses import dataclass, replace
+import re
+from copy import deepcopy
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from tenable_reports.application.cloud_report_dataset import (
     CLOUD_METRIC_DEFINITION_VERSION,
     build_cloud_dataset,
+    load_cloud_report_dataset,
     write_cloud_report_dataset,
 )
 from tenable_reports.application.cloud_contract import probe_cloud_contract
@@ -38,6 +44,7 @@ from tenable_reports.config.environment import CloudCredentialConfig
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.domain.cloud import NormalizedCloudSnapshot
 from tenable_reports.domain.execution_control import ExecutionInterruptedError
+from tenable_reports.domain.report_components import ComponentStage
 from tenable_reports.domain.reporting import ReportingPeriod
 from tenable_reports.infrastructure.tenable_cloud.client import (
     CloudAuthError,
@@ -50,7 +57,7 @@ from tenable_reports.infrastructure.tenable_cloud.queries import (
 )
 from tenable_reports.presentation.cloud_report_docx import generate_cloud_report
 from tenable_reports.presentation.report_filenames import cloud_report_filename
-from tenable_reports.application.publishing import validate_docx_package
+from tenable_reports.application.publishing import sha256_file, validate_docx_package
 
 
 class CloudExecutionStatus(StrEnum):
@@ -72,6 +79,40 @@ class CloudLiveCollection:
 
 
 @dataclass(frozen=True, slots=True)
+class CloudResumeContext:
+    stage: ComponentStage
+    dataset_path: Path
+    dataset_sha256: str
+    capabilities: Mapping[str, Any] = field(default_factory=dict)
+    connector_version: str = CLOUD_CONNECTOR_VERSION
+
+    def __post_init__(self) -> None:
+        stage = ComponentStage(self.stage)
+        if stage not in {
+            ComponentStage.DATASET,
+            ComponentStage.RENDER,
+            ComponentStage.DOCUMENT_VALIDATION,
+            ComponentStage.SNAPSHOT_PUBLICATION,
+        }:
+            raise ValueError("Etapa de retomada Cloud invalida.")
+        digest = str(self.dataset_sha256).strip().lower()
+        if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError("Hash do dataset Cloud invalido.")
+        connector_version = str(self.connector_version).strip()
+        if not connector_version:
+            raise ValueError("connector_version Cloud obrigatorio.")
+        object.__setattr__(self, "stage", stage)
+        object.__setattr__(self, "dataset_path", Path(self.dataset_path))
+        object.__setattr__(self, "dataset_sha256", digest)
+        object.__setattr__(
+            self,
+            "capabilities",
+            MappingProxyType(deepcopy(dict(self.capabilities))),
+        )
+        object.__setattr__(self, "connector_version", connector_version)
+
+
+@dataclass(frozen=True, slots=True)
 class CloudGeneratedDocument:
     path: Path
     variant: str
@@ -85,6 +126,9 @@ class CloudComponentResult:
     snapshot_id: str | None = None
     warnings: tuple[Mapping[str, Any], ...] = ()
     cleanup_ready: bool = False
+    failure_stage: ComponentStage | None = None
+    failure_code: str | None = None
+    retryable: bool = False
 
 
 def _cloud_scope_hash(profile: ClientProfile) -> str:
@@ -144,6 +188,10 @@ class CloudExecutionDependencies:
     validate_document: Callable[[str | Path], Mapping[str, Any]] = (
         validate_docx_package
     )
+    load_dataset: Callable[[str | Path], Mapping[str, Any]] = (
+        load_cloud_report_dataset
+    )
+    hash_file: Callable[[str | Path], str] = sha256_file
     now: Callable[[], datetime] = lambda: datetime.now(UTC)
     history_persistent: bool = True
 
@@ -315,6 +363,36 @@ def _emit(
     )
 
 
+class _CloudStageFailure(Exception):
+    def __init__(
+        self,
+        *,
+        stage: ComponentStage,
+        failure_code: str,
+        retryable: bool,
+    ) -> None:
+        super().__init__(failure_code)
+        self.stage = stage
+        self.failure_code = failure_code
+        self.retryable = retryable
+
+
+@contextmanager
+def _cloud_stage(stage: ComponentStage, failure_code: str):
+    try:
+        yield
+    except ExecutionInterruptedError:
+        raise
+    except _CloudStageFailure:
+        raise
+    except Exception as exc:
+        raise _CloudStageFailure(
+            stage=stage,
+            failure_code=failure_code,
+            retryable=bool(getattr(exc, "retryable", True)),
+        ) from exc
+
+
 def _write_and_render(
     *,
     request: CloudExecutionRequest,
@@ -326,27 +404,33 @@ def _write_and_render(
         if request.execution_type == "AUTOMATIC_MONTHLY"
         else "manual"
     )
-    artifact = dependencies.write_dataset(
-        dataset=dataset,
-        output_root=request.output_root,
-        execution_type=execution_directory,
-        client_id=request.profile.client_id,
-        run_id=request.run_id,
-    )
+    with _cloud_stage(ComponentStage.DATASET, "CLOUD_DATASET_FAILED"):
+        artifact = dependencies.write_dataset(
+            dataset=dataset,
+            output_root=request.output_root,
+            execution_type=execution_directory,
+            client_id=request.profile.client_id,
+            run_id=request.run_id,
+        )
     documents: list[CloudGeneratedDocument] = []
     for variant in _variants(request.profile):
         output_path = request.report_directory / cloud_report_filename(
             request.profile.display_name,
             request.period,
         )
-        rendered = dependencies.render_report(
-            template_path=request.template_path,
-            dataset_path=artifact.dataset_path,
-            profile=request.profile,
-            output_path=output_path,
-            variant=variant,
-        )
-        dependencies.validate_document(rendered.output_path)
+        with _cloud_stage(ComponentStage.RENDER, "CLOUD_RENDER_FAILED"):
+            rendered = dependencies.render_report(
+                template_path=request.template_path,
+                dataset_path=artifact.dataset_path,
+                profile=request.profile,
+                output_path=output_path,
+                variant=variant,
+            )
+        with _cloud_stage(
+            ComponentStage.DOCUMENT_VALIDATION,
+            "CLOUD_DOCUMENT_VALIDATION_FAILED",
+        ):
+            dependencies.validate_document(rendered.output_path)
         documents.append(
             CloudGeneratedDocument(
                 path=Path(rendered.output_path),
@@ -444,14 +528,15 @@ def execute_cloud_component(
             status="STARTED",
             stage="COLLECTION",
         )
-        live = dependencies.collect_live(
-            request,
-            lambda event: (
-                progress_callback(dict(event))
-                if progress_callback is not None
-                else None
-            ),
-        )
+        with _cloud_stage(ComponentStage.COLLECTION, "CLOUD_COLLECTION_FAILED"):
+            live = dependencies.collect_live(
+                request,
+                lambda event: (
+                    progress_callback(dict(event))
+                    if progress_callback is not None
+                    else None
+                ),
+            )
         history: list[Mapping[str, Any]] = []
         for prior in dependencies.repository.list_main_before(
             compatibility=compatibility,
@@ -459,47 +544,54 @@ def execute_cloud_component(
         ):
             history.append(_history_row(replay_cloud_snapshot(prior).dataset))
 
-        dataset = dependencies.build_dataset(
-            snapshot=live.snapshot,
-            period=request.period,
-            enrichments=live.enrichments,
-            snapshot_is_exact=live.snapshot_is_exact,
-            connector_version=live.connector_version,
-            capabilities=live.capabilities,
-            history=tuple(history),
-        )
+        with _cloud_stage(ComponentStage.DATASET, "CLOUD_DATASET_FAILED"):
+            dataset = dependencies.build_dataset(
+                snapshot=live.snapshot,
+                period=request.period,
+                enrichments=live.enrichments,
+                snapshot_is_exact=live.snapshot_is_exact,
+                connector_version=live.connector_version,
+                capabilities=live.capabilities,
+                history=tuple(history),
+            )
         current_history = tuple((*history, _history_row(dataset)))
-        dataset = dependencies.build_dataset(
-            snapshot=live.snapshot,
-            period=request.period,
-            enrichments=live.enrichments,
-            snapshot_is_exact=live.snapshot_is_exact,
-            connector_version=live.connector_version,
-            capabilities=live.capabilities,
-            history=current_history,
-        )
+        with _cloud_stage(ComponentStage.DATASET, "CLOUD_DATASET_FAILED"):
+            dataset = dependencies.build_dataset(
+                snapshot=live.snapshot,
+                period=request.period,
+                enrichments=live.enrichments,
+                snapshot_is_exact=live.snapshot_is_exact,
+                connector_version=live.connector_version,
+                capabilities=live.capabilities,
+                history=current_history,
+            )
         dataset_path, documents = _write_and_render(
             request=request,
             dependencies=dependencies,
             dataset=dataset,
         )
-        snapshot = build_cloud_snapshot(
-            dataset=dataset,
-            client_id=request.profile.client_id,
-            tenant_id=request.profile.tenant_id,
-            run_id=request.run_id,
-            attempt_number=request.attempt_number,
-            execution_type=request.execution_type,
-            period_mode=request.period.mode.value,
-            timezone=request.period.timezone,
-            period_start_at=str(period["start_at"]),
-            period_end_at=str(period["end_at"]),
-            scope_hash=compatibility.scope_hash,
-            collected_at=live.snapshot.collected_at,
-            capabilities=live.capabilities,
-            connector_version=live.connector_version,
-        )
-        dependencies.repository.publish(snapshot)
+        with _cloud_stage(ComponentStage.DATASET, "CLOUD_DATASET_FAILED"):
+            snapshot = build_cloud_snapshot(
+                dataset=dataset,
+                client_id=request.profile.client_id,
+                tenant_id=request.profile.tenant_id,
+                run_id=request.run_id,
+                attempt_number=request.attempt_number,
+                execution_type=request.execution_type,
+                period_mode=request.period.mode.value,
+                timezone=request.period.timezone,
+                period_start_at=str(period["start_at"]),
+                period_end_at=str(period["end_at"]),
+                scope_hash=compatibility.scope_hash,
+                collected_at=live.snapshot.collected_at,
+                capabilities=live.capabilities,
+                connector_version=live.connector_version,
+            )
+        with _cloud_stage(
+            ComponentStage.SNAPSHOT_PUBLICATION,
+            "CLOUD_SNAPSHOT_PUBLICATION_FAILED",
+        ):
+            dependencies.repository.publish(snapshot)
         _emit(
             progress_callback,
             request=request,
@@ -518,6 +610,31 @@ def execute_cloud_component(
         )
     except ExecutionInterruptedError:
         raise
+    except _CloudStageFailure as exc:
+        warning = {
+            "code": "CLOUD_COMPONENT_FAILED",
+            "message": (
+                "Falha no componente Cloud Security; os demais relatórios "
+                "foram preservados."
+            ),
+            "retryable": exc.retryable,
+        }
+        _emit(
+            progress_callback,
+            request=request,
+            status="FAILED",
+            stage=exc.stage.value,
+            failure_code=exc.failure_code,
+            retryable=exc.retryable,
+        )
+        return CloudComponentResult(
+            status=CloudExecutionStatus.FAILED,
+            warnings=(warning,),
+            cleanup_ready=False,
+            failure_stage=exc.stage,
+            failure_code=exc.failure_code,
+            retryable=exc.retryable,
+        )
     except Exception as exc:
         retryable = bool(getattr(exc, "retryable", True))
         warning = {
@@ -545,14 +662,200 @@ def execute_cloud_component(
         )
 
 
+def _resume_failure(
+    *,
+    request: CloudExecutionRequest,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None,
+    stage: ComponentStage,
+    failure_code: str,
+) -> CloudComponentResult:
+    warning = {
+        "code": "CLOUD_COMPONENT_FAILED",
+        "message": (
+            "Falha no componente Cloud Security; os demais relatórios "
+            "foram preservados."
+        ),
+        "retryable": True,
+    }
+    _emit(
+        progress_callback,
+        request=request,
+        status="FAILED",
+        stage=stage.value,
+        failure_code=failure_code,
+        retryable=True,
+    )
+    return CloudComponentResult(
+        status=CloudExecutionStatus.FAILED,
+        warnings=(warning,),
+        cleanup_ready=False,
+        failure_stage=stage,
+        failure_code=failure_code,
+        retryable=True,
+    )
+
+
+def _render_resumed_dataset(
+    *,
+    request: CloudExecutionRequest,
+    dependencies: CloudExecutionDependencies,
+    dataset_path: Path,
+) -> tuple[CloudGeneratedDocument, ...]:
+    documents: list[CloudGeneratedDocument] = []
+    for variant in _variants(request.profile):
+        output_path = request.report_directory / cloud_report_filename(
+            request.profile.display_name,
+            request.period,
+        )
+        rendered = dependencies.render_report(
+            template_path=request.template_path,
+            dataset_path=dataset_path,
+            profile=request.profile,
+            output_path=output_path,
+            variant=variant,
+        )
+        documents.append(
+            CloudGeneratedDocument(
+                path=Path(rendered.output_path),
+                variant=variant,
+            )
+        )
+    return tuple(documents)
+
+
+def _resume_cloud_component(
+    request: CloudExecutionRequest,
+    *,
+    dependencies: CloudExecutionDependencies,
+    resume: CloudResumeContext,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None,
+) -> CloudComponentResult:
+    if not request.profile.cloud_security_scope.enabled:
+        return CloudComponentResult(status=CloudExecutionStatus.DISABLED)
+
+    try:
+        dataset_path = resume.dataset_path.resolve()
+        output_root = request.output_root.resolve()
+        dataset_path.relative_to(output_root)
+        if not dataset_path.is_file():
+            raise ValueError("Dataset Cloud de retomada ausente.")
+        actual_sha256 = str(dependencies.hash_file(dataset_path)).strip().lower()
+        if not hmac.compare_digest(actual_sha256, resume.dataset_sha256):
+            raise ValueError("Hash do dataset Cloud de retomada nao confere.")
+        dataset = dict(dependencies.load_dataset(dataset_path))
+    except ExecutionInterruptedError:
+        raise
+    except Exception:
+        return _resume_failure(
+            request=request,
+            progress_callback=progress_callback,
+            stage=ComponentStage.DATASET,
+            failure_code="CLOUD_RESUME_DATASET_INVALID",
+        )
+
+    _emit(
+        progress_callback,
+        request=request,
+        status="STARTED",
+        stage=ComponentStage.RENDER.value,
+    )
+    try:
+        documents = _render_resumed_dataset(
+            request=request,
+            dependencies=dependencies,
+            dataset_path=dataset_path,
+        )
+    except ExecutionInterruptedError:
+        raise
+    except Exception:
+        return _resume_failure(
+            request=request,
+            progress_callback=progress_callback,
+            stage=ComponentStage.RENDER,
+            failure_code="CLOUD_RENDER_FAILED",
+        )
+
+    _emit(
+        progress_callback,
+        request=request,
+        status="STARTED",
+        stage=ComponentStage.DOCUMENT_VALIDATION.value,
+    )
+    try:
+        for document in documents:
+            dependencies.validate_document(document.path)
+    except ExecutionInterruptedError:
+        raise
+    except Exception:
+        return _resume_failure(
+            request=request,
+            progress_callback=progress_callback,
+            stage=ComponentStage.DOCUMENT_VALIDATION,
+            failure_code="CLOUD_DOCUMENT_VALIDATION_FAILED",
+        )
+
+    try:
+        period = request.period.to_dict()
+        snapshot = build_cloud_snapshot(
+            dataset=dataset,
+            client_id=request.profile.client_id,
+            tenant_id=request.profile.tenant_id,
+            run_id=request.run_id,
+            attempt_number=request.attempt_number,
+            execution_type=request.execution_type,
+            period_mode=request.period.mode.value,
+            timezone=request.period.timezone,
+            period_start_at=str(period["start_at"]),
+            period_end_at=str(period["end_at"]),
+            scope_hash=request.compatibility().scope_hash,
+            collected_at=str(dataset.get("collected_at") or ""),
+            capabilities=resume.capabilities,
+            connector_version=resume.connector_version,
+        )
+        dependencies.repository.publish(snapshot)
+    except ExecutionInterruptedError:
+        raise
+    except Exception:
+        return _resume_failure(
+            request=request,
+            progress_callback=progress_callback,
+            stage=ComponentStage.SNAPSHOT_PUBLICATION,
+            failure_code="CLOUD_SNAPSHOT_PUBLICATION_FAILED",
+        )
+
+    _emit(
+        progress_callback,
+        request=request,
+        status="FINISHED",
+        stage=ComponentStage.SNAPSHOT_PUBLICATION.value,
+        documents=len(documents),
+        snapshot_id=snapshot.snapshot_id,
+    )
+    return CloudComponentResult(
+        status=CloudExecutionStatus.COMPLETE,
+        documents=documents,
+        dataset_path=dataset_path,
+        snapshot_id=snapshot.snapshot_id,
+        cleanup_ready=dependencies.history_persistent,
+    )
+
+
 def retry_cloud_component(
     request: CloudExecutionRequest,
     *,
     dependencies: CloudExecutionDependencies,
+    resume: CloudResumeContext | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> CloudComponentResult:
     """Retry only Cloud while preserving exact replay and bypassing the 24h guard."""
 
+    if resume is not None:
+        return _resume_cloud_component(
+            request,
+            dependencies=dependencies,
+            resume=resume,
+            progress_callback=progress_callback,
+        )
     return execute_cloud_component(
         replace(request, bypass_recent_guard=True),
         dependencies=dependencies,
@@ -567,6 +870,7 @@ __all__ = [
     "CloudExecutionStatus",
     "CloudGeneratedDocument",
     "CloudLiveCollection",
+    "CloudResumeContext",
     "TenableCloudLiveCollector",
     "execute_cloud_component",
     "retry_cloud_component",

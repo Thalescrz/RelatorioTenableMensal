@@ -55,6 +55,7 @@ from tenable_reports.application.cloud_execution import (
     CloudExecutionDependencies,
     CloudExecutionRequest,
     CloudExecutionStatus,
+    CloudResumeContext,
     TenableCloudLiveCollector,
     execute_cloud_component,
     retry_cloud_component,
@@ -184,6 +185,7 @@ from tenable_reports.infrastructure.web_batches_postgresql import (
     PostgresWebBatchRepository,
 )
 from tenable_reports.domain.execution_control import ExecutionInterruptedError
+from tenable_reports.domain.report_components import ComponentStage
 from tenable_reports.domain.report_reference import (
     READY_STATUS,
     ReportCandidate,
@@ -2684,7 +2686,22 @@ def _retry_output_root(manifest: Path) -> Path:
 
 
 def command_retry_cloud(args: argparse.Namespace) -> int:
-    if not args.confirm_live_api:
+    resume_dataset = getattr(args, "resume_dataset", None)
+    resume_dataset_sha256 = getattr(args, "resume_dataset_sha256", None)
+    if bool(resume_dataset) != bool(resume_dataset_sha256):
+        raise ValueError(
+            "--resume-dataset e --resume-dataset-sha256 devem ser informados juntos."
+        )
+    resume = (
+        CloudResumeContext(
+            stage=ComponentStage.RENDER,
+            dataset_path=Path(resume_dataset),
+            dataset_sha256=str(resume_dataset_sha256),
+        )
+        if resume_dataset
+        else None
+    )
+    if resume is None and not args.confirm_live_api:
         raise ValueError(
             "A retentativa Cloud exige --confirm-live-api; ela pode consultar a API real."
         )
@@ -2711,9 +2728,20 @@ def command_retry_cloud(args: argparse.Namespace) -> int:
         mode=PeriodMode(context.period_mode),
         reference_at=parse_datetime(context.period_end_at, context.timezone),
     )
-    load_dotenv_file(args.env_file, override=True)
-    credentials = CloudCredentialConfig.from_environment()
     repository, persistent = _cloud_snapshot_repository_for_args(args)
+    if resume is None:
+        load_dotenv_file(args.env_file, override=True)
+        credentials = CloudCredentialConfig.from_environment()
+        collect_live = TenableCloudLiveCollector(
+            credentials,
+            cancellation_probe=_execution_cancellation_probe(args),
+        )
+    else:
+        def collect_live(_request, _progress):
+            raise RuntimeError(
+                "Coleta Cloud live nao permitida durante retomada de dataset."
+            )
+
     result = retry_cloud_component(
         CloudExecutionRequest(
             profile=profile,
@@ -2727,12 +2755,10 @@ def command_retry_cloud(args: argparse.Namespace) -> int:
         ),
         dependencies=CloudExecutionDependencies(
             repository=repository,
-            collect_live=TenableCloudLiveCollector(
-                credentials,
-                cancellation_probe=_execution_cancellation_probe(args),
-            ),
+            collect_live=collect_live,
             history_persistent=persistent,
         ),
+        resume=resume,
         progress_callback=_emit_progress_event,
     )
     success = result.status in {
@@ -3501,6 +3527,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="templates/corporate/cloud-base-v1.docx",
     )
     retry_cloud.add_argument("--confirm-live-api", action="store_true")
+    retry_cloud.add_argument("--resume-dataset")
+    retry_cloud.add_argument("--resume-dataset-sha256")
     retry_cloud.set_defaults(handler=command_retry_cloud)
 
     validate_orchestration = subparsers.add_parser(
