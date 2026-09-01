@@ -175,6 +175,240 @@ class _ArchiveDashboardDatabase:
 
 
 class WebDashboardTests(unittest.TestCase):
+    def test_analyst_crud_and_client_assignment_are_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+            client = LocalClient(app)
+            try:
+                status, payload = client.request(
+                    "POST", "/api/analysts", {"display_name": "Analista Um"}
+                )
+                self.assertEqual(status, 201)
+                analyst_id = payload["analyst"]["analyst_id"]
+
+                status, payload = client.request("GET", "/api/state")
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["analysts"][0]["display_name"], "Analista Um")
+
+                status, payload = client.request(
+                    "POST",
+                    "/api/clients",
+                    {
+                        "client_id": "cliente-analista",
+                        "display_name": "Cliente Analista",
+                        "responsible_analyst_id": analyst_id,
+                    },
+                )
+                self.assertEqual(status, 201)
+                self.assertEqual(payload["client"]["responsible_analyst_id"], analyst_id)
+                self.assertEqual(
+                    payload["client"]["responsible_analyst_name"], "Analista Um"
+                )
+
+                status, payload = client.request(
+                    "PATCH",
+                    f"/api/analysts/{analyst_id}",
+                    {"display_name": "Analista Principal", "active": False},
+                )
+                self.assertEqual(status, 200)
+                self.assertFalse(payload["analyst"]["active"])
+
+                status, payload = client.request(
+                    "PATCH",
+                    "/api/clients/cliente-analista",
+                    {"display_name": "Cliente Atualizado"},
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["client"]["responsible_analyst_id"], analyst_id)
+                self.assertFalse(payload["client"]["responsible_analyst_active"])
+
+                status, payload = client.request(
+                    "PATCH",
+                    "/api/clients/cliente-analista",
+                    {"responsible_analyst_id": "desconhecido"},
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("Analista", payload["error"])
+
+                status, payload = client.request(
+                    "DELETE", f"/api/analysts/{analyst_id}", {"confirmation": "EXCLUIR"}
+                )
+                self.assertEqual(status, 409)
+                self.assertIn("uso", payload["error"])
+
+                status, payload = client.request(
+                    "PATCH",
+                    "/api/clients/cliente-analista",
+                    {"responsible_analyst_id": None},
+                )
+                self.assertEqual(status, 200)
+                self.assertIsNone(payload["client"]["responsible_analyst_id"])
+
+                status, payload = client.request(
+                    "DELETE", f"/api/analysts/{analyst_id}", {"confirmation": "EXCLUIR"}
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["deleted_analyst_id"], analyst_id)
+            finally:
+                client.close()
+
+    def test_analyst_patch_rejects_wrong_json_types(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+            client = LocalClient(app)
+            try:
+                status, payload = client.request(
+                    "POST", "/api/analysts", {"display_name": "Analista Um"}
+                )
+                self.assertEqual(status, 201)
+                analyst_id = payload["analyst"]["analyst_id"]
+
+                status, _ = client.request(
+                    "PATCH",
+                    f"/api/analysts/{analyst_id}",
+                    {"active": "false"},
+                )
+                self.assertEqual(status, 400)
+
+                status, _ = client.request(
+                    "PATCH",
+                    f"/api/analysts/{analyst_id}",
+                    {"display_name": None},
+                )
+                self.assertEqual(status, 400)
+            finally:
+                client.close()
+
+    def test_inactive_analyst_cannot_be_assigned_to_another_client(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+            client = LocalClient(app)
+            try:
+                status, payload = client.request(
+                    "POST", "/api/analysts", {"display_name": "Analista Um"}
+                )
+                self.assertEqual(status, 201)
+                analyst_id = payload["analyst"]["analyst_id"]
+                status, _ = client.request(
+                    "PATCH",
+                    f"/api/analysts/{analyst_id}",
+                    {"active": False},
+                )
+                self.assertEqual(status, 200)
+
+                status, payload = client.request(
+                    "POST",
+                    "/api/clients",
+                    {
+                        "client_id": "cliente-novo",
+                        "display_name": "Cliente Novo",
+                        "responsible_analyst_id": analyst_id,
+                    },
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("inativo", payload["error"])
+            finally:
+                client.close()
+
+    def test_analyst_delete_fails_closed_when_client_profile_is_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+            client = LocalClient(app)
+            try:
+                status, payload = client.request(
+                    "POST", "/api/analysts", {"display_name": "Analista Um"}
+                )
+                self.assertEqual(status, 201)
+                analyst_id = payload["analyst"]["analyst_id"]
+                status, _ = client.request(
+                    "POST",
+                    "/api/clients",
+                    {
+                        "client_id": "cliente-analista",
+                        "display_name": "Cliente Analista",
+                        "responsible_analyst_id": analyst_id,
+                    },
+                )
+                self.assertEqual(status, 201)
+                app.config.client_profile_path("cliente-analista").write_text(
+                    "{invalid",
+                    encoding="utf-8",
+                )
+
+                status, payload = client.request(
+                    "DELETE",
+                    f"/api/analysts/{analyst_id}",
+                    {"confirmation": "EXCLUIR"},
+                )
+                self.assertEqual(status, 409)
+                self.assertIn("verificar", payload["error"])
+            finally:
+                client.close()
+
+    def test_invalid_analyst_catalog_returns_sanitized_json_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+            (root / "orchestration" / "analysts.json").write_text(
+                "{invalid",
+                encoding="utf-8",
+            )
+            client = LocalClient(app)
+            try:
+                status, payload = client.request("GET", "/api/analysts")
+            finally:
+                client.close()
+
+            self.assertEqual(status, 500)
+            self.assertIn("error", payload)
+            self.assertNotIn("{invalid", json.dumps(payload))
+
+    def test_orphaned_analyst_assignment_is_preserved_as_inactive_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DashboardConfigStore(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+            store.add_client({
+                "client_id": "cliente-orfao",
+                "display_name": "Cliente Órfão",
+            })
+            profile_path = store.client_profile_path("cliente-orfao")
+            profile = json.loads(profile_path.read_text(encoding="utf-8"))
+            profile["responsible_analyst_id"] = "analista-ausente"
+            profile_path.write_text(
+                json.dumps(profile, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            client = store.list_clients()[0]
+            self.assertEqual(
+                client["responsible_analyst_id"],
+                "analista-ausente",
+            )
+            self.assertIsNone(client["responsible_analyst_name"])
+            self.assertFalse(client["responsible_analyst_active"])
+
     def test_default_runner_forces_utf8_for_json_protocol(self) -> None:
         script = (
             "import json; "

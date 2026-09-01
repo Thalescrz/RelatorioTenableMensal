@@ -18,6 +18,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ProfileTests(unittest.TestCase):
+    def test_profile_accepts_optional_responsible_analyst_id(self) -> None:
+        profile = ClientProfile.from_dict({
+            "schema_version": 1,
+            "client_id": "cliente-analista",
+            "display_name": "Cliente Analista",
+            "tenant_id": "tenant-analista",
+            "responsible_analyst_id": "ana-1",
+        })
+        self.assertEqual(profile.responsible_analyst_id, "ana-1")
+
+    def test_profile_without_responsible_analyst_migrates_to_none(self) -> None:
+        profile = ClientProfile.from_dict({
+            "schema_version": 1,
+            "client_id": "cliente-legado",
+            "display_name": "Cliente Legado",
+            "tenant_id": "tenant-legado",
+        })
+        self.assertIsNone(profile.responsible_analyst_id)
+
     def test_example_profile_is_valid(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
         self.assertEqual(profile.client_id, "cliente-exemplo")

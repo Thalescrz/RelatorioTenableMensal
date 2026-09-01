@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -88,6 +90,26 @@ class AnalystCatalogTests(unittest.TestCase):
             self.catalog.update("ausente", display_name="Analista", active=True)
         with self.assertRaisesRegex(ValueError, "não encontrado"):
             self.catalog.deactivate("ausente")
+
+    def test_catalog_preserves_every_concurrent_creation(self) -> None:
+        release = threading.Event()
+
+        def create_analyst(index: int) -> None:
+            release.wait()
+            self.catalog.create(display_name=f"Analista {index}")
+
+        with ThreadPoolExecutor(max_workers=24) as executor:
+            futures = [executor.submit(create_analyst, index) for index in range(24)]
+            release.set()
+            for future in futures:
+                future.result()
+
+        records = self.catalog.list()
+        self.assertEqual(len(records), 24)
+        self.assertEqual(
+            {record.display_name for record in records},
+            {f"Analista {index}" for index in range(24)},
+        )
 
 
 if __name__ == "__main__":

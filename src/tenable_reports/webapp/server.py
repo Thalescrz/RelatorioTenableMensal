@@ -82,6 +82,11 @@ from tenable_reports.application.retention import (
     plan_tiered_retention,
 )
 from tenable_reports.config.database import DatabaseConfig
+from tenable_reports.config.analysts import (
+    AnalystCatalog,
+    AnalystInUseError,
+    AnalystRecord,
+)
 from tenable_reports.config.environment import (
     CloudCredentialConfig,
     CredentialConfig,
@@ -410,6 +415,9 @@ class DashboardConfigStore:
         self.project_root = project_root.resolve()
         self.config_path = config_path.resolve()
         self._lock = threading.RLock()
+        self.analysts = AnalystCatalog(
+            self.project_root / "orchestration" / "analysts.json"
+        )
         self.ensure_exists()
 
     def ensure_exists(self) -> None:
@@ -454,6 +462,95 @@ class DashboardConfigStore:
         with self._lock:
             return _read_json(self.config_path)
 
+    @staticmethod
+    def _analyst_payload(record: AnalystRecord) -> dict[str, Any]:
+        return {
+            "analyst_id": record.analyst_id,
+            "display_name": record.display_name,
+            "active": record.active,
+            "created_at": record.created_at.isoformat(),
+            "updated_at": record.updated_at.isoformat(),
+        }
+
+    def list_analysts(self) -> list[dict[str, Any]]:
+        return [self._analyst_payload(record) for record in self.analysts.list()]
+
+    def create_analyst(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            created = self.analysts.create(
+                display_name=str(values.get("display_name") or "")
+            )
+            return self._analyst_payload(created)
+
+    def update_analyst(
+        self,
+        analyst_id: str,
+        values: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        with self._lock:
+            current = self.analysts.get(analyst_id)
+            if current is None:
+                raise ValueError("Analista não encontrado.")
+            if "display_name" in values and not isinstance(
+                values["display_name"], str
+            ):
+                raise ValueError("display_name deve ser texto.")
+            if "active" in values and not isinstance(values["active"], bool):
+                raise ValueError("active deve ser booleano.")
+            updated = self.analysts.update(
+                current.analyst_id,
+                display_name=values.get("display_name", current.display_name),
+                active=values.get("active", current.active),
+            )
+            return self._analyst_payload(updated)
+
+    def delete_analyst(self, analyst_id: str) -> None:
+        with self._lock:
+            self.analysts.delete(analyst_id, is_in_use=self._analyst_in_use)
+
+    def _analyst_in_use(self, analyst_id: str) -> bool:
+        payload = self.raw()
+        for client in payload.get("clients") or []:
+            if not isinstance(client, Mapping):
+                continue
+            profile_path = (
+                self.config_path.parent / str(client.get("profile") or "")
+            ).resolve()
+            try:
+                profile = _read_json(profile_path)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                raise AnalystInUseError(
+                    "Não foi possível verificar todos os vínculos de clientes."
+                ) from exc
+            if (
+                self._optional_analyst_id(profile.get("responsible_analyst_id"))
+                == analyst_id
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _optional_analyst_id(value: Any) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+    def _validate_responsible_analyst_id(
+        self,
+        value: Any,
+        *,
+        current_id: str | None = None,
+    ) -> str | None:
+        analyst_id = self._optional_analyst_id(value)
+        if analyst_id is None:
+            return None
+        analyst = self.analysts.get(analyst_id)
+        if analyst is None:
+            raise ValueError("Analista responsável não encontrado.")
+        if not analyst.active and analyst_id != current_id:
+            raise ValueError("Analista responsável está inativo.")
+        return analyst_id
+
     def database_env_path(self) -> Path:
         payload = self.raw()
         raw = str((payload.get("defaults") or {}).get("database_env_file") or "../credentials/database.env")
@@ -487,6 +584,9 @@ class DashboardConfigStore:
 
     def list_clients(self) -> list[dict[str, Any]]:
         payload = self.raw()
+        analysts_by_id = {
+            record.analyst_id: record for record in self.analysts.list()
+        }
         result: list[dict[str, Any]] = []
         for raw in payload.get("clients") or []:
             if not isinstance(raw, Mapping):
@@ -523,12 +623,27 @@ class DashboardConfigStore:
                 if isinstance((profile.get("scope") or {}).get("cloud_security"), Mapping)
                 else {}
             )
+            responsible_analyst_id = self._optional_analyst_id(
+                profile.get("responsible_analyst_id")
+            )
+            responsible_analyst = (
+                analysts_by_id.get(responsible_analyst_id)
+                if responsible_analyst_id is not None
+                else None
+            )
             result.append({
                 "client_id": client_id,
                 "display_name": str(
                     raw.get("display_name") or profile.get("display_name") or client_id
                 ),
                 "tenant_id": str(profile.get("tenant_id") or ""),
+                "responsible_analyst_id": responsible_analyst_id,
+                "responsible_analyst_name": (
+                    responsible_analyst.display_name if responsible_analyst else None
+                ),
+                "responsible_analyst_active": bool(
+                    responsible_analyst and responsible_analyst.active
+                ),
                 "enabled": bool(raw.get("enabled", True)),
                 "tags": list(raw.get("tags") or []),
                 "profile_exists": profile_path.is_file(),
@@ -576,6 +691,9 @@ class DashboardConfigStore:
         if bool(access_key) != bool(secret_key):
             raise ValueError("Informe as duas chaves ou deixe ambas em branco.")
         with self._lock:
+            responsible_analyst_id = self._validate_responsible_analyst_id(
+                values.get("responsible_analyst_id")
+            )
             payload = _read_json(self.config_path)
             clients = payload.setdefault("clients", [])
             if any(item.get("client_id") == client_id for item in clients if isinstance(item, Mapping)):
@@ -606,6 +724,7 @@ class DashboardConfigStore:
                 "client_id": client_id,
                 "display_name": display_name,
                 "tenant_id": tenant_id,
+                "responsible_analyst_id": responsible_analyst_id,
                 "report": {
                     "type": "vulnerabilities",
                     "base_modules": ["summary", "infrastructure", "vm_top5", "was", "was_top5"],
@@ -699,6 +818,17 @@ class DashboardConfigStore:
             profile_path = (self.config_path.parent / str(client["profile"])).resolve()
             profile = _read_json(profile_path)
             profile_changed = False
+            if "responsible_analyst_id" in values:
+                current_analyst_id = self._optional_analyst_id(
+                    profile.get("responsible_analyst_id")
+                )
+                profile["responsible_analyst_id"] = (
+                    self._validate_responsible_analyst_id(
+                        values.get("responsible_analyst_id"),
+                        current_id=current_analyst_id,
+                    )
+                )
+                profile_changed = True
             if "display_name" in values:
                 display_name = str(values.get("display_name") or "").strip()
                 if not display_name:
@@ -2994,6 +3124,7 @@ class DashboardApplication:
         batches = batches_snapshot() if callable(batches_snapshot) else []
         return {
             "clients": clients,
+            "analysts": self.config.list_analysts(),
             "jobs": jobs,
             "batches": batches,
             "alerts": alerts,
@@ -3028,7 +3159,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_static(name, mimetypes.guess_type(name)[0] or "text/plain")
             return
         if parsed.path == "/api/state":
-            self._json(HTTPStatus.OK, self.app.state())
+            try:
+                self._json(HTTPStatus.OK, self.app.state())
+            except (OSError, ValueError, KeyError, json.JSONDecodeError):
+                self._json_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "Falha ao carregar a configuração local.",
+                )
+            return
+        if parsed.path == "/api/analysts":
+            try:
+                self._json(
+                    HTTPStatus.OK,
+                    {"analysts": self.app.config.list_analysts()},
+                )
+            except (OSError, ValueError, KeyError, json.JSONDecodeError):
+                self._json_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    "Falha ao carregar a configuração local.",
+                )
             return
         archive_builder: Callable[[], ReportArchiveResult] | None = None
         if parsed.path == "/api/report-archives/months":
@@ -3295,6 +3444,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "Não foi possível preparar o arquivo ZIP.",
                     )
                 return
+            if parsed.path == "/api/analysts":
+                analyst = self.app.config.create_analyst(payload)
+                self._json(HTTPStatus.CREATED, {"analyst": analyst})
+                return
             if parsed.path == "/api/clients":
                 client = self.app.config.add_client(payload)
                 self._json(HTTPStatus.CREATED, {"client": client})
@@ -3449,6 +3602,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._write_allowed():
             return
         parsed = urlsplit(self.path)
+        analyst_match = re.fullmatch(r"/api/analysts/([^/]+)", parsed.path)
+        if analyst_match:
+            try:
+                payload = self._request_json()
+                if payload.get("confirmation") != "EXCLUIR":
+                    raise ValueError('Digite exatamente "EXCLUIR" para confirmar.')
+                analyst_id = unquote(analyst_match.group(1))
+                self.app.config.delete_analyst(analyst_id)
+                self._json(
+                    HTTPStatus.OK,
+                    {"deleted_analyst_id": analyst_id},
+                )
+            except AnalystInUseError as exc:
+                self._json_error(
+                    HTTPStatus.CONFLICT,
+                    _safe_error(str(exc), limit=500),
+                )
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._json_error(
+                    HTTPStatus.BAD_REQUEST,
+                    _safe_error(str(exc), limit=500),
+                )
+            except Exception as exc:
+                self._json_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    _safe_error(str(exc), limit=500),
+                )
+            return
         match = re.fullmatch(r"/api/reports/([^/]+)", parsed.path)
         if not match:
             self._json_error(HTTPStatus.NOT_FOUND, "Rota nao encontrada.")
@@ -3496,12 +3677,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._write_allowed():
             return
         parsed = urlsplit(self.path)
-        match = re.fullmatch(r"/api/clients/([^/]+)", parsed.path)
-        if not match:
+        client_match = re.fullmatch(r"/api/clients/([^/]+)", parsed.path)
+        analyst_match = re.fullmatch(r"/api/analysts/([^/]+)", parsed.path)
+        if not client_match and not analyst_match:
             self._json_error(HTTPStatus.NOT_FOUND, "Rota nao encontrada.")
             return
         try:
-            client = self.app.update_client(unquote(match.group(1)), self._request_json())
+            payload = self._request_json()
+            if analyst_match:
+                analyst = self.app.config.update_analyst(
+                    unquote(analyst_match.group(1)),
+                    payload,
+                )
+                self._json(HTTPStatus.OK, {"analyst": analyst})
+                return
+            client = self.app.update_client(
+                unquote(client_match.group(1)),
+                payload,
+            )
             self._json(HTTPStatus.OK, {"client": client})
         except KeyError as exc:
             self._json_error(HTTPStatus.NOT_FOUND, _safe_error(str(exc), limit=500))

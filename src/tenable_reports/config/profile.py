@@ -161,6 +161,7 @@ class ClientProfile:
     client_id: str
     display_name: str
     tenant_id: str
+    responsible_analyst_id: str | None = None
     report: ReportConfig = field(default_factory=ReportConfig)
     vm_scope: VmScope = field(default_factory=VmScope)
     was_scope: WasScope = field(default_factory=WasScope)
@@ -236,6 +237,12 @@ class ClientProfile:
         tenant_id = str(data.get("tenant_id", "")).strip()
         if not display_name or not tenant_id:
             raise ProfileError("display_name e tenant_id sao obrigatorios.")
+        raw_responsible_analyst_id = data.get("responsible_analyst_id")
+        responsible_analyst_id = (
+            str(raw_responsible_analyst_id).strip() or None
+            if raw_responsible_analyst_id is not None
+            else None
+        )
 
         report_data = data.get("report") or {}
         scope_data = data.get("scope") or {}
@@ -440,6 +447,7 @@ class ClientProfile:
             client_id=client_id,
             display_name=display_name,
             tenant_id=tenant_id,
+            responsible_analyst_id=responsible_analyst_id,
             report=ReportConfig(
                 type=report_type,
                 base_modules=REQUIRED_BASE_MODULES,

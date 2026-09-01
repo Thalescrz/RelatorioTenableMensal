@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
@@ -11,6 +12,18 @@ from typing import Any
 
 
 CATALOG_SCHEMA_VERSION = 1
+_LOCK_REGISTRY_GUARD = threading.Lock()
+_LOCK_REGISTRY: dict[Path, threading.RLock] = {}
+
+
+def _lock_for_path(path: Path) -> threading.RLock:
+    resolved = path.resolve()
+    with _LOCK_REGISTRY_GUARD:
+        lock = _LOCK_REGISTRY.get(resolved)
+        if lock is None:
+            lock = threading.RLock()
+            _LOCK_REGISTRY[resolved] = lock
+        return lock
 
 
 def utc_now() -> datetime:
@@ -26,6 +39,10 @@ class AnalystRecord:
     updated_at: datetime
 
 
+class AnalystInUseError(ValueError):
+    pass
+
+
 class AnalystCatalog:
     def __init__(
         self,
@@ -35,36 +52,47 @@ class AnalystCatalog:
     ) -> None:
         self.path = Path(path)
         self._now = now
+        self._lock = _lock_for_path(self.path)
 
     def list(self) -> Sequence[AnalystRecord]:
-        return tuple(
-            sorted(
-                self._load(),
-                key=lambda record: (record.display_name.casefold(), record.analyst_id),
+        with self._lock:
+            return tuple(
+                sorted(
+                    self._load(),
+                    key=lambda record: (
+                        record.display_name.casefold(),
+                        record.analyst_id,
+                    ),
+                )
             )
-        )
 
     def get(self, analyst_id: str) -> AnalystRecord | None:
-        normalized_id = str(analyst_id).strip()
-        return next(
-            (record for record in self._load() if record.analyst_id == normalized_id),
-            None,
-        )
+        with self._lock:
+            normalized_id = str(analyst_id).strip()
+            return next(
+                (
+                    record
+                    for record in self._load()
+                    if record.analyst_id == normalized_id
+                ),
+                None,
+            )
 
     def create(self, *, display_name: str) -> AnalystRecord:
-        normalized_name = _normalize_display_name(display_name)
-        records = self._load()
-        _ensure_unique_name(records, normalized_name)
-        timestamp = _normalize_timestamp(self._now())
-        created = AnalystRecord(
-            analyst_id=uuid.uuid4().hex,
-            display_name=normalized_name,
-            active=True,
-            created_at=timestamp,
-            updated_at=timestamp,
-        )
-        self._write((*records, created))
-        return created
+        with self._lock:
+            normalized_name = _normalize_display_name(display_name)
+            records = self._load()
+            _ensure_unique_name(records, normalized_name)
+            timestamp = _normalize_timestamp(self._now())
+            created = AnalystRecord(
+                analyst_id=uuid.uuid4().hex,
+                display_name=normalized_name,
+                active=True,
+                created_at=timestamp,
+                updated_at=timestamp,
+            )
+            self._write((*records, created))
+            return created
 
     def update(
         self,
@@ -73,31 +101,36 @@ class AnalystCatalog:
         display_name: str,
         active: bool,
     ) -> AnalystRecord:
-        normalized_id = str(analyst_id).strip()
-        normalized_name = _normalize_display_name(display_name)
-        records = self._load()
-        current = _require_record(records, normalized_id)
-        _ensure_unique_name(records, normalized_name, excluding_id=normalized_id)
-        updated = replace(
-            current,
-            display_name=normalized_name,
-            active=bool(active),
-            updated_at=_normalize_timestamp(self._now()),
-        )
-        self._write(
-            tuple(updated if record.analyst_id == normalized_id else record for record in records)
-        )
-        return updated
+        with self._lock:
+            normalized_id = str(analyst_id).strip()
+            normalized_name = _normalize_display_name(display_name)
+            records = self._load()
+            current = _require_record(records, normalized_id)
+            _ensure_unique_name(records, normalized_name, excluding_id=normalized_id)
+            updated = replace(
+                current,
+                display_name=normalized_name,
+                active=bool(active),
+                updated_at=_normalize_timestamp(self._now()),
+            )
+            self._write(
+                tuple(
+                    updated if record.analyst_id == normalized_id else record
+                    for record in records
+                )
+            )
+            return updated
 
     def deactivate(self, analyst_id: str) -> AnalystRecord:
-        current = self.get(analyst_id)
-        if current is None:
-            raise ValueError("Analista não encontrado.")
-        return self.update(
-            current.analyst_id,
-            display_name=current.display_name,
-            active=False,
-        )
+        with self._lock:
+            current = self.get(analyst_id)
+            if current is None:
+                raise ValueError("Analista não encontrado.")
+            return self.update(
+                current.analyst_id,
+                display_name=current.display_name,
+                active=False,
+            )
 
     def delete(
         self,
@@ -105,12 +138,21 @@ class AnalystCatalog:
         *,
         is_in_use: Callable[[str], bool],
     ) -> None:
-        normalized_id = str(analyst_id).strip()
-        records = self._load()
-        _require_record(records, normalized_id)
-        if is_in_use(normalized_id):
-            raise ValueError("O analista está em uso e não pode ser excluído.")
-        self._write(tuple(record for record in records if record.analyst_id != normalized_id))
+        with self._lock:
+            normalized_id = str(analyst_id).strip()
+            records = self._load()
+            _require_record(records, normalized_id)
+            if is_in_use(normalized_id):
+                raise AnalystInUseError(
+                    "O analista está em uso e não pode ser excluído."
+                )
+            self._write(
+                tuple(
+                    record
+                    for record in records
+                    if record.analyst_id != normalized_id
+                )
+            )
 
     def _load(self) -> tuple[AnalystRecord, ...]:
         if not self.path.exists():
