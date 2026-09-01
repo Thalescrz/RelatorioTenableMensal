@@ -29,6 +29,12 @@ e publicação controlada.
 6. Exibir claramente, por lote e por cliente, a fase atual e o progresso remoto.
 7. Aplicar o mesmo comportamento ao botão **Gerar todos** e à execução mensal
    automática do primeiro dia do mês.
+8. Permitir que o operador exclua clientes da solicitação manual de **Gerar
+   todos** antes de criar o lote.
+9. Manter um catálogo simples de analistas e associar um responsável principal
+   opcional a cada cliente.
+10. Filtrar os cards e a seleção de clientes pelo analista responsável, incluindo
+    clientes sem responsável.
 
 ## 3. Fora de escopo
 
@@ -39,6 +45,10 @@ e publicação controlada.
 - Tratar `total_chunks > 0` como conclusão antes de `FINISHED`.
 - Introduzir uma nova tecnologia de mensageria; PostgreSQL continua sendo a fonte
   durável da fila.
+- Criar login, autenticação, autorização, permissões ou distribuição automática de
+  clientes entre analistas.
+- Inserir o nome do analista nos relatórios DOCX; o responsável é metadado
+  operacional da interface nesta entrega.
 
 Este desenho substitui somente a decisão de execução estritamente sequencial das
 seções 2 e 13 de `2026-08-31-controle-duravel-de-lotes-design.md` para novos lotes
@@ -222,6 +232,64 @@ Em **Gerar todos**, o padrão é concorrência automática. A configuração ava
 permite reduzir o número de coletores remotos, mas a fila local permanece em um.
 A automação mensal usa a mesma política sem interação.
 
+### 12.1. Seleção do Gerar todos
+
+O botão **Gerar todos** abre uma janela de seleção antes de criar o lote. Todos os
+clientes ativos e elegíveis começam marcados. O operador pode:
+
+- pesquisar pelo nome ou identificador do cliente;
+- filtrar por analista responsável;
+- filtrar por **Sem responsável**;
+- marcar ou desmarcar individualmente;
+- selecionar ou limpar somente os resultados visíveis;
+- confirmar em **Gerar N clientes**.
+
+Nenhum lote é criado quando a seleção fica vazia. O backend recebe e valida a lista
+explícita de `selected_client_ids`; não confia apenas em exclusões calculadas no
+navegador. O lote persiste a fotografia de `selected_client_ids`,
+`excluded_client_ids` e do filtro usado para auditoria. Alterações futuras no
+cadastro não modificam um lote já criado.
+
+Clientes inativos não são elegíveis. Um conflito com outro lote ativo continua
+sendo informado antes da confirmação e não é escondido pelo filtro visual. A
+automação mensal permanece não interativa e seleciona todos os clientes ativos
+configurados para execução automática.
+
+### 12.2. Analistas responsáveis
+
+O menu de administração oferece um catálogo simples de analistas com:
+
+- `analyst_id` estável e gerado automaticamente;
+- `display_name` obrigatório e único sem diferenciar maiúsculas/minúsculas;
+- estado ativo/inativo;
+- datas de criação e atualização.
+
+Não há conta, senha ou permissão associada. Desativar um analista impede novas
+atribuições, mas preserva clientes já associados e o histórico. Exclusão física é
+recusada enquanto houver cliente associado; a ação normal é desativar.
+
+O perfil do cliente ganha `responsible_analyst_id`, opcional e limitado a um
+analista principal. A interface exibe o nome no card e permite alterá-lo em
+**Gerenciar clientes**. O valor precisa existir no catálogo; um identificador
+desconhecido é rejeitado. Clientes sem associação aparecem como **Sem
+responsável**.
+
+O painel principal recebe um filtro por analista que combina com a busca textual.
+Esse filtro altera somente os cards exibidos. Ele não filtra vulnerabilidades,
+ativos, TAGs, relatórios ou um lote que já tenha sido confirmado.
+
+### 12.3. Persistência do catálogo
+
+O catálogo fica em `orchestration/analysts.json`, arquivo local sem secrets e
+gerenciado atomicamente pela mesma camada de configuração dos clientes. O perfil
+JSON de cada cliente guarda apenas `responsible_analyst_id`. PostgreSQL registra a
+fotografia do responsável no payload sanitizado do lote para auditoria, sem se
+tornar a fonte de verdade do cadastro.
+
+Gravações usam substituição atômica e validação de esquema. Nomes são tratados
+como dado pessoal operacional: podem aparecer na interface e na auditoria do lote,
+mas não em logs técnicos, checkpoints de export ou documentos gerados.
+
 ## 13. Configuração
 
 Novas opções, sem secrets:
@@ -232,6 +300,13 @@ Novas opções, sem secrets:
 - `remote_processing_timeout_seconds`: padrão `7200`;
 - `remote_progress_warning_seconds`: padrão `900`, apenas alerta;
 - `max_clients_per_batch`: padrão `64`.
+
+Novos campos de configuração, também sem secrets:
+
+- `analyst_id`, `display_name` e `active` no catálogo de analistas;
+- `responsible_analyst_id` opcional no perfil do cliente;
+- `selected_client_ids`, `excluded_client_ids` e fotografia do responsável nas
+  opções persistidas de cada lote manual.
 
 Perfis de cliente continuam controlando propriedades seletivas e tamanhos de
 chunk. O servidor não altera esses valores automaticamente.
@@ -256,6 +331,8 @@ chunk. O servidor não altera esses valores automaticamente.
    retentativas; somente ações já enfileiradas e autorizadas são executadas.
 6. O primeiro teste real será feito em clientes escolhidos pelo analista, sem
    habilitar todos os tenants automaticamente durante a implantação.
+7. Clientes existentes são migrados com `responsible_analyst_id = null`; nenhum
+   responsável é inferido pelo nome ou histórico.
 
 ## 16. Testes obrigatórios
 
@@ -275,6 +352,12 @@ chunk. O servidor não altera esses valores automaticamente.
 - estados e contadores novos nos endpoints e na interface;
 - migração PostgreSQL e compatibilidade de lotes `LEGACY`;
 - execução mensal e botão **Gerar todos** usando `STAGED_V1`;
+- CRUD do catálogo, unicidade de nome, desativação e bloqueio de exclusão em uso;
+- vínculo opcional do responsável e rejeição de identificador desconhecido;
+- modal com todos marcados, exclusão individual, seleção visível e seleção vazia;
+- persistência exata dos clientes incluídos e excluídos no lote;
+- filtro do painel e do modal por analista e **Sem responsável**;
+- combinação do filtro com busca textual sem alterar o conteúdo dos relatórios;
 - suíte completa, auditoria de secrets e validação dos guias.
 
 ## 17. Critérios de aceite
@@ -291,3 +374,9 @@ chunk. O servidor não altera esses valores automaticamente.
    contratos atuais.
 7. A interface distingue espera Tenable, coleta, fila local e montagem.
 8. Nenhuma coleta real é iniciada como parte dos testes automatizados.
+9. Antes de **Gerar todos**, o operador visualiza os clientes elegíveis e pode
+   excluir qualquer subconjunto da solicitação.
+10. Cada cliente pode ter zero ou um analista responsável, escolhido de um
+    catálogo administrável sem contas ou permissões.
+11. O painel e a janela de geração filtram por responsável e por **Sem
+    responsável**, mantendo busca e seleção consistentes.
