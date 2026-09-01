@@ -335,6 +335,7 @@ def test_repository_reconciles_jobs_owned_by_inactive_workers() -> None:
             _Cursor(many=(_job_row(status="INTERRUPTED"),)),
             _Cursor(one=_batch_row(status="PAUSED")),
             _Cursor(one=(1,)),
+            _Cursor(many=()),
         ]
     )
     repository = PostgresWebBatchRepository(database, migrate=False)
@@ -350,3 +351,24 @@ def test_repository_reconciles_jobs_owned_by_inactive_workers() -> None:
     assert reconcile_params == (["new-worker"],)
     event_sql, event_params = database.connection_value.calls[2]
     assert event_params[2] == "JOB_RECOVERED_AS_INTERRUPTED"
+
+
+def test_repository_pauses_preexisting_queued_batches_on_startup() -> None:
+    database = _Database(
+        [
+            _Cursor(many=()),
+            _Cursor(many=((UUID(int=1),),)),
+            _Cursor(one=(1,)),
+        ]
+    )
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    reconciled = repository.reconcile_abandoned_jobs(active_worker_ids=set())
+
+    assert reconciled == 0
+    pause_sql, _ = database.connection_value.calls[1]
+    assert "set status = 'paused'" in pause_sql.lower()
+    assert "batch.status = 'queued'" in pause_sql.lower()
+    event_sql, event_params = database.connection_value.calls[2]
+    assert "insert into tenable_reports.web_batch_events" in event_sql.lower()
+    assert event_params[1] == "BATCH_RECOVERED_PAUSED"

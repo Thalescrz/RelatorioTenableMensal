@@ -395,7 +395,33 @@ class PostgresWebBatchRepository(WebBatchRepository):
                         _jsonb({"previous_worker_id": job.worker_id}),
                     ),
                 ).fetchone()
-        return len(jobs)
+            paused_rows = connection.execute(
+                f"""
+                update {SCHEMA_NAME}.web_batches batch
+                set status = 'PAUSED', version = version + 1
+                where batch.status = 'QUEUED'
+                  and exists (
+                      select 1 from {SCHEMA_NAME}.web_batch_jobs job
+                      where job.batch_id = batch.id and job.status = 'QUEUED'
+                  )
+                returning batch.id
+                """
+            ).fetchall()
+            for paused_row in paused_rows:
+                connection.execute(
+                    f"""
+                    insert into {SCHEMA_NAME}.web_batch_events (
+                        batch_id, event_type, payload
+                    ) values (%s, %s, %s)
+                    returning id
+                    """,
+                    (
+                        UUID(str(paused_row[0])),
+                        "BATCH_RECOVERED_PAUSED",
+                        _jsonb({"reason": "local_worker_restart"}),
+                    ),
+                ).fetchone()
+            return len(jobs)
 
     def append_event(self, event: WebBatchEvent) -> None:
         assert_sanitized_payload(event.payload, path="event.payload")

@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from tenable_reports.application.web_batches import WebBatchRepository
 from tenable_reports.application.cloud_contract import probe_cloud_contract
 from tenable_reports.application.orchestration import SAFE_ID_PATTERN
 from tenable_reports.application.orchestration import load_orchestration_config
@@ -85,6 +86,9 @@ from tenable_reports.infrastructure.report_set_purge_postgresql import (
 from tenable_reports.infrastructure.was_recovery_postgresql import (
     PostgresWasRecoveryRepository,
 )
+from tenable_reports.infrastructure.web_batches_postgresql import (
+    PostgresWebBatchRepository,
+)
 from tenable_reports.domain.report_reference import reference_key_for_candidate
 from tenable_reports.infrastructure.tenable_cloud.client import (
     CloudGraphQLClient,
@@ -94,6 +98,9 @@ from tenable_reports.infrastructure.tenable_vm.client import (
     ExportTimeoutError,
     TenableVmClient,
     TenableVmConfig,
+)
+from tenable_reports.webapp.durable_dashboard_queue import (
+    DurableDashboardJobQueue,
 )
 
 
@@ -997,6 +1004,7 @@ class DashboardDatabase:
 
 
 ProgressCallback = Callable[[Mapping[str, Any]], None]
+ProgressSink = Callable[[str, Mapping[str, Any]], None]
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
@@ -1092,15 +1100,25 @@ class JobQueue:
         project_root: Path,
         config_path: Path,
         runner: Runner = _default_runner,
+        *,
+        start_worker: bool = True,
+        progress_sink: ProgressSink | None = None,
     ) -> None:
         self.project_root = project_root
         self.config_path = config_path
         self.runner = runner
+        self.progress_sink = progress_sink
         self._pending: queue.Queue[str] = queue.Queue()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
-        self._worker = threading.Thread(target=self._work, name="tenable-web-queue", daemon=True)
-        self._worker.start()
+        self._worker: threading.Thread | None = None
+        if start_worker:
+            self._worker = threading.Thread(
+                target=self._work,
+                name="tenable-web-queue",
+                daemon=True,
+            )
+            self._worker.start()
 
     def enqueue(self, client_ids: Sequence[str], request: Mapping[str, Any]) -> list[dict[str, Any]]:
         mode = str(request.get("mode") or "manual")
@@ -1546,6 +1564,11 @@ class JobQueue:
                     ))
         try:
             def update_progress(event: Mapping[str, Any]) -> None:
+                if self.progress_sink is not None:
+                    try:
+                        self.progress_sink(job_id, event)
+                    except Exception:
+                        pass
                 with self._lock:
                     current_job = self._jobs.get(job_id)
                     if current_job is None:
@@ -1748,10 +1771,11 @@ class DashboardApplication:
         cleanup_status_recorder: Callable[..., Any] | None = None,
         cloud_contract_invalidator: Callable[..., int] | None = None,
         was_recovery_repository: Any | None = None,
+        batch_repository: WebBatchRepository | None = None,
+        require_durable_batches: bool = False,
     ) -> None:
         self.project_root = project_root.resolve()
         self.config = DashboardConfigStore(project_root=self.project_root, config_path=config_path)
-        self.jobs = JobQueue(self.project_root, self.config.config_path, runner)
         self.connection_checker = connection_checker
         self.cloud_connection_checker = cloud_connection_checker
         self.tag_lister = tag_lister
@@ -1764,6 +1788,26 @@ class DashboardApplication:
         except Exception as exc:
             self.database = None
             self.database_error = _safe_error(str(exc), limit=500)
+        self.batch_repository = batch_repository
+        if self.batch_repository is None and self.database is not None:
+            self.batch_repository = PostgresWebBatchRepository(
+                self.database.database,
+            )
+        self.require_durable_batches = bool(require_durable_batches)
+        if self.batch_repository is not None:
+            executor = JobQueue(
+                self.project_root,
+                self.config.config_path,
+                runner,
+                start_worker=False,
+            )
+            self.jobs = DurableDashboardJobQueue(
+                repository=self.batch_repository,
+                executor=executor,
+                worker_id=f"web-{os.getpid()}-{uuid.uuid4().hex[:8]}",
+            )
+        else:
+            self.jobs = JobQueue(self.project_root, self.config.config_path, runner)
         self.cloud_contract_invalidator = cloud_contract_invalidator
         if self.cloud_contract_invalidator is None and self.database is not None:
             cloud_repository = PostgresCloudSnapshotRepository(
@@ -2136,7 +2180,7 @@ class DashboardApplication:
                 "quando nao houver snapshot. Confirme a reconstrucao para continuar."
             )
 
-        created: list[dict[str, Any]] = []
+        requests: list[tuple[str, Mapping[str, Any]]] = []
         for client_id in client_ids:
             client = clients.get(client_id)
             if client is None:
@@ -2150,6 +2194,16 @@ class DashboardApplication:
             client_request["vm_export_strategy"] = str(
                 client.get("vm_export_strategy") or "combined"
             )
+            requests.append((client_id, client_request))
+        if self.require_durable_batches and self.batch_repository is None:
+            raise RuntimeError(
+                "Banco PostgreSQL indisponivel; novas geracoes estao bloqueadas."
+            )
+        enqueue_requests = getattr(self.jobs, "enqueue_requests", None)
+        if callable(enqueue_requests):
+            return enqueue_requests(tuple(requests))
+        created: list[dict[str, Any]] = []
+        for client_id, client_request in requests:
             created.extend(self.jobs.enqueue([client_id], client_request))
         return created
 
@@ -2937,7 +2991,11 @@ def serve_dashboard(
     config = Path(config_path)
     if not config.is_absolute():
         config = root / config
-    app = DashboardApplication(project_root=root, config_path=config)
+    app = DashboardApplication(
+        project_root=root,
+        config_path=config,
+        require_durable_batches=True,
+    )
     server = DashboardHTTPServer((host, port), app)
     url = f"http://{host}:{port}"
     print(json.dumps({

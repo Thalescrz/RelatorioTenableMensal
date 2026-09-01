@@ -286,6 +286,29 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                     )
                 )
                 reconciled += 1
+            for batch_id, batch in tuple(self._batches.items()):
+                if batch.status is not BatchStatus.QUEUED:
+                    continue
+                if not any(
+                    job.batch_id == batch_id
+                    and job.status is BatchJobStatus.QUEUED
+                    for job in self._jobs.values()
+                ):
+                    continue
+                paused_at = _now()
+                self._batches[batch_id] = replace(
+                    batch,
+                    status=BatchStatus.PAUSED,
+                    version=batch.version + 1,
+                )
+                self._events.append(
+                    WebBatchEvent(
+                        batch_id=batch_id,
+                        event_type="BATCH_RECOVERED_PAUSED",
+                        payload={"reason": "local_worker_restart"},
+                        created_at=paused_at,
+                    )
+                )
         return reconciled
 
 
