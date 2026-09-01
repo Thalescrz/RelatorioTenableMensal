@@ -12,8 +12,11 @@ from tenable_reports.application.web_batches_memory import (
 )
 from tenable_reports.domain.web_batches import (
     BatchAction,
+    BatchJobPhase,
     BatchJobStatus,
     BatchStatus,
+    WebBatch,
+    WebBatchJob,
 )
 from tenable_reports.webapp.durable_dashboard_queue import (
     DurableDashboardJobQueue,
@@ -91,7 +94,12 @@ def test_stop_writes_cooperative_control_without_remote_export_cancel(
         batch_id = UUID(str(created[0]["batch_id"]))
         active = repository.claim_next_job(worker_id="worker-control")
         assert active is not None
-        queue._active_job = active
+        sibling = repository.claim_next_job(worker_id="worker-control-sibling")
+        assert sibling is not None
+        queue._active_jobs = {
+            active.id.hex: active,
+            sibling.id.hex: sibling,
+        }
 
         batch = queue.request_action(batch_id, BatchAction.STOP)
 
@@ -99,11 +107,15 @@ def test_stop_writes_cooperative_control_without_remote_export_cancel(
         control = json.loads(Path(active.control_file).read_text(encoding="utf-8"))
         assert control["stop_requested"] is True
         assert "local" in control["reason"].lower()
+        sibling_control = json.loads(
+            Path(sibling.control_file).read_text(encoding="utf-8")
+        )
+        assert sibling_control["stop_requested"] is True
         assert tuple(
             job.status for job in repository.list_batch_jobs(batch.id)
         ) == (
             BatchJobStatus.INTERRUPT_REQUESTED,
-            BatchJobStatus.CANCELLED_BY_USER,
+            BatchJobStatus.INTERRUPT_REQUESTED,
         )
     finally:
         queue.close()
@@ -205,4 +217,127 @@ def test_durable_queue_persists_process_and_fallback_event(
         event.event_type == "JOB_LOCAL_FALLBACK_TERMINATION"
         and event.payload == {"process_id": 4242}
         for event in events
+    )
+
+
+def test_progress_and_process_sinks_route_to_each_active_job(
+    tmp_path: Path,
+) -> None:
+    def runner(command, cwd, progress_callback=None):
+        raise AssertionError("Nenhuma execução local deve ocorrer neste teste.")
+
+    repository, queue = _queue(tmp_path, runner)
+    try:
+        created = queue.enqueue(
+            ["client-a", "client-b"],
+            {"mode": "manual", "days": 30},
+        )
+        batch_id = UUID(str(created[0]["batch_id"]))
+        first = repository.claim_next_job(worker_id="worker-a")
+        second = repository.claim_next_job(worker_id="worker-b")
+        assert first is not None
+        assert second is not None
+        queue._active_jobs = {
+            first.id.hex: first,
+            second.id.hex: second,
+        }
+
+        queue._persist_progress(first.id.hex, {"stage": "REMOTE"})
+        queue._persist_process(second.id.hex, 4242)
+        queue._persist_fallback(first.id.hex, 5151)
+
+        stored = repository.list_batch_jobs(batch_id)
+        events = repository.list_events(batch_id)
+    finally:
+        queue.close()
+
+    assert stored[0].process_id is None
+    assert stored[1].process_id == 4242
+    assert any(
+        event.job_id == first.id
+        and event.event_type == "JOB_PROGRESS"
+        and event.payload == {"stage": "REMOTE"}
+        for event in events
+    )
+    assert any(
+        event.job_id == first.id
+        and event.event_type == "JOB_LOCAL_FALLBACK_TERMINATION"
+        and event.payload == {"process_id": 5151}
+        for event in events
+    )
+
+
+def test_stop_signals_all_staged_jobs_and_preserves_recovery_artifacts(
+    tmp_path: Path,
+) -> None:
+    def runner(command, cwd, progress_callback=None):
+        raise AssertionError("A parada local nao deve executar nem cancelar coleta.")
+
+    repository, queue = _queue(tmp_path, runner)
+    batch_id = UUID(int=900)
+    checkpoint = str((tmp_path / "checkpoint.json").resolve())
+    manifest = str((tmp_path / "manifest.partial.json").resolve())
+    payloads = (
+        {
+            "vm_export_uuid": "00000000-0000-0000-0000-000000000901",
+            "downloaded_chunks": [0, 1],
+            "manifest_path": manifest,
+        },
+        {
+            "vm_export_uuid": "00000000-0000-0000-0000-000000000902",
+            "downloaded_chunks": [0],
+            "manifest_path": manifest,
+        },
+    )
+    jobs = tuple(
+        WebBatchJob(
+            id=UUID(int=910 + index),
+            batch_id=batch_id,
+            client_id=f"client-{index}",
+            position=index,
+            status=BatchJobStatus.QUEUED,
+            attempt_number=1,
+            phase=BatchJobPhase.READY_FOR_BUILD,
+            payload=payloads[index - 1],
+            control_file=str((tmp_path / f"control-{index}.json").resolve()),
+            collection_checkpoint_path=checkpoint,
+        )
+        for index in (1, 2)
+    )
+    repository.create_batch(
+        WebBatch(
+            id=batch_id,
+            idempotency_key="batch:staged-stop",
+            kind="GENERATE_ALL",
+            status=BatchStatus.QUEUED,
+            options={"execution_model": "STAGED_V1"},
+        ),
+        jobs,
+    )
+    first = repository.claim_next_job(
+        worker_id="tenable-build-1",
+        phases=(BatchJobPhase.READY_FOR_BUILD,),
+    )
+    second = repository.claim_next_job(
+        worker_id="tenable-build-2",
+        phases=(BatchJobPhase.READY_FOR_BUILD,),
+    )
+    assert first is not None
+    assert second is not None
+
+    try:
+        queue.request_action(batch_id, BatchAction.STOP)
+        stopped = repository.list_batch_jobs(batch_id)
+    finally:
+        queue.close()
+
+    assert all(job.status is BatchJobStatus.INTERRUPT_REQUESTED for job in stopped)
+    assert tuple(dict(job.payload) for job in stopped) == payloads
+    assert all(job.collection_checkpoint_path == checkpoint for job in stopped)
+    assert all(
+        json.loads(Path(job.control_file).read_text(encoding="utf-8"))[
+            "stop_requested"
+        ]
+        is True
+        for job in stopped
     )

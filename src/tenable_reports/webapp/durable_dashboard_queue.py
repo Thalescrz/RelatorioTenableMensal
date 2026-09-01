@@ -22,13 +22,18 @@ from tenable_reports.domain.web_batches import (
     BATCH_TERMINAL_STATUSES,
     RETRYABLE_BATCH_JOB_STATUSES,
     BatchAction,
+    BatchJobPhase,
     BatchJobStatus,
     BatchStatus,
     WebBatch,
     WebBatchEvent,
     WebBatchJob,
 )
-from tenable_reports.webapp.job_queue import DurableJobQueue
+from tenable_reports.webapp.job_queue import (
+    DurableRunner,
+    DurableWorkerPool,
+    DurableWorkerPoolGroup,
+)
 
 
 def _now() -> str:
@@ -46,20 +51,66 @@ class DurableDashboardJobQueue:
         worker_id: str,
         poll_interval: float = 0.25,
         start_worker: bool = True,
+        remote_runner: DurableRunner | None = None,
+        build_runner: DurableRunner | None = None,
+        remote_workers: int = 0,
     ) -> None:
         self.repository = repository
         self.executor = executor
         self._active_lock = threading.RLock()
-        self._active_job: WebBatchJob | None = None
+        self._active_jobs: dict[str, WebBatchJob] = {}
         self.executor.progress_sink = self._persist_progress
         self.executor.process_sink = self._persist_process
         self.executor.fallback_sink = self._persist_fallback
-        self._dispatcher = DurableJobQueue(
+        pools = [
+            DurableWorkerPool(
+                repository=repository,
+                runner=self._run_job,
+                worker_prefix=f"{worker_id}-legacy",
+                phases=(BatchJobPhase.LEGACY,),
+                workers=1,
+                poll_interval=poll_interval,
+                start_workers=False,
+                reconcile=False,
+            )
+        ]
+        normalized_remote_workers = int(remote_workers)
+        if remote_runner is not None:
+            if normalized_remote_workers < 1:
+                raise ValueError(
+                    "remote_workers deve ser positivo quando o pool remoto existe."
+                )
+            pools.append(
+                DurableWorkerPool(
+                    repository=repository,
+                    runner=lambda job: self._run_pool_job(job, remote_runner),
+                    worker_prefix=f"tenable-remote-{worker_id}",
+                    phases=(BatchJobPhase.REMOTE_QUEUED,),
+                    workers=normalized_remote_workers,
+                    poll_interval=poll_interval,
+                    start_workers=False,
+                    reconcile=False,
+                )
+            )
+        elif normalized_remote_workers != 0:
+            raise ValueError("remote_runner e obrigatorio para o pool remoto.")
+        if build_runner is not None:
+            pools.append(
+                DurableWorkerPool(
+                    repository=repository,
+                    runner=lambda job: self._run_pool_job(job, build_runner),
+                    worker_prefix=f"tenable-build-{worker_id}",
+                    phases=(BatchJobPhase.READY_FOR_BUILD,),
+                    workers=1,
+                    poll_interval=poll_interval,
+                    start_workers=False,
+                    reconcile=False,
+                )
+            )
+        self._dispatcher = DurableWorkerPoolGroup(
             repository=repository,
-            runner=self._run_job,
-            worker_id=worker_id,
-            poll_interval=poll_interval,
-            start_worker=start_worker,
+            pools=tuple(pools),
+            start_workers=start_worker,
         )
 
     def enqueue(
@@ -580,8 +631,8 @@ class DurableDashboardJobQueue:
         event: Mapping[str, Any],
     ) -> None:
         with self._active_lock:
-            active = self._active_job
-        if active is None or active.id.hex != str(job_id):
+            active = self._active_jobs.get(str(job_id))
+        if active is None:
             return
         self.repository.append_event(
             WebBatchEvent(
@@ -594,8 +645,8 @@ class DurableDashboardJobQueue:
 
     def _persist_process(self, job_id: str, process_id: int) -> None:
         with self._active_lock:
-            active = self._active_job
-        if active is None or active.id.hex != str(job_id):
+            active = self._active_jobs.get(str(job_id))
+        if active is None:
             return
         self.repository.record_job_process(
             active.id,
@@ -605,8 +656,8 @@ class DurableDashboardJobQueue:
 
     def _persist_fallback(self, job_id: str, process_id: int) -> None:
         with self._active_lock:
-            active = self._active_job
-        if active is None or active.id.hex != str(job_id):
+            active = self._active_jobs.get(str(job_id))
+        if active is None:
             return
         self.repository.append_event(
             WebBatchEvent(
@@ -625,14 +676,14 @@ class DurableDashboardJobQueue:
         with self.executor._lock:
             self.executor._jobs[job_id] = payload
         with self._active_lock:
-            self._active_job = job
+            self._active_jobs[job_id] = job
         try:
             self.executor._run(job_id)
             with self.executor._lock:
                 result = dict(self.executor._jobs[job_id])
         finally:
             with self._active_lock:
-                self._active_job = None
+                self._active_jobs.pop(job_id, None)
         raw_status = str(result.get("status") or "FAILED").upper()
         if raw_status == "WAITING_WAS_DECISION":
             status = BatchJobStatus.WAITING_WAS_DECISION
@@ -670,6 +721,20 @@ class DurableDashboardJobQueue:
             ),
             payload=result,
         )
+
+    def _run_pool_job(
+        self,
+        job: WebBatchJob,
+        runner: DurableRunner,
+    ) -> BatchJobResult:
+        job_id = job.id.hex
+        with self._active_lock:
+            self._active_jobs[job_id] = job
+        try:
+            return runner(job)
+        finally:
+            with self._active_lock:
+                self._active_jobs.pop(job_id, None)
 
 
 def _apply_progress(row: dict[str, Any], event: Mapping[str, Any]) -> None:

@@ -4,6 +4,8 @@ import json
 import subprocess
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import UUID
@@ -15,6 +17,8 @@ from tenable_reports.application.web_batches_memory import (
     InMemoryWebBatchRepository,
 )
 from tenable_reports.domain.web_batches import (
+    BatchAction,
+    BatchJobPhase,
     BatchJobStatus,
     BatchStatus,
     WebBatch,
@@ -23,7 +27,11 @@ from tenable_reports.domain.web_batches import (
 from tenable_reports.webapp.durable_dashboard_queue import (
     DurableDashboardJobQueue,
 )
-from tenable_reports.webapp.job_queue import DurableJobQueue
+from tenable_reports.webapp.job_queue import (
+    DurableJobQueue,
+    DurableWorkerPool,
+    DurableWorkerPoolGroup,
+)
 from tenable_reports.webapp.server import DashboardApplication, JobQueue
 
 
@@ -42,6 +50,7 @@ def _job(
     *,
     status: BatchJobStatus = BatchJobStatus.QUEUED,
     worker_id: str | None = None,
+    phase: BatchJobPhase = BatchJobPhase.LEGACY,
 ) -> WebBatchJob:
     return WebBatchJob(
         id=UUID(int=10 + position),
@@ -51,6 +60,7 @@ def _job(
         status=status,
         attempt_number=1,
         worker_id=worker_id,
+        phase=phase,
     )
 
 
@@ -163,6 +173,286 @@ def test_queue_reconciles_abandoned_running_job_as_interrupted_and_pauses_batch(
 
 def _successful_runner(job: WebBatchJob) -> BatchJobResult:
     return BatchJobResult(status=BatchJobStatus.COMPLETE)
+
+
+def test_remote_pool_can_claim_twenty_clients_concurrently() -> None:
+    repository = InMemoryWebBatchRepository()
+    repository.create_batch(
+        _batch(),
+        tuple(
+            _job(position, phase=BatchJobPhase.REMOTE_QUEUED)
+            for position in range(1, 21)
+        ),
+    )
+    all_started = threading.Event()
+    release = threading.Event()
+    lock = threading.Lock()
+    active_clients: set[str] = set()
+    maximum_active = 0
+
+    def runner(job: WebBatchJob) -> BatchJobResult:
+        nonlocal maximum_active
+        with lock:
+            active_clients.add(job.client_id)
+            maximum_active = max(maximum_active, len(active_clients))
+            if len(active_clients) == 20:
+                all_started.set()
+        assert release.wait(3)
+        with lock:
+            active_clients.remove(job.client_id)
+        return BatchJobResult(status=BatchJobStatus.COMPLETE)
+
+    pool = DurableWorkerPool(
+        repository=repository,
+        runner=runner,
+        worker_prefix="tenable-remote",
+        phases=(BatchJobPhase.REMOTE_QUEUED,),
+        workers=20,
+        poll_interval=0.01,
+    )
+    try:
+        pool.wake()
+        assert all_started.wait(3)
+        running = repository.list_batch_jobs(UUID(int=1))
+        assert all(job.status is BatchJobStatus.RUNNING for job in running)
+        assert all(job.phase is BatchJobPhase.REMOTE_RUNNING for job in running)
+        release.set()
+        assert pool.wait_until_idle(timeout=3)
+    finally:
+        release.set()
+        pool.close()
+
+    assert maximum_active == 20
+    assert not any(
+        thread.name.startswith("tenable-remote-")
+        for thread in threading.enumerate()
+    )
+    assert all(
+        job.status is BatchJobStatus.COMPLETE
+        for job in repository.list_batch_jobs(UUID(int=1))
+    )
+
+
+def test_build_pool_with_one_worker_never_runs_two_jobs() -> None:
+    repository = InMemoryWebBatchRepository()
+    repository.create_batch(
+        _batch(),
+        tuple(
+            _job(position, phase=BatchJobPhase.READY_FOR_BUILD)
+            for position in range(1, 4)
+        ),
+    )
+    first_started = threading.Event()
+    release_first = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    maximum_active = 0
+
+    def runner(job: WebBatchJob) -> BatchJobResult:
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        if job.position == 1:
+            first_started.set()
+            assert release_first.wait(3)
+        with lock:
+            active -= 1
+        return BatchJobResult(status=BatchJobStatus.COMPLETE)
+
+    pool = DurableWorkerPool(
+        repository=repository,
+        runner=runner,
+        worker_prefix="tenable-build",
+        phases=(BatchJobPhase.READY_FOR_BUILD,),
+        workers=1,
+        poll_interval=0.01,
+    )
+    try:
+        assert first_started.wait(3)
+        statuses = tuple(
+            job.status for job in repository.list_batch_jobs(UUID(int=1))
+        )
+        assert statuses == (
+            BatchJobStatus.RUNNING,
+            BatchJobStatus.QUEUED,
+            BatchJobStatus.QUEUED,
+        )
+        release_first.set()
+        assert pool.wait_until_idle(timeout=3)
+    finally:
+        release_first.set()
+        pool.close()
+
+    assert pool.worker_count == 1
+    assert maximum_active == 1
+    assert not any(
+        thread.name.startswith("tenable-build-")
+        for thread in threading.enumerate()
+    )
+
+
+def test_pool_group_reconciles_once_with_every_sibling_worker_id() -> None:
+    class TrackingRepository(InMemoryWebBatchRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.reconcile_calls: list[set[str]] = []
+
+        def reconcile_abandoned_jobs(self, *, active_worker_ids: set[str]) -> int:
+            self.reconcile_calls.append(set(active_worker_ids))
+            return super().reconcile_abandoned_jobs(
+                active_worker_ids=active_worker_ids
+            )
+
+    repository = TrackingRepository()
+    remote = DurableWorkerPool(
+        repository=repository,
+        runner=_successful_runner,
+        worker_prefix="tenable-remote",
+        phases=(BatchJobPhase.REMOTE_QUEUED,),
+        workers=2,
+        start_workers=False,
+        reconcile=False,
+    )
+    build = DurableWorkerPool(
+        repository=repository,
+        runner=_successful_runner,
+        worker_prefix="tenable-build",
+        phases=(BatchJobPhase.READY_FOR_BUILD,),
+        workers=1,
+        start_workers=False,
+        reconcile=False,
+    )
+
+    group = DurableWorkerPoolGroup(
+        repository=repository,
+        pools=(remote, build),
+        start_workers=False,
+    )
+    try:
+        assert repository.reconcile_calls == [
+            set(remote.worker_ids + build.worker_ids)
+        ]
+    finally:
+        group.close()
+
+
+def test_pause_blocks_new_remote_claims() -> None:
+    repository = InMemoryWebBatchRepository()
+    repository.create_batch(
+        _batch(),
+        (_job(1, phase=BatchJobPhase.REMOTE_QUEUED),),
+    )
+    repository.request_action(UUID(int=1), BatchAction.PAUSE)
+    entered = threading.Event()
+    pool = DurableWorkerPool(
+        repository=repository,
+        runner=lambda job: (
+            entered.set() or BatchJobResult(status=BatchJobStatus.COMPLETE)
+        ),
+        worker_prefix="tenable-remote",
+        phases=(BatchJobPhase.REMOTE_QUEUED,),
+        workers=1,
+        poll_interval=0.01,
+    )
+    try:
+        pool.wake()
+        assert not entered.wait(0.2)
+    finally:
+        pool.close()
+
+    stored = repository.list_batch_jobs(UUID(int=1))[0]
+    assert stored.status is BatchJobStatus.QUEUED
+    assert stored.phase is BatchJobPhase.REMOTE_QUEUED
+
+
+def test_repository_prevents_concurrent_jobs_for_the_same_client() -> None:
+    repository = InMemoryWebBatchRepository()
+    barrier = threading.Barrier(2)
+
+    def create(index: int) -> bool:
+        batch = WebBatch(
+            id=UUID(int=index),
+            idempotency_key=f"batch:same-client:{index}",
+            kind="GENERATE_ONE",
+            status=BatchStatus.QUEUED,
+            options={"mode": "manual"},
+        )
+        job = WebBatchJob(
+            id=UUID(int=100 + index),
+            batch_id=batch.id,
+            client_id="client-shared",
+            position=1,
+            status=BatchJobStatus.QUEUED,
+            attempt_number=1,
+            phase=BatchJobPhase.REMOTE_QUEUED,
+        )
+        barrier.wait()
+        try:
+            repository.create_batch(batch, (job,))
+        except ValueError:
+            return False
+        return True
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(create, (1, 2)))
+
+    assert sorted(results) == [False, True]
+    assert len(repository.list_batches(limit=10)) == 1
+
+
+def test_pause_preserves_running_build_checkpoint_and_blocks_sibling(
+    tmp_path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    checkpoint = (tmp_path / "collection-checkpoint.json").resolve()
+    checkpoint.write_text("{}", encoding="utf-8")
+    repository.create_batch(
+        _batch(),
+        (
+            replace(
+                _job(1, phase=BatchJobPhase.READY_FOR_BUILD),
+                collection_checkpoint_path=str(checkpoint),
+            ),
+            _job(2, phase=BatchJobPhase.READY_FOR_BUILD),
+        ),
+    )
+    first_started = threading.Event()
+    second_started = threading.Event()
+    release = threading.Event()
+
+    def runner(job: WebBatchJob) -> BatchJobResult:
+        if job.position == 1:
+            first_started.set()
+            assert release.wait(3)
+        else:
+            second_started.set()
+        return BatchJobResult(status=BatchJobStatus.COMPLETE)
+
+    pool = DurableWorkerPool(
+        repository=repository,
+        runner=runner,
+        worker_prefix="tenable-build",
+        phases=(BatchJobPhase.READY_FOR_BUILD,),
+        workers=1,
+        poll_interval=0.01,
+    )
+    try:
+        assert first_started.wait(3)
+        paused = repository.request_action(UUID(int=1), BatchAction.PAUSE)
+        assert paused.status is BatchStatus.PAUSE_REQUESTED
+        assert not second_started.wait(0.2)
+        running = repository.list_batch_jobs(UUID(int=1))[0]
+        assert running.status is BatchJobStatus.RUNNING
+        assert running.collection_checkpoint_path == str(checkpoint)
+    finally:
+        release.set()
+        pool.close()
+
+    jobs = repository.list_batch_jobs(UUID(int=1))
+    assert jobs[0].status is BatchJobStatus.COMPLETE
+    assert jobs[0].collection_checkpoint_path == str(checkpoint)
+    assert jobs[1].status is BatchJobStatus.QUEUED
 
 
 def test_legacy_executor_can_run_without_worker_and_forward_progress(tmp_path) -> None:
