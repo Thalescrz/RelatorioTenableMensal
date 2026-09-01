@@ -1856,3 +1856,81 @@ class CliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+def test_import_web_batch_recovery_is_dry_run_by_default() -> None:
+    from tests.test_web_batch_recovery_import import _snapshot
+
+    with tempfile.TemporaryDirectory() as directory_name:
+        snapshot = Path(directory_name) / "recovery.json"
+        snapshot.write_text(json.dumps(_snapshot()), encoding="utf-8")
+        stdout = io.StringIO()
+        with (
+            patch.object(
+                cli_module,
+                "_load_database_config",
+                side_effect=AssertionError("dry-run nao deve acessar o banco"),
+            ),
+            contextlib.redirect_stdout(stdout),
+        ):
+            result = main(
+                [
+                    "import-web-batch-recovery",
+                    "--snapshot",
+                    str(snapshot),
+                    "--dry-run",
+                ]
+            )
+
+    assert result == 0
+    payload = json.loads(stdout.getvalue().splitlines()[-1])
+    assert payload == {
+        "status": "DRY_RUN",
+        "batch_status": "PAUSED",
+        "counts": {
+            "COMPLETE": 1,
+            "FAILED": 1,
+            "INTERRUPTED": 1,
+            "QUEUED": 1,
+        },
+    }
+
+
+def test_import_web_batch_recovery_apply_uses_postgresql_repository() -> None:
+    from tests.test_web_batch_recovery_import import _snapshot
+    from tenable_reports.application.web_batches_memory import (
+        InMemoryWebBatchRepository,
+    )
+
+    with tempfile.TemporaryDirectory() as directory_name:
+        snapshot = Path(directory_name) / "recovery.json"
+        snapshot.write_text(json.dumps(_snapshot()), encoding="utf-8")
+        repository = InMemoryWebBatchRepository()
+        stdout = io.StringIO()
+        with (
+            patch.object(cli_module, "_load_database_config", return_value=Mock()),
+            patch.object(cli_module, "PostgresDatabase", return_value=Mock()),
+            patch.object(
+                cli_module,
+                "PostgresWebBatchRepository",
+                return_value=repository,
+            ),
+            contextlib.redirect_stdout(stdout),
+        ):
+            result = main(
+                [
+                    "import-web-batch-recovery",
+                    "--snapshot",
+                    str(snapshot),
+                    "--database-env-file",
+                    "database.env",
+                    "--apply",
+                ]
+            )
+
+    assert result == 0
+    payload = json.loads(stdout.getvalue().splitlines()[-1])
+    assert payload["status"] == "APPLIED"
+    assert payload["batch_status"] == "PAUSED"
+    assert payload["counts"]["INTERRUPTED"] == 1
+    assert "client_ids" not in payload
+    assert len(repository.list_batches()) == 1

@@ -94,6 +94,10 @@ from tenable_reports.application.postgresql_migration import (
     migrate_legacy_state,
 )
 from tenable_reports.application.report_main_backfill import plan_main_backfill
+from tenable_reports.application.web_batch_recovery_import import (
+    apply_web_batch_recovery,
+    plan_web_batch_recovery,
+)
 from tenable_reports.application.orchestration import (
     OrchestrationRequest,
     load_orchestration_config,
@@ -175,6 +179,9 @@ from tenable_reports.infrastructure.report_registry_postgresql import (
 )
 from tenable_reports.infrastructure.was_recovery_postgresql import (
     PostgresWasRecoveryRepository,
+)
+from tenable_reports.infrastructure.web_batches_postgresql import (
+    PostgresWebBatchRepository,
 )
 from tenable_reports.domain.execution_control import ExecutionInterruptedError
 from tenable_reports.domain.report_reference import (
@@ -2904,6 +2911,24 @@ def command_database_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_import_web_batch_recovery(args: argparse.Namespace) -> int:
+    plan = plan_web_batch_recovery(args.snapshot)
+    status = "DRY_RUN"
+    if args.apply:
+        config = _load_database_config(args.database_env_file, required=True)
+        if config is None:
+            raise EnvironmentError("Configuracao PostgreSQL ausente.")
+        repository = PostgresWebBatchRepository(PostgresDatabase(config))
+        apply_web_batch_recovery(plan, repository)
+        status = "APPLIED"
+    print(json.dumps({
+        "status": status,
+        "batch_status": plan.batch.status.value,
+        "counts": dict(plan.counts),
+    }, ensure_ascii=False))
+    return 0
+
+
 def command_backfill_report_main(args: argparse.Namespace) -> int:
     config = _load_database_config(args.database_env_file, required=True)
     if config is None:
@@ -3584,6 +3609,32 @@ def build_parser() -> argparse.ArgumentParser:
         "--database-env-file", default="credentials/database.env"
     )
     database_status.set_defaults(handler=command_database_status)
+
+    import_recovery = subparsers.add_parser(
+        "import-web-batch-recovery",
+        help="Importa uma vez um snapshot legado de lote web interrompido.",
+    )
+    import_recovery.add_argument("--snapshot", required=True)
+    import_recovery.add_argument(
+        "--database-env-file", default="credentials/database.env"
+    )
+    import_recovery_mode = import_recovery.add_mutually_exclusive_group()
+    import_recovery_mode.add_argument(
+        "--dry-run",
+        dest="apply",
+        action="store_false",
+        help="Valida e mostra apenas totais por estado (padrao).",
+    )
+    import_recovery_mode.add_argument(
+        "--apply",
+        dest="apply",
+        action="store_true",
+        help="Persiste o lote recuperado no PostgreSQL.",
+    )
+    import_recovery.set_defaults(
+        apply=False,
+        handler=command_import_web_batch_recovery,
+    )
 
     backfill_main = subparsers.add_parser(
         "backfill-report-main",

@@ -91,6 +91,22 @@ class InMemoryWebBatchRepository(WebBatchRepository):
             )
             return stored_batch
 
+    def import_recovery_batch(
+        self,
+        batch: WebBatch,
+        jobs: Sequence[WebBatchJob],
+        event: WebBatchEvent,
+    ) -> WebBatch:
+        """Atomically persist the recovered batch and its import audit event."""
+
+        with self._lock:
+            existing = self._batches.get(batch.id)
+            if existing is not None:
+                return existing
+            stored = self.create_batch(batch, jobs)
+            self.append_event(event)
+            return stored
+
     def get_batch(self, batch_id: UUID) -> WebBatch | None:
         with self._lock:
             return self._batches.get(batch_id)

@@ -171,6 +171,130 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 ).fetchone()
         return _batch_from_row(row)
 
+    def import_recovery_batch(
+        self,
+        batch: WebBatch,
+        jobs: Sequence[WebBatchJob],
+        event: WebBatchEvent,
+    ) -> WebBatch:
+        """Persist one recovered batch, its jobs and audit in one transaction."""
+
+        assert_sanitized_payload(batch.options, path="batch.options")
+        assert_sanitized_payload(event.payload, path="event.payload")
+        if event.batch_id != batch.id:
+            raise ValueError("O evento de recuperacao pertence a outro lote.")
+        if any(job.batch_id != batch.id for job in jobs):
+            raise ValueError("Todos os trabalhos precisam pertencer ao lote recuperado.")
+        for job in jobs:
+            assert_sanitized_payload(job.payload, path="job.payload")
+
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                insert into {SCHEMA_NAME}.web_batches (
+                    id, idempotency_key, kind, status, options,
+                    source_batch_id, requested_action, created_at,
+                    started_at, ended_at
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                on conflict (idempotency_key) do nothing
+                returning {_BATCH_COLUMNS}
+                """,
+                (
+                    batch.id,
+                    batch.idempotency_key,
+                    batch.kind,
+                    batch.status.value,
+                    _jsonb(dict(batch.options)),
+                    batch.source_batch_id,
+                    batch.requested_action.value if batch.requested_action else None,
+                    batch.created_at,
+                    batch.started_at,
+                    batch.ended_at,
+                ),
+            ).fetchone()
+            if row is None:
+                existing = connection.execute(
+                    f"""
+                    select {_BATCH_COLUMNS}
+                    from {SCHEMA_NAME}.web_batches
+                    where idempotency_key = %s
+                    """,
+                    (batch.idempotency_key,),
+                ).fetchone()
+                if existing is None or UUID(str(existing[0])) != batch.id:
+                    raise ValueError("Chave idempotente ja pertence a outro lote.")
+                return _batch_from_row(existing)
+
+            for job in jobs:
+                connection.execute(
+                    f"""
+                    insert into {SCHEMA_NAME}.web_batch_jobs (
+                        id, batch_id, client_id, position, status,
+                        attempt_number, payload, retry_of_batch_job_id,
+                        logical_job_id, run_id, exit_code, error_code,
+                        error_message, created_at, started_at, ended_at
+                    ) values (
+                        %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s
+                    )
+                    returning id
+                    """,
+                    (
+                        job.id,
+                        job.batch_id,
+                        job.client_id,
+                        job.position,
+                        job.status.value,
+                        job.attempt_number,
+                        _jsonb(dict(job.payload)),
+                        job.retry_of_batch_job_id,
+                        job.logical_job_id,
+                        job.run_id,
+                        job.exit_code,
+                        job.error_code,
+                        job.error_message,
+                        job.created_at,
+                        job.started_at,
+                        job.ended_at,
+                    ),
+                ).fetchone()
+            connection.execute(
+                f"""
+                insert into {SCHEMA_NAME}.web_batch_events (
+                    batch_id, event_type, actor, idempotency_key,
+                    payload, created_at
+                ) values (%s, %s, %s, %s, %s, %s)
+                returning id
+                """,
+                (
+                    batch.id,
+                    "BATCH_CREATED",
+                    event.actor,
+                    f"{event.idempotency_key}:batch-created",
+                    _jsonb({"job_count": len(jobs), "kind": batch.kind}),
+                    batch.created_at,
+                ),
+            ).fetchone()
+            connection.execute(
+                f"""
+                insert into {SCHEMA_NAME}.web_batch_events (
+                    batch_id, job_id, event_type, actor,
+                    idempotency_key, payload, created_at
+                ) values (%s, %s, %s, %s, %s, %s, %s)
+                returning id
+                """,
+                (
+                    event.batch_id,
+                    event.job_id,
+                    event.event_type,
+                    event.actor,
+                    event.idempotency_key,
+                    _jsonb(dict(event.payload)),
+                    event.created_at,
+                ),
+            ).fetchone()
+        return _batch_from_row(row)
+
     def get_batch(self, batch_id: UUID) -> WebBatch | None:
         with self.database.connection() as connection:
             row = connection.execute(
