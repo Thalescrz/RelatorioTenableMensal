@@ -50,6 +50,8 @@ class DurableDashboardJobQueue:
         self._active_lock = threading.RLock()
         self._active_job: WebBatchJob | None = None
         self.executor.progress_sink = self._persist_progress
+        self.executor.process_sink = self._persist_process
+        self.executor.fallback_sink = self._persist_fallback
         self._dispatcher = DurableJobQueue(
             repository=repository,
             runner=self._run_job,
@@ -300,11 +302,21 @@ class DurableDashboardJobQueue:
         self,
         batch_id: UUID | str,
         action: BatchAction,
+        *,
+        actor: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
     ) -> WebBatch:
         normalized_id = (
             batch_id if isinstance(batch_id, UUID) else UUID(str(batch_id))
         )
-        updated = self.repository.request_action(normalized_id, action)
+        updated = self.repository.request_action(
+            normalized_id,
+            action,
+            actor=actor,
+            reason=reason,
+            idempotency_key=idempotency_key,
+        )
         if action is BatchAction.STOP:
             for job in self.repository.list_batch_jobs(normalized_id):
                 if (
@@ -551,6 +563,31 @@ class DurableDashboardJobQueue:
                 job_id=active.id,
                 event_type="JOB_PROGRESS",
                 payload=dict(event),
+            )
+        )
+
+    def _persist_process(self, job_id: str, process_id: int) -> None:
+        with self._active_lock:
+            active = self._active_job
+        if active is None or active.id.hex != str(job_id):
+            return
+        self.repository.record_job_process(
+            active.id,
+            process_id,
+            control_file=active.control_file,
+        )
+
+    def _persist_fallback(self, job_id: str, process_id: int) -> None:
+        with self._active_lock:
+            active = self._active_job
+        if active is None or active.id.hex != str(job_id):
+            return
+        self.repository.append_event(
+            WebBatchEvent(
+                batch_id=active.batch_id,
+                job_id=active.id,
+                event_type="JOB_LOCAL_FALLBACK_TERMINATION",
+                payload={"process_id": int(process_id)},
             )
         )
 

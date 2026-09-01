@@ -133,13 +133,54 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 )
             )
 
+    def record_job_process(
+        self,
+        job_id: UUID,
+        process_id: int,
+        *,
+        control_file: str | None = None,
+    ) -> WebBatchJob:
+        normalized_process_id = int(process_id)
+        if normalized_process_id <= 0:
+            raise ValueError("process_id deve ser positivo.")
+        with self._lock:
+            current = self._jobs[job_id]
+            updated = replace(
+                current,
+                process_id=normalized_process_id,
+                control_file=control_file or current.control_file,
+            )
+            self._jobs[job_id] = updated
+            self._events.append(
+                WebBatchEvent(
+                    batch_id=current.batch_id,
+                    job_id=current.id,
+                    event_type="JOB_PROCESS_STARTED",
+                    payload={"process_id": normalized_process_id},
+                    created_at=_now(),
+                )
+            )
+            return updated
+
     def request_action(
         self,
         batch_id: UUID,
         action: BatchAction,
+        *,
+        actor: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
     ) -> WebBatch:
+        normalized_actor = str(actor or "").strip()[:200] or None
+        normalized_reason = str(reason or "").strip()[:500]
+        normalized_key = str(idempotency_key or "").strip()[:200] or None
         with self._lock:
             batch = self._batches[batch_id]
+            if normalized_key and any(
+                event.idempotency_key == normalized_key
+                for event in self._events
+            ):
+                return batch
             jobs = tuple(
                 job for job in self._jobs.values() if job.batch_id == batch_id
             )
@@ -244,7 +285,10 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                     payload={
                         "action": action.value,
                         "status": next_status.value,
+                        "reason": normalized_reason,
                     },
+                    actor=normalized_actor,
+                    idempotency_key=normalized_key,
                     created_at=changed_at,
                 )
             )

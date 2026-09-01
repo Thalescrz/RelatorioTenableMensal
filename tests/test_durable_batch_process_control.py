@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
+import time
 from pathlib import Path
 from uuid import UUID
 
@@ -16,7 +18,7 @@ from tenable_reports.domain.web_batches import (
 from tenable_reports.webapp.durable_dashboard_queue import (
     DurableDashboardJobQueue,
 )
-from tenable_reports.webapp.server import JobQueue
+from tenable_reports.webapp.server import JobQueue, _default_runner
 
 
 def _queue(tmp_path: Path, runner):
@@ -137,3 +139,70 @@ def test_exit_130_is_persisted_as_interrupted_instead_of_failed(
     assert result.exit_code == 130
     assert result.error_code == "INTERRUPTED_BY_USER"
 
+def test_default_runner_terminates_only_local_process_after_grace(
+    tmp_path: Path,
+) -> None:
+    started: list[int] = []
+    fallback: list[int] = []
+    before = time.monotonic()
+
+    completed = _default_runner(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        tmp_path,
+        cancellation_probe=lambda: True,
+        process_started_callback=started.append,
+        fallback_callback=fallback.append,
+        stop_grace_seconds=0.05,
+    )
+
+    assert completed.returncode != 0
+    assert len(started) == 1
+    assert fallback == started
+    assert time.monotonic() - before < 10
+
+
+def test_durable_queue_persists_process_and_fallback_event(
+    tmp_path: Path,
+) -> None:
+    def runner(
+        command,
+        cwd,
+        progress_callback=None,
+        cancellation_probe=None,
+        process_started_callback=None,
+        fallback_callback=None,
+    ):
+        assert callable(cancellation_probe)
+        assert cancellation_probe() is False
+        process_started_callback(4242)
+        fallback_callback(4242)
+        return subprocess.CompletedProcess(
+            command,
+            130,
+            stdout=json.dumps({"status": "INTERRUPTED"}),
+            stderr="",
+        )
+
+    repository, queue = _queue(tmp_path, runner)
+    try:
+        created = queue.enqueue(
+            ["client-a"],
+            {"mode": "manual", "days": 30},
+        )
+        batch_id = UUID(str(created[0]["batch_id"]))
+        claimed = repository.claim_next_job(worker_id="worker-control")
+        assert claimed is not None
+
+        result = queue._run_job(claimed)
+        stored = repository.list_batch_jobs(batch_id)[0]
+        events = repository.list_events(batch_id)
+    finally:
+        queue.close()
+
+    assert result.status is BatchJobStatus.INTERRUPTED
+    assert stored.process_id == 4242
+    assert any(
+        event.event_type == "JOB_LOCAL_FALLBACK_TERMINATION"
+        and event.payload == {"process_id": 4242}
+        for event in events
+    )

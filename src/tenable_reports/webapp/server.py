@@ -7,6 +7,7 @@ import os
 import queue
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from tenable_reports.application.execution_control import FileExecutionControl
 from tenable_reports.application.web_batches import (
     BatchClientConflictError,
     DerivedBatchRequest,
@@ -1013,13 +1015,49 @@ ProgressSink = Callable[[str, Mapping[str, Any]], None]
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
+def _terminate_local_process_tree(process: subprocess.Popen[str]) -> bool:
+    """Terminate only the local child tree; never call a remote API."""
+
+    if process.poll() is not None:
+        return False
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if process.poll() is None:
+            process.kill()
+        return True
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=2)
+    except (ProcessLookupError, subprocess.TimeoutExpired):
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    return True
+
+
 def _default_runner(
     command: Sequence[str],
     cwd: Path,
     progress_callback: ProgressCallback | None = None,
+    cancellation_probe: Callable[[], bool] | None = None,
+    process_started_callback: Callable[[int], None] | None = None,
+    fallback_callback: Callable[[int], None] | None = None,
+    stop_grace_seconds: float = 30.0,
 ) -> subprocess.CompletedProcess[str]:
     child_environment = os.environ.copy()
     child_environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+    process_options: dict[str, Any] = {}
+    if os.name == "nt":
+        process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        process_options["start_new_session"] = True
     process = subprocess.Popen(
         list(command),
         cwd=cwd,
@@ -1030,39 +1068,74 @@ def _default_runner(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        **process_options,
     )
+    if process_started_callback is not None:
+        try:
+            process_started_callback(process.pid)
+        except Exception:
+            pass
     stdout_parts: list[str] = []
     stderr_parts: list[str] = []
+    monitor_done = threading.Event()
 
     def drain_stderr() -> None:
         if process.stderr is not None:
             stderr_parts.extend(process.stderr)
 
-    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
-    stderr_thread.start()
-    if process.stdout is not None:
-        for line in process.stdout:
-            stdout_parts.append(line)
-            if progress_callback is None:
-                continue
+    def monitor_stop_request() -> None:
+        if cancellation_probe is None:
+            return
+        while not monitor_done.wait(0.2):
             try:
-                event = json.loads(line.strip())
-            except (json.JSONDecodeError, TypeError):
+                requested = cancellation_probe()
+            except Exception:
+                requested = False
+            if not requested:
                 continue
-            if (
-                isinstance(event, Mapping)
-                and event.get("event") in {
-                    "TAG_REPORT_PROGRESS",
-                    "TENABLE_EXPORT_PROGRESS",
-                    "TENABLE_CLOUD_PROGRESS",
-                }
-            ):
+            deadline = time.monotonic() + max(0.0, float(stop_grace_seconds))
+            while process.poll() is None and time.monotonic() < deadline:
+                if monitor_done.wait(0.1):
+                    return
+            if process.poll() is None and _terminate_local_process_tree(process):
+                if fallback_callback is not None:
+                    try:
+                        fallback_callback(process.pid)
+                    except Exception:
+                        pass
+            return
+
+    stderr_thread = threading.Thread(target=drain_stderr, daemon=True)
+    stop_thread = threading.Thread(target=monitor_stop_request, daemon=True)
+    stderr_thread.start()
+    stop_thread.start()
+    try:
+        if process.stdout is not None:
+            for line in process.stdout:
+                stdout_parts.append(line)
+                if progress_callback is None:
+                    continue
                 try:
-                    progress_callback(event)
-                except Exception:
-                    pass
-    return_code = process.wait(timeout=4 * 60 * 60)
-    stderr_thread.join()
+                    event = json.loads(line.strip())
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if (
+                    isinstance(event, Mapping)
+                    and event.get("event") in {
+                        "TAG_REPORT_PROGRESS",
+                        "TENABLE_EXPORT_PROGRESS",
+                        "TENABLE_CLOUD_PROGRESS",
+                    }
+                ):
+                    try:
+                        progress_callback(event)
+                    except Exception:
+                        pass
+        return_code = process.wait(timeout=4 * 60 * 60)
+    finally:
+        monitor_done.set()
+        stop_thread.join(timeout=2)
+        stderr_thread.join(timeout=2)
     return subprocess.CompletedProcess(
         list(command), return_code,
         stdout="".join(stdout_parts), stderr="".join(stderr_parts),
@@ -1074,17 +1147,32 @@ def _run_web_command(
     command: Sequence[str],
     cwd: Path,
     progress_callback: ProgressCallback,
+    *,
+    cancellation_probe: Callable[[], bool] | None = None,
+    process_started_callback: Callable[[int], None] | None = None,
+    fallback_callback: Callable[[int], None] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
-        parameters = inspect.signature(runner).parameters.values()
+        parameters = tuple(inspect.signature(runner).parameters.values())
     except (TypeError, ValueError):
         parameters = ()
-    if any(
-        item.name == "progress_callback"
-        or item.kind is inspect.Parameter.VAR_KEYWORD
-        for item in parameters
-    ):
-        return runner(command, cwd, progress_callback=progress_callback)
+    names = {item.name for item in parameters}
+    accepts_keywords = any(
+        item.kind is inspect.Parameter.VAR_KEYWORD for item in parameters
+    )
+    optional_values = {
+        "progress_callback": progress_callback,
+        "cancellation_probe": cancellation_probe,
+        "process_started_callback": process_started_callback,
+        "fallback_callback": fallback_callback,
+    }
+    keyword_arguments = {
+        name: value
+        for name, value in optional_values.items()
+        if accepts_keywords or name in names
+    }
+    if keyword_arguments:
+        return runner(command, cwd, **keyword_arguments)
     positional = [
         item for item in parameters
         if item.kind in {
@@ -1097,7 +1185,6 @@ def _run_web_command(
     ):
         return runner(command, cwd, progress_callback)
     return runner(command, cwd)
-
 
 class JobQueue:
     def __init__(
@@ -1113,6 +1200,8 @@ class JobQueue:
         self.config_path = config_path
         self.runner = runner
         self.progress_sink = progress_sink
+        self.process_sink: Callable[[str, int], None] | None = None
+        self.fallback_sink: Callable[[str, int], None] | None = None
         self._pending: queue.Queue[str] = queue.Queue()
         self._jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
@@ -1653,8 +1742,35 @@ class JobQueue:
                         92, 45 + round(45 * current / total)
                     )
 
+            control_file = str(job.get("_job_control_file") or "")
+            control = FileExecutionControl(control_file) if control_file else None
+
+            def process_started(process_id: int) -> None:
+                with self._lock:
+                    current_job = self._jobs.get(job_id)
+                    if current_job is not None:
+                        current_job["process_id"] = process_id
+                if self.process_sink is not None:
+                    self.process_sink(job_id, process_id)
+
+            def fallback_terminated(process_id: int) -> None:
+                with self._lock:
+                    current_job = self._jobs.get(job_id)
+                    if current_job is not None:
+                        current_job["fallback_terminated"] = True
+                if self.fallback_sink is not None:
+                    self.fallback_sink(job_id, process_id)
+
             completed = _run_web_command(
-                self.runner, command, self.project_root, update_progress
+                self.runner,
+                command,
+                self.project_root,
+                update_progress,
+                cancellation_probe=(
+                    control.is_stop_requested if control is not None else None
+                ),
+                process_started_callback=process_started,
+                fallback_callback=fallback_terminated,
             )
             payload: dict[str, Any] = {}
             for line in reversed((completed.stdout or "").splitlines()):
@@ -2237,6 +2353,10 @@ class DashboardApplication:
         self,
         batch_id: str,
         action: BatchAction,
+        *,
+        actor: str,
+        reason: str,
+        idempotency_key: str,
     ) -> dict[str, Any]:
         request_action = getattr(self.jobs, "request_action", None)
         if not callable(request_action):
@@ -2797,9 +2917,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         raise ValueError(
                             f'Digite exatamente "{expected}" para confirmar.'
                         )
+                idempotency_key = str(
+                    payload.get("idempotency_key") or ""
+                ).strip()
+                if not idempotency_key:
+                    raise ValueError(
+                        "A chave idempotente da acao de lote e obrigatoria."
+                    )
                 result = self.app.request_batch_action(
                     batch_id,
                     action,
+                    actor=str(payload.get("actor") or "")[:200],
+                    reason=str(payload.get("reason") or "")[:500],
+                    idempotency_key=idempotency_key[:200],
                 )
                 self._json(HTTPStatus.OK, result)
                 return

@@ -96,8 +96,10 @@ def _event_from_row(row: Sequence[Any]) -> WebBatchEvent:
         batch_id=UUID(str(row[0])),
         job_id=UUID(str(row[1])) if row[1] is not None else None,
         event_type=str(row[2]),
-        payload=dict(row[3] or {}),
-        created_at=_iso(row[4]),
+        actor=str(row[3]) if row[3] is not None else None,
+        idempotency_key=str(row[4]) if row[4] is not None else None,
+        payload=dict(row[5] or {}),
+        created_at=_iso(row[6]),
     )
 
 
@@ -330,11 +332,58 @@ class PostgresWebBatchRepository(WebBatchRepository):
             ).fetchall()
         return tuple(_job_from_row(row) for row in rows)
 
+    def record_job_process(
+        self,
+        job_id: UUID,
+        process_id: int,
+        *,
+        control_file: str | None = None,
+    ) -> WebBatchJob:
+        normalized_process_id = int(process_id)
+        if normalized_process_id <= 0:
+            raise ValueError("process_id deve ser positivo.")
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                update {SCHEMA_NAME}.web_batch_jobs
+                set process_id = %s,
+                    control_file = coalesce(%s, control_file)
+                where id = %s
+                returning {_JOB_COLUMNS}
+                """,
+                (normalized_process_id, control_file, job_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Trabalho de lote nao encontrado.")
+            job = _job_from_row(row)
+            connection.execute(
+                f"""
+                insert into {SCHEMA_NAME}.web_batch_events (
+                    batch_id, job_id, event_type, payload
+                ) values (%s, %s, %s, %s)
+                returning id
+                """,
+                (
+                    job.batch_id,
+                    job.id,
+                    "JOB_PROCESS_STARTED",
+                    _jsonb({"process_id": normalized_process_id}),
+                ),
+            ).fetchone()
+        return job
+
     def request_action(
         self,
         batch_id: UUID,
         action: BatchAction,
+        *,
+        actor: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
     ) -> WebBatch:
+        normalized_actor = str(actor or "").strip()[:200] or None
+        normalized_reason = str(reason or "").strip()[:500]
+        normalized_key = str(idempotency_key or "").strip()[:200] or None
         with self.database.connection() as connection:
             row = connection.execute(
                 f"""
@@ -475,17 +524,22 @@ class PostgresWebBatchRepository(WebBatchRepository):
             connection.execute(
                 f"""
                 insert into {SCHEMA_NAME}.web_batch_events (
-                    batch_id, event_type, payload
-                ) values (%s, %s, %s)
+                    batch_id, event_type, actor, idempotency_key, payload
+                ) values (%s, %s, %s, %s, %s)
+                on conflict (idempotency_key) where idempotency_key is not null
+                do nothing
                 returning id
                 """,
                 (
                     batch_id,
                     "BATCH_ACTION_APPLIED",
+                    normalized_actor,
+                    normalized_key,
                     _jsonb(
                         {
                             "action": action.value,
                             "status": next_status.value,
+                            "reason": normalized_reason,
                         }
                     ),
                 ),
@@ -777,7 +831,8 @@ class PostgresWebBatchRepository(WebBatchRepository):
         with self.database.connection() as connection:
             rows = connection.execute(
                 f"""
-                select batch_id, job_id, event_type, payload, created_at
+                select batch_id, job_id, event_type, actor, idempotency_key,
+                       payload, created_at
                 from {SCHEMA_NAME}.web_batch_events
                 where batch_id = %s
                 order by id

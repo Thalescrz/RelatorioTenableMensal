@@ -203,6 +203,8 @@ def test_repository_appends_and_lists_immutable_events() -> None:
                         UUID(int=1),
                         UUID(int=11),
                         "JOB_PROGRESS",
+                        "worker-local",
+                        "event:progress:fixture",
                         {"completed_chunks": 2, "total_chunks": 3},
                         "2026-08-31T12:05:00Z",
                     ),
@@ -224,6 +226,8 @@ def test_repository_appends_and_lists_immutable_events() -> None:
     assert len(events) == 1
     assert events[0].event_type == "JOB_PROGRESS"
     assert events[0].payload == {"completed_chunks": 2, "total_chunks": 3}
+    assert events[0].actor == "worker-local"
+    assert events[0].idempotency_key == "event:progress:fixture"
     list_sql, list_params = database.connection_value.calls[1]
     assert "order by id" in list_sql.lower()
     assert list_params == (UUID(int=1),)

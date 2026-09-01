@@ -207,3 +207,34 @@ def test_domain_accepts_immediate_pause_and_stop_without_active_job() -> None:
         BatchStatus.PAUSE_REQUESTED,
         BatchStatus.STOPPED,
     ) is BatchStatus.STOPPED
+
+def test_action_event_preserves_actor_reason_and_idempotency() -> None:
+    repository = _repository(
+        batch_status=BatchStatus.QUEUED,
+        job_statuses=(BatchJobStatus.QUEUED,),
+    )
+
+    repository.request_action(
+        BATCH_ID,
+        BatchAction.PAUSE,
+        actor="analista-local",
+        reason="validacao operacional",
+        idempotency_key="action:pause:fixture",
+    )
+    repository.request_action(
+        BATCH_ID,
+        BatchAction.PAUSE,
+        actor="analista-local",
+        reason="validacao operacional",
+        idempotency_key="action:pause:fixture",
+    )
+
+    events = [
+        event
+        for event in repository.list_events(BATCH_ID)
+        if event.event_type == "BATCH_ACTION_APPLIED"
+    ]
+    assert len(events) == 1
+    assert events[0].actor == "analista-local"
+    assert events[0].idempotency_key == "action:pause:fixture"
+    assert events[0].payload["reason"] == "validacao operacional"

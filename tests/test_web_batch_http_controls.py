@@ -14,7 +14,7 @@ from tenable_reports.webapp.server import DashboardHTTPServer
 
 class _BatchApp:
     def __init__(self) -> None:
-        self.actions: list[tuple[UUID, BatchAction]] = []
+        self.actions: list[tuple[UUID, BatchAction, str, str, str]] = []
         self.derivations = []
         self.conflict = False
 
@@ -25,8 +25,18 @@ class _BatchApp:
             "events": [],
         }
 
-    def request_batch_action(self, batch_id: str, action: BatchAction):
-        self.actions.append((UUID(str(batch_id)), action))
+    def request_batch_action(
+        self,
+        batch_id: str,
+        action: BatchAction,
+        *,
+        actor: str,
+        reason: str,
+        idempotency_key: str,
+    ):
+        self.actions.append(
+            (UUID(str(batch_id)), action, actor, reason, idempotency_key)
+        )
         return {
             "batch": {"id": str(batch_id), "status": action.value},
             "jobs": [],
@@ -89,11 +99,13 @@ def test_batch_action_routes_are_local_writes(
 ) -> None:
     app, base = batch_server
     batch_id = UUID(int=901)
-    body = (
-        {"confirmation": f"PARAR {str(batch_id)[:8]}"}
-        if action is BatchAction.STOP
-        else {}
-    )
+    body = {
+        "idempotency_key": f"fixture:{route}",
+        "actor": "analista-local",
+        "reason": "teste local",
+    }
+    if action is BatchAction.STOP:
+        body["confirmation"] = f"PARAR {str(batch_id)[:8]}"
     request = Request(
         f"{base}/api/batches/{batch_id}/{route}",
         data=json.dumps(body).encode("utf-8"),
@@ -109,7 +121,9 @@ def test_batch_action_routes_are_local_writes(
 
     assert response.status == 200
     assert payload["batch"]["status"] == action.value
-    assert app.actions == [(batch_id, action)]
+    assert app.actions == [
+        (batch_id, action, "analista-local", "teste local", f"fixture:{route}")
+    ]
 
 @pytest.mark.parametrize(
     ("route", "kind"),
@@ -199,3 +213,22 @@ def test_stop_requires_short_batch_confirmation(batch_server) -> None:
     assert captured.value.code == 400
     payload = json.loads(captured.value.read().decode("utf-8"))
     assert f"PARAR {str(batch_id)[:8]}" in payload["error"]
+
+def test_batch_action_requires_idempotency_key(batch_server) -> None:
+    from urllib.error import HTTPError
+
+    _app, base = batch_server
+    batch_id = UUID(int=906)
+    request = Request(
+        f"{base}/api/batches/{batch_id}/pause",
+        data=json.dumps({"actor": "analista-local", "reason": "teste"}).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "X-Tenable-UI": "1"},
+    )
+
+    with pytest.raises(HTTPError) as captured:
+        urlopen(request, timeout=3)
+
+    assert captured.value.code == 400
+    payload = json.loads(captured.value.read().decode("utf-8"))
+    assert "idempot" in payload["error"].lower()

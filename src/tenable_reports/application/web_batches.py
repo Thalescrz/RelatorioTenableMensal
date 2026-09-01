@@ -108,10 +108,22 @@ class WebBatchRepository(Protocol):
 
     def list_batch_jobs(self, batch_id: UUID) -> tuple[WebBatchJob, ...]: ...
 
+    def record_job_process(
+        self,
+        job_id: UUID,
+        process_id: int,
+        *,
+        control_file: str | None = None,
+    ) -> WebBatchJob: ...
+
     def request_action(
         self,
         batch_id: UUID,
         action: BatchAction,
+        *,
+        actor: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
     ) -> WebBatch: ...
 
     def active_client_conflicts(
