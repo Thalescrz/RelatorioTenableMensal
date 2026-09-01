@@ -1056,3 +1056,20 @@ def test_manifest_preserves_legacy_cloud_variants_and_common_dataset(tmp_path: P
 
 if __name__ == "__main__":
     unittest.main()
+
+def test_client_command_propagates_job_control_file_to_run_client() -> None:
+    config = load_orchestration_config(EXAMPLE_CONFIG)
+    control_file = ROOT / "data" / "control" / "batch-job.json"
+
+    command = build_client_command(
+        config=config,
+        client=config.clients[0],
+        request=OrchestrationRequest(
+            mode="manual",
+            job_control_file=str(control_file),
+        ),
+        client_run_id="run-controlled",
+    )
+
+    index = command.index("--job-control-file")
+    assert command[index + 1] == str(control_file)

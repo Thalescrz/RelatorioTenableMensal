@@ -92,6 +92,7 @@ class OrchestrationRequest:
     historical_source: str | None = None
     force_live_collection: bool = False
     was_failure_policy: str | None = None
+    job_control_file: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,6 +201,9 @@ class OrchestrationResult:
             "planned": sum(item.status == "PLANNED" for item in self.clients),
             "waiting_was_decision": sum(
                 item.status == "WAITING_WAS_DECISION" for item in self.clients
+            ),
+            "interrupted": sum(
+                item.status == "INTERRUPTED" for item in self.clients
             ),
             "clients": [item.to_dict() for item in self.clients],
             "retention_candidates": list(self.retention_candidates),
@@ -490,6 +494,11 @@ def _validate_request(request: OrchestrationRequest) -> None:
         raise ValueError(
             "was_failure_policy deve ser wait, continue ou retry_then_continue."
         )
+    if (
+        request.job_control_file is not None
+        and not str(request.job_control_file).strip()
+    ):
+        raise ValueError("job_control_file nao pode ser vazio.")
 
 
 def _select_clients(
@@ -556,6 +565,8 @@ def build_client_command(
         "--was-failure-policy",
         was_failure_policy,
     ]
+    if request.job_control_file:
+        command.extend(("--job-control-file", str(request.job_control_file)))
     if request.force_live_collection:
         command.append("--force-live-collection")
     if request.vm_selective_mode:
@@ -782,7 +793,29 @@ def _execute_client(
             stdout_status = str(
                 (stdout_payload or {}).get("status") or ""
             ).strip().lower()
-            if stdout_status == "waiting_was_decision":
+            if completed.returncode == 130 or stdout_status == "interrupted":
+                error_code = "INTERRUPTED_BY_USER"
+                events.append({
+                    "timestamp": ended.isoformat(),
+                    "event": "CLIENT_INTERRUPTED",
+                    "client_id": client.client_id,
+                    "exit_code": completed.returncode,
+                    "duration_seconds": duration,
+                    "result": dict(stdout_payload or {}),
+                })
+                result = ClientExecutionResult(
+                    client_id=client.client_id,
+                    status="INTERRUPTED",
+                    exit_code=completed.returncode,
+                    command=command,
+                    started_at=started.isoformat(),
+                    ended_at=ended.isoformat(),
+                    duration_seconds=duration,
+                    payload=stdout_payload,
+                    error=None,
+                    log_path=log_path,
+                )
+            elif stdout_status == "waiting_was_decision":
                 events.append({
                     "timestamp": ended.isoformat(),
                     "event": "CLIENT_WAITING_WAS_DECISION",
@@ -1035,6 +1068,7 @@ def _execute_client_with_retry(
             "COMPLETE",
             "COMPLETE_WITH_WARNINGS",
             "WAITING_WAS_DECISION",
+            "INTERRUPTED",
         }:
             return last_result
         current_attempt = result.attempts[-1]
@@ -1190,6 +1224,7 @@ def run_orchestration(
         else ()
     )
     failed = sum(item.status == "FAILED" for item in results)
+    interrupted = sum(item.status == "INTERRUPTED" for item in results)
     waiting_was = sum(item.status == "WAITING_WAS_DECISION" for item in results)
     warned = sum(item.status == "COMPLETE_WITH_WARNINGS" for item in results)
     status = (
@@ -1198,6 +1233,7 @@ def run_orchestration(
         else (
             "PARTIAL_FAILURE"
             if failed
+            else "INTERRUPTED" if interrupted
             else "WAITING_WAS_DECISION" if waiting_was
             else "COMPLETE_WITH_WARNINGS" if warned else "COMPLETE"
         )

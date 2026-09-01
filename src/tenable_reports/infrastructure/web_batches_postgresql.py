@@ -206,6 +206,168 @@ class PostgresWebBatchRepository(WebBatchRepository):
             ).fetchall()
         return tuple(_job_from_row(row) for row in rows)
 
+    def request_action(
+        self,
+        batch_id: UUID,
+        action: BatchAction,
+    ) -> WebBatch:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                select {_BATCH_COLUMNS}
+                from {SCHEMA_NAME}.web_batches
+                where id = %s
+                for update
+                """,
+                (batch_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("Lote nao encontrado.")
+            batch = _batch_from_row(row)
+
+            if action is BatchAction.PAUSE:
+                if batch.status in {
+                    BatchStatus.PAUSE_REQUESTED,
+                    BatchStatus.PAUSED,
+                }:
+                    return batch
+                if batch.status not in {
+                    BatchStatus.QUEUED,
+                    BatchStatus.RUNNING,
+                }:
+                    raise ValueError("O lote nao pode ser pausado neste estado.")
+                active_row = connection.execute(
+                    f"""
+                    select exists (
+                        select 1
+                        from {SCHEMA_NAME}.web_batch_jobs
+                        where batch_id = %s
+                          and status in ('RUNNING', 'WAITING_WAS_DECISION')
+                    )
+                    """,
+                    (batch_id,),
+                ).fetchone()
+                has_active = bool(active_row and active_row[0])
+                next_status = (
+                    BatchStatus.PAUSE_REQUESTED
+                    if has_active
+                    else BatchStatus.PAUSED
+                )
+            elif action is BatchAction.RESUME:
+                if (
+                    batch.status is BatchStatus.RUNNING
+                    and batch.requested_action is None
+                ):
+                    return batch
+                if batch.status is not BatchStatus.PAUSED:
+                    raise ValueError("O lote nao pode ser retomado neste estado.")
+                queued_row = connection.execute(
+                    f"""
+                    select exists (
+                        select 1
+                        from {SCHEMA_NAME}.web_batch_jobs
+                        where batch_id = %s and status = 'QUEUED'
+                    )
+                    """,
+                    (batch_id,),
+                ).fetchone()
+                if not bool(queued_row and queued_row[0]):
+                    raise ValueError(
+                        "O lote nao possui trabalhos pendentes para retomar."
+                    )
+                next_status = BatchStatus.RUNNING
+            elif action is BatchAction.STOP:
+                if batch.status in {
+                    BatchStatus.STOP_REQUESTED,
+                    BatchStatus.STOPPED,
+                }:
+                    return batch
+                if batch.status not in {
+                    BatchStatus.QUEUED,
+                    BatchStatus.RUNNING,
+                    BatchStatus.PAUSE_REQUESTED,
+                    BatchStatus.PAUSED,
+                }:
+                    raise ValueError("O lote nao pode ser parado neste estado.")
+                changed_jobs = connection.execute(
+                    f"""
+                    update {SCHEMA_NAME}.web_batch_jobs
+                    set status = case
+                            when status = 'QUEUED'
+                                then 'CANCELLED_BY_USER'
+                            else 'INTERRUPT_REQUESTED'
+                        end,
+                        ended_at = case
+                            when status = 'QUEUED' then now()
+                            else ended_at
+                        end
+                    where batch_id = %s
+                      and status in (
+                          'QUEUED', 'RUNNING', 'WAITING_WAS_DECISION',
+                          'INTERRUPT_REQUESTED'
+                      )
+                    returning id, status
+                    """,
+                    (batch_id,),
+                ).fetchall()
+                has_active = any(
+                    str(changed[1]) == BatchJobStatus.INTERRUPT_REQUESTED.value
+                    for changed in changed_jobs
+                )
+                next_status = (
+                    BatchStatus.STOP_REQUESTED
+                    if has_active
+                    else BatchStatus.STOPPED
+                )
+            else:
+                raise ValueError(
+                    f"Acao de lote ainda nao suportada: {action}."
+                )
+
+            requested_action = (
+                None if action is BatchAction.RESUME else action.value
+            )
+            updated_row = connection.execute(
+                f"""
+                update {SCHEMA_NAME}.web_batches
+                set status = %s, requested_action = %s,
+                    ended_at = case
+                        when %s = 'STOPPED' then now()
+                        else ended_at
+                    end,
+                    version = version + 1
+                where id = %s
+                returning {_BATCH_COLUMNS}
+                """,
+                (
+                    next_status.value,
+                    requested_action,
+                    next_status.value,
+                    batch_id,
+                ),
+            ).fetchone()
+            if updated_row is None:
+                raise KeyError("Lote nao encontrado.")
+            connection.execute(
+                f"""
+                insert into {SCHEMA_NAME}.web_batch_events (
+                    batch_id, event_type, payload
+                ) values (%s, %s, %s)
+                returning id
+                """,
+                (
+                    batch_id,
+                    "BATCH_ACTION_APPLIED",
+                    _jsonb(
+                        {
+                            "action": action.value,
+                            "status": next_status.value,
+                        }
+                    ),
+                ),
+            ).fetchone()
+        return _batch_from_row(updated_row)
+
     def claim_next_job(self, *, worker_id: str) -> WebBatchJob | None:
         normalized_worker = str(worker_id or "").strip()
         if not normalized_worker:
@@ -290,6 +452,14 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 f"""
                 update {SCHEMA_NAME}.web_batches batch
                 set status = case
+                        when batch.status = 'STOP_REQUESTED' then 'STOPPED'
+                        when batch.status = 'PAUSE_REQUESTED'
+                             and exists (
+                                select 1
+                                from {SCHEMA_NAME}.web_batch_jobs child
+                                where child.batch_id = batch.id
+                                  and child.status = 'QUEUED'
+                             ) then 'PAUSED'
                         when exists (
                             select 1 from {SCHEMA_NAME}.web_batch_jobs child
                             where child.batch_id = batch.id
@@ -312,6 +482,7 @@ class PostgresWebBatchRepository(WebBatchRepository):
                         else 'COMPLETE'
                     end,
                     ended_at = case
+                        when batch.status = 'STOP_REQUESTED' then now()
                         when exists (
                             select 1 from {SCHEMA_NAME}.web_batch_jobs child
                             where child.batch_id = batch.id

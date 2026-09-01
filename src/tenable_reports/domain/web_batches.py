@@ -67,12 +67,18 @@ RETRYABLE_BATCH_JOB_STATUSES = frozenset(
 
 _ALLOWED_BATCH_TRANSITIONS: Mapping[BatchStatus, frozenset[BatchStatus]] = {
     BatchStatus.QUEUED: frozenset(
-        {BatchStatus.RUNNING, BatchStatus.STOP_REQUESTED}
+        {
+            BatchStatus.RUNNING,
+            BatchStatus.PAUSED,
+            BatchStatus.STOP_REQUESTED,
+            BatchStatus.STOPPED,
+        }
     ),
     BatchStatus.RUNNING: frozenset(
         {
             BatchStatus.PAUSE_REQUESTED,
             BatchStatus.STOP_REQUESTED,
+            BatchStatus.STOPPED,
             BatchStatus.COMPLETE,
             BatchStatus.COMPLETE_WITH_FAILURES,
             BatchStatus.COMPLETE_WITH_WARNINGS,
@@ -82,13 +88,18 @@ _ALLOWED_BATCH_TRANSITIONS: Mapping[BatchStatus, frozenset[BatchStatus]] = {
         {
             BatchStatus.PAUSED,
             BatchStatus.STOP_REQUESTED,
+            BatchStatus.STOPPED,
             BatchStatus.COMPLETE,
             BatchStatus.COMPLETE_WITH_FAILURES,
             BatchStatus.COMPLETE_WITH_WARNINGS,
         }
     ),
     BatchStatus.PAUSED: frozenset(
-        {BatchStatus.RUNNING, BatchStatus.STOP_REQUESTED}
+        {
+            BatchStatus.RUNNING,
+            BatchStatus.STOP_REQUESTED,
+            BatchStatus.STOPPED,
+        }
     ),
     BatchStatus.STOP_REQUESTED: frozenset({BatchStatus.STOPPED}),
     BatchStatus.STOPPED: frozenset(),

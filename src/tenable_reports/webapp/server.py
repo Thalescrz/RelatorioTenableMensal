@@ -90,6 +90,7 @@ from tenable_reports.infrastructure.web_batches_postgresql import (
     PostgresWebBatchRepository,
 )
 from tenable_reports.domain.report_reference import reference_key_for_candidate
+from tenable_reports.domain.web_batches import BatchAction
 from tenable_reports.infrastructure.tenable_cloud.client import (
     CloudGraphQLClient,
     CloudGraphQLConfig,
@@ -1538,6 +1539,10 @@ class JobQueue:
                     "1",
                     "--confirm-live-api",
                 ]
+                if job.get("_job_control_file"):
+                    command.extend((
+                        "--job-control-file", str(job["_job_control_file"])
+                    ))
                 if job.get("force_live_collection"):
                     command.append("--force-live-collection")
                 if job.get("vm_selective_mode"):
@@ -1660,6 +1665,7 @@ class JobQueue:
                 job = self._jobs[job_id]
                 job["ended_at"] = _utc_now()
                 job["progress"] = 100
+                job["exit_code"] = completed.returncode
                 job["run_id"] = payload.get("run_id") or job.get("run_id")
                 client_payloads = [
                     item.get("payload")
@@ -1734,6 +1740,10 @@ class JobQueue:
                 )
                 if waiting_payload is not None:
                     job["status"] = "WAITING_WAS_DECISION"
+                    job["error"] = None
+                elif completed.returncode == 130:
+                    job["status"] = "INTERRUPTED"
+                    job["error_code"] = "INTERRUPTED_BY_USER"
                     job["error"] = None
                 elif completed.returncode == 0:
                     job["status"] = "COMPLETE"
@@ -2207,6 +2217,23 @@ class DashboardApplication:
             created.extend(self.jobs.enqueue([client_id], client_request))
         return created
 
+    def batch_state(self, batch_id: str) -> dict[str, Any]:
+        snapshot = getattr(self.jobs, "batch_snapshot", None)
+        if not callable(snapshot):
+            raise RuntimeError("Controle duravel de lotes indisponivel.")
+        return snapshot(batch_id)
+
+    def request_batch_action(
+        self,
+        batch_id: str,
+        action: BatchAction,
+    ) -> dict[str, Any]:
+        request_action = getattr(self.jobs, "request_action", None)
+        if not callable(request_action):
+            raise RuntimeError("Controle duravel de lotes indisponivel.")
+        request_action(batch_id, action)
+        return self.batch_state(batch_id)
+
     def cancel_export_and_retry(
         self,
         *,
@@ -2597,6 +2624,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/state":
             self._json(HTTPStatus.OK, self.app.state())
             return
+        match = re.fullmatch(r"/api/batches/([^/]+)", parsed.path)
+        if match:
+            try:
+                self._json(
+                    HTTPStatus.OK,
+                    self.app.batch_state(unquote(match.group(1))),
+                )
+            except KeyError as exc:
+                self._json_error(
+                    HTTPStatus.NOT_FOUND,
+                    _safe_error(str(exc), limit=300),
+                )
+            except (ValueError, RuntimeError) as exc:
+                self._json_error(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    _safe_error(str(exc), limit=300),
+                )
+            return
         if parsed.path == "/api/storage":
             try:
                 self._json(HTTPStatus.OK, self.app.storage_status())
@@ -2682,6 +2727,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         try:
             payload = self._request_json()
+            match = re.fullmatch(
+                r"/api/batches/([^/]+)/(pause|resume|stop)",
+                parsed.path,
+            )
+            if match:
+                action = BatchAction(match.group(2).upper())
+                result = self.app.request_batch_action(
+                    unquote(match.group(1)),
+                    action,
+                )
+                self._json(HTTPStatus.OK, result)
+                return
             if parsed.path == "/api/clients":
                 client = self.app.config.add_client(payload)
                 self._json(HTTPStatus.CREATED, {"client": client})

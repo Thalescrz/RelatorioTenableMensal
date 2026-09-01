@@ -14,6 +14,7 @@ from tenable_reports.application.web_batches import (
     assert_sanitized_payload,
 )
 from tenable_reports.domain.web_batches import (
+    BatchAction,
     BatchJobStatus,
     BatchStatus,
     WebBatch,
@@ -116,6 +117,123 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 )
             )
 
+    def request_action(
+        self,
+        batch_id: UUID,
+        action: BatchAction,
+    ) -> WebBatch:
+        with self._lock:
+            batch = self._batches[batch_id]
+            jobs = tuple(
+                job for job in self._jobs.values() if job.batch_id == batch_id
+            )
+            if action is BatchAction.PAUSE:
+                if batch.status in {
+                    BatchStatus.PAUSE_REQUESTED,
+                    BatchStatus.PAUSED,
+                }:
+                    return batch
+                if batch.status not in {
+                    BatchStatus.QUEUED,
+                    BatchStatus.RUNNING,
+                }:
+                    raise ValueError("O lote nao pode ser pausado neste estado.")
+                has_active = any(
+                    job.status
+                    in {
+                        BatchJobStatus.RUNNING,
+                        BatchJobStatus.WAITING_WAS_DECISION,
+                    }
+                    for job in jobs
+                )
+                next_status = (
+                    BatchStatus.PAUSE_REQUESTED
+                    if has_active
+                    else BatchStatus.PAUSED
+                )
+            elif action is BatchAction.RESUME:
+                if (
+                    batch.status is BatchStatus.RUNNING
+                    and batch.requested_action is None
+                ):
+                    return batch
+                if batch.status is not BatchStatus.PAUSED:
+                    raise ValueError("O lote nao pode ser retomado neste estado.")
+                if not any(job.status is BatchJobStatus.QUEUED for job in jobs):
+                    raise ValueError(
+                        "O lote nao possui trabalhos pendentes para retomar."
+                    )
+                next_status = BatchStatus.RUNNING
+            elif action is BatchAction.STOP:
+                if batch.status in {
+                    BatchStatus.STOP_REQUESTED,
+                    BatchStatus.STOPPED,
+                }:
+                    return batch
+                if batch.status not in {
+                    BatchStatus.QUEUED,
+                    BatchStatus.RUNNING,
+                    BatchStatus.PAUSE_REQUESTED,
+                    BatchStatus.PAUSED,
+                }:
+                    raise ValueError("O lote nao pode ser parado neste estado.")
+                has_active = False
+                for job in jobs:
+                    if job.status in {
+                        BatchJobStatus.RUNNING,
+                        BatchJobStatus.WAITING_WAS_DECISION,
+                        BatchJobStatus.INTERRUPT_REQUESTED,
+                    }:
+                        has_active = True
+                        if job.status is not BatchJobStatus.INTERRUPT_REQUESTED:
+                            self._jobs[job.id] = replace(
+                                job,
+                                status=BatchJobStatus.INTERRUPT_REQUESTED,
+                            )
+                    elif job.status is BatchJobStatus.QUEUED:
+                        self._jobs[job.id] = replace(
+                            job,
+                            status=BatchJobStatus.CANCELLED_BY_USER,
+                            ended_at=_now(),
+                        )
+                next_status = (
+                    BatchStatus.STOP_REQUESTED
+                    if has_active
+                    else BatchStatus.STOPPED
+                )
+            else:
+                raise ValueError(
+                    f"Acao de lote ainda nao suportada: {action}."
+                )
+
+            changed_at = _now()
+            updated = replace(
+                batch,
+                status=next_status,
+                requested_action=(
+                    None if action is BatchAction.RESUME else action
+                ),
+                ended_at=(
+                    changed_at
+                    if next_status is BatchStatus.STOPPED
+                    else batch.ended_at
+                ),
+                version=batch.version + 1,
+            )
+            self._batches[batch_id] = updated
+            self._events.append(
+                WebBatchEvent(
+                    batch_id=batch_id,
+                    event_type="BATCH_ACTION_APPLIED",
+                    payload={
+                        "action": action.value,
+                        "status": next_status.value,
+                    },
+                    created_at=changed_at,
+                )
+            )
+            return updated
+
     def claim_next_job(self, *, worker_id: str) -> WebBatchJob | None:
         normalized_worker = str(worker_id or "").strip()
         if not normalized_worker:
@@ -177,13 +295,26 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 error_code=result.error_code,
                 error_message=result.error_message,
                 payload={**dict(current.payload), **dict(result.payload)},
-                ended_at=ended_at,
+                ended_at=(
+                    None
+                    if result.status is BatchJobStatus.WAITING_WAS_DECISION
+                    else ended_at
+                ),
             )
             self._jobs[job_id] = completed
             batch_jobs = self.list_batch_jobs(current.batch_id)
             batch = self._batches[current.batch_id]
             next_status = batch.status
-            if result.status in {
+            if batch.status is BatchStatus.STOP_REQUESTED:
+                next_status = BatchStatus.STOPPED
+            elif (
+                batch.status is BatchStatus.PAUSE_REQUESTED
+                and any(
+                    job.status is BatchJobStatus.QUEUED for job in batch_jobs
+                )
+            ):
+                next_status = BatchStatus.PAUSED
+            elif result.status in {
                 BatchJobStatus.WAITING_WAS_DECISION,
                 BatchJobStatus.INTERRUPTED,
             }:
@@ -213,6 +344,7 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                     ended_at
                     if next_status
                     in {
+                        BatchStatus.STOPPED,
                         BatchStatus.COMPLETE,
                         BatchStatus.COMPLETE_WITH_FAILURES,
                         BatchStatus.COMPLETE_WITH_WARNINGS,

@@ -7,11 +7,13 @@ from datetime import UTC, datetime
 from typing import Any, Mapping, Sequence
 from uuid import UUID, uuid4
 
+from tenable_reports.application.execution_control import FileExecutionControl
 from tenable_reports.application.web_batches import (
     BatchJobResult,
     WebBatchRepository,
 )
 from tenable_reports.domain.web_batches import (
+    BatchAction,
     BatchJobStatus,
     BatchStatus,
     WebBatch,
@@ -83,17 +85,44 @@ class DurableDashboardJobQueue:
             options={"requests": normalized_requests},
             created_at=created_at,
         )
-        jobs = tuple(
-            WebBatchJob(
-                id=UUID(hex=str(row["job_id"])),
+        scope_name = (
+            "automatic-monthly"
+            if str(created[0].get("mode") or "manual") == "automatic"
+            else "manual"
+        )
+
+        def durable_job(
+            position: int,
+            row: Mapping[str, Any],
+        ) -> WebBatchJob:
+            job_id = UUID(hex=str(row["job_id"]))
+            control_file = (
+                self.executor.project_root
+                / "data"
+                / scope_name
+                / "control"
+                / "web-batches"
+                / str(batch_id)
+                / f"{job_id.hex}.json"
+            ).resolve()
+            return WebBatchJob(
+                id=job_id,
                 batch_id=batch_id,
                 client_id=str(row["client_id"]),
                 position=position,
                 status=BatchJobStatus.QUEUED,
                 attempt_number=1,
-                payload={**dict(row), "batch_id": str(batch_id)},
+                payload={
+                    **dict(row),
+                    "batch_id": str(batch_id),
+                    "_job_control_file": str(control_file),
+                },
+                control_file=str(control_file),
                 created_at=str(row.get("created_at") or created_at),
             )
+
+        jobs = tuple(
+            durable_job(position, row)
             for position, row in enumerate(created, start=1)
         )
         try:
@@ -107,6 +136,98 @@ class DurableDashboardJobQueue:
             for row in self.snapshot()
             if UUID(hex=str(row["job_id"])) in created_ids
         ]
+    def request_action(
+        self,
+        batch_id: UUID | str,
+        action: BatchAction,
+    ) -> WebBatch:
+        normalized_id = (
+            batch_id if isinstance(batch_id, UUID) else UUID(str(batch_id))
+        )
+        updated = self.repository.request_action(normalized_id, action)
+        if action is BatchAction.STOP:
+            for job in self.repository.list_batch_jobs(normalized_id):
+                if (
+                    job.status is not BatchJobStatus.INTERRUPT_REQUESTED
+                    or not job.control_file
+                ):
+                    continue
+                try:
+                    FileExecutionControl(job.control_file).request_stop(
+                        reason="Solicitacao local do usuario para parar o lote."
+                    )
+                except Exception as exc:
+                    self.repository.append_event(
+                        WebBatchEvent(
+                            batch_id=normalized_id,
+                            job_id=job.id,
+                            event_type="JOB_CONTROL_WRITE_FAILED",
+                            payload={"message": str(exc)[:500]},
+                        )
+                    )
+                    raise RuntimeError(
+                        "A parada foi registrada, mas o sinal local nao pôde "
+                        "ser gravado."
+                    ) from exc
+        elif action is BatchAction.RESUME:
+            self._dispatcher.wake()
+        return updated
+
+    def batch_snapshot(self, batch_id: UUID | str) -> dict[str, Any]:
+        normalized_id = (
+            batch_id if isinstance(batch_id, UUID) else UUID(str(batch_id))
+        )
+        batch = self.repository.get_batch(normalized_id)
+        if batch is None:
+            raise KeyError("Lote nao encontrado.")
+        return {
+            "batch": {
+                "id": str(batch.id),
+                "kind": batch.kind,
+                "status": batch.status.value,
+                "requested_action": (
+                    batch.requested_action.value
+                    if batch.requested_action is not None
+                    else None
+                ),
+                "source_batch_id": (
+                    str(batch.source_batch_id)
+                    if batch.source_batch_id is not None
+                    else None
+                ),
+                "version": batch.version,
+                "created_at": batch.created_at,
+                "started_at": batch.started_at,
+                "ended_at": batch.ended_at,
+            },
+            "jobs": [
+                {
+                    "id": str(job.id),
+                    "client_id": job.client_id,
+                    "position": job.position,
+                    "status": job.status.value,
+                    "attempt_number": job.attempt_number,
+                    "run_id": job.run_id,
+                    "exit_code": job.exit_code,
+                    "error_code": job.error_code,
+                    "error_message": job.error_message,
+                    "created_at": job.created_at,
+                    "started_at": job.started_at,
+                    "ended_at": job.ended_at,
+                }
+                for job in self.repository.list_batch_jobs(normalized_id)
+            ],
+            "events": [
+                {
+                    "job_id": str(event.job_id) if event.job_id else None,
+                    "event_type": event.event_type,
+                    "payload": dict(event.payload),
+                    "created_at": event.created_at,
+                }
+                for event in self.repository.list_events(normalized_id)
+            ],
+        }
+
     def snapshot(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         queued_ids: list[str] = []
@@ -125,6 +246,13 @@ class DurableDashboardJobQueue:
                     {
                         "job_id": job.id.hex,
                         "batch_id": str(batch.id),
+                        "batch_status": batch.status.value,
+                        "batch_kind": batch.kind,
+                        "batch_requested_action": (
+                            batch.requested_action.value
+                            if batch.requested_action is not None
+                            else None
+                        ),
                         "client_id": job.client_id,
                         "status": job.status.value,
                         "started_at": job.started_at,
@@ -199,6 +327,8 @@ class DurableDashboardJobQueue:
         raw_status = str(result.get("status") or "FAILED").upper()
         if raw_status == "WAITING_WAS_DECISION":
             status = BatchJobStatus.WAITING_WAS_DECISION
+        elif raw_status == "INTERRUPTED" or int(result.get("exit_code") or 0) == 130:
+            status = BatchJobStatus.INTERRUPTED
         elif raw_status == "COMPLETE" and result.get("warnings"):
             status = BatchJobStatus.COMPLETE_WITH_WARNINGS
         elif raw_status == "COMPLETE":
@@ -207,11 +337,23 @@ class DurableDashboardJobQueue:
             status = BatchJobStatus.FAILED
         return BatchJobResult(
             status=status,
-            exit_code=0 if status in {
-                BatchJobStatus.COMPLETE,
-                BatchJobStatus.COMPLETE_WITH_WARNINGS,
-            } else 1,
-            error_code="UNEXPECTED" if status is BatchJobStatus.FAILED else None,
+            exit_code=(
+                0
+                if status in {
+                    BatchJobStatus.COMPLETE,
+                    BatchJobStatus.COMPLETE_WITH_WARNINGS,
+                }
+                else 130
+                if status is BatchJobStatus.INTERRUPTED
+                else int(result.get("exit_code") or 1)
+            ),
+            error_code=(
+                "INTERRUPTED_BY_USER"
+                if status is BatchJobStatus.INTERRUPTED
+                else "UNEXPECTED"
+                if status is BatchJobStatus.FAILED
+                else None
+            ),
             error_message=(
                 str(result.get("error") or "Falha operacional sem detalhe.")[:500]
                 if status is BatchJobStatus.FAILED

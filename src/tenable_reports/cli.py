@@ -2828,6 +2828,7 @@ def command_orchestrate(args: argparse.Namespace) -> int:
             historical_source=args.historical_source,
             force_live_collection=args.force_live_collection,
             was_failure_policy=getattr(args, "was_failure_policy", None),
+            job_control_file=getattr(args, "job_control_file", None),
         ),
         run_status=retention_state.get("run_status"),
         history_confirmed_run_ids=retention_state.get(
@@ -2850,6 +2851,8 @@ def command_orchestrate(args: argparse.Namespace) -> int:
         if operations is not None:
             operations.record_orchestration_manifest(result.manifest_path)
     print(json.dumps(result.to_dict(), ensure_ascii=False))
+    if result.status == "INTERRUPTED":
+        return 130
     return 1 if result.failed_count else 0
 
 
@@ -3543,6 +3546,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--force-live-collection",
         action="store_true",
         help="Ignora snapshot compacto exato e inicia uma nova coleta pela API.",
+    )
+    orchestrate.add_argument(
+        "--job-control-file",
+        help="Arquivo local repassado ao cliente para interrupcao cooperativa.",
     )
     orchestrate.set_defaults(apply_retention=True)
     orchestrate.add_argument("--confirm-live-api", action="store_true")
