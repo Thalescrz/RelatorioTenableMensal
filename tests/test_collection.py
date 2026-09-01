@@ -750,6 +750,36 @@ class CollectionTests(unittest.TestCase):
                     self.assertEqual(manifest["export_uuid"], "fixture-export")
                     self.assertEqual(manifest["origin"], "created")
 
+    def test_cancelled_provided_uuid_starts_new_export_before_waiting(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = StatusAwareResumeClient({
+            "status": "CANCELLED",
+            "chunks_available": [1],
+            "completed_chunks": 1,
+            "finished_chunks": 1,
+            "total_chunks": 1,
+            "failed_chunks": 0,
+            "cancelled_chunks": 0,
+        })
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = collect_vm_snapshot(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                output_root=directory,
+                run_id="run-retry-cancelled-provided",
+                logical_job_id="logical-july",
+                export_uuid="cancelled-export",
+            )
+
+            manifest = json.loads(result.raw_manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(client.status_calls, ["cancelled-export"])
+        self.assertNotEqual(client.start_arguments, {})
+        self.assertEqual(manifest["export_uuid"], "fixture-export")
+        self.assertEqual(manifest["origin"], "created")
+
     def test_partial_manifest_reuses_downloaded_chunk_on_retry(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
         first_client = IncrementalTimeoutCollectionClient()

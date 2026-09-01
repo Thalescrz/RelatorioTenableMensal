@@ -138,7 +138,9 @@ também um export que ainda estava em processamento sem criar uma operação
 duplicada.
 
 Antes de abrir um novo export VM para o mesmo trabalho lógico, a aplicação consulta
-o UUID preservado. Estados ativos continuam em acompanhamento; um estado
+o UUID preservado, inclusive quando a fila o fornece explicitamente à nova
+tentativa. Essa validação ocorre antes de aguardar ou baixar chunks. Estados ativos
+continuam em acompanhamento; um estado
 `FINISHED` reutiliza os chunks ainda disponíveis e os já persistidos. Um novo
 export só é aberto quando o anterior está terminal (`CANCELLED`, `FAILED` ou
 `ERROR`), não existe mais (HTTP 404) ou terminou sem que todos os chunks restantes

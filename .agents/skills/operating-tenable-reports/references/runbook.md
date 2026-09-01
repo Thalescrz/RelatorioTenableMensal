@@ -146,7 +146,9 @@ jobs fornecidos, preexistentes ou retomados.
 
 Não apague o manifesto parcial antes de diagnosticar, mesmo quando nenhum chunk
 chegou. Ele é criado ao receber o UUID e permite que a tentativa seguinte consulte
-o job remoto antes de abrir outro. Se estiver `PROCESSING` ou `QUEUED`, retome a
+o job remoto antes de abrir outro. A validação também ocorre quando a fila fornece
+o UUID explicitamente à retentativa, antes de aguardar ou baixar chunks. Se estiver
+`PROCESSING` ou `QUEUED`, retome a
 espera; se estiver `FINISHED`, baixe os chunks ainda disponíveis e reutilize os
 locais. Só abra um novo export quando o anterior estiver terminal, retornar HTTP
 404 ou tiver finalizado com chunks restantes já expirados. Não transforme

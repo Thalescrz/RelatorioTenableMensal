@@ -476,6 +476,13 @@ def collect_vm_snapshot(
     ):
         resumed_export_uuid = None
         resumed_chunks = {}
+    provided_export_uuid = export_uuid
+    if provided_export_uuid and not _resumable_export_is_available(
+        client,
+        provided_export_uuid,
+        {},
+    ):
+        provided_export_uuid = None
     start_arguments = {
         "filters": request.filters,
         "num_assets": request.num_assets,
@@ -484,8 +491,8 @@ def collect_vm_snapshot(
         "include_plugin_output": request.include_plugin_output,
         "properties": list(request.properties) or None,
     }
-    if export_uuid:
-        job = ExportJob(export_uuid=export_uuid, origin="provided")
+    if provided_export_uuid:
+        job = ExportJob(export_uuid=provided_export_uuid, origin="provided")
     elif resumed_export_uuid:
         job = ExportJob(export_uuid=resumed_export_uuid, origin="resumed")
     else:

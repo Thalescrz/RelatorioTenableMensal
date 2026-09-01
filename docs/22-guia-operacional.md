@@ -241,7 +241,8 @@ que chegam ao limite sem qualquer progresso. Um export reutilizado ou retomado n
 Depois de um timeout, preserve o diretório da tentativa. Mesmo com `0/N` chunks,
 o manifesto parcial contém o UUID necessário para salvar a operação. Na próxima
 tentativa do mesmo período e trabalho lógico, a aplicação consulta esse UUID antes
-de criar outro export:
+de criar outro export. A mesma verificação é aplicada quando a fila repassa o UUID
+explicitamente para a retentativa, antes de aguardar ou baixar chunks:
 
 - `PROCESSING` ou `QUEUED`: continua aguardando o mesmo job;
 - `FINISHED`: baixa os chunks ainda disponíveis e reaproveita os já persistidos;
