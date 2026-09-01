@@ -218,9 +218,11 @@ git commit -m "feat: persistir seleção explícita do lote"
 ### Task 4: Modal, filtros e administração de analistas
 
 **Files:**
+- Create: `src/tenable_reports/webapp/static/client_selection.js`
 - Modify: `src/tenable_reports/webapp/static/index.html`
 - Modify: `src/tenable_reports/webapp/static/app.js`
 - Modify: `src/tenable_reports/webapp/static/app.css`
+- Modify: `src/tenable_reports/webapp/server.py`
 - Modify: `tests/test_web_batch_ui.py`
 - Modify: `tests/test_webapp.py`
 
@@ -245,7 +247,11 @@ Run: `python -m pytest tests/test_web_batch_ui.py tests/test_webapp.py -q -k "an
 
 - [ ] **Step 3: Implementar UI mínima**
 
-`Gerar todos` passa a abrir modal com todos elegíveis marcados. Busca e filtro de analista combinam; marcar/desmarcar atua somente nos visíveis; seleção vazia desabilita confirmação. O dashboard oferece `Todos`, cada analista e `Sem responsável`.
+Os helpers puros ficam em `client_selection.js`, no formato UMD/CommonJS e
+carregado antes de `app.js`. `Gerar todos` passa a abrir modal com todos elegíveis
+marcados. Busca e filtro de analista combinam; marcar/desmarcar atua somente nos
+visíveis; seleção vazia desabilita confirmação. O dashboard oferece `Todos`, cada
+analista e `Sem responsável`.
 
 - [ ] **Step 4: Testar e validar JavaScript**
 

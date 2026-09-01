@@ -3174,7 +3174,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path.startswith("/static/"):
             name = parsed.path.removeprefix("/static/")
-            if name not in {"app.css", "app.js"}:
+            if name not in {"app.css", "app.js", "client_selection.js"}:
                 self._json_error(HTTPStatus.NOT_FOUND, "Arquivo nao encontrado.")
                 return
             self._send_static(name, mimetypes.guess_type(name)[0] or "text/plain")

@@ -178,6 +178,85 @@ class _ArchiveDashboardDatabase:
 
 
 class WebDashboardTests(unittest.TestCase):
+    def test_client_selection_static_asset_is_served_as_javascript(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+            )
+            app.config.add_client(
+                {
+                    "client_id": "cliente-fixture-privado",
+                    "display_name": "Cliente Fixture Privado",
+                    "access_key": "fixture-access-private",
+                    "secret_key": "fixture-secret-private",
+                }
+            )
+            client = LocalClient(app)
+            try:
+                status, headers, body = client.download(
+                    "/static/client_selection.js"
+                )
+            finally:
+                client.close()
+                app.jobs.close()
+
+        source = body.decode("utf-8")
+        self.assertEqual(status, 200)
+        self.assertIn("javascript", headers.get("Content-Type", "").lower())
+        self.assertIn("TenableClientSelection", source)
+        for private_value in (
+            "cliente-fixture-privado",
+            "Cliente Fixture Privado",
+            "fixture-access-private",
+            "fixture-secret-private",
+        ):
+            self.assertNotIn(private_value, source)
+
+    def test_state_exposes_sanitized_analysts_and_responsible_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+            analyst = app.config.create_analyst({"display_name": "Analista Um"})
+            analyst_id = analyst["analyst_id"]
+            app.config.add_client(
+                {
+                    "client_id": "cliente-vinculado",
+                    "display_name": "Cliente Vinculado",
+                    "responsible_analyst_id": analyst_id,
+                }
+            )
+            app.config.add_client(
+                {
+                    "client_id": "cliente-sem-responsavel",
+                    "display_name": "Cliente Sem Responsável",
+                }
+            )
+
+            payload = app.state()
+            serialized = json.dumps(payload, ensure_ascii=False).lower()
+
+            self.assertEqual(payload["analysts"][0]["analyst_id"], analyst_id)
+            clients = {client["client_id"]: client for client in payload["clients"]}
+            self.assertEqual(
+                clients["cliente-vinculado"]["responsible_analyst_id"],
+                analyst_id,
+            )
+            self.assertEqual(
+                clients["cliente-vinculado"]["responsible_analyst_name"],
+                "Analista Um",
+            )
+            self.assertIsNone(
+                clients["cliente-sem-responsavel"]["responsible_analyst_id"]
+            )
+            for forbidden_key in ("access_key", "secret_key", "password", "token"):
+                self.assertNotIn(f'"{forbidden_key}"', serialized)
+
     def test_generate_all_rejects_explicit_empty_client_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

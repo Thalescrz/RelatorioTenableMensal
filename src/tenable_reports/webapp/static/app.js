@@ -1,4 +1,5 @@
-const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "", selectedBatchId: null };
+const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue } = window.TenableClientSelection;
+const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "", selectedBatchId: null };
 const CLOUD_PROGRESS_EVENT = "TENABLE_CLOUD_PROGRESS";
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
@@ -226,10 +227,71 @@ function renderBatches() {
   document.querySelectorAll("[data-batch-action]").forEach(button => button.addEventListener("click", () => runBatchAction(button, batch, button.dataset.batchAction)));
 }
 
+function analystOptions(records) {
+  return records.map(analyst => `<option value="${escapeHtml(analyst.analyst_id)}">${escapeHtml(analyst.display_name)}</option>`).join("");
+}
+
+function populateAnalystControls() {
+  const analysts = state.data?.analysts || [];
+  const active = analysts.filter(analyst => analyst.active);
+  const filterOptions = `<option value="all">Todos os responsáveis</option><option value="unassigned">Sem responsável</option>${analystOptions(active)}`;
+  const dashboardFilter = $("#dashboard-analyst-filter");
+  dashboardFilter.innerHTML = filterOptions;
+  dashboardFilter.value = active.some(item => item.analyst_id === state.analystFilter) || ["all", "unassigned"].includes(state.analystFilter) ? state.analystFilter : "all";
+  state.analystFilter = dashboardFilter.value;
+  const runFilter = $("#run-selection-analyst-filter");
+  runFilter.innerHTML = filterOptions;
+  runFilter.value = active.some(item => item.analyst_id === state.runSelectionAnalystFilter) || ["all", "unassigned"].includes(state.runSelectionAnalystFilter) ? state.runSelectionAnalystFilter : "all";
+  state.runSelectionAnalystFilter = runFilter.value;
+
+  const responsibleSelect = $("#client-form [name='responsible_analyst_id']");
+  const editingClient = state.data?.clients.find(client => client.client_id === state.editingClientId);
+  const currentId = resolveResponsibleAnalystValue(
+    state.responsibleAnalystDraft,
+    editingClient?.responsible_analyst_id,
+  );
+  const assignable = analysts.filter(analyst => analyst.active || analyst.analyst_id === currentId);
+  responsibleSelect.innerHTML = `<option value="">Sem responsável</option>${analystOptions(assignable)}`;
+  responsibleSelect.value = currentId;
+}
+
+function renderAnalystManager() {
+  const analysts = state.data?.analysts || [];
+  $("#analyst-list").innerHTML = analysts.length ? analysts.map(analyst => `<div class="analyst-row" data-analyst-id="${escapeHtml(analyst.analyst_id)}"><div><strong>${escapeHtml(analyst.display_name)}</strong><small>${analyst.active ? "Ativo" : "Inativo"}</small></div><div class="analyst-actions"><button class="mini-button" type="button" data-analyst-action="rename">Renomear</button><button class="mini-button" type="button" data-analyst-action="toggle">${analyst.active ? "Desativar" : "Ativar"}</button><button class="mini-button danger" type="button" data-analyst-action="delete">Excluir</button></div></div>`).join("") : '<div class="loading">Nenhum analista cadastrado.</div>';
+}
+
+function eligibleRunClients() {
+  return (state.data?.clients || []).filter(client => client.enabled && client.credentials_ready);
+}
+
+function visibleRunSelectionClients() {
+  return filterClients(eligibleRunClients(), {
+    query: state.runSelectionQuery,
+    analystId: state.runSelectionAnalystFilter,
+  });
+}
+
+function renderRunSelection() {
+  const visible = visibleRunSelectionClients();
+  const selected = new Set(state.runSelection);
+  $("#run-selection-list").innerHTML = visible.length ? visible.map(client => `<label class="selection-row"><input type="checkbox" data-run-selection-id="${escapeHtml(client.client_id)}" ${selected.has(client.client_id) ? "checked" : ""}><span><strong>${escapeHtml(client.display_name)}</strong><small>${escapeHtml(client.client_id)} · ${escapeHtml(client.responsible_analyst_name || "Sem responsável")}</small></span></label>`).join("") : '<div class="loading">Nenhum cliente corresponde aos filtros.</div>';
+  document.querySelectorAll("[data-run-selection-id]").forEach(input => input.addEventListener("change", () => {
+    state.runSelection = selectionForVisibleClients(state.runSelection, [input.dataset.runSelectionId], input.checked);
+    renderRunSelection();
+  }));
+  const count = state.runSelection.length;
+  $("#run-selection-count").textContent = `${count} cliente(s) selecionado(s)`;
+  const confirmButton = $("#confirm-run-selection");
+  confirmButton.disabled = count === 0;
+  confirmButton.textContent = `Gerar ${count} cliente(s)`;
+}
+
 function render() {
   if (!state.data) return;
   const clients = state.data.clients || [];
   renderBatches();
+  populateAnalystControls();
+  renderAnalystManager();
   const activeJobs = (state.data.jobs || []).filter(j => ["QUEUED", "RUNNING"].includes(j.status));
   $("#metric-clients").textContent = clients.filter(c => c.enabled).length;
   $("#metric-running").textContent = activeJobs.length;
@@ -265,7 +327,7 @@ function render() {
   $("#storage-pending").textContent = String(storage.pending_cleanup_runs || 0);
   $("#storage-reserved").textContent = formatBytes(storage.queue_reserved_bytes);
 
-  const filtered = clients.filter(c => `${c.display_name} ${c.client_id} ${c.tenant_id}`.toLowerCase().includes(state.filter));
+  const filtered = filterClients(clients, { query: state.filter, analystId: state.analystFilter });
   $("#empty-state").classList.toggle("hidden", clients.length > 0);
   $("#client-grid").innerHTML = filtered.map(client => {
     const status = statusFor(client); const job = client.job;
@@ -289,7 +351,7 @@ function render() {
       : collectionOutcomeCopy(job) || (report ? `${report.document_count} documento(s)` : "Aguardando primeira execução");
     return `<article class="client-card" data-client="${escapeHtml(client.client_id)}" tabindex="0">
       <div class="card-top"><span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? '<span class="warning-badge" title="Há um alerta">!</span>' : ""}</div>
-      <h3>${escapeHtml(client.display_name)}</h3><p class="client-meta">${escapeHtml(client.client_id)}<br>${escapeHtml(client.tenant_id || "tenant não informado")}</p>
+      <h3>${escapeHtml(client.display_name)}</h3><span class="analyst-chip">${escapeHtml(client.responsible_analyst_name || "Sem responsável")}</span><p class="client-meta">${escapeHtml(client.client_id)}<br>${escapeHtml(client.tenant_id || "tenant não informado")}</p>
       <div class="card-report"><span>Último relatório</span><strong>${report ? escapeHtml(report.period_id || formatDate(report.ended_at)) : "Ainda não gerado"}</strong></div>
       <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(displayRunningCopy) : job?.status === "QUEUED" ? queuedCopy : job?.status === "FAILED" ? "Execução interrompida" : job?.status === "WAITING_WAS_DECISION" ? "VM concluído · escolha como tratar o WEB" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div>${componentProgress.length ? `<div class="component-progress">${componentProgress.map(item => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}</div>
     </article>`;
@@ -656,9 +718,28 @@ async function analyzeBackfill() {
   }
 }
 
+function openRunSelection() {
+  const active = (state.data?.batches || []).find(batch => ACTIVE_BATCH_STATES.has(batch.status));
+  if (active) {
+    toast(`O lote ${active.id.slice(0, 8)} ainda está ${batchStatusLabel(active.status).toLowerCase()}. Use os controles do lote antes de iniciar outro.`, "error");
+    return;
+  }
+  state.runSelection = eligibleRunClients().map(client => client.client_id);
+  state.runSelectionQuery = "";
+  state.runSelectionAnalystFilter = "all";
+  state.runSelectionFilterSnapshot = null;
+  $("#run-selection-search").value = "";
+  populateAnalystControls();
+  $("#run-selection-analyst-filter").value = "all";
+  renderRunSelection();
+  $("#run-selection-dialog").showModal();
+}
+
 function openRun(clientIds, runScope = "single") {
   state.runClientIds = clientIds;
   state.runScope = runScope;
+  if (runScope === "single") state.runSelectionFilterSnapshot = null;
+  else if (!state.runSelectionFilterSnapshot) state.runSelectionFilterSnapshot = { analyst_id: null, query: "", unassigned: false };
   const all = runScope === "all"; $("#run-title").textContent = all ? "Gerar todos os clientes" : "Gerar relatório";
   $("#run-subtitle").textContent = all ? `${clientIds.length} clientes serão adicionados à fila.` : state.data.clients.find(c => c.client_id === clientIds[0])?.display_name || "";
   $("#run-dialog").showModal();
@@ -670,6 +751,48 @@ function toast(message, type = "success") {
 
 document.querySelectorAll(".close-dialog").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
 $("#manage-button").addEventListener("click", () => $("#manage-dialog").showModal());
+$("#analyst-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const input = event.currentTarget.elements.display_name;
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    await api("/api/analysts", { method: "POST", body: { display_name: input.value.trim() } });
+    event.currentTarget.reset();
+    await refresh();
+    toast("Analista adicionado.");
+  } catch (error) { toast(error.message, "error"); }
+  finally { button.disabled = false; }
+});
+$("#analyst-list").addEventListener("click", async event => {
+  const button = event.target.closest("[data-analyst-action]");
+  if (!button) return;
+  const row = button.closest("[data-analyst-id]");
+  const analyst = (state.data?.analysts || []).find(item => item.analyst_id === row?.dataset.analystId);
+  if (!analyst) return;
+  const action = button.dataset.analystAction;
+  let path = `/api/analysts/${encodeURIComponent(analyst.analyst_id)}`;
+  let method = "PATCH";
+  let body;
+  if (action === "rename") {
+    const displayName = window.prompt("Novo nome do analista:", analyst.display_name);
+    if (displayName === null) return;
+    body = { display_name: displayName.trim() };
+  } else if (action === "toggle") {
+    body = { active: !analyst.active };
+  } else if (action === "delete") {
+    if (!window.confirm(`Excluir o analista ${analyst.display_name}?`)) return;
+    method = "DELETE";
+    body = { confirmation: "EXCLUIR" };
+  } else return;
+  button.disabled = true;
+  try {
+    await api(path, { method, body });
+    await refresh();
+    toast(action === "delete" ? "Analista excluído." : "Analista atualizado.");
+  } catch (error) { toast(error.message, "error"); }
+  finally { button.disabled = false; }
+});
 $("#admin-button").addEventListener("click", () => { $("#admin-dialog").showModal(); analyzeBackfill(); });
 $("#analyze-backfill-button").addEventListener("click", analyzeBackfill);
 $("#apply-backfill-button").addEventListener("click", async event => {
@@ -732,7 +855,7 @@ $("#run-all-button").addEventListener("click", () => {
     $("#batch-choice-dialog").showModal();
     return;
   }
-  openRun(state.data.clients.filter(c => c.enabled && c.credentials_ready).map(c => c.client_id), "all");
+  openRunSelection();
 });
 $("#retry-incomplete-button").addEventListener("click", async event => {
   const batch = (state.data?.batches || []).find(item => item.id === state.selectedBatchId);
@@ -742,12 +865,34 @@ $("#retry-incomplete-button").addEventListener("click", async event => {
 });
 $("#rerun-all-button").addEventListener("click", () => {
   $("#batch-choice-dialog").close();
-  openRun(state.data.clients.filter(c => c.enabled && c.credentials_ready).map(c => c.client_id), "all");
+  openRunSelection();
 });
 $("#detail-run-button").addEventListener("click", () => { $("#client-dialog").close(); openRun([state.selectedClient]); });
 $("#detail-check-button").addEventListener("click", event => testConnections([state.selectedClient], event.currentTarget));
 $("#detail-edit-button").addEventListener("click", () => { const clientId = state.selectedClient; $("#client-dialog").close(); $("#manage-dialog").showModal(); editClient(clientId); });
 $("#search-input").addEventListener("input", event => { state.filter = event.target.value.trim().toLowerCase(); render(); });
+$("#dashboard-analyst-filter").addEventListener("change", event => { state.analystFilter = event.target.value; render(); });
+$("#run-selection-search").addEventListener("input", event => { state.runSelectionQuery = event.target.value; renderRunSelection(); });
+$("#run-selection-analyst-filter").addEventListener("change", event => { state.runSelectionAnalystFilter = event.target.value; renderRunSelection(); });
+$("#select-visible-clients").addEventListener("click", () => {
+  state.runSelection = selectionForVisibleClients(state.runSelection, visibleRunSelectionClients().map(client => client.client_id), true);
+  renderRunSelection();
+});
+$("#clear-visible-clients").addEventListener("click", () => {
+  state.runSelection = selectionForVisibleClients(state.runSelection, visibleRunSelectionClients().map(client => client.client_id), false);
+  renderRunSelection();
+});
+$("#confirm-run-selection").addEventListener("click", () => {
+  const selected = [...state.runSelection];
+  const analystFilter = state.runSelectionAnalystFilter;
+  state.runSelectionFilterSnapshot = {
+    analyst_id: ["all", "unassigned"].includes(analystFilter) ? null : analystFilter,
+    query: state.runSelectionQuery.trim().slice(0, 200),
+    unassigned: analystFilter === "unassigned",
+  };
+  $("#run-selection-dialog").close();
+  openRun(selected, "all");
+});
 
 document.querySelectorAll('input[name="period_type"]').forEach(input => input.addEventListener("change", () => {
   const type = document.querySelector('input[name="period_type"]:checked').value;
@@ -815,7 +960,9 @@ function syncCloudConfig() {
 
 function resetClientForm() {
   state.editingClientId = null;
+  state.responsibleAnalystDraft = "";
   clientForm.reset();
+  clientForm.elements.responsible_analyst_id.value = "";
   clientForm.classList.remove("editing");
   idField.readOnly = false;
   idField.dataset.manual = "false";
@@ -852,6 +999,8 @@ function editClient(clientId) {
   const client = state.data?.clients.find(item => item.client_id === clientId);
   if (!client) return;
   state.editingClientId = clientId;
+  state.responsibleAnalystDraft = client.responsible_analyst_id || "";
+  populateAnalystControls();
   clientForm.classList.add("editing");
   clientForm.elements.display_name.value = client.display_name || "";
   idField.value = client.client_id;
@@ -859,6 +1008,7 @@ function editClient(clientId) {
   idField.dataset.manual = "true";
   tenantField.value = client.tenant_id || client.client_id;
   tenantField.dataset.manual = "true";
+  clientForm.elements.responsible_analyst_id.value = client.responsible_analyst_id || "";
   clientForm.elements.access_key.value = "";
   clientForm.elements.secret_key.value = "";
   clientForm.elements.access_key.placeholder = "Preencha somente para trocar";
@@ -898,6 +1048,9 @@ nameField.addEventListener("input", () => {
 });
 idField.addEventListener("input", event => { event.target.dataset.manual = event.isTrusted ? "true" : "false"; });
 tenantField.addEventListener("input", event => { event.target.dataset.manual = event.isTrusted ? "true" : "false"; });
+clientForm.elements.responsible_analyst_id.addEventListener("change", event => {
+  state.responsibleAnalystDraft = event.target.value;
+});
 
 $("#cancel-edit-button").addEventListener("click", resetClientForm);
 $("#fetch-tags-button").addEventListener("click", fetchClientTags);
@@ -949,6 +1102,7 @@ $("#tag-search-input").addEventListener("input", event => {
 clientForm.addEventListener("submit", async event => {
   event.preventDefault(); const form = new FormData(event.currentTarget); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
   const payload = Object.fromEntries(form.entries()); ["intelligence_enabled","was_enabled","cloud_enabled","include_output","show_source_filters","tag_reports_enabled"].forEach(name => payload[name] = form.has(name));
+  payload.responsible_analyst_id = String(payload.responsible_analyst_id || "").trim() || null;
   payload.tag_reports = state.availableTags.filter(tag => tag.generate_report).map(tag => ({
     tag_uuid: tag.tag_uuid,
     category_uuid: tag.category_uuid || "",
@@ -966,6 +1120,7 @@ clientForm.addEventListener("submit", async event => {
 
 $("#run-form").addEventListener("submit", async event => {
   event.preventDefault(); const form = new FormData(event.currentTarget); const type = form.get("period_type"); const payload = { client_ids: state.runClientIds, mode: "manual", run_scope: state.runScope };
+  if (state.runScope === "all") payload.selection_filter_snapshot = state.runSelectionFilterSnapshot || { analyst_id: null, query: "", unassigned: false };
   if (type === "days") payload.days = Number(form.get("days"));
   payload.force_live_collection = form.has("force_live_collection");
   if (type === "range") {

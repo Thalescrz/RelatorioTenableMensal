@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from uuid import UUID
@@ -21,6 +22,103 @@ from tenable_reports.webapp.server import JobQueue
 
 ROOT = Path(__file__).resolve().parents[1]
 STATIC = ROOT / "src" / "tenable_reports" / "webapp" / "static"
+
+
+def _run_selection_script(source: str) -> object:
+    script_path = STATIC / "client_selection.js"
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            (
+                f"const helpers = require({json.dumps(str(script_path))});"
+                f"const result = (() => {{ {source} }})();"
+                "process.stdout.write(JSON.stringify(result));"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def test_client_selection_helpers_filter_by_query_analyst_and_unassigned() -> None:
+    clients = [
+        {
+            "client_id": "a",
+            "display_name": "TRT A",
+            "responsible_analyst_id": "ana-1",
+        },
+        {
+            "client_id": "b",
+            "display_name": "TRT B",
+            "responsible_analyst_id": "ana-2",
+        },
+        {
+            "client_id": "c",
+            "display_name": "Outro",
+            "responsible_analyst_id": None,
+        },
+    ]
+    encoded_clients = json.dumps(clients)
+
+    assert _run_selection_script(
+        "return helpers.filterClients("
+        f"{encoded_clients}, {{ query: 'trt', analystId: 'ana-1' }}"
+        ").map(client => client.client_id);"
+    ) == ["a"]
+    assert _run_selection_script(
+        "return helpers.filterClients("
+        f"{encoded_clients}, {{ query: '', analystId: 'unassigned' }}"
+        ").map(client => client.client_id);"
+    ) == ["c"]
+
+
+def test_client_selection_helper_changes_only_visible_ids() -> None:
+    assert _run_selection_script(
+        "return helpers.selectionForVisibleClients(['a'], ['b', 'c'], true);"
+    ) == ["a", "b", "c"]
+    assert _run_selection_script(
+        "return helpers.selectionForVisibleClients("
+        "['a', 'b', 'c'], ['b', 'c'], false);"
+    ) == ["a"]
+
+
+def test_responsible_analyst_draft_preserves_explicit_empty_value() -> None:
+    assert _run_selection_script(
+        "return ["
+        "helpers.resolveResponsibleAnalystValue(undefined, 'ana-1'),"
+        "helpers.resolveResponsibleAnalystValue('', 'ana-1'),"
+        "helpers.resolveResponsibleAnalystValue('ana-2', 'ana-1')"
+        "];"
+    ) == ["ana-1", "", "ana-2"]
+
+
+def test_frontend_exposes_analyst_filters_selection_modal_and_management() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    for element_id in (
+        "dashboard-analyst-filter",
+        "run-selection-dialog",
+        "run-selection-search",
+        "run-selection-analyst-filter",
+        "run-selection-list",
+        "run-selection-count",
+        "select-visible-clients",
+        "clear-visible-clients",
+        "confirm-run-selection",
+        "analyst-form",
+        "analyst-list",
+    ):
+        assert f'id="{element_id}"' in html
+    assert 'name="responsible_analyst_id"' in html
+    assert html.index("client_selection.js") < html.index("app.js")
+    assert "/api/analysts" in javascript
+    assert "selection_filter_snapshot" in javascript
+    assert "responsible_analyst_id" in javascript
+    assert "openRunSelection" in javascript
 
 
 def test_frontend_exposes_contextual_durable_batch_controls() -> None:

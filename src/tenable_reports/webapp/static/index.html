@@ -70,7 +70,13 @@
     <section class="workspace">
       <div class="section-head">
         <div><p class="eyebrow">CLIENTES</p><h2>Carteira monitorada</h2></div>
-        <label class="search"><span>⌕</span><input id="search-input" type="search" placeholder="Buscar cliente" autocomplete="off"></label>
+        <div class="client-filter-bar">
+          <label class="search"><span>⌕</span><input id="search-input" type="search" placeholder="Buscar cliente" autocomplete="off"></label>
+          <select class="compact-select" id="dashboard-analyst-filter" aria-label="Filtrar por responsável">
+            <option value="all">Todos os responsáveis</option>
+            <option value="unassigned">Sem responsável</option>
+          </select>
+        </div>
       </div>
       <div class="client-grid" id="client-grid" aria-live="polite"></div>
       <div class="empty-state hidden" id="empty-state">
@@ -122,6 +128,14 @@
       <section>
         <h3>Clientes cadastrados</h3>
         <div id="manage-client-list" class="manage-list"></div>
+        <section class="analyst-manager">
+          <div><span>RESPONSÁVEIS</span><strong>Analistas</strong></div>
+          <form id="analyst-form" class="analyst-form">
+            <input name="display_name" required maxlength="120" placeholder="Nome do analista" aria-label="Nome do analista">
+            <button class="mini-button" type="submit">Adicionar</button>
+          </form>
+          <div id="analyst-list" class="analyst-list"></div>
+        </section>
       </section>
       <form id="client-form" class="client-form">
         <div class="form-heading"><span id="client-form-mode">NOVO</span><h3 id="client-form-title">Adicionar cliente</h3></div>
@@ -130,6 +144,11 @@
           <label>ID do cliente · automático<input name="client_id" pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,79}" placeholder="cliente-norte"></label>
           <label>Tenant ID · automático<input name="tenant_id" placeholder="cliente-norte"></label>
         </div>
+        <label>Analista responsável
+          <select name="responsible_analyst_id">
+            <option value="">Sem responsável</option>
+          </select>
+        </label>
         <div class="field-row">
           <label>Access Key<input name="access_key" type="password" autocomplete="off" placeholder="Opcional agora"></label>
           <label>Secret Key<input name="secret_key" type="password" autocomplete="off" placeholder="Opcional agora"></label>
@@ -229,6 +248,29 @@
     </div>
   </dialog>
 
+  <dialog id="run-selection-dialog" class="dialog run-selection-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">GERAR TODOS</p><h2>Selecionar clientes</h2><p>Escolha os clientes que entrarão neste lote.</p></div>
+      <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
+    </div>
+    <div class="selection-toolbar">
+      <label class="search"><span>⌕</span><input id="run-selection-search" type="search" placeholder="Buscar cliente" autocomplete="off"></label>
+      <select class="compact-select" id="run-selection-analyst-filter" aria-label="Filtrar seleção por responsável">
+        <option value="all">Todos os responsáveis</option>
+        <option value="unassigned">Sem responsável</option>
+      </select>
+    </div>
+    <div class="selection-actions">
+      <button class="mini-button" id="select-visible-clients" type="button">Selecionar visíveis</button>
+      <button class="mini-button" id="clear-visible-clients" type="button">Limpar visíveis</button>
+    </div>
+    <div id="run-selection-list" class="selection-list"></div>
+    <footer class="selection-footer">
+      <span id="run-selection-count">0 clientes selecionados</span>
+      <button class="button primary" id="confirm-run-selection" type="button" disabled>Gerar 0 clientes</button>
+    </footer>
+  </dialog>
+
   <dialog id="run-dialog" class="dialog run-dialog">
     <div class="dialog-head">
       <div><p class="eyebrow">EXECUÇÃO PONTUAL</p><h2 id="run-title">Gerar relatório</h2><p id="run-subtitle">A execução será adicionada à fila.</p></div>
@@ -282,6 +324,7 @@
     </div>
   </dialog>
 
+  <script src="/static/client_selection.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>
