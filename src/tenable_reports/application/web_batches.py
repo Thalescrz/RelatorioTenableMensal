@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Protocol, Sequence
 from uuid import UUID
@@ -94,6 +95,129 @@ def assert_sanitized_payload(value: Any, *, path: str = "payload") -> None:
     if isinstance(value, (list, tuple)):
         for index, nested in enumerate(value):
             assert_sanitized_payload(nested, path=f"{path}[{index}]")
+
+
+def build_manual_batch_options(
+    *,
+    clients: Sequence[Mapping[str, Any]],
+    selected_client_ids: Sequence[str],
+    selection_filter_snapshot: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    if isinstance(clients, (str, bytes)) or not isinstance(clients, Sequence):
+        raise ValueError("UNKNOWN_CLIENT_SELECTION: lista de clientes invalida.")
+    if isinstance(selected_client_ids, (str, bytes)) or not isinstance(
+        selected_client_ids, Sequence
+    ):
+        raise ValueError("UNKNOWN_CLIENT_SELECTION: selecao de clientes invalida.")
+
+    normalized_selected: list[str] = []
+    seen_selected: set[str] = set()
+    for raw_client_id in selected_client_ids:
+        if not isinstance(raw_client_id, str):
+            raise ValueError("UNKNOWN_CLIENT_SELECTION: cliente invalido.")
+        client_id = raw_client_id.strip()
+        if not client_id:
+            raise ValueError("UNKNOWN_CLIENT_SELECTION: cliente invalido.")
+        if client_id in seen_selected:
+            raise ValueError(
+                f"DUPLICATE_CLIENT_SELECTION: cliente duplicado: {client_id}."
+            )
+        seen_selected.add(client_id)
+        normalized_selected.append(client_id)
+    if not normalized_selected:
+        raise ValueError("EMPTY_CLIENT_SELECTION: selecione ao menos um cliente.")
+
+    client_rows: dict[str, Mapping[str, Any]] = {}
+    enabled_client_ids: list[str] = []
+    for client in clients:
+        if not isinstance(client, Mapping):
+            continue
+        raw_client_id = client.get("client_id")
+        if not isinstance(raw_client_id, str):
+            continue
+        client_id = raw_client_id.strip()
+        if not client_id or client_id in client_rows:
+            continue
+        client_rows[client_id] = client
+        if client.get("enabled") is True:
+            enabled_client_ids.append(client_id)
+
+    for client_id in normalized_selected:
+        client = client_rows.get(client_id)
+        if client is None or client.get("enabled") is not True:
+            raise ValueError(
+                f"UNKNOWN_CLIENT_SELECTION: cliente desconhecido ou inativo: {client_id}."
+            )
+
+    raw_filter = {} if selection_filter_snapshot is None else selection_filter_snapshot
+    if not isinstance(raw_filter, Mapping):
+        raise ValueError("INVALID_SELECTION_FILTER: filtro deve ser um objeto.")
+    allowed_filter_keys = {"analyst_id", "query", "unassigned"}
+    if any(key not in allowed_filter_keys for key in raw_filter):
+        raise ValueError("INVALID_SELECTION_FILTER: campo desconhecido.")
+    normalized_filter: dict[str, Any] = {}
+    if "analyst_id" in raw_filter:
+        raw_analyst_id = raw_filter["analyst_id"]
+        if raw_analyst_id is not None and not isinstance(raw_analyst_id, str):
+            raise ValueError("INVALID_SELECTION_FILTER: analyst_id invalido.")
+        normalized_filter["analyst_id"] = (
+            raw_analyst_id.strip() or None
+            if isinstance(raw_analyst_id, str)
+            else None
+        )
+    if "query" in raw_filter:
+        raw_query = raw_filter["query"]
+        if not isinstance(raw_query, str):
+            raise ValueError("INVALID_SELECTION_FILTER: query invalida.")
+        query = raw_query.strip()
+        if len(query) > 200:
+            raise ValueError("INVALID_SELECTION_FILTER: query muito longa.")
+        normalized_filter["query"] = query
+    if "unassigned" in raw_filter:
+        raw_unassigned = raw_filter["unassigned"]
+        if not isinstance(raw_unassigned, bool):
+            raise ValueError("INVALID_SELECTION_FILTER: unassigned invalido.")
+        normalized_filter["unassigned"] = raw_unassigned
+
+    analyst_snapshot: dict[str, dict[str, Any]] = {}
+    for client_id in normalized_selected:
+        client = client_rows[client_id]
+        raw_analyst_id = client.get("responsible_analyst_id")
+        analyst_id = (
+            raw_analyst_id.strip() or None
+            if isinstance(raw_analyst_id, str)
+            else None
+        )
+        raw_display_name = client.get("responsible_analyst_name")
+        display_name = (
+            raw_display_name.strip() or None
+            if analyst_id is not None and isinstance(raw_display_name, str)
+            else None
+        )
+        analyst_snapshot[client_id] = {
+            "analyst_id": analyst_id,
+            "display_name": display_name,
+            "active": (
+                client.get("responsible_analyst_active") is True
+                if analyst_id is not None
+                else False
+            ),
+        }
+
+    selected_set = set(normalized_selected)
+    options = {
+        "selected_client_ids": list(normalized_selected),
+        "excluded_client_ids": [
+            client_id
+            for client_id in enabled_client_ids
+            if client_id not in selected_set
+        ],
+        "analyst_snapshot_by_client": analyst_snapshot,
+        "selection_filter_snapshot": deepcopy(normalized_filter),
+    }
+    assert_sanitized_payload(options)
+    return options
+
 
 class WebBatchRepository(Protocol):
     def create_batch(

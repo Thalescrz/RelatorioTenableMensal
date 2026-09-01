@@ -321,7 +321,16 @@ def test_dashboard_application_groups_generate_all_in_one_durable_batch(tmp_path
     try:
         created = app.enqueue_jobs(
             ["client-1", "client-2"],
-            {"mode": "manual", "days": 30, "run_scope": "all"},
+            {
+                "mode": "manual",
+                "days": 30,
+                "run_scope": "all",
+                "selection_filter_snapshot": {
+                    "analyst_id": None,
+                    "query": "",
+                    "unassigned": False,
+                },
+            },
         )
         assert len({row["batch_id"] for row in created}) == 1
         assert app.jobs.wait_until_idle(timeout=2)
@@ -329,7 +338,27 @@ def test_dashboard_application_groups_generate_all_in_one_durable_batch(tmp_path
         app.jobs.close()
 
     assert len(repository.list_batches()) == 1
-    assert repository.list_batches()[0].status is BatchStatus.COMPLETE
+    batch = repository.list_batches()[0]
+    assert batch.status is BatchStatus.COMPLETE
+    assert batch.options["selected_client_ids"] == ["client-1", "client-2"]
+    assert batch.options["excluded_client_ids"] == []
+    assert batch.options["analyst_snapshot_by_client"] == {
+        "client-1": {
+            "analyst_id": None,
+            "display_name": None,
+            "active": False,
+        },
+        "client-2": {
+            "analyst_id": None,
+            "display_name": None,
+            "active": False,
+        },
+    }
+    assert batch.options["selection_filter_snapshot"] == {
+        "analyst_id": None,
+        "query": "",
+        "unassigned": False,
+    }
 
 
 def test_production_server_requires_durable_batches(tmp_path) -> None:

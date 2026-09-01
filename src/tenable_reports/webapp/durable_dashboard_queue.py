@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any, Mapping, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -15,6 +16,7 @@ from tenable_reports.application.web_batches import (
     DerivedBatchRequest,
     NoEligibleBatchJobsError,
     WebBatchRepository,
+    assert_sanitized_payload,
 )
 from tenable_reports.domain.web_batches import (
     BATCH_TERMINAL_STATUSES,
@@ -94,7 +96,15 @@ class DurableDashboardJobQueue:
     def enqueue_requests(
         self,
         requests: Sequence[tuple[str, Mapping[str, Any]]],
+        *,
+        batch_options: Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
+        if batch_options is not None and not isinstance(batch_options, Mapping):
+            raise ValueError("batch_options deve ser um objeto.")
+        copied_batch_options = deepcopy(dict(batch_options or {}))
+        if "requests" in copied_batch_options:
+            raise ValueError("batch_options nao pode sobrescrever requests.")
+        assert_sanitized_payload(copied_batch_options, path="batch_options")
         created: list[dict[str, Any]] = []
         normalized_requests: list[dict[str, Any]] = []
         for client_id, request in requests:
@@ -107,12 +117,21 @@ class DurableDashboardJobQueue:
             return []
         batch_id = uuid4()
         created_at = _now()
+        options = {
+            "requests": normalized_requests,
+            **copied_batch_options,
+        }
+        assert_sanitized_payload(options, path="batch_options")
         batch = WebBatch(
             id=batch_id,
             idempotency_key=f"batch:create:{batch_id}",
-            kind="GENERATE_ALL" if len(created) > 1 else "GENERATE_ONE",
+            kind=(
+                "GENERATE_ALL"
+                if "selected_client_ids" in copied_batch_options or len(created) > 1
+                else "GENERATE_ONE"
+            ),
             status=BatchStatus.QUEUED,
-            options={"requests": normalized_requests},
+            options=options,
             created_at=created_at,
         )
 

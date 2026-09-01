@@ -18,6 +18,9 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from tenable_reports.application.report_registry import InMemoryReportRegistry
+from tenable_reports.application.web_batches_memory import (
+    InMemoryWebBatchRepository,
+)
 from tenable_reports.application.report_archives import ReportArchiveResult
 from tenable_reports.application.report_set_purge import (
     ReportSetPurgeRecord,
@@ -175,6 +178,53 @@ class _ArchiveDashboardDatabase:
 
 
 class WebDashboardTests(unittest.TestCase):
+    def test_generate_all_rejects_explicit_empty_client_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = InMemoryWebBatchRepository()
+
+            def runner(command, cwd, progress_callback=None):
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps(
+                        {"status": "COMPLETE", "run_id": "run-fixture"}
+                    ),
+                    stderr="",
+                )
+
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                runner=runner,
+                batch_repository=repository,
+            )
+            for client_id in ("cliente-a", "cliente-b"):
+                app.config.add_client(
+                    {
+                        "client_id": client_id,
+                        "display_name": client_id,
+                    }
+                )
+            client = LocalClient(app)
+            try:
+                status, payload = client.request(
+                    "POST",
+                    "/api/jobs",
+                    {
+                        "client_ids": [],
+                        "run_scope": "all",
+                        "mode": "manual",
+                    },
+                )
+            finally:
+                client.close()
+                app.jobs.close()
+
+            self.assertEqual(status, 400)
+            self.assertIn("EMPTY_CLIENT_SELECTION", payload["error"])
+            self.assertEqual(repository.list_batches(), ())
+
     def test_analyst_crud_and_client_assignment_are_validated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

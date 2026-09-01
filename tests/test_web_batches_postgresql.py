@@ -152,6 +152,43 @@ def test_repository_creates_batch_and_jobs_in_one_connection() -> None:
     assert job_params[2:5] == ("client-a", 1, "QUEUED")
 
 
+def test_repository_persists_and_returns_manual_selection_options() -> None:
+    options = {
+        "selected_client_ids": ["client-a"],
+        "excluded_client_ids": ["client-b"],
+        "analyst_snapshot_by_client": {
+            "client-a": {
+                "analyst_id": "analyst-1",
+                "display_name": "Analista Um",
+                "active": True,
+            }
+        },
+        "selection_filter_snapshot": {
+            "analyst_id": "analyst-1",
+            "query": "",
+            "unassigned": False,
+        },
+    }
+    returned_row = list(_batch_row())
+    returned_row[4] = options
+    database = _Database([_Cursor(one=tuple(returned_row))])
+    repository = PostgresWebBatchRepository(database, migrate=False)
+    batch = WebBatch(
+        id=UUID(int=1),
+        idempotency_key="batch:create:one",
+        kind="GENERATE_ALL",
+        status=BatchStatus.QUEUED,
+        options=options,
+        created_at="2026-08-31T12:00:00Z",
+    )
+
+    returned = repository.create_batch(batch, ())
+
+    _batch_sql, batch_params = database.connection_value.calls[0]
+    assert batch_params[4].obj == options
+    assert returned.options == options
+
+
 def test_repository_lists_jobs_in_original_position_order() -> None:
     second = list(_job_row())
     second[0] = UUID(int=12)

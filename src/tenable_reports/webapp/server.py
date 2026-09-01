@@ -28,6 +28,7 @@ from tenable_reports.application.web_batches import (
     BatchClientConflictError,
     DerivedBatchRequest,
     WebBatchRepository,
+    build_manual_batch_options,
 )
 from tenable_reports.application.cloud_contract import probe_cloud_contract
 from tenable_reports.application.orchestration import SAFE_ID_PATTERN
@@ -2683,7 +2684,22 @@ class DashboardApplication:
         run_scope = str(request.get("run_scope") or "single").strip().lower()
         if run_scope not in {"single", "all"}:
             raise ValueError("Escopo de execucao invalido.")
-        clients = {item["client_id"]: item for item in self.config.list_clients()}
+        client_rows = self.config.list_clients()
+        clients = {item["client_id"]: item for item in client_rows}
+        batch_options: dict[str, Any] | None = None
+        if run_scope == "all":
+            batch_options = build_manual_batch_options(
+                clients=client_rows,
+                selected_client_ids=client_ids,
+                selection_filter_snapshot=(
+                    request.get("selection_filter_snapshot")
+                    or {
+                        "analyst_id": None,
+                        "query": "",
+                        "unassigned": False,
+                    }
+                ),
+            )
         exact_period = bool(
             (request.get("start_at") and request.get("end_at"))
             or (request.get("start_date") and request.get("end_date"))
@@ -2710,6 +2726,8 @@ class DashboardApplication:
             if client is None:
                 raise ValueError(f"Cliente nao encontrado: {client_id}")
             client_request = dict(request)
+            client_request.pop("client_ids", None)
+            client_request.pop("selection_filter_snapshot", None)
             if run_scope == "all":
                 client_request["was_failure_policy"] = "retry_then_continue"
             client_request["historical_source"] = str(
@@ -2725,7 +2743,10 @@ class DashboardApplication:
             )
         enqueue_requests = getattr(self.jobs, "enqueue_requests", None)
         if callable(enqueue_requests):
-            return enqueue_requests(tuple(requests))
+            return enqueue_requests(
+                tuple(requests),
+                batch_options=batch_options,
+            )
         created: list[dict[str, Any]] = []
         for client_id, client_request in requests:
             created.extend(self.jobs.enqueue([client_id], client_request))
@@ -3487,8 +3508,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 known = {
                     item["client_id"] for item in self.app.config.list_clients() if item["enabled"]
                 }
-                requested = payload.get("client_ids") or sorted(known)
-                if not isinstance(requested, list) or any(item not in known for item in requested):
+                requested = (
+                    payload["client_ids"]
+                    if "client_ids" in payload
+                    else sorted(known)
+                )
+                if not isinstance(requested, list) or any(
+                    not isinstance(item, str) or item not in known
+                    for item in requested
+                ):
                     raise ValueError("Ha clientes inexistentes ou desabilitados na selecao.")
                 jobs = self.app.enqueue_jobs(requested, payload)
                 if not jobs:

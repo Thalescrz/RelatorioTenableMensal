@@ -162,7 +162,10 @@ git commit -m "feat: vincular analista responsável ao cliente"
 **Files:**
 - Modify: `src/tenable_reports/application/web_batches.py`
 - Modify: `src/tenable_reports/webapp/server.py`
+- Modify: `src/tenable_reports/webapp/durable_dashboard_queue.py`
 - Modify: `tests/test_web_batches.py`
+- Modify: `tests/test_durable_job_queue.py`
+- Modify: `tests/test_web_batches_postgresql.py`
 - Modify: `tests/test_webapp.py`
 
 **Interfaces:**
@@ -194,11 +197,12 @@ Run: `python -m pytest tests/test_web_batches.py tests/test_webapp.py -q -k "sel
 
 - [ ] **Step 3: Implementar validação e fotografia**
 
-Normalizar IDs, rejeitar duplicatas/desconhecidos/inativos, calcular exclusões
-somente no servidor e persistir, em `batch.options`, `selected_client_ids`,
-`excluded_client_ids`, `analyst_snapshot_by_client` e o
-`selection_filter_snapshot` recebido na solicitação. A fotografia é imutável após
-a criação do lote.
+A regra pura de normalização, rejeição de duplicatas/desconhecidos/inativos e
+cálculo de exclusões fica em `application/web_batches.py`. O servidor constrói a
+fotografia imutável com `selected_client_ids`, `excluded_client_ids`,
+`analyst_snapshot_by_client` e o `selection_filter_snapshot` recebido na
+solicitação. A fila durável aceita `batch_options` separado de `requests` e
+persiste ambos sem recalcular a seleção depois da criação do lote.
 
 - [ ] **Step 4: Confirmar GREEN e regressão de conflitos**
 
@@ -207,7 +211,7 @@ Run: `python -m pytest tests/test_web_batches.py tests/test_webapp.py -q`
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add src/tenable_reports/application/web_batches.py src/tenable_reports/webapp/server.py tests/test_web_batches.py tests/test_webapp.py
+git add src/tenable_reports/application/web_batches.py src/tenable_reports/webapp/server.py src/tenable_reports/webapp/durable_dashboard_queue.py tests/test_web_batches.py tests/test_durable_job_queue.py tests/test_web_batches_postgresql.py tests/test_webapp.py
 git commit -m "feat: persistir seleção explícita do lote"
 ```
 
