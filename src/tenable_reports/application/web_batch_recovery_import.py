@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Protocol, Sequence
@@ -66,6 +67,21 @@ def _require_text(value: Any, *, field: str) -> str:
     return normalized
 
 
+def _normalized_timestamp(value: Any, *, field: str) -> str:
+    raw = _require_text(value, field=field)
+    iso_candidate = f"{raw[:-1]}+00:00" if raw.endswith(("Z", "z")) else raw
+    try:
+        parsed = datetime.fromisoformat(iso_candidate)
+    except ValueError:
+        try:
+            parsed = datetime.strptime(raw, "%m/%d/%Y %H:%M:%S")
+        except ValueError as exc:
+            raise ValueError(
+                f"O campo {field} do snapshot deve conter uma data valida."
+            ) from exc
+    return parsed.isoformat()
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -121,10 +137,10 @@ def plan_web_batch_recovery(
         NAMESPACE_URL,
         f"tenable-reports:web-batch-recovery:{snapshot_sha256}",
     )
-    captured_at = _require_text(
+    captured_at = _normalized_timestamp(
         snapshot.get("captured_at"), field="captured_at"
     )
-    batch_created_at = _require_text(
+    batch_created_at = _normalized_timestamp(
         snapshot.get("batch_created_at"), field="batch_created_at"
     )
     period = dict(_require_mapping(snapshot.get("period"), field="period"))

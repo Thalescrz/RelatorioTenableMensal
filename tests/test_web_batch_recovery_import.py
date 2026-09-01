@@ -94,6 +94,25 @@ def test_recovery_plan_maps_legacy_states_and_pauses_batch(tmp_path: Path) -> No
     assert failed.payload["was_failure_policy"] == "retry_then_continue"
 
 
+def test_recovery_plan_normalizes_legacy_us_batch_timestamp(tmp_path: Path) -> None:
+    snapshot = _snapshot()
+    snapshot["batch_created_at"] = "08/31/2026 16:03:28"
+
+    plan = plan_web_batch_recovery(_write_snapshot(tmp_path, snapshot))
+
+    assert plan.batch.created_at == "2026-08-31T16:03:28"
+    assert {job.created_at for job in plan.jobs} == {"2026-08-31T16:03:28"}
+    assert plan.event.created_at == "2026-08-31T16:15:00+00:00"
+
+
+def test_recovery_plan_rejects_invalid_timestamp(tmp_path: Path) -> None:
+    snapshot = _snapshot()
+    snapshot["batch_created_at"] = "31/31/2026 16:03:28"
+
+    with pytest.raises(ValueError, match="batch_created_at"):
+        plan_web_batch_recovery(_write_snapshot(tmp_path, snapshot))
+
+
 def test_recovery_plan_rejects_invalid_schema_and_sensitive_fields(
     tmp_path: Path,
 ) -> None:
