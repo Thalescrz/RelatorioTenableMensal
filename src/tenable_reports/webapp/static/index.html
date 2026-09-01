@@ -19,6 +19,7 @@
       <button class="button ghost" id="check-all-button" type="button">Testar APIs</button>
       <button class="button ghost" id="admin-button" type="button" title="Administração do banco">Admin</button>
       <button class="button ghost" id="manage-button" type="button"><span class="desktop-label">Gerenciar </span>clientes</button>
+      <button class="button ghost" id="archive-all-button" type="button"><span class="desktop-label">Baixar </span>ZIP mensal</button>
       <button class="button primary" id="run-all-button" type="button">Gerar todos</button>
     </div>
   </header>
@@ -96,6 +97,20 @@
     </div>
     <div class="reports-head"><h3>Relatórios gerados</h3><span id="reports-count">0 arquivos</span></div>
     <div class="report-list" id="report-list"></div>
+  </dialog>
+
+  <dialog id="archive-dialog" class="dialog archive-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">DOWNLOAD DA CARTEIRA</p><h2>Baixar ZIP mensal</h2><p>O arquivo usa somente o conjunto MAIN de cada cliente.</p></div>
+      <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
+    </div>
+    <form id="archive-form" class="archive-form">
+      <label>Mês dos relatórios
+        <select id="archive-month-select" name="period_id" required></select>
+      </label>
+      <p id="archive-month-note">Clientes sem MAIN no período serão registrados no RESUMO.txt.</p>
+      <button class="button primary full" id="archive-download-button" type="submit">Gerar e baixar ZIP</button>
+    </form>
   </dialog>
 
   <dialog id="manage-dialog" class="dialog manage-dialog">

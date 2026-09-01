@@ -167,6 +167,13 @@ prévia, frase digitada, substituição obrigatória de `MAIN`, bloqueio por job
 validação da raiz `data`, rollback do estágio físico e remoção transacional dos
 registros PostgreSQL.
 
+Downloads agregados devem ser montados sob `data/.downloads`, aceitar somente
+documentos registrados dentro da raiz `data`, usar nomes de componentes
+sanitizados e remover o ZIP temporário em bloco `finally` após a transmissão. O
+download mensal consulta a referência `MAIN` por cliente e período; o download de
+um conjunto preserva a identidade do `run_id` selecionado. Cubra seleção,
+estrutura interna, omissões, caminhos inseguros e limpeza temporária com testes.
+
 ## Documentação e instruções
 
 Atualize os guias vigentes quando o comportamento mudar. Registros de fase podem

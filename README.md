@@ -29,7 +29,8 @@ No Windows, abra o PowerShell na raiz do projeto:
 O painel abre em `http://127.0.0.1:8765`. Nele é possível cadastrar clientes,
 testar suas APIs, buscar TAGs, iniciar uma geração individual ou da carteira,
 acompanhar o progresso, baixar documentos e escolher a referência `MAIN` usada
-no próximo comparativo.
+no próximo comparativo. Também é possível baixar um conjunto completo em ZIP ou
+montar o ZIP mensal da carteira usando somente o `MAIN` de cada cliente.
 
 As credenciais ficam somente em `credentials/*.env`, arquivos ignorados pelo Git.
 Use os exemplos em [credentials](credentials) como referência; nunca grave chaves

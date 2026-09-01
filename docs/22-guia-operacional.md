@@ -302,8 +302,21 @@ confirmação consciente do analista.
 Na lista de documentos do cliente é possível:
 
 - baixar o DOCX;
+- baixar em ZIP todos os documentos de um conjunto específico;
 - excluir permanentemente o conjunto completo com confirmação;
 - promover uma geração como `MAIN` para o próximo comparativo.
+
+O botão **Baixar ZIP mensal**, no topo do painel, solicita o mês e cria uma pasta
+`Relatorios-Tenable-AAAA-MM`, com uma subpasta por cliente. Esse pacote inclui
+somente o conjunto `MAIN` de cada cliente naquele mês. Clientes sem `MAIN` e
+documentos registrados que não estejam mais no disco são omitidos e relacionados
+em `RESUMO.txt`; os demais clientes continuam no download. O mês mais recente fica
+pré-selecionado.
+
+O botão **Baixar conjunto ZIP**, dentro do histórico do cliente, baixa exatamente
+a geração escolhida, ainda que ela não seja `MAIN`. Conjuntos excluídos não podem
+ser baixados. Os ZIPs são temporários e não passam a ocupar espaço durável depois
+que a resposta termina.
 
 Para excluir um conjunto:
 

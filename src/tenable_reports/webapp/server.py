@@ -21,7 +21,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from tenable_reports.application.execution_control import FileExecutionControl
 from tenable_reports.application.web_batches import (
@@ -40,6 +40,17 @@ from tenable_reports.application.publishing import write_json_atomic
 from tenable_reports.application.report_main_backfill import (
     MainBackfillPlan,
     plan_main_backfill,
+)
+from tenable_reports.application.report_archives import (
+    ArchiveClient,
+    ArchiveDocument,
+    ArchiveReportSet,
+    EmptyReportArchiveError,
+    InsufficientReportArchiveSpace,
+    ReportArchiveResult,
+    UnsafeReportArchivePath,
+    build_monthly_report_archive,
+    build_report_set_archive,
 )
 from tenable_reports.application.report_registry import (
     MainDeletionRequiresDecision,
@@ -2091,6 +2102,103 @@ class DashboardApplication:
             })
         return rows
 
+    def _archive_roots(self) -> tuple[Path, Path]:
+        payload = self.config.raw()
+        raw_root = str((payload.get("defaults") or {}).get("output_root") or "../data")
+        data_root = (self.config.config_path.parent / raw_root).resolve()
+        return data_root, data_root / ".downloads"
+
+    @staticmethod
+    def _archive_report_from_row(
+        row: Mapping[str, Any], *, display_name: str
+    ) -> ArchiveReportSet:
+        return ArchiveReportSet(
+            client_id=str(row.get("client_id") or ""),
+            display_name=display_name,
+            run_id=str(row.get("run_id") or ""),
+            period_id=str(row.get("period_id") or ""),
+            is_main=bool(row.get("is_main")),
+            deleted=bool(row.get("deleted_at")),
+            documents=tuple(
+                ArchiveDocument(
+                    path=Path(str(document.get("path") or "")),
+                    name=str(document.get("name") or "") or None,
+                )
+                for document in row.get("documents") or ()
+                if isinstance(document, Mapping) and document.get("path")
+            ),
+        )
+
+    def report_archive_months(self) -> list[str]:
+        periods: set[str] = set()
+        for client in self.config.list_clients():
+            for row in self.report_rows(str(client["client_id"])):
+                period_id = str(row.get("period_id") or "")
+                if bool(row.get("is_main")) and re.fullmatch(r"\d{4}-\d{2}", period_id):
+                    periods.add(period_id)
+        return sorted(periods, reverse=True)
+
+    def create_report_set_archive(self, run_id: str) -> ReportArchiveResult:
+        if self.report_registry is None or self.database is None:
+            raise RuntimeError("Banco e registro de relatórios precisam estar disponíveis.")
+        registered = self.report_registry.get_report(run_id)
+        if registered.deleted:
+            raise KeyError("Conjunto de relatórios excluído.")
+        client_id = registered.candidate.client_id
+        client = next(
+            (
+                item for item in self.config.list_clients()
+                if str(item.get("client_id") or "") == client_id
+            ),
+            {"display_name": client_id},
+        )
+        row = next(
+            (
+                item for item in self.report_rows(client_id, include_deleted=True)
+                if str(item.get("run_id") or "") == run_id
+            ),
+            None,
+        )
+        if row is None or row.get("deleted_at"):
+            raise KeyError("Conjunto de relatórios não encontrado.")
+        row = {**row, "client_id": client_id}
+        data_root, temporary_root = self._archive_roots()
+        return build_report_set_archive(
+            data_root=data_root,
+            temporary_root=temporary_root,
+            report=self._archive_report_from_row(
+                row,
+                display_name=str(client.get("display_name") or client_id),
+            ),
+        )
+
+    def create_monthly_report_archive(self, period_id: str) -> ReportArchiveResult:
+        if self.report_registry is None or self.database is None:
+            raise RuntimeError("Banco e registro de relatórios precisam estar disponíveis.")
+        clients: list[ArchiveClient] = []
+        for client in self.config.list_clients():
+            client_id = str(client.get("client_id") or "")
+            display_name = str(client.get("display_name") or client_id)
+            reports = tuple(
+                self._archive_report_from_row(
+                    {**row, "client_id": client_id},
+                    display_name=display_name,
+                )
+                for row in self.report_rows(client_id)
+            )
+            clients.append(ArchiveClient(
+                client_id=client_id,
+                display_name=display_name,
+                reports=reports,
+            ))
+        data_root, temporary_root = self._archive_roots()
+        return build_monthly_report_archive(
+            data_root=data_root,
+            temporary_root=temporary_root,
+            period_id=period_id,
+            clients=clients,
+        )
+
     def storage_status(self) -> dict[str, Any]:
         payload = self.config.raw()
         raw_root = str((payload.get("defaults") or {}).get("output_root") or "../data")
@@ -2780,6 +2888,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/state":
             self._json(HTTPStatus.OK, self.app.state())
             return
+        archive_builder: Callable[[], ReportArchiveResult] | None = None
+        if parsed.path == "/api/report-archives/months":
+            try:
+                self._json(HTTPStatus.OK, {
+                    "periods": self.app.report_archive_months(),
+                })
+            except RuntimeError as exc:
+                self._json_error(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    _safe_error(str(exc), limit=500),
+                )
+            except Exception as exc:
+                self._json_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    _safe_error(str(exc), limit=500),
+                )
+            return
+        if parsed.path == "/api/report-archives/monthly":
+            period_id = str(parse_qs(parsed.query).get("period_id", [""])[0])
+            archive_builder = lambda: self.app.create_monthly_report_archive(period_id)
+        else:
+            archive_match = re.fullmatch(r"/api/reports/([^/]+)/archive", parsed.path)
+            if archive_match:
+                run_id = unquote(archive_match.group(1))
+                archive_builder = lambda: self.app.create_report_set_archive(run_id)
+        if archive_builder is not None:
+            try:
+                self._download_archive(archive_builder())
+            except KeyError as exc:
+                self._json_error(HTTPStatus.NOT_FOUND, _safe_error(str(exc), limit=500))
+            except ValueError as exc:
+                self._json_error(HTTPStatus.BAD_REQUEST, _safe_error(str(exc), limit=500))
+            except EmptyReportArchiveError as exc:
+                self._json_error(HTTPStatus.CONFLICT, _safe_error(str(exc), limit=500))
+            except UnsafeReportArchivePath as exc:
+                self._json_error(HTTPStatus.CONFLICT, _safe_error(str(exc), limit=500))
+            except InsufficientReportArchiveSpace as exc:
+                self._json_error(
+                    HTTPStatus.INSUFFICIENT_STORAGE,
+                    _safe_error(str(exc), limit=500),
+                )
+            except RuntimeError as exc:
+                self._json_error(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    _safe_error(str(exc), limit=500),
+                )
+            except Exception as exc:
+                self._json_error(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    _safe_error(str(exc), limit=500),
+                )
+            return
         if parsed.path == "/api/batches":
             try:
                 self._json(HTTPStatus.OK, self.app.batch_list())
@@ -3184,6 +3344,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_error(HTTPStatus.FORBIDDEN, "Origem nao autorizada.")
             return False
         return True
+
+    def _download_archive(self, archive: ReportArchiveResult) -> None:
+        path = archive.path.resolve()
+        if not path.is_file() or path.suffix.lower() != ".zip":
+            path.unlink(missing_ok=True)
+            self._json_error(HTTPStatus.NOT_FOUND, "Arquivo ZIP não encontrado no disco.")
+            return
+        raw_name = archive.download_name.replace(chr(34), "")
+        ascii_name = (
+            unicodedata.normalize("NFKD", raw_name)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+        ) or "Relatorios-Tenable.zip"
+        encoded_name = quote(raw_name)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(path.stat().st_size))
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{encoded_name}',
+            )
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            with path.open("rb") as source:
+                while chunk := source.read(64 * 1024):
+                    self.wfile.write(chunk)
+        finally:
+            path.unlink(missing_ok=True)
 
     def _download(self, document_id: int, *, inline: bool = False) -> None:
         if self.app.database is None:

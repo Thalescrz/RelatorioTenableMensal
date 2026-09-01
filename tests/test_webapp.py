@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import io
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import os
+import zipfile
 from unittest.mock import Mock, patch
 from datetime import datetime, timedelta, timezone
 from dataclasses import replace
@@ -139,6 +142,24 @@ class LocalClient:
         except HTTPError as exc:
             return exc.code, json.loads(exc.read().decode("utf-8"))
         return response.status, json.loads(response.read().decode("utf-8"))
+
+    def download(self, path: str):
+        try:
+            response = urlopen(self.base + path, timeout=3)
+        except HTTPError as exc:
+            return exc.code, dict(exc.headers), exc.read()
+        return response.status, dict(response.headers), response.read()
+
+
+class _ArchiveDashboardDatabase:
+    def __init__(self, documents_by_client: dict[str, list[dict]]) -> None:
+        self.documents_by_client = documents_by_client
+
+    def reports(self, client_id: str):
+        return list(self.documents_by_client.get(client_id, ()))
+
+    def cloud_results(self, client_id: str):
+        return {}
 
 
 class WebDashboardTests(unittest.TestCase):
@@ -584,6 +605,23 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("sem referência para comparações futuras", source)
         self.assertIn("body.allow_main_gap = true", source)
 
+    def test_frontend_exposes_report_set_and_monthly_zip_downloads(self) -> None:
+        static_root = (
+            Path(__file__).resolve().parents[1]
+            / "src/tenable_reports/webapp/static"
+        )
+        html = (static_root / "index.html").read_text(encoding="utf-8")
+        javascript = (static_root / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="archive-all-button"', html)
+        self.assertIn('id="archive-dialog"', html)
+        self.assertIn('id="archive-month-select"', html)
+        self.assertIn('id="archive-download-button"', html)
+        self.assertIn("Baixar conjunto ZIP", javascript)
+        self.assertIn("/api/report-archives/months", javascript)
+        self.assertIn("/api/report-archives/monthly?period_id=", javascript)
+        self.assertIn("/archive", javascript)
+
     def test_backfill_routes_analyze_and_apply_only_safe_promotions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -854,6 +892,102 @@ class WebDashboardTests(unittest.TestCase):
                 with self.assertRaises(KeyError):
                     registry.get_report("run-a")
                 self.assertIsNone(registry.get_main(key))
+            finally:
+                client.close()
+
+    def test_report_archive_endpoints_download_set_and_monthly_main(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_root = root / "data"
+            main_document = data_root / "reports" / "main.docx"
+            old_document = data_root / "reports" / "old.docx"
+            main_document.parent.mkdir(parents=True)
+            main_document.write_bytes(b"main")
+            old_document.write_bytes(b"old")
+            registry = InMemoryReportRegistry()
+            main_report = valid_run("run-main")
+            old_report = valid_run("run-old")
+            registry.register_report(main_report)
+            registry.register_report(old_report)
+            registry.promote_main(
+                reference_key_for_candidate(main_report),
+                main_report.run_id,
+                actor="system",
+                reason="principal",
+            )
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=registry,
+            )
+            app.config.add_client({
+                "client_id": "cliente-a",
+                "display_name": "Cliente A",
+            })
+            app.database = _ArchiveDashboardDatabase({
+                "cliente-a": [
+                    {
+                        "document_id": 1,
+                        "name": "main.docx",
+                        "path": str(main_document),
+                        "size_bytes": 4,
+                        "run_id": "run-main",
+                        "document_kind": "base",
+                    },
+                    {
+                        "document_id": 2,
+                        "name": "old.docx",
+                        "path": str(old_document),
+                        "size_bytes": 3,
+                        "run_id": "run-old",
+                        "document_kind": "base",
+                    },
+                ]
+            })
+            client = LocalClient(app)
+            try:
+                status, payload = client.request(
+                    "GET", "/api/report-archives/months"
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["periods"], ["2026-07"])
+
+                status, headers, content = client.download(
+                    "/api/reports/run-old/archive"
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(headers["Content-Type"], "application/zip")
+                with zipfile.ZipFile(io.BytesIO(content)) as package:
+                    self.assertIn(
+                        "Relatorios-Tenable-2026-07/Cliente A/old.docx",
+                        package.namelist(),
+                    )
+
+                status, headers, content = client.download(
+                    "/api/report-archives/monthly?period_id=2026-07"
+                )
+                self.assertEqual(status, 200)
+                self.assertIn(
+                    "Relatorios-Tenable-2026-07.zip",
+                    headers["Content-Disposition"],
+                )
+                with zipfile.ZipFile(io.BytesIO(content)) as package:
+                    names = package.namelist()
+                    self.assertIn(
+                        "Relatorios-Tenable-2026-07/Cliente A/main.docx",
+                        names,
+                    )
+                    self.assertNotIn(
+                        "Relatorios-Tenable-2026-07/Cliente A/old.docx",
+                        names,
+                    )
+                deadline = time.monotonic() + 1
+                while (
+                    list((data_root / ".downloads").glob("*.zip"))
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+                self.assertEqual(list((data_root / ".downloads").glob("*.zip")), [])
             finally:
                 client.close()
 

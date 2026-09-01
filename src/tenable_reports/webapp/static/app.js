@@ -258,6 +258,7 @@ function render() {
   $("#global-alert-text").textContent = alert || "";
   $("#run-all-button").disabled = !clients.some(c => c.enabled && c.credentials_ready);
   $("#check-all-button").disabled = !clients.some(c => c.enabled);
+  $("#archive-all-button").disabled = Boolean(state.data.database_error);
   const storage = state.data.storage || {};
   $("#storage-free").textContent = formatBytes(storage.available_bytes);
   $("#storage-temporary").textContent = formatBytes(storage.temporary_bytes);
@@ -305,6 +306,46 @@ async function refresh(silent = true) {
   catch (error) { if (!silent) toast(error.message, "error"); $("#connection-label").textContent = "servidor indisponível"; }
 }
 
+function startBrowserDownload(url) {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "";
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+function monthlyPeriodLabel(periodId) {
+  const [year, month] = periodId.split("-").map(Number);
+  if (!year || !month) return periodId;
+  return new Date(Date.UTC(year, month - 1, 1)).toLocaleDateString("pt-BR", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+async function openMonthlyArchiveDialog(button) {
+  button.disabled = true;
+  try {
+    const payload = await api("/api/report-archives/months");
+    const periods = payload.periods || [];
+    if (!periods.length) {
+      toast("Nenhum período mensal com relatório MAIN está disponível.", "error");
+      return;
+    }
+    $("#archive-month-select").innerHTML = periods.map(period =>
+      `<option value="${escapeHtml(period)}">${escapeHtml(monthlyPeriodLabel(period))}</option>`
+    ).join("");
+    $("#archive-dialog").showModal();
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 async function openClient(clientId) {
   const client = state.data.clients.find(c => c.client_id === clientId); if (!client) return;
   state.selectedClient = clientId;
@@ -328,7 +369,10 @@ async function openClient(clientId) {
       const cloudRetryAction = report.cloud_retry_available
         ? '<button class="mini-button" data-report-action="retry-cloud" type="button">Tentar Cloud novamente</button>'
         : "";
-      return `<div class="report-row ${report.deleted_at ? "deleted" : ""}" data-report-run="${escapeHtml(report.run_id)}"><div><div class="report-badges">${report.is_main ? '<span class="report-badge main">MAIN</span>' : ""}<span class="report-badge">${escapeHtml(report.origin || "MANUAL")}</span><span class="report-badge">${escapeHtml(report.status || "")}</span>${cloudBadge}${report.deleted_at ? '<span class="report-badge">EXCLUÍDO</span>' : ""}</div><strong>${escapeHtml(report.period_id || report.run_id)}</strong><small>${escapeHtml(report.run_id)} · ${formatBytes(report.size_bytes)}${reference}${omitted}</small><div class="report-documents">${documents || '<small>Documentos não localizados no disco.</small>'}</div></div><div class="report-actions">${cloudRetryAction}${!report.deleted_at && !report.is_main ? '<button class="mini-button" data-report-action="main" type="button">Definir MAIN</button>' : ""}${report.deleted_at ? '<button class="mini-button" data-report-action="restore" type="button">Restaurar</button>' : '<button class="mini-button danger" data-report-action="delete" type="button">Excluir conjunto</button>'}</div></div>`;
+      const reportArchiveAction = !report.deleted_at
+        ? `<a class="mini-button archive-download" href="/api/reports/${encodeURIComponent(report.run_id)}/archive" download>Baixar conjunto ZIP</a>`
+        : "";
+      return `<div class="report-row ${report.deleted_at ? "deleted" : ""}" data-report-run="${escapeHtml(report.run_id)}"><div><div class="report-badges">${report.is_main ? '<span class="report-badge main">MAIN</span>' : ""}<span class="report-badge">${escapeHtml(report.origin || "MANUAL")}</span><span class="report-badge">${escapeHtml(report.status || "")}</span>${cloudBadge}${report.deleted_at ? '<span class="report-badge">EXCLUÍDO</span>' : ""}</div><strong>${escapeHtml(report.period_id || report.run_id)}</strong><small>${escapeHtml(report.run_id)} · ${formatBytes(report.size_bytes)}${reference}${omitted}</small><div class="report-documents">${documents || '<small>Documentos não localizados no disco.</small>'}</div></div><div class="report-actions">${reportArchiveAction}${cloudRetryAction}${!report.deleted_at && !report.is_main ? '<button class="mini-button" data-report-action="main" type="button">Definir MAIN</button>' : ""}${report.deleted_at ? '<button class="mini-button" data-report-action="restore" type="button">Restaurar</button>' : '<button class="mini-button danger" data-report-action="delete" type="button">Excluir conjunto</button>'}</div></div>`;
     }).join("") : '<div class="loading">Nenhum relatório gerado para este cliente.</div>';
     bindReportActions();
   } catch (error) { $("#report-list").innerHTML = `<div class="loading">${escapeHtml(error.message)}</div>`; }
@@ -621,6 +665,15 @@ $("#apply-backfill-button").addEventListener("click", async event => {
   } catch (error) { toast(error.message, "error"); event.currentTarget.disabled = false; }
 });
 $("#check-all-button").addEventListener("click", event => testConnections(state.data.clients.filter(c => c.enabled).map(c => c.client_id), event.currentTarget));
+$("#archive-all-button").addEventListener("click", event => openMonthlyArchiveDialog(event.currentTarget));
+$("#archive-form").addEventListener("submit", event => {
+  event.preventDefault();
+  const periodId = $("#archive-month-select").value;
+  if (!periodId) return;
+  startBrowserDownload(`/api/report-archives/monthly?period_id=${encodeURIComponent(periodId)}`);
+  $("#archive-dialog").close();
+  toast(`Download mensal de ${monthlyPeriodLabel(periodId)} iniciado.`);
+});
 $("#empty-add-button").addEventListener("click", () => { resetClientForm(); $("#manage-dialog").showModal(); });
 $("#open-alerts-button").addEventListener("click", () => $("#alerts-dialog").showModal());
 $("#cleanup-button").addEventListener("click", async event => {

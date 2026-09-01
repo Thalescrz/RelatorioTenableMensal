@@ -213,6 +213,14 @@ interface exige outra referência compatível. O serviço bloqueia gerações at
 valida que todos os alvos pertencem à raiz `data` e usa quarentena reversível antes
 da transação PostgreSQL. Somente após o commit a remoção física é finalizada.
 
+Os pacotes ZIP são projeções temporárias dos documentos registrados, não novos
+artefatos duráveis. O pacote de um conjunto usa exatamente a execução escolhida. O
+pacote mensal seleciona somente o `MAIN` de cada cliente no período, separa os
+arquivos por cliente e registra em `RESUMO.txt` clientes sem `MAIN`, documentos
+ausentes e demais omissões. Caminhos fora da raiz `data` são rejeitados. O ZIP é
+montado em `data/.downloads`, transmitido com `no-store` e removido ao final da
+resposta, inclusive quando o navegador interrompe o download.
+
 ## Ciclo de vida do armazenamento
 
 Duráveis:
@@ -230,6 +238,7 @@ Temporários:
 - respostas GraphQL, checkpoints e enriquecimentos Cloud;
 - snapshots normalizados completos;
 - datasets intermediários e imagens de montagem.
+- pacotes ZIP de download, somente durante a resposta HTTP.
 
 Após sucesso validado, os temporários são descartados. Em falha, permanecem por
 uma janela curta, atualmente orientada a sete dias, para diagnóstico e retomada.
