@@ -186,6 +186,9 @@ def test_repository_claims_one_job_with_skip_locked_and_records_event() -> None:
     claim_sql, claim_params = database.connection_value.calls[0]
     assert "for update skip locked" in claim_sql.lower()
     assert "update tenable_reports.web_batch_jobs" in claim_sql.lower()
+    assert "returning job.id, job.batch_id" in " ".join(
+        claim_sql.lower().split()
+    )
     assert claim_params == ("worker-one",)
     event_sql, event_params = database.connection_value.calls[2]
     assert "insert into tenable_reports.web_batch_events" in event_sql

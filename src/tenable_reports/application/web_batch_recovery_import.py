@@ -180,6 +180,24 @@ def plan_web_batch_recovery(
             )
             if job_payload.get(key) is not None
         }
+        operational_payload.update({
+            "mode": "manual",
+            "days": job_payload.get("days"),
+            "start_at": str(job_payload.get("start_at") or period["start_at"]),
+            "end_at": str(job_payload.get("end_at") or period["end_at"]),
+            "vm_selective_mode": job_payload.get("vm_selective_mode"),
+            "vm_export_strategy": job_payload.get("vm_export_strategy"),
+            "historical_source": job_payload.get("historical_source"),
+            "was_failure_policy": (
+                job_payload.get("was_failure_policy") or "retry_then_continue"
+            ),
+            "force_live_collection": (
+                job_payload.get("force_live_collection") is True
+            ),
+            "confirm_historical_reconstruction": (
+                job_payload.get("confirm_historical_reconstruction") is True
+            ),
+        })
         operational_payload["recovery_original_status"] = legacy_status
         job_id = uuid5(batch_id, str(original_job_id))
         error_code = None

@@ -1228,6 +1228,14 @@ class JobQueue:
         )
         if vm_export_strategy not in {None, "combined", "split"}:
             raise ValueError("Estrategia de export VM invalida.")
+        vm_export_uuid = (
+            str(request.get("vm_export_uuid") or "").strip() or None
+        )
+        if vm_export_uuid:
+            try:
+                uuid.UUID(vm_export_uuid)
+            except ValueError as exc:
+                raise ValueError("UUID de export VM invalido.") from exc
         historical_source = (
             str(request.get("historical_source") or "").strip().lower() or None
         )
@@ -1300,6 +1308,7 @@ class JobQueue:
                     "end_at": end_at,
                     "vm_selective_mode": vm_selective_mode,
                     "vm_export_strategy": vm_export_strategy,
+                    "vm_export_uuid": vm_export_uuid,
                     "historical_source": historical_source,
                     "was_failure_policy": was_failure_policy,
                     "force_live_collection": force_live_collection,
@@ -1518,6 +1527,7 @@ class JobQueue:
                 "end_at": original["end_at"],
                 "vm_selective_mode": original.get("vm_selective_mode"),
                 "vm_export_strategy": original.get("vm_export_strategy"),
+                "vm_export_uuid": original.get("vm_export_uuid"),
                 "historical_source": original.get("historical_source"),
                 "was_failure_policy": original.get("was_failure_policy"),
                 "confirm_historical_reconstruction": original.get(
@@ -1645,6 +1655,10 @@ class JobQueue:
                 if job.get("vm_export_strategy"):
                     command.extend((
                         "--vm-export-strategy", job["vm_export_strategy"]
+                    ))
+                if job.get("vm_export_uuid"):
+                    command.extend((
+                        "--vm-export-uuid", job["vm_export_uuid"]
                     ))
                 if job.get("historical_source"):
                     command.extend((

@@ -80,6 +80,32 @@ class HistoricalWebUiTests(unittest.TestCase):
         self.assertEqual(observed[0][start_index + 1], "2026-07-01")
         self.assertEqual(observed[0][end_index + 1], "2026-08-01")
 
+    def test_recovery_uuid_is_forwarded_by_web_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            observed: list[list[str]] = []
+            export_uuid = "00000000-0000-0000-0000-000000000321"
+
+            def runner(command, cwd, progress_callback=None):
+                observed.append(list(command))
+                return subprocess.CompletedProcess(
+                    command, 0, stdout="{}", stderr=""
+                )
+
+            jobs = JobQueue(
+                root, root / "orchestration" / "clients.json", runner
+            )
+            jobs.enqueue(["cliente-a"], {
+                "mode": "manual",
+                "start_at": "2026-07-01T03:00:00Z",
+                "end_at": "2026-08-01T03:00:00Z",
+                "vm_export_uuid": export_uuid,
+            })
+            jobs._pending.join()
+
+        index = observed[0].index("--vm-export-uuid")
+        self.assertEqual(observed[0][index + 1], export_uuid)
+
     def test_inclusive_calendar_range_rejects_end_before_start(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

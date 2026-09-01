@@ -133,6 +133,10 @@ execute `import-web-batch-recovery --dry-run`. Revise os totais e só então use
 `--apply`. A gravação é idempotente e transacional; erro faz rollback. O lote entra
 como `PAUSED` e não inicia clientes automaticamente.
 
+No lote `RECOVERED/PAUSED`, use **Tentar falhas/interrompidos**. A derivação
+preserva período e `vm_export_uuid`; não use **Retomar lote**, pois os trabalhos
+importados já são terminais.
+
 ## Export sem progresso
 
 Timeout VM é temporário. Use **Cancelar export e tentar novamente** somente com

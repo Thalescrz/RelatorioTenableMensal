@@ -2832,6 +2832,7 @@ def command_orchestrate(args: argparse.Namespace) -> int:
             apply_retention_policy=args.apply_retention,
             vm_selective_mode=args.vm_selective_mode,
             vm_export_strategy=args.vm_export_strategy,
+            vm_export_uuid=getattr(args, "vm_export_uuid", None),
             historical_source=args.historical_source,
             force_live_collection=args.force_live_collection,
             was_failure_policy=getattr(args, "was_failure_policy", None),
@@ -3535,6 +3536,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--vm-export-strategy",
         choices=("combined", "split"),
         help="Sobrescreve a estrategia VM dos clientes selecionados.",
+    )
+    orchestrate.add_argument(
+        "--vm-export-uuid",
+        help="Retoma um export VM existente; exige exatamente um --client.",
     )
     orchestrate.add_argument(
         "--historical-source",

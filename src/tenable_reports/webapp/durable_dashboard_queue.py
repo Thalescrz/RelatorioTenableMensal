@@ -164,7 +164,14 @@ class DurableDashboardJobQueue:
         source = self.repository.get_batch(request.source_batch_id)
         if source is None:
             raise KeyError("Lote de origem nao encontrado.")
-        if source.status not in BATCH_TERMINAL_STATUSES:
+        paused_recovery = (
+            source.kind == "RECOVERED"
+            and source.status is BatchStatus.PAUSED
+        )
+        if (
+            source.status not in BATCH_TERMINAL_STATUSES
+            and not paused_recovery
+        ):
             raise ValueError(
                 "O lote de origem ainda esta ativo e nao pode ser derivado."
             )

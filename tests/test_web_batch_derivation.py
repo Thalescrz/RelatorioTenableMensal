@@ -138,6 +138,55 @@ def test_retry_incomplete_selects_only_failed_interrupted_and_cancelled(
     assert all(job.control_file for job in jobs)
 
 
+def test_retry_incomplete_accepts_paused_recovery_and_preserves_uuid(
+    tmp_path: Path,
+) -> None:
+    recovered_id = UUID(int=1200)
+    export_uuid = "00000000-0000-0000-0000-000000000321"
+    repository = InMemoryWebBatchRepository()
+    repository.create_batch(
+        WebBatch(
+            id=recovered_id,
+            idempotency_key="batch:recovered:paused",
+            kind="RECOVERED",
+            status=BatchStatus.PAUSED,
+        ),
+        (
+            WebBatchJob(
+                id=UUID(int=1201),
+                batch_id=recovered_id,
+                client_id="client-recovered",
+                position=1,
+                status=BatchJobStatus.FAILED,
+                attempt_number=1,
+                payload={
+                    "mode": "manual",
+                    "days": None,
+                    "start_at": "2026-07-01T03:00:00Z",
+                    "end_at": "2026-08-01T03:00:00Z",
+                    "vm_export_uuid": export_uuid,
+                },
+            ),
+        ),
+    )
+    queue = _queue(tmp_path, repository)
+    try:
+        retry = queue.derive_batch(
+            DerivedBatchRequest(
+                source_batch_id=recovered_id,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key="retry:recovered:paused",
+            )
+        )
+    finally:
+        queue.close()
+
+    jobs = repository.list_batch_jobs(UUID(retry["batch"]["id"]))
+    assert len(jobs) == 1
+    assert jobs[0].payload["vm_export_uuid"] == export_uuid
+    assert jobs[0].payload["start_at"] == "2026-07-01T03:00:00Z"
+
+
 def test_retry_incomplete_rejects_source_without_eligible_jobs(
     tmp_path: Path,
 ) -> None:

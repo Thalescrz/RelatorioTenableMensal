@@ -38,6 +38,13 @@ _JOB_COLUMNS = """
 """
 
 
+_JOB_COLUMNS_AS_JOB = ", ".join(
+    f"job.{column.strip()}"
+    for column in _JOB_COLUMNS.split(",")
+    if column.strip()
+)
+
+
 def _iso(value: Any) -> str | None:
     if value is None:
         return None
@@ -602,7 +609,7 @@ class PostgresWebBatchRepository(WebBatchRepository):
                     started_at = coalesce(job.started_at, now())
                 from next_job
                 where job.id = next_job.id
-                returning {_JOB_COLUMNS}
+                returning {_JOB_COLUMNS_AS_JOB}
                 """,
                 (normalized_worker,),
             ).fetchone()

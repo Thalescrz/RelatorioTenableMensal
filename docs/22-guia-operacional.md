@@ -282,6 +282,10 @@ restaure o backup lógico antes de iniciar qualquer lote novo. Nunca use **Retom
 lote** para trabalhos importados como `FAILED` ou `INTERRUPTED`; crie **Tentar
 falhas/interrompidos**.
 
+Essa ação é permitida para o lote especial `RECOVERED/PAUSED`. Cada trabalho
+derivado conserva o período original e o `vm_export_uuid`; o executor consulta
+primeiro esse export remoto e só cria outro conforme as regras de estado acima.
+
 ## Propriedades seletivas
 
 O padrão seguro é payload completo. A opção seletiva deve ser ativada por cliente

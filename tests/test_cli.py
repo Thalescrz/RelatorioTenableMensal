@@ -389,11 +389,19 @@ class CliTests(unittest.TestCase):
         orchestrate = parser.parse_args([
             "orchestrate", "--config", "clients.json", "--force-live-collection",
         ])
+        recovery = parser.parse_args([
+            "orchestrate", "--config", "clients.json",
+            "--vm-export-uuid", "00000000-0000-0000-0000-000000000321",
+        ])
         run_client = parser.parse_args([
             "run-client", "--profile", "client.json", "--force-live-collection",
         ])
 
         self.assertTrue(orchestrate.force_live_collection)
+        self.assertEqual(
+            recovery.vm_export_uuid,
+            "00000000-0000-0000-0000-000000000321",
+        )
         self.assertTrue(run_client.force_live_collection)
 
     def _tag_run_fixture(self, directory: Path):

@@ -599,6 +599,23 @@ class OrchestrationTests(unittest.TestCase):
         index = command.index("--vm-selective-mode")
         self.assertEqual(command[index + 1], "validation")
 
+    def test_client_command_propagates_recovery_export_uuid(self) -> None:
+        config = load_orchestration_config(EXAMPLE_CONFIG)
+        export_uuid = "00000000-0000-0000-0000-000000000321"
+        command = build_client_command(
+            config=config,
+            client=config.clients[0],
+            request=OrchestrationRequest(
+                mode="manual",
+                selected_client_ids=(config.clients[0].client_id,),
+                vm_export_uuid=export_uuid,
+            ),
+            client_run_id="run-recovery",
+        )
+
+        index = command.index("--vm-export-uuid")
+        self.assertEqual(command[index + 1], export_uuid)
+
     def test_client_command_retries_was_for_monthly_and_explicit_batch(self) -> None:
         config = load_orchestration_config(EXAMPLE_CONFIG)
 

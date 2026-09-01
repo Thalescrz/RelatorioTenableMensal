@@ -87,6 +87,12 @@ def test_recovery_plan_maps_legacy_states_and_pauses_batch(tmp_path: Path) -> No
     assert interrupted.payload["partial_manifest_present"] is True
     assert interrupted.payload["vm_export_uuid"]
 
+    failed = plan.jobs[1]
+    assert failed.payload["mode"] == "manual"
+    assert failed.payload["start_at"] == "2026-07-01T03:00:00Z"
+    assert failed.payload["end_at"] == "2026-08-01T03:00:00Z"
+    assert failed.payload["was_failure_policy"] == "retry_then_continue"
+
 
 def test_recovery_plan_rejects_invalid_schema_and_sensitive_fields(
     tmp_path: Path,
