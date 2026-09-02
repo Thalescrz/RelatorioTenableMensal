@@ -43,6 +43,7 @@ $env:PYTHONPATH = (Join-Path $PWD 'src')
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe tools\validate_project_guidance.py --root .
 .\.venv\Scripts\python.exe tools\audit_secret_leaks.py
+node --check src\tenable_reports\webapp\static\app.js
 git diff --check
 ```
 
@@ -66,7 +67,13 @@ frontmatter e links locais. Ele valida estrutura, não redação exata.
   e rollback de documentos/manifesto;
 - `NOT_COLLECTED` WEB distinto de `NO_DATA` no dataset e no texto do DOCX;
 - Cloud opcional, com falha, progresso e retentativa independentes;
+- `VM_CORE`, `WAS` e `CLOUD` com tentativa, etapa e retryable independentes;
+- retry seletivo sem repetir componente concluído e com rollback byte a byte do
+  manifesto em falha;
 - VPR Cloud zero distinto de ausência e fotografia atual distinta de histórico exato;
+- `STAGED_V1` com coleta remota concorrente, montagem local única e compatibilidade
+  `LEGACY`;
+- checkpoint íntegro antes de `READY_FOR_BUILD` e build sem transporte HTTP;
 - `MAIN` explícito e histórico compatível;
 - descarte seguro apenas depois da publicação validada.
 
@@ -114,19 +121,54 @@ Mudanças na fila precisam preservar estes contratos:
 
 - PostgreSQL é a única fonte dos lotes em produção; não existe fallback silencioso
   para memória;
-- a fila sequencial usa reivindicação transacional e impede o mesmo cliente ativo
-  em dois lotes;
-- pausa conserva `QUEUED`; retomada não altera `FAILED`, `INTERRUPTED` ou
-  `CANCELLED_BY_USER`;
-- parada tenta cooperação, preserva o export remoto e limita o fallback à árvore de
-  processos local;
+- novos lotes usam `STAGED_V1`; linhas antigas permanecem `LEGACY` e são
+  reivindicadas pelo worker compatível;
+- o pool remoto reivindica somente `REMOTE_QUEUED`; o pool local, com exatamente
+  um worker, reivindica somente `READY_FOR_BUILD`;
+- capacidade remota automática é
+  `max(1, min(elegíveis, max_clients_per_batch, 64))`; valor configurado positivo
+  pode reduzi-la, nunca ampliar o limite;
+- `COLLECTION_READY` valida e persiste o checkpoint na mesma transação que move
+  `REMOTE_RUNNING` para `READY_FOR_BUILD`;
+- reconciliação ocorre uma vez para todos os worker IDs: coleta abandonada volta a
+  `REMOTE_QUEUED` e build abandonado volta a `READY_FOR_BUILD`;
+- pausa bloqueia novos claims sem apagar checkpoints; retomada não altera
+  `FAILED`, `INTERRUPTED` ou `CANCELLED_BY_USER`;
+- parada sinaliza todos os jobs ativos, preserva export/chunks e limita o fallback
+  a cada árvore de processo local;
+- 900 segundos sem progresso emitem alerta; 7.200 segundos encerram a tentativa
+  local como retentável, sem cancelamento automático remoto;
 - **Tentar falhas/interrompidos** e **Gerar todos novamente** criam lotes derivados
   idempotentes e não reescrevem a origem;
 - ações registram ator, motivo, chave idempotente, PID e eventos relevantes.
 
-Teste estado de domínio, repositório em memória, SQL PostgreSQL, subprocesso local,
-rotas HTTP e JavaScript. Para recuperação, cubra `--dry-run`, schema inválido,
-hash idempotente, transação e rollback. Não use coleta real para esses testes.
+O snapshot HTTP pode expor fase, timestamps e `checkpoint_ready`; nunca serialize
+`collection_checkpoint_path`. Teste estado de domínio, claims por fase,
+repositório em memória, SQL PostgreSQL, 20 clientes concorrentes, build máximo 1,
+subprocesso local, rotas HTTP e JavaScript. Para recuperação, cubra `--dry-run`,
+schema/hash inválido, transação e rollback. Não use coleta real.
+
+## Componentes e seleção do lote
+
+`report_component_attempts` registra somente metadados sanitizados de
+`VM_CORE`, `WAS` e `CLOUD`. A tentativa mais recente define disponibilidade e
+retry. `FAILED`/`INTERRUPTED` exigem `failure_code` seguro; componentes
+concluídos não podem ser selecionados em `failed_only`.
+
+`component_retry.py` trata handlers e publisher como fronteiras. Crie staging
+filho único, valide todos os caminhos dentro dele e só altere o manifesto no
+publisher. Qualquer falha restaura os bytes anteriores, remove apenas o staging
+novo e nunca persiste `str(exc)`. WAS sem VM reutilizável deve falhar com
+`MISSING_VM_CHECKPOINT_FOR_WAS`; Cloud não depende de VM.
+
+O servidor valida confirmação, conjunto excluído, enum e subconjunto retentável
+antes de chamar o executor. Sem `component_retry_enqueuer`, somente o caminho
+compatível Cloud pode executar; VM/WAS retornam indisponibilidade explícita.
+
+Em **Gerar todos**, o navegador envia IDs explícitos, mas a regra pura do servidor
+revalida vazio, duplicatas, desconhecidos e inativos. Persista
+`selected_client_ids`, `excluded_client_ids`, filtro e fotografia do analista
+sem deixar referências mutáveis ao cadastro. Analista é metadado, não autorização.
 
 ## Documentos Word
 
@@ -134,6 +176,17 @@ Preserve o conteúdo editorial dos modelos aprovados. Não introduza parágrafos
 tabelas ou títulos novos sem decisão explícita de produto. Datas e identificadores
 dinâmicos devem ser substituídos sem destruir formatação de runs, cabeçalhos,
 rodapés, imagens e quebras de seção.
+
+Rótulos integrais de severidade/faixa em tabelas destacadas usam a paleta aprovada:
+`CRITICAL`, `HIGH`, `MEDIUM` e `LOW`. A classificação deve ser estrita;
+texto livre que apenas contém “crítico” não recebe cor. Cubra idade, faixas CVSS,
+eixos CVSS×VPR e rating VPR, além de builders compartilhados.
+
+Tradução de descrição usa `translate_semantic_text`: parágrafo, sentença e limite
+de palavra, com CVE/URL/versão inteiros quando couberem. Use tradutor injetado e
+cache, nunca rede em teste. Falha de um chunk preserva somente a fonte daquele
+chunk e não bloqueia os demais nem o DOCX. `translator=None` preserva texto,
+inclusive conteúdo já em português.
 
 Depois de alterar apresentação:
 
@@ -159,6 +212,8 @@ inspeção.
 
 Rotas novas precisam de teste do servidor e do JavaScript que as consome. Mostre
 erros de forma acionável, associe-os ao cliente e não retorne secrets ao navegador.
+Fase e timestamps podem ser retornados; checkpoint é representado somente por
+`checkpoint_ready`, nunca por caminho local.
 O formulário Cloud devolve apenas `cloud_token_saved`; um token vazio em edição
 preserva o valor local existente. VM e Cloud possuem resultados de teste separados.
 Operações destrutivas, como exclusão ou cancelamento de export, exigem alvo

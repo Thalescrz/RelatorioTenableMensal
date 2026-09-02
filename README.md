@@ -27,10 +27,11 @@ No Windows, abra o PowerShell na raiz do projeto:
 ```
 
 O painel abre em `http://127.0.0.1:8765`. Nele é possível cadastrar clientes,
-testar suas APIs, buscar TAGs, iniciar uma geração individual ou da carteira,
-acompanhar o progresso, baixar documentos e escolher a referência `MAIN` usada
-no próximo comparativo. Também é possível baixar um conjunto completo em ZIP ou
-montar o ZIP mensal da carteira usando somente o `MAIN` de cada cliente.
+manter o catálogo operacional de analistas responsáveis, testar APIs, buscar TAGs,
+iniciar uma geração individual ou selecionar explicitamente os clientes da
+carteira, acompanhar as fases, baixar documentos e escolher a referência `MAIN`
+usada no próximo comparativo. Também é possível baixar um conjunto completo em ZIP
+ou montar o ZIP mensal da carteira usando somente o `MAIN` de cada cliente.
 
 As credenciais ficam somente em `credentials/*.env`, arquivos ignorados pelo Git.
 Use os exemplos em [credentials](credentials) como referência; nunca grave chaves
@@ -79,8 +80,10 @@ limitado para diagnóstico.
 O WAS e o Cloud Security são componentes opcionais e independentes. Falha, ausência
 de licença ou ausência de população em um deles não invalida os documentos VM já
 gerados. O Cloud registra uma fotografia atual compacta no PostgreSQL e mantém o
-staging quando uma retentativa isolada ainda pode aproveitá-lo. Tradução por
-provedor externo continua sem integração automática.
+staging quando uma retentativa isolada ainda pode aproveitá-lo. Quando um tradutor
+é injetado, descrições longas são divididas semanticamente e uma falha preserva
+somente o trecho fonte afetado; provedor externo continua sem integração
+automática.
 
 No botão **Gerar todos** e no automático mensal, uma falha WAS inicia uma única
 retentativa apenas do componente WEB. Se ela também falhar, os relatórios são
@@ -90,27 +93,36 @@ analista a decisão entre tentar novamente ou continuar sem WEB.
 
 ## Controle durável da carteira
 
-A geração da carteira usa uma fila sequencial persistida no PostgreSQL. Reiniciar a
-interface não transforma trabalhos interrompidos em novas coletas: o painel recupera
-o lote e mostra quantos clientes concluíram, falharam, foram interrompidos ou ainda
-estão pendentes.
+Novos lotes usam o modelo `STAGED_V1`: coletas remotas de clientes diferentes
+podem ocorrer em paralelo, enquanto a normalização final, a montagem dos DOCX e a
+publicação passam por um único worker local. A capacidade remota automática é
+limitada ao menor valor entre clientes elegíveis e 64; a montagem permanece em 1.
+Lotes antigos continuam como `LEGACY`. Reiniciar a interface não transforma
+trabalho preservado em nova coleta: o painel reconcilia a fase e o checkpoint.
 
 No painel do lote:
 
-- **Pausar após o atual** deixa o cliente em execução terminar e mantém os próximos
-  na fila;
-- **Parar lote** pede interrupção cooperativa ao cliente atual, marca os ainda não
-  iniciados como `CANCELLED_BY_USER` e preserva o export remoto;
-- **Retomar lote** libera somente trabalhos que continuavam `QUEUED`;
+- **Pausar após o atual** impede novas reivindicações e deixa as fases ativas
+  salvarem seu checkpoint;
+- **Parar lote** sinaliza cooperativamente todos os processos locais ativos,
+  cancela os ainda não iniciados e preserva export, UUID e chunks remotos;
+- **Retomar lote** libera somente trabalhos que permanecem retomáveis na própria
+  fase;
 - **Tentar falhas/interrompidos** cria outro lote apenas com falhas, interrupções e
   cancelamentos;
-- **Gerar todos novamente** cria outro lote com todos os clientes e exige confirmação.
+- **Gerar todos novamente** abre a seleção explícita e cria outro lote somente com
+  os clientes confirmados.
 
-Os estados terminais incluem `STOPPED`, `COMPLETE`, `COMPLETE_WITH_FAILURES` e
-`COMPLETE_WITH_WARNINGS`. Se a interrupção cooperativa não encerrar o subprocesso
-local no prazo de tolerância, a aplicação finaliza somente a árvore local e mantém
-o UUID/checkpoint para recuperação; ela não envia cancelamento à Tenable por essa
-ação.
+O painel distingue coleta remota, espera por decisão WEB, pronto para montagem,
+montando documento e terminal. Após 900 segundos sem progresso remoto há alerta;
+em 7.200 segundos a tentativa local expira sem cancelar automaticamente o export
+na Tenable. A API expõe apenas que existe checkpoint validado, nunca seu caminho.
+
+VM, WAS e Cloud possuem resultados independentes. Um conjunto parcial preserva os
+documentos válidos e mostra somente componentes falhos/interrompidos e retentáveis.
+O retry integrado padrão continua disponível para Cloud; VM/WAS seletivos exigem o
+executor faseado configurado e falham de forma explícita quando ele não estiver
+disponível.
 
 ## Cloud Security
 

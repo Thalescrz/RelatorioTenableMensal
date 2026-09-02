@@ -58,7 +58,35 @@ da interface, de Word ou de uma resposta HTTP específica.
 11. O histórico compatível do cliente ou da própria TAG é recuperado do PostgreSQL.
 12. Os DOCX são renderizados, validados, registrados e oferecidos para download.
 13. Métricas compactas são persistidas; dados intermediários pesados de uma
-   execução bem-sucedida são removidos.
+    execução bem-sucedida são removidos.
+
+## Pipeline em fases para novos lotes
+
+`STAGED_V1` substitui a execução estritamente sequencial somente nos lotes novos
+criados pelo fluxo atual. Registros anteriores permanecem em `LEGACY` e continuam
+na fila sequencial do worker compatível. A concorrência aparece quando há mais de
+um cliente no lote.
+Para um lote faseado, a capacidade remota automática é
+`max(1, min(clientes_elegíveis, max_clients_per_batch, 64))`; configurar
+`remote_collection_workers` com valor positivo pode reduzi-la. A montagem local
+usa sempre `local_build_workers = 1`.
+
+O trabalho persiste uma fase independente do status:
+
+- `REMOTE_QUEUED`: aguardando um coletor remoto;
+- `REMOTE_RUNNING`: `collect-client` coleta raw/chunks e atualiza checkpoint;
+- `REMOTE_WAITING_DECISION`: aguarda a decisão WEB aplicável;
+- `READY_FOR_BUILD`: checkpoint validado e pronto para a fila local;
+- `BUILD_RUNNING`: `build-client` normaliza, monta, valida e publica;
+- `TERMINAL`: sucesso, aviso, falha, interrupção ou cancelamento;
+- `LEGACY`: execução monolítica compatível.
+
+`COLLECTION_READY` é o evento transacional que valida o checkpoint e move o mesmo
+job de `REMOTE_RUNNING` para `READY_FOR_BUILD`. Um reinício devolve coleta
+abandonada a `REMOTE_QUEUED` com o que já foi persistido e montagem abandonada a
+`READY_FOR_BUILD`, sem abrir API remota na fase local. O snapshot HTTP oferece
+`checkpoint_ready` como booleano; caminhos de checkpoint ficam restritos ao
+processo local e ao PostgreSQL.
 
 ## Fluxo Cloud Security
 
@@ -89,6 +117,25 @@ Cloud é tolerante a falha. Erro obrigatório não publica DOCX Cloud parcial, p
 checkpoints íntegros, registra alerta sanitizado e mantém VM, WAS, customizado e TAG.
 A ação **Tentar Cloud novamente** reutiliza o contexto da execução e não repete a
 coleta geral.
+
+## Componentes e retentativa seletiva
+
+Cada conjunto acompanha `VM_CORE`, `WAS` e `CLOUD` de forma independente.
+`VM_CORE` contém assets, findings VM, TAGs e documentos gerais; `WAS` é opcional
+e depende de um checkpoint VM íntegro para reparar documentos com seção WEB;
+`CLOUD` coleta e publica sua fotografia sem depender de VM. Sucesso de um
+componente preserva seus documentos mesmo quando outro falha.
+
+As tentativas registram estado, etapa, número, `retryable`, código sanitizado e
+referências de artefato. **Tentar componentes com falha** considera somente a
+tentativa mais recente em `FAILED` ou `INTERRUPTED`; componentes concluídos não
+são repetidos. A publicação seletiva substitui referências apenas depois de
+validar o novo staging e restaura manifesto/documentos anteriores em falha.
+
+O núcleo seletivo cobre VM, WAS e Cloud. No servidor padrão, o caminho de
+compatibilidade Cloud está integrado. VM/WAS pela rota seletiva dependem de um
+executor de componentes configurado; sua ausência retorna erro explícito em vez de
+iniciar uma coleta completa ou repetir silenciosamente componentes válidos.
 
 ## Replay e coleta nova
 
@@ -157,10 +204,11 @@ posterior materializa VM/assets/TAG localmente do snapshot compacto, coleta apen
 WAS e troca os documentos VM/TAG e o manifesto em uma transação com rollback.
 Cloud é preservado e não é executado novamente.
 
-O cancelamento automático é conservador: somente um job criado pela execução atual,
-sem progresso, pode ser cancelado ao atingir o limite. Job preexistente, fornecido
-ou retomado nunca é cancelado automaticamente. Timeout de export é falha temporária
-e elegível a retentativa.
+No `STAGED_V1`, 900 segundos sem progresso geram apenas
+`TENABLE_EXPORT_NO_PROGRESS_WARNING`. Aos 7.200 segundos, o processo remoto local
+termina como falha retentável e preserva UUID, manifesto, checkpoint e chunks já
+baixados. Nenhum export remoto é cancelado automaticamente por esse timeout; a
+ação de cancelamento continua manual, explícita e vinculada ao UUID.
 
 Propriedades seletivas reduzem o payload quando previamente validadas no tenant. A
 configuração é por cliente e possui fallback único para payload completo se houver
@@ -169,10 +217,11 @@ ocultados por esse fallback.
 
 ## Lotes duráveis e controle local
 
-`web_batches`, `web_batch_jobs` e `web_batch_events` no PostgreSQL guardam o lote,
-cada cliente e a trilha de auditoria. O dispatcher mantém uma fila sequencial: um
-único cliente é reivindicado por vez com bloqueio transacional, e um reinício local
-reconcilia qualquer `RUNNING` abandonado como `INTERRUPTED` e o lote como `PAUSED`.
+`web_batches`, `web_batch_jobs` e `web_batch_events` no PostgreSQL guardam lote,
+cliente, fase, timestamps, checkpoint e trilha de auditoria. Pools distintos
+reivindicam transacionalmente somente `REMOTE_QUEUED` ou `READY_FOR_BUILD`; o
+pool local possui exatamente um worker. A reconciliação ocorre uma vez para o
+conjunto de workers e devolve cada job abandonado à fila correspondente.
 
 Pausa e retomada não reclassificam resultados antigos. **Pausar após o atual** espera
 o trabalho ativo; **Retomar lote** libera somente os itens ainda `QUEUED`. **Parar
@@ -187,9 +236,15 @@ são preservados.
 `COMPLETE_WITH_WARNINGS`, `COMPLETE_WITH_FAILURES` ou `STOPPED`. Ator, motivo e
 chave idempotente são registrados para cada mutação.
 
+**Gerar todos** recebe a lista explícita de clientes selecionados. A fotografia do
+lote preserva incluídos, excluídos, filtro e analista responsável; mudança posterior
+no cadastro não altera a auditoria. Clientes inativos, desconhecidos, duplicados ou
+seleção vazia são rejeitados no servidor. O catálogo de analistas é metadado local,
+não autenticação nem autorização.
+
 **Tentar falhas/interrompidos** cria um lote derivado somente de `FAILED`,
 `INTERRUPTED` e `CANCELLED_BY_USER`. **Gerar todos novamente** inclui a seleção
-integral e exige a frase de confirmação. Nenhum dos dois altera o lote de origem;
+confirmada e exige a frase de confirmação. Nenhum dos dois altera o lote de origem;
 conflitos com outro trabalho ativo do mesmo cliente retornam HTTP 409.
 
 Um snapshot anterior à fila durável pode ser validado por
@@ -255,3 +310,18 @@ expor chaves ou conteúdo sensível dos findings. Falha Cloud é registrada
 separadamente e pode produzir sucesso parcial com retentativa exclusiva. Falha WAS
 usa disponibilidade tipada: `NOT_COLLECTED` produz alerta editorial, enquanto
 `NO_DATA` significa coleta concluída sem ocorrências.
+
+## Apresentação, cores e tradução
+
+Nas tabelas destacadas, células cujo conteúdo inteiro representa severidade ou
+faixa CVSS/VPR herdam a paleta aprovada: crítica vermelha, alta laranja, média
+amarela e baixa verde. Isso inclui idade, primeira coluna CVSS, eixos da matriz
+CVSS×VPR e cabeçalhos de rating VPR. Texto livre que apenas contém palavras como
+“crítico” mantém o estilo normal.
+
+Quando um `TextTranslator` é injetado, descrições longas são divididas por
+parágrafo, depois sentença e, por fim, limite seguro de palavra. CVE, URL e versão
+permanecem inteiros quando cabem no limite. Chunks repetidos usam cache em memória;
+uma falha preserva somente o chunk fonte e os demais continuam traduzidos. Sem
+tradutor, inclusive para conteúdo já em português, o texto fonte é preservado. O
+projeto não envia descrições a provedor externo automaticamente.

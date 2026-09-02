@@ -36,6 +36,11 @@ escutando a porta e reinicie pela raiz correta antes de investigar o código.
 O formulário não deve devolver secrets salvos. Uma falha de teste não prova chave
 inválida: diferencie autenticação, rede, permissão, rate limit e rota antiga.
 
+Cadastre analistas em **Gerenciar clientes** e associe no máximo um responsável
+principal a cada cliente. O catálogo não cria conta nem permissão. Desative em vez
+de excluir quando houver vínculo; use **Sem responsável** para clientes não
+atribuídos.
+
 ## TAGs
 
 Use **Buscar TAGs da Tenable**. Habilite separadamente:
@@ -76,19 +81,23 @@ usar `legacy_vm` com payload completo. Nessa rota, `since` limita o início e o 
 
 ## Gerar e acompanhar
 
-Use o card para um cliente ou **Gerar todos** para a fila da carteira. Acompanhe:
+Use o card para um cliente ou **Gerar todos** para abrir a seleção da carteira.
+Filtre por nome, analista ou **Sem responsável**, ajuste somente os clientes
+visíveis e confirme o total. Todos os IDs são revalidados no servidor. Acompanhe:
 
 1. validação do perfil e espaço em disco;
-2. export de ativos;
-3. export VM e chunks;
-4. WAS, se habilitado;
-5. normalização e datasets;
-6. histórico e TAGs;
-7. renderização, registro e limpeza.
+2. **Coleta remota na fila** ou **Coleta remota**;
+3. export VM, UUID e chunks;
+4. WAS/Cloud e eventual decisão WEB;
+5. **Pronto para montagem** após checkpoint validado;
+6. **Montando documento** no worker local;
+7. registro, publicação e limpeza.
 
 Para VM, registre UUID, origem (`created`, `resumed` ou equivalente), estado,
 chunks persistidos e última mudança. Só `FINISHED` com chunks tratados encerra a
-etapa.
+etapa. `0/0 · aguardando a Tenable informar chunks` significa total remoto ainda
+desconhecido, não zero findings. A UI pode informar checkpoint validado, mas nunca
+mostra seu caminho.
 
 **Gerar todos** usa `retry_then_continue`: a primeira falha WAS retenta somente o
 WEB; a segunda publica sem WAS e registra `WAS_RETRY_EXHAUSTED`. O automático
@@ -114,15 +123,18 @@ tempo observado, próximo de seis minutos, não deve ser tratado como SLA.
 
 ## Controlar o lote da carteira
 
-A interface usa uma fila sequencial persistida. O card do lote oferece:
+A interface usa `STAGED_V1` para lotes novos. Coletas remotas de clientes
+distintos podem rodar em paralelo; a capacidade automática é limitada ao menor
+valor entre elegíveis e 64. A montagem possui exatamente um worker. Lotes antigos
+continuam `LEGACY`. O card oferece:
 
-- **Pausar após o atual**: aguarda o cliente corrente e conserva os próximos;
-- **Parar lote**: solicita interrupção local, marca pendentes como
-  `CANCELLED_BY_USER` e preserva o export remoto;
-- **Retomar lote**: continua somente os trabalhos `QUEUED`;
+- **Pausar após o atual**: bloqueia novos claims e conserva fases ativas;
+- **Parar lote**: sinaliza todos os subprocessos locais ativos, marca não iniciados
+  como `CANCELLED_BY_USER` e preserva exports/chunks;
+- **Retomar lote**: continua somente trabalhos retomáveis em sua fase;
 - **Tentar falhas/interrompidos**: cria outro lote com falhas, interrupções e
   cancelamentos;
-- **Gerar todos novamente**: recria a carteira inteira após confirmação.
+- **Gerar todos novamente**: recria a seleção após confirmação.
 
 `COMPLETE_WITH_FAILURES` e `STOPPED` são estados terminais. Não use retomada para
 `FAILED` ou `INTERRUPTED`. Se o processo local ignorar a solicitação, o fallback
@@ -139,10 +151,11 @@ importados já são terminais.
 
 ## Export sem progresso
 
-Timeout VM é temporário. Use **Cancelar export e tentar novamente** somente com
-confirmação do UUID e da execução. O cancelamento automático é permitido apenas
-para job criado pela execução atual que chegou ao limite sem progresso. Preserve
-jobs fornecidos, preexistentes ou retomados.
+Em `STAGED_V1`, 900 segundos sem progresso emitem alerta. O limite remoto padrão
+de 7.200 segundos termina a tentativa local como retentável e preserva UUID,
+checkpoint, manifesto e chunks. Nenhum export remoto é cancelado automaticamente.
+Use **Cancelar export e tentar novamente** somente manualmente, com confirmação do
+UUID, execução e impacto.
 
 Não apague o manifesto parcial antes de diagnosticar, mesmo quando nenhum chunk
 chegou. Ele é criado ao receber o UUID e permite que a tentativa seguinte consulte
@@ -174,6 +187,18 @@ No lote e no mensal, espere no máximo duas tentativas WAS durante a execução.
 segunda falhar, confirme a publicação sem WEB e o alerta `WAS_RETRY_EXHAUSTED`. No
 individual, aguarde a decisão explícita entre continuar sem WEB e retentar.
 
+## Componentes e retry
+
+O conjunto expõe `VM_CORE`, `WAS` e `CLOUD`. **Tentar componentes com falha**
+seleciona apenas falhas/interrupções retentáveis; **Selecionar componentes** permite
+reduzir a lista. Nunca marque componente concluído.
+
+Cloud não depende de VM e possui caminho compatível integrado. WAS requer
+checkpoint VM íntegro e repara somente os documentos com seção WEB. VM pode
+reutilizar UUID/chunks ou raw completo. Se o executor seletivo VM/WAS não estiver
+configurado, a interface retorna erro explícito em vez de repetir a execução toda.
+Falha do retry preserva manifesto, documentos, hashes e `MAIN` anteriores.
+
 ## Documentos e `MAIN`
 
 Depois da publicação:
@@ -182,6 +207,11 @@ Depois da publicação:
 - confira documentos por TAG habilitados;
 - verifique hashes/registro e disponibilidade para download;
 - confirme qual geração está `MAIN`.
+
+Nas tabelas destacadas, confira vermelho/laranja/amarelo/verde apenas em rótulos
+integrais de severidade ou faixa CVSS/VPR. Para descrição longa com tradutor
+configurado, uma falha deve preservar somente o trecho fonte e permitir a tradução
+dos demais. Não envie descrição a serviço externo sem autorização.
 
 Automático válido vira `MAIN` por padrão quando aplicável. Após uma reexecução
 melhor, promova manualmente a versão correta. Antes de excluir um `MAIN`, defina a
@@ -205,9 +235,13 @@ Use a ajuda da versão ativa:
 ```powershell
 .\.venv\Scripts\python.exe -m tenable_reports --help
 .\.venv\Scripts\python.exe -m tenable_reports run-client --help
+.\.venv\Scripts\python.exe -m tenable_reports collect-client --help
+.\.venv\Scripts\python.exe -m tenable_reports build-client --help
 .\.venv\Scripts\python.exe -m tenable_reports orchestrate --help
 .\.venv\Scripts\python.exe -m tenable_reports database-status --help
 ```
 
 Evite copiar comandos antigos sem conferir `--help`. Comandos que chamam APIs reais
-devem manter a confirmação explícita exigida pela CLI.
+devem manter a confirmação explícita exigida pela CLI. `collect-client` e
+`build-client` são usados pelo dispatcher; não tente obter caminho de checkpoint
+pela API ou reconstruí-lo a partir de logs.

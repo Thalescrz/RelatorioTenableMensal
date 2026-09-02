@@ -53,6 +53,17 @@ aparecer, encerre todas as instâncias antigas e inicie novamente pela raiz corr
 
 As chaves ficam no arquivo local ignorado pelo Git e não retornam para a tela.
 
+### Analistas responsáveis
+
+O catálogo em **Gerenciar clientes** é apenas metadado operacional: não cria conta,
+login ou permissão. Cadastre um nome único, associe opcionalmente um responsável ao
+cliente e use **Sem responsável** quando ainda não houver definição. Analista
+inativo continua visível nos clientes já vinculados, mas não aceita nova atribuição.
+Exclusão é bloqueada enquanto existir vínculo; a operação normal é desativar.
+
+O filtro por analista no painel combina com a busca textual e altera somente os
+cards exibidos. Ele não muda vulnerabilidades, relatórios nem lotes já confirmados.
+
 ## Cloud Security
 
 1. Em **Gerenciar clientes**, habilite **Cloud Security**.
@@ -120,7 +131,7 @@ export VM somente quando habilitado e validado para o tenant. Portanto, é poss�
 testar uma coleta real nova mantendo o payload completo e a rota VM tradicional.
 
 Se Cloud estiver habilitado, a mesma execução também inicia o componente GraphQL e
-publica as variantes selecionadas. Isso não altera o período nem o universo VM.
+publica o documento padrão. Isso não altera o período nem o universo VM.
 
 ### Evidência autenticada de referência
 
@@ -138,28 +149,34 @@ seis minutos; ela é apenas evidência operacional, não um SLA para outros tena
 
 ### Carteira
 
-Use **Gerar todos** para colocar todos os clientes habilitados na fila. A execução
-sequencial é a configuração segura inicial porque reduz concorrência de exports e
-torna os limites da API mais previsíveis.
+Use **Gerar todos** para abrir a seleção dos clientes ativos e com credenciais
+prontas. Todos começam marcados. Pesquise, filtre por analista ou **Sem
+responsável**, selecione/limpe somente os resultados visíveis e confirme
+**Gerar N clientes**. Seleção vazia não cria lote; o servidor valida a lista
+explícita e persiste a fotografia de incluídos, excluídos, filtro e responsáveis.
 
 Nesse fluxo coletivo, a primeira falha WAS provoca uma única retentativa automática
 somente do componente WEB. Se a segunda tentativa falhar, o cliente continua na
-fila, publica os documentos sem WAS e registra `WAS_RETRY_EXHAUSTED`. A política é
-associada ao botão, inclusive quando houver apenas um cliente habilitado.
+fila, publica os documentos sem WAS e registra `WAS_RETRY_EXHAUSTED`. A política
+é associada ao lote, inclusive quando apenas um cliente foi selecionado.
 
 ### Controle durável do lote
 
 O bloco da carteira representa o lote persistido, não somente a memória do servidor.
-A operação permanece em fila sequencial. Use:
+Lotes novos usam `STAGED_V1`: a coleta remota é concorrente entre clientes e a
+montagem/publicação é serial. Com configuração automática, a capacidade remota é o
+menor valor entre clientes elegíveis e 64; `remote_collection_workers` pode
+reduzi-la. `local_build_workers` permanece obrigatoriamente em 1. Use:
 
-- **Pausar após o atual** quando o cliente corrente pode concluir, mas os próximos
-  não devem iniciar;
-- **Parar lote** quando o cliente corrente também deve ser interrompido; confirme o
-  identificador curto mostrado na tela;
-- **Retomar lote** para continuar apenas os trabalhos ainda `QUEUED`;
+- **Pausar após o atual** para impedir novos claims e permitir que fases já ativas
+  salvem seus checkpoints;
+- **Parar lote** para sinalizar cooperativamente todos os subprocessos locais ativos
+  e cancelar os itens ainda não iniciados; confirme o identificador curto;
+- **Retomar lote** para liberar somente trabalhos preservados e retomáveis em sua
+  fase;
 - **Tentar falhas/interrompidos** depois do término para criar uma fila somente de
   `FAILED`, `INTERRUPTED` e `CANCELLED_BY_USER`;
-- **Gerar todos novamente** quando todos os clientes precisam de nova execução.
+- **Gerar todos novamente** quando a seleção precisa de nova execução.
 
 A pausa não repete cliente concluído. A retomada também não reabre falha ou
 interrupção; essas situações exigem o lote derivado. `COMPLETE_WITH_FAILURES` é um
@@ -167,9 +184,12 @@ resultado terminal do lote, não um estado ainda executando.
 
 Ao parar, o arquivo de controle solicita uma saída cooperativa. O export remoto não
 é cancelado: UUID, manifesto parcial e chunks persistidos ficam disponíveis para uma
-retentativa. Se o subprocesso não responder no prazo, o fallback encerra somente a
-árvore local e registra PID/evento. Depois, use a retentativa de incompletos em vez
-de **Retomar lote**.
+retentativa. Cada job ativo é controlado separadamente; se um subprocesso não
+responder, o fallback encerra somente sua árvore e registra PID/evento. Depois, use
+a ação de falhas/interrompidos em vez de reabrir resultado terminal.
+
+Lotes anteriores permanecem em `LEGACY`. Eles conservam o worker monolítico e não
+são migrados automaticamente para o pipeline em fases.
 
 ### Automático mensal
 
@@ -183,21 +203,28 @@ por causa dessa falha.
 
 ## Acompanhar progresso
 
-O card informa etapa, cliente, execução e alertas. Durante VM, observe UUID do
-export, origem, status e chunks persistidos. Durante WAS e Cloud, a interface deve
-indicar etapas e falhas independentes; o progresso Cloud mostra contrato, fontes,
-normalização, fotografia e renderização das variantes.
+O card informa etapa, cliente, execução e alertas. O painel do lote agrega coleta
+na fila/ativa, decisão WEB, fila de montagem, montagem ativa, legado e terminal,
+além da concorrência remota efetiva e da fila local. Durante VM, observe UUID do
+export, origem, status e chunks persistidos. Durante WAS e Cloud, acompanhe estados
+independentes.
 
 Estados importantes:
 
-- em fila: a Tenable ainda não iniciou o processamento;
-- processando: export ativo, com ou sem chunks disponíveis;
-- finalizado: estado remoto `FINISHED` e chunks tratados;
+- **Coleta remota na fila**: fase `REMOTE_QUEUED`;
+- **Coleta remota**: fase `REMOTE_RUNNING`;
+- **Aguardando decisão WEB**: fase `REMOTE_WAITING_DECISION`;
+- **Pronto para montagem**: checkpoint validado em `READY_FOR_BUILD`;
+- **Montando documento**: worker local único em `BUILD_RUNNING`;
+- concluído/falhou: fase `TERMINAL`;
 - falha temporária: pode receber nova tentativa;
 - falha permanente: requer correção de perfil, credencial ou contrato.
 
 Um export com `total_chunks=1` ainda pode estar processando. Não considere o número
-de chunks como confirmação de término.
+de chunks como confirmação de término. Enquanto a Tenable não informar total, a
+interface mostra exatamente `0/0 · aguardando a Tenable informar chunks`. O
+indicador `checkpoint validado` é booleano; a interface e a API não mostram o
+caminho do arquivo.
 
 ### Falha isolada no WAS
 
@@ -218,6 +245,25 @@ No Word, “não foram identificadas vulnerabilidades WEB” significa coleta co
 sem ocorrências. A mensagem “não foi possível concluir a coleta WEB” indica dados
 indisponíveis e não deve ser validada na plataforma como zero.
 
+### Componentes e retentativas
+
+O detalhe do conjunto mostra `VM_CORE`, `WAS` e `CLOUD` separadamente. Um
+conjunto parcial mantém todos os documentos já válidos. **Tentar componentes com
+falha** seleciona somente componentes cuja tentativa mais recente está falha ou
+interrompida e marcada como retentável; **Selecionar componentes** permite reduzir
+essa seleção. Componente concluído fica desabilitado.
+
+Cloud é independente e o retry integrado reaproveita dataset/checkpoint quando
+válido, sem repetir VM ou WAS. WAS precisa de base VM reutilizável para reparar
+somente documentos com seção WEB. VM pode retomar UUID/chunks ou normalizar raw
+completo sem abrir API nova. A substituição só ocorre depois da validação; falha
+preserva manifesto, hashes, `MAIN` e documentos anteriores.
+
+No bootstrap padrão, o caminho compatível Cloud está disponível. Retry seletivo de
+VM/WAS requer que o executor de componentes esteja configurado; sem ele, a
+solicitação retorna indisponibilidade explícita e não cai para uma execução completa.
+Conjuntos excluídos nunca podem ser retentados.
+
 Para uma execução com coleta nova, confirme também:
 
 - indicação de coleta forçada no card;
@@ -230,13 +276,13 @@ Para uma execução com coleta nova, confirme também:
 
 ## Export preso e cancelamento
 
-Quando um job fica sem progresso, a interface oferece **Cancelar export e tentar
-novamente** com confirmação e UUID. Use essa ação apenas depois de confirmar que o
-job pertence à execução apresentada.
+Em `STAGED_V1`, 900 segundos sem progresso geram alerta, mas não encerram a
+coleta. Aos 7.200 segundos o processo local termina como falha retentável,
+preservando UUID, checkpoint e chunks. A aplicação não cancela automaticamente o
+export remoto.
 
-A aplicação cancela automaticamente somente exports criados pela execução atual
-que chegam ao limite sem qualquer progresso. Um export reutilizado ou retomado não
-é cancelado automaticamente para evitar destruir trabalho válido de outra execução.
+Use **Cancelar export e tentar novamente** somente como ação manual, com confirmação
+do UUID e da execução, depois de avaliar o impacto no trabalho remoto preservado.
 
 Depois de um timeout, preserve o diretório da tentativa. Mesmo com `0/N` chunks,
 o manifesto parcial contém o UUID necessário para salvar a operação. Na próxima
@@ -361,6 +407,10 @@ diagnóstico e retomada e depois entra na limpeza.
 Quando Cloud falha com checkpoint reutilizável, seu staging permanece protegido até
 a retentativa ou a janela de retenção aplicável.
 
+Checkpoint é metadado operacional interno. O painel pode informar que ele foi
+validado, mas não revela caminho local; não copie caminhos de staging para chamados,
+logs compartilhados ou documentação.
+
 Documentos e histórico compacto deixam de permanecer quando o próprio conjunto é
 excluído explicitamente pela interface.
 
@@ -392,10 +442,14 @@ Para intervenção controlada, consulte a ajuda atual:
 ```powershell
 .\.venv\Scripts\python.exe -m tenable_reports --help
 .\.venv\Scripts\python.exe -m tenable_reports run-client --help
+.\.venv\Scripts\python.exe -m tenable_reports collect-client --help
+.\.venv\Scripts\python.exe -m tenable_reports build-client --help
 .\.venv\Scripts\python.exe -m tenable_reports orchestrate --help
 .\.venv\Scripts\python.exe -m tenable_reports resume-was --help
 .\.venv\Scripts\python.exe -m tenable_reports retry-cloud --help
 ```
 
 Não execute coleta real ou cancelamento fora da interface sem identificar cliente,
-período, UUID e impacto.
+período, UUID e impacto. `collect-client` e `build-client` são fronteiras internas
+do dispatcher faseado; não monte manualmente caminhos de checkpoint recebidos da
+interface, porque eles não são expostos por esse canal.
