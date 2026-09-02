@@ -242,6 +242,13 @@ no cadastro não altera a auditoria. Clientes inativos, desconhecidos, duplicado
 seleção vazia são rejeitados no servidor. O catálogo de analistas é metadado local,
 não autenticação nem autorização.
 
+A existência de outro lote, inclusive pausado, não constitui bloqueio global. A
+interface cruza a seleção com trabalhos em `QUEUED`, `RUNNING`,
+`WAITING_WAS_DECISION` ou `INTERRUPT_REQUESTED` e sinaliza conflito somente no
+mesmo cliente. O analista pode desmarcá-lo ou solicitar a parada individual. Jobs
+pendentes são finalizados localmente; jobs em execução recebem sinal cooperativo.
+Nenhuma dessas ações cancela o export remoto, e os demais clientes continuam.
+
 **Tentar falhas/interrompidos** cria um lote derivado somente de `FAILED`,
 `INTERRUPTED` e `CANCELLED_BY_USER`. **Gerar todos novamente** inclui a seleção
 confirmada e exige a frase de confirmação. Nenhum dos dois altera o lote de origem;

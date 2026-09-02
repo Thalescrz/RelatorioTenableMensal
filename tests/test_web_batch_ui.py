@@ -106,6 +106,31 @@ def test_client_selection_helper_changes_only_visible_ids() -> None:
     ) == ["a"]
 
 
+def test_client_selection_maps_only_active_jobs_as_conflicts() -> None:
+    result = _run_selection_script(
+        "return helpers.conflictingJobsByClient(["
+        "{ job_id: 'job-a', client_id: 'a', status: 'FAILED' },"
+        "{ job_id: 'job-b', client_id: 'b', status: 'RUNNING', batch_id: 'batch-b' },"
+        "{ job_id: 'job-c', client_id: 'c', status: 'WAITING_WAS_DECISION', batch_id: 'batch-c' }"
+        "]);"
+    )
+
+    assert result == {
+        "b": {
+            "job_id": "job-b",
+            "client_id": "b",
+            "status": "RUNNING",
+            "batch_id": "batch-b",
+        },
+        "c": {
+            "job_id": "job-c",
+            "client_id": "c",
+            "status": "WAITING_WAS_DECISION",
+            "batch_id": "batch-c",
+        },
+    }
+
+
 def test_responsible_analyst_draft_preserves_explicit_empty_value() -> None:
     assert _run_selection_script(
         "return ["
@@ -216,6 +241,17 @@ def test_frontend_exposes_contextual_durable_batch_controls() -> None:
     assert "button.disabled = true" in javascript
     assert ".batch-panel" in css
     assert ".batch-actions" in css
+
+
+def test_generate_all_uses_per_client_conflicts_instead_of_global_batch_lock() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert "Use os controles do lote antes de iniciar outro" not in javascript
+    assert "conflictingJobsByClient" in javascript
+    assert "data-stop-conflicting-job" in javascript
+    assert "/api/jobs/${encodeURIComponent(jobId)}/stop" in javascript
+    assert "Coletas remotas em paralelo" in html
 
 
 def test_frontend_exposes_component_status_and_selective_retry_controls() -> None:

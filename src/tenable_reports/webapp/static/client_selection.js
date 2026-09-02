@@ -61,10 +61,26 @@
     ));
   }
 
+  function conflictingJobsByClient(jobs) {
+    const activeStatuses = new Set([
+      "QUEUED",
+      "RUNNING",
+      "WAITING_WAS_DECISION",
+      "INTERRUPT_REQUESTED",
+    ]);
+    const conflicts = {};
+    for (const job of Array.isArray(jobs) ? jobs : []) {
+      if (!job?.client_id || !activeStatuses.has(job.status)) continue;
+      if (!conflicts[job.client_id]) conflicts[job.client_id] = { ...job };
+    }
+    return conflicts;
+  }
+
   return {
     filterClients,
     selectionForVisibleClients,
     resolveResponsibleAnalystValue,
     mergeSavedClient,
+    conflictingJobsByClient,
   };
 }));

@@ -485,6 +485,46 @@ class DurableDashboardJobQueue:
             self._dispatcher.wake()
         return updated
 
+    def request_job_stop(
+        self,
+        job_id: UUID | str,
+        *,
+        actor: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> WebBatchJob:
+        normalized_id = (
+            job_id if isinstance(job_id, UUID) else UUID(str(job_id))
+        )
+        updated = self.repository.request_job_stop(
+            normalized_id,
+            actor=actor,
+            reason=reason,
+            idempotency_key=idempotency_key,
+        )
+        if (
+            updated.status is BatchJobStatus.INTERRUPT_REQUESTED
+            and updated.control_file
+        ):
+            try:
+                FileExecutionControl(updated.control_file).request_stop(
+                    reason="Solicitacao local do usuario para parar este cliente."
+                )
+            except Exception as exc:
+                self.repository.append_event(
+                    WebBatchEvent(
+                        batch_id=updated.batch_id,
+                        job_id=updated.id,
+                        event_type="JOB_CONTROL_WRITE_FAILED",
+                        payload={"message": str(exc)[:500]},
+                    )
+                )
+                raise RuntimeError(
+                    "A parada foi registrada, mas o sinal local nao pôde "
+                    "ser gravado."
+                ) from exc
+        return updated
+
     def batches_snapshot(self, *, limit: int = 50) -> list[dict[str, Any]]:
         summaries: list[dict[str, Any]] = []
         capacities = self.capacity_snapshot()

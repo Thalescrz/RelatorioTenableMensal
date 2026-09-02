@@ -1,4 +1,4 @@
-const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue, mergeSavedClient } = window.TenableClientSelection;
+const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue, mergeSavedClient, conflictingJobsByClient } = window.TenableClientSelection;
 const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "", selectedBatchId: null, componentRetryRunId: null, componentRetryState: null };
 const { createLatestRequestGuard } = window.TenableReportRequestGuard;
 const reportRequestGuard = createLatestRequestGuard();
@@ -166,7 +166,6 @@ function renderDocumentGroups(documents) {
   }).join("");
 }
 
-const ACTIVE_BATCH_STATES = new Set(["QUEUED", "RUNNING", "PAUSE_REQUESTED", "PAUSED", "STOP_REQUESTED"]);
 const TERMINAL_BATCH_STATES = new Set(["STOPPED", "COMPLETE", "COMPLETE_WITH_FAILURES", "COMPLETE_WITH_WARNINGS"]);
 const BATCH_ACTION_ROUTES = {
   pause: "/pause",
@@ -320,16 +319,55 @@ function visibleRunSelectionClients() {
 function renderRunSelection() {
   const visible = visibleRunSelectionClients();
   const selected = new Set(state.runSelection);
-  $("#run-selection-list").innerHTML = visible.length ? visible.map(client => `<label class="selection-row"><input type="checkbox" data-run-selection-id="${escapeHtml(client.client_id)}" ${selected.has(client.client_id) ? "checked" : ""}><span><strong>${escapeHtml(client.display_name)}</strong><small>${escapeHtml(client.client_id)} · ${escapeHtml(client.responsible_analyst_name || "Sem responsável")}</small></span></label>`).join("") : '<div class="loading">Nenhum cliente corresponde aos filtros.</div>';
+  const conflicts = conflictingJobsByClient(state.data?.jobs || []);
+  $("#run-selection-list").innerHTML = visible.length ? visible.map(client => {
+    const conflict = conflicts[client.client_id];
+    const conflictCopy = conflict ? ({
+      QUEUED: "Aguardando execução",
+      RUNNING: "Execução em andamento",
+      WAITING_WAS_DECISION: "Aguardando decisão WEB",
+      INTERRUPT_REQUESTED: "Parada solicitada",
+    })[conflict.status] || conflict.status : "";
+    const conflictAction = conflict ? `<div class="selection-conflict"><span>${escapeHtml(conflictCopy)} · lote ${escapeHtml(String(conflict.batch_id || "").slice(0, 8))}</span><button class="mini-button danger" type="button" data-stop-conflicting-job="${escapeHtml(conflict.job_id)}" data-conflicting-client="${escapeHtml(client.client_id)}" ${conflict.status === "INTERRUPT_REQUESTED" ? "disabled" : ""}>${conflict.status === "INTERRUPT_REQUESTED" ? "Aguardando parada" : "Parar execução atual"}</button></div>` : "";
+    return `<div class="selection-row ${conflict ? "has-conflict" : ""}"><label class="selection-row-main"><input type="checkbox" data-run-selection-id="${escapeHtml(client.client_id)}" ${selected.has(client.client_id) ? "checked" : ""}><span><strong>${escapeHtml(client.display_name)}</strong><small>${escapeHtml(client.client_id)} · ${escapeHtml(client.responsible_analyst_name || "Sem responsável")}</small></span></label>${conflictAction}</div>`;
+  }).join("") : '<div class="loading">Nenhum cliente corresponde aos filtros.</div>';
   document.querySelectorAll("[data-run-selection-id]").forEach(input => input.addEventListener("change", () => {
     state.runSelection = selectionForVisibleClients(state.runSelection, [input.dataset.runSelectionId], input.checked);
     renderRunSelection();
   }));
+  document.querySelectorAll("[data-stop-conflicting-job]").forEach(button => button.addEventListener("click", () => stopConflictingJob(button)));
   const count = state.runSelection.length;
-  $("#run-selection-count").textContent = `${count} cliente(s) selecionado(s)`;
+  const selectedConflicts = state.runSelection.filter(clientId => conflicts[clientId]);
+  $("#run-selection-count").textContent = `${count} cliente(s) selecionado(s)${selectedConflicts.length ? ` · ${selectedConflicts.length} em andamento` : ""}`;
   const confirmButton = $("#confirm-run-selection");
-  confirmButton.disabled = count === 0;
-  confirmButton.textContent = `Gerar ${count} cliente(s)`;
+  confirmButton.disabled = count === 0 || selectedConflicts.length > 0;
+  confirmButton.textContent = selectedConflicts.length ? `Resolver ${selectedConflicts.length} conflito(s)` : `Gerar ${count} cliente(s)`;
+}
+
+async function stopConflictingJob(button) {
+  if (button.disabled) return;
+  const jobId = button.dataset.stopConflictingJob;
+  const clientId = button.dataset.conflictingClient;
+  const client = (state.data?.clients || []).find(item => item.client_id === clientId);
+  const message = `Somente a execução atual de ${client?.display_name || clientId} será parada. Os outros clientes continuam normalmente e o export remoto será preservado.\n\nJob: ${jobId}\n\nDeseja continuar?`;
+  if (!window.confirm(message)) return;
+  button.disabled = true;
+  try {
+    await api(`/api/jobs/${encodeURIComponent(jobId)}/stop`, {
+      method: "POST",
+      body: {
+        idempotency_key: actionKey("stop-job", jobId),
+        actor: "interface-local",
+        reason: "Substituir a execução deste cliente por uma nova solicitação.",
+        confirmation: `PARAR ${jobId.slice(0, 8)}`,
+      },
+    });
+    await refresh();
+    toast("Parada individual registrada. Os demais clientes não foram afetados.");
+  } catch (error) {
+    toast(error.message, "error");
+    button.disabled = false;
+  }
 }
 
 function render() {
@@ -365,6 +403,7 @@ function render() {
   $("#global-alert").classList.toggle("hidden", !alert);
   $("#global-alert-text").textContent = alert || "";
   $("#run-all-button").disabled = !clients.some(c => c.enabled && c.credentials_ready);
+  if ($("#run-selection-dialog").open) renderRunSelection();
   $("#check-all-button").disabled = !clients.some(c => c.enabled);
   $("#archive-all-button").disabled = Boolean(state.data.database_error);
   const storage = state.data.storage || {};
@@ -879,11 +918,6 @@ async function analyzeBackfill() {
 }
 
 function openRunSelection() {
-  const active = (state.data?.batches || []).find(batch => ACTIVE_BATCH_STATES.has(batch.status));
-  if (active) {
-    toast(`O lote ${active.id.slice(0, 8)} ainda está ${batchStatusLabel(active.status).toLowerCase()}. Use os controles do lote antes de iniciar outro.`, "error");
-    return;
-  }
   state.runSelection = eligibleRunClients().map(client => client.client_id);
   state.runSelectionQuery = "";
   state.runSelectionAnalystFilter = "all";
@@ -1002,20 +1036,6 @@ $("#cleanup-button").addEventListener("click", async event => {
   finally { event.currentTarget.disabled = false; }
 });
 $("#run-all-button").addEventListener("click", () => {
-  const batches = state.data?.batches || [];
-  const active = batches.find(batch => ACTIVE_BATCH_STATES.has(batch.status));
-  if (active) {
-    toast(`O lote ${active.id.slice(0, 8)} ainda está ${batchStatusLabel(active.status).toLowerCase()}. Use os controles do lote antes de iniciar outro.`, "error");
-    return;
-  }
-  const comparable = batches.find(batch => batch.kind === "GENERATE_ALL" && TERMINAL_BATCH_STATES.has(batch.status));
-  if (comparable && Number(comparable.retryable_count || 0) > 0) {
-    state.selectedBatchId = comparable.id;
-    $("#batch-choice-copy").textContent = `O lote ${comparable.id.slice(0, 8)} tem ${comparable.retryable_count} cliente(s) incompleto(s).`;
-    $("#retry-incomplete-copy").textContent = `Reexecuta somente ${comparable.retryable_count} cliente(s); concluídos e avisos ficam de fora.`;
-    $("#batch-choice-dialog").showModal();
-    return;
-  }
   openRunSelection();
 });
 $("#retry-incomplete-button").addEventListener("click", async event => {
@@ -1045,6 +1065,13 @@ $("#clear-visible-clients").addEventListener("click", () => {
 });
 $("#confirm-run-selection").addEventListener("click", () => {
   const selected = [...state.runSelection];
+  const conflicts = conflictingJobsByClient(state.data?.jobs || []);
+  const selectedConflicts = selected.filter(clientId => conflicts[clientId]);
+  if (selectedConflicts.length) {
+    toast("Exclua ou pare as execuções atuais dos clientes destacados.", "error");
+    renderRunSelection();
+    return;
+  }
   const analystFilter = state.runSelectionAnalystFilter;
   state.runSelectionFilterSnapshot = {
     analyst_id: ["all", "unassigned"].includes(analystFilter) ? null : analystFilter,

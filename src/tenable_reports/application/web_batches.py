@@ -303,6 +303,15 @@ class WebBatchRepository(Protocol):
         idempotency_key: str | None = None,
     ) -> WebBatch: ...
 
+    def request_job_stop(
+        self,
+        job_id: UUID,
+        *,
+        actor: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> WebBatchJob: ...
+
     def active_client_conflicts(
         self,
         client_ids: Sequence[str],

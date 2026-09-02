@@ -3081,6 +3081,38 @@ class DashboardApplication:
         request_action(batch_id, action)
         return self.batch_state(batch_id)
 
+    def request_job_stop(
+        self,
+        job_id: str,
+        *,
+        actor: str,
+        reason: str,
+        idempotency_key: str,
+        confirmation: str,
+    ) -> dict[str, Any]:
+        normalized_id = UUID(str(job_id))
+        expected = f"PARAR {str(normalized_id)[:8]}"
+        if confirmation.strip() != expected:
+            raise ValueError(f'Digite exatamente "{expected}" para confirmar.')
+        if not idempotency_key.strip():
+            raise ValueError("idempotency_key e obrigatorio.")
+        request_stop = getattr(self.jobs, "request_job_stop", None)
+        if not callable(request_stop):
+            raise RuntimeError("Parada individual duravel indisponivel.")
+        job = request_stop(
+            normalized_id,
+            actor=actor,
+            reason=reason,
+            idempotency_key=idempotency_key,
+        )
+        return {
+            "job_id": str(job.id),
+            "batch_id": str(job.batch_id),
+            "client_id": job.client_id,
+            "status": job.status.value,
+            "phase": job.phase.value,
+        }
+
     def derive_batch(
         self,
         request: DerivedBatchRequest,
@@ -3947,6 +3979,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if match:
                 job = self.app.jobs.retry(unquote(match.group(1)))
                 self._json(HTTPStatus.ACCEPTED, {"job": job})
+                return
+            match = re.fullmatch(r"/api/jobs/([^/]+)/stop", parsed.path)
+            if match:
+                job = self.app.request_job_stop(
+                    job_id=unquote(match.group(1)),
+                    actor=str(payload.get("actor") or ""),
+                    reason=str(payload.get("reason") or ""),
+                    idempotency_key=str(payload.get("idempotency_key") or ""),
+                    confirmation=str(payload.get("confirmation") or ""),
+                )
+                self._json(HTTPStatus.OK, {"job": job})
                 return
             if parsed.path == "/api/storage/cleanup/preview":
                 result = self.app.cleanup_safe_residues(apply=False)
