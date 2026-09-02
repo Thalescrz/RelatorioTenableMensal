@@ -195,6 +195,9 @@ def collect_external_period(
             plugin_catalog_callback=plugin_catalog_callback,
             progress_callback=progress_callback,
             cancellation_probe=cancellation_probe,
+            auto_cancel_on_timeout=bool(
+                getattr(args, "auto_cancel_on_timeout", True)
+            ),
         )
         check_interruption()
         if vm_policy.outcome == "FALLBACK_FULL":

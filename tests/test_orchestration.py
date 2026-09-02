@@ -22,6 +22,7 @@ from tenable_reports.application.orchestration import (
     OrchestrationRequest,
     build_client_command,
     load_orchestration_config,
+    resolve_remote_worker_capacity,
     run_orchestration,
 )
 from tenable_reports.application.publishing import (
@@ -284,6 +285,37 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(config.failed_staging_days, 7)
         self.assertEqual(config.logs_days, 90)
         self.assertTrue(config.cleanup_after_publish)
+        self.assertEqual(config.remote_collection_workers, 0)
+        self.assertEqual(config.local_build_workers, 1)
+        self.assertEqual(config.remote_processing_timeout_seconds, 7200)
+        self.assertEqual(config.remote_progress_warning_seconds, 900)
+        self.assertEqual(config.max_clients_per_batch, 64)
+
+    def test_remote_worker_capacity_is_automatic_bounded_and_never_zero(self) -> None:
+        self.assertEqual(
+            resolve_remote_worker_capacity(
+                eligible_client_count=20,
+                configured_workers=0,
+                max_clients_per_batch=64,
+            ),
+            20,
+        )
+        self.assertEqual(
+            resolve_remote_worker_capacity(
+                eligible_client_count=0,
+                configured_workers=0,
+                max_clients_per_batch=64,
+            ),
+            1,
+        )
+        self.assertEqual(
+            resolve_remote_worker_capacity(
+                eligible_client_count=80,
+                configured_workers=0,
+                max_clients_per_batch=64,
+            ),
+            64,
+        )
 
     def test_tiered_retention_is_applied_automatically_after_orchestration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

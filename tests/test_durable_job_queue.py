@@ -6,6 +6,7 @@ import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import UUID
@@ -32,7 +33,11 @@ from tenable_reports.webapp.job_queue import (
     DurableWorkerPool,
     DurableWorkerPoolGroup,
 )
-from tenable_reports.webapp.server import DashboardApplication, JobQueue
+from tenable_reports.webapp.server import (
+    DashboardApplication,
+    DashboardConfigStore,
+    JobQueue,
+)
 
 
 def _batch(*, status: BatchStatus = BatchStatus.QUEUED) -> WebBatch:
@@ -582,12 +587,23 @@ def test_dashboard_application_groups_generate_all_in_one_durable_batch(tmp_path
     repository = InMemoryWebBatchRepository()
 
     def runner(command, cwd, progress_callback=None):
-        client_id = command[command.index("--client") + 1]
+        subcommand = command[3]
+        if subcommand == "collect-client":
+            checkpoint = Path(command[command.index("--checkpoint") + 1])
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint.write_text("{}", encoding="utf-8")
         return subprocess.CompletedProcess(
             command,
             0,
             stdout=json.dumps(
-                {"status": "COMPLETE", "run_id": f"run-{client_id}"}
+                {
+                    "status": (
+                        "COLLECTION_READY"
+                        if subcommand == "collect-client"
+                        else "COMPLETE"
+                    ),
+                    "run_id": "run-fixture",
+                }
             ),
             stderr="",
         )
@@ -681,3 +697,231 @@ def test_production_server_requires_durable_batches(tmp_path) -> None:
         )
 
     assert captured["require_durable_batches"] is True
+
+
+def test_staged_remote_success_advances_to_build_before_terminal(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    checkpoint = (tmp_path / "collection-checkpoint.json").resolve()
+    checkpoint.write_text("{}", encoding="utf-8")
+    build_saw: list[tuple[BatchJobPhase, str | None]] = []
+
+    def remote_runner(job: WebBatchJob) -> BatchJobResult:
+        return BatchJobResult(
+            status=BatchJobStatus.COMPLETE,
+            payload={"_collection_checkpoint_path": str(checkpoint)},
+        )
+
+    def build_runner(job: WebBatchJob) -> BatchJobResult:
+        build_saw.append((job.phase, job.collection_checkpoint_path))
+        return BatchJobResult(status=BatchJobStatus.COMPLETE)
+
+    legacy = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=legacy,
+        worker_id="worker-staged",
+        poll_interval=0.01,
+        remote_runner=remote_runner,
+        build_runner=build_runner,
+        remote_workers=1,
+    )
+    try:
+        created = queue.enqueue_requests(
+            (("client-1", {"mode": "manual", "days": 30}),),
+            batch_options={"execution_model": "STAGED_V1"},
+        )
+        assert queue.wait_until_idle(timeout=3)
+        snapshot = queue.batch_snapshot(created[0]["batch_id"])
+    finally:
+        queue.close()
+
+    assert build_saw == [(BatchJobPhase.BUILD_RUNNING, str(checkpoint))]
+    assert snapshot["jobs"][0]["status"] == "COMPLETE"
+    assert [event["event_type"] for event in snapshot["events"]].count(
+        "COLLECTION_READY"
+    ) == 1
+    assert "collection_checkpoint_path" not in snapshot["jobs"][0]
+    assert str(checkpoint) not in json.dumps(snapshot)
+
+
+def test_staged_retry_with_checkpoint_resumes_at_build_phase(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    checkpoint = (tmp_path / "collection-checkpoint.json").resolve()
+    checkpoint.write_text("{}", encoding="utf-8")
+    source = replace(
+        _batch(status=BatchStatus.COMPLETE_WITH_FAILURES),
+        options={"execution_model": "STAGED_V1"},
+    )
+    failed = replace(
+        _job(1, status=BatchJobStatus.FAILED, phase=BatchJobPhase.TERMINAL),
+        collection_checkpoint_path=str(checkpoint),
+        logical_job_id="logical-client-1",
+    )
+    repository.create_batch(source, (failed,))
+    legacy = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=legacy,
+        worker_id="worker-staged-retry",
+        start_worker=False,
+    )
+    try:
+        derived = queue.derive_batch(
+            server_module.DerivedBatchRequest(
+                source_batch_id=source.id,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key="retry-staged-build",
+            )
+        )
+        stored = repository.list_batch_jobs(UUID(derived["batch"]["id"]))[0]
+    finally:
+        queue.close()
+
+    assert stored.phase is BatchJobPhase.READY_FOR_BUILD
+    assert stored.collection_checkpoint_path == str(checkpoint)
+    assert stored.logical_job_id == "logical-client-1"
+
+
+def test_staged_retry_with_missing_checkpoint_returns_to_remote_phase(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    missing = (tmp_path / "missing-checkpoint.json").resolve()
+    source = replace(
+        _batch(status=BatchStatus.COMPLETE_WITH_FAILURES),
+        options={"execution_model": "STAGED_V1"},
+    )
+    failed = replace(
+        _job(1, status=BatchJobStatus.FAILED, phase=BatchJobPhase.TERMINAL),
+        collection_checkpoint_path=str(missing),
+    )
+    repository.create_batch(source, (failed,))
+    legacy = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=legacy,
+        worker_id="worker-staged-missing",
+        start_worker=False,
+    )
+    try:
+        derived = queue.derive_batch(
+            server_module.DerivedBatchRequest(
+                source_batch_id=source.id,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key="retry-staged-missing",
+            )
+        )
+        stored = repository.list_batch_jobs(UUID(derived["batch"]["id"]))[0]
+    finally:
+        queue.close()
+
+    assert stored.phase is BatchJobPhase.REMOTE_QUEUED
+    assert stored.collection_checkpoint_path is None
+
+
+def test_dashboard_bootstraps_automatic_remote_capacity_and_serial_build(tmp_path) -> None:
+    config_path = tmp_path / "orchestration" / "clients.json"
+    store = DashboardConfigStore(project_root=tmp_path, config_path=config_path)
+    for index in range(20):
+        store.add_client(
+            {
+                "client_id": f"client-{index:02d}",
+                "display_name": f"Client {index:02d}",
+                "access_key": "fixture-access",
+                "secret_key": "fixture-secret",
+            }
+        )
+    app = DashboardApplication(
+        project_root=tmp_path,
+        config_path=config_path,
+        runner=lambda *args, **kwargs: None,
+        batch_repository=InMemoryWebBatchRepository(),
+    )
+    try:
+        capacities = app.jobs.capacity_snapshot()
+    finally:
+        app.jobs.close()
+
+    by_phase = {tuple(item["phases"]): item["workers"] for item in capacities}
+    assert by_phase[(BatchJobPhase.LEGACY.value,)] == 1
+    assert by_phase[(BatchJobPhase.REMOTE_QUEUED.value,)] == 20
+    assert by_phase[(BatchJobPhase.READY_FOR_BUILD.value,)] == 1
+
+
+def test_staged_workers_construct_collect_then_build_commands(tmp_path) -> None:
+    config_path = tmp_path / "orchestration" / "clients.json"
+    store = DashboardConfigStore(project_root=tmp_path, config_path=config_path)
+    store.add_client(
+        {
+            "client_id": "client-01",
+            "display_name": "Client 01",
+            "access_key": "fixture-access",
+            "secret_key": "fixture-secret",
+        }
+    )
+    raw_config = store.raw()
+    custom_output_root = (tmp_path / "custom-data").resolve()
+    raw_config["defaults"]["output_root"] = str(custom_output_root)
+    config_path.write_text(
+        json.dumps(raw_config, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    commands: list[list[str]] = []
+
+    def runner(command, cwd, progress_callback=None):
+        commands.append(list(command))
+        subcommand = command[3]
+        if subcommand == "collect-client":
+            checkpoint = Path(command[command.index("--checkpoint") + 1])
+            checkpoint.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint.write_text("{}", encoding="utf-8")
+            payload = {"status": "COLLECTION_READY", "run_id": "run-staged"}
+        else:
+            payload = {"status": "COMPLETE", "run_id": "run-staged"}
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    app = DashboardApplication(
+        project_root=tmp_path,
+        config_path=config_path,
+        runner=runner,
+        batch_repository=InMemoryWebBatchRepository(),
+    )
+    try:
+        created = app.enqueue_jobs(
+            ["client-01"],
+            {"mode": "manual", "days": 30, "run_scope": "single"},
+        )
+        assert app.jobs.wait_until_idle(timeout=3)
+        snapshot = app.jobs.batch_snapshot(created[0]["batch_id"])
+    finally:
+        app.jobs.close()
+
+    assert [command[3] for command in commands] == ["collect-client", "build-client"]
+    collect_command, build_command = commands
+    assert "--confirm-live-api" in collect_command
+    assert "--confirm-live-api" not in build_command
+    assert collect_command[collect_command.index("--remote-processing-timeout-seconds") + 1] == "7200"
+    assert collect_command[collect_command.index("--remote-progress-warning-seconds") + 1] == "900"
+    assert "--job-control-file" in collect_command
+    assert "--job-control-file" in build_command
+    checkpoint = Path(collect_command[collect_command.index("--checkpoint") + 1])
+    assert checkpoint.is_relative_to(custom_output_root)
+    assert snapshot["jobs"][0]["status"] == "COMPLETE"

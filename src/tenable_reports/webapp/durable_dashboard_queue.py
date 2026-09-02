@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import threading
 from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -54,9 +56,16 @@ class DurableDashboardJobQueue:
         remote_runner: DurableRunner | None = None,
         build_runner: DurableRunner | None = None,
         remote_workers: int = 0,
+        enable_staged_executor: bool = False,
+        staged_output_root: str | Path | None = None,
     ) -> None:
         self.repository = repository
         self.executor = executor
+        self._staged_output_root = (
+            Path(staged_output_root).resolve()
+            if staged_output_root is not None
+            else (self.executor.project_root / "data").resolve()
+        )
         self._active_lock = threading.RLock()
         self._active_jobs: dict[str, WebBatchJob] = {}
         self.executor.progress_sink = self._persist_progress
@@ -75,6 +84,9 @@ class DurableDashboardJobQueue:
             )
         ]
         normalized_remote_workers = int(remote_workers)
+        if enable_staged_executor:
+            remote_runner = remote_runner or self._run_remote_job
+            build_runner = build_runner or self._run_build_job
         if remote_runner is not None:
             if normalized_remote_workers < 1:
                 raise ValueError(
@@ -90,6 +102,7 @@ class DurableDashboardJobQueue:
                     poll_interval=poll_interval,
                     start_workers=False,
                     reconcile=False,
+                    result_handler=self._handle_remote_result,
                 )
             )
         elif normalized_remote_workers != 0:
@@ -156,6 +169,11 @@ class DurableDashboardJobQueue:
         if "requests" in copied_batch_options:
             raise ValueError("batch_options nao pode sobrescrever requests.")
         assert_sanitized_payload(copied_batch_options, path="batch_options")
+        execution_model = str(
+            copied_batch_options.get("execution_model") or "LEGACY"
+        ).strip().upper()
+        if execution_model not in {"LEGACY", "STAGED_V1"}:
+            raise ValueError("execution_model invalido.")
         created: list[dict[str, Any]] = []
         normalized_requests: list[dict[str, Any]] = []
         for client_id, request in requests:
@@ -203,6 +221,11 @@ class DurableDashboardJobQueue:
                 position=position,
                 status=BatchJobStatus.QUEUED,
                 attempt_number=1,
+                phase=(
+                    BatchJobPhase.REMOTE_QUEUED
+                    if execution_model == "STAGED_V1"
+                    else BatchJobPhase.LEGACY
+                ),
                 payload={
                     **dict(row),
                     "batch_id": str(batch_id),
@@ -335,6 +358,18 @@ class DurableDashboardJobQueue:
                 }
             )
             is_retry = request.kind is BatchAction.RETRY_INCOMPLETE
+            staged_model = (
+                str(source.options.get("execution_model") or "").upper()
+                == "STAGED_V1"
+            )
+            reusable_checkpoint = (
+                source_job.collection_checkpoint_path
+                if is_retry
+                and staged_model
+                and source_job.collection_checkpoint_path
+                and Path(source_job.collection_checkpoint_path).resolve().is_file()
+                else None
+            )
             jobs.append(
                 WebBatchJob(
                     id=job_id,
@@ -345,9 +380,19 @@ class DurableDashboardJobQueue:
                     attempt_number=(
                         source_job.attempt_number + 1 if is_retry else 1
                     ),
+                    phase=(
+                        BatchJobPhase.READY_FOR_BUILD
+                        if reusable_checkpoint
+                        else BatchJobPhase.REMOTE_QUEUED
+                        if staged_model
+                        else BatchJobPhase.LEGACY
+                    ),
                     payload=payload,
                     retry_of_batch_job_id=source_job.id if is_retry else None,
                     logical_job_id=source_job.logical_job_id,
+                    collection_checkpoint_path=(
+                        reusable_checkpoint
+                    ),
                     control_file=control_file,
                     created_at=created_at,
                 )
@@ -617,6 +662,9 @@ class DurableDashboardJobQueue:
     def wait_until_idle(self, *, timeout: float) -> bool:
         return self._dispatcher.wait_until_idle(timeout=timeout)
 
+    def capacity_snapshot(self) -> tuple[dict[str, Any], ...]:
+        return self._dispatcher.capacity_snapshot()
+
     def close(self) -> None:
         self._dispatcher.close()
 
@@ -669,10 +717,90 @@ class DurableDashboardJobQueue:
         )
 
     def _run_job(self, job: WebBatchJob) -> BatchJobResult:
+        return self._run_executor_job(job)
+
+    def _checkpoint_file(self, job: WebBatchJob) -> str:
+        mode = str(job.payload.get("mode") or "manual")
+        scope = "automatic-monthly" if mode == "automatic" else "manual"
+        return str(
+            (
+                self._staged_output_root
+                / scope
+                / "orchestration"
+                / "checkpoints"
+                / str(job.batch_id)
+                / f"{job.id.hex}.json"
+            ).resolve()
+        )
+
+    def _run_remote_job(self, job: WebBatchJob) -> BatchJobResult:
+        checkpoint = self._checkpoint_file(job)
+        result = self._run_executor_job(
+            job,
+            operation="staged_remote",
+            checkpoint_path=checkpoint,
+        )
+        if result.status in {
+            BatchJobStatus.COMPLETE,
+            BatchJobStatus.COMPLETE_WITH_WARNINGS,
+        }:
+            return replace(
+                result,
+                payload={
+                    **dict(result.payload),
+                    "_collection_checkpoint_path": checkpoint,
+                },
+            )
+        return result
+
+    def _run_build_job(self, job: WebBatchJob) -> BatchJobResult:
+        return self._run_executor_job(
+            job,
+            operation="staged_build",
+            checkpoint_path=job.collection_checkpoint_path,
+        )
+
+    def _handle_remote_result(
+        self,
+        job: WebBatchJob,
+        result: BatchJobResult,
+    ) -> None:
+        payload = {
+            key: value
+            for key, value in dict(result.payload).items()
+            if key != "_collection_checkpoint_path"
+        }
+        if result.status in {
+            BatchJobStatus.COMPLETE,
+            BatchJobStatus.COMPLETE_WITH_WARNINGS,
+        }:
+            checkpoint = result.payload.get("_collection_checkpoint_path")
+            self.repository.advance_job_phase(
+                job.id,
+                expected_phase=BatchJobPhase.REMOTE_RUNNING,
+                requested_phase=BatchJobPhase.READY_FOR_BUILD,
+                collection_checkpoint_path=checkpoint,
+            )
+            return
+        self.repository.complete_job(job.id, replace(result, payload=payload))
+
+    def _run_executor_job(
+        self,
+        job: WebBatchJob,
+        *,
+        operation: str | None = None,
+        checkpoint_path: str | None = None,
+    ) -> BatchJobResult:
         job_id = job.id.hex
         payload = dict(job.payload)
         payload["job_id"] = job_id
         payload["status"] = "QUEUED"
+        if operation is not None:
+            payload["operation"] = operation
+        if checkpoint_path is not None:
+            payload["_collection_checkpoint_path"] = checkpoint_path
+        payload["attempt_number"] = job.attempt_number
+        payload["logical_job_id"] = job.logical_job_id or job.id.hex
         with self.executor._lock:
             self.executor._jobs[job_id] = payload
         with self._active_lock:

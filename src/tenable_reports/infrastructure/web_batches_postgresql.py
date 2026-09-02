@@ -719,7 +719,7 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 set status = 'QUEUED', phase = %s,
                     collection_checkpoint_path = %s,
                     remote_ended_at = now(), worker_id = null,
-                    process_id = null, control_file = null, ended_at = null
+                    process_id = null, ended_at = null
                 where id = %s and status = 'RUNNING' and phase = %s
                 returning {_JOB_COLUMNS}
                 """,

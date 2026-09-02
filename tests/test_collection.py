@@ -499,6 +499,71 @@ class CollectionTests(unittest.TestCase):
         self.assertTrue(state["auto_cancelled"])
         self.assertEqual(progress[-1]["event"], "TENABLE_EXPORT_PROGRESS")
 
+    def test_staged_timeout_preserves_created_export_without_auto_cancel(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = TimedOutCollectionClient(origin="created")
+        progress: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExportTimeoutError) as caught:
+                collect_vm_snapshot(
+                    client=client,  # type: ignore[arg-type]
+                    profile=profile,
+                    request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                    output_root=directory,
+                    run_id="run-staged-timeout",
+                    progress_callback=progress.append,
+                    auto_cancel_on_timeout=False,
+                )
+
+        self.assertEqual(client.cancelled, [])
+        self.assertFalse(caught.exception.auto_cancelled)
+        self.assertEqual(caught.exception.export_uuid, "fixture-stuck-export")
+        self.assertEqual(progress[-1]["status"], "TIMED_OUT")
+        self.assertFalse(progress[-1]["auto_cancelled"])
+
+    def test_staged_collection_warns_once_after_remote_inactivity(self) -> None:
+        class StalledClient(TimedOutCollectionClient):
+            def wait_for_completion(self, export_uuid: str, *, progress_callback=None):
+                status = {
+                    "status": "PROCESSING",
+                    "completed_chunks": 0,
+                    "total_chunks": 0,
+                    "idle_seconds": 900,
+                    "stalled": True,
+                    "progress_made": False,
+                }
+                if progress_callback is not None:
+                    progress_callback(status)
+                    progress_callback(status)
+                raise ExportTimeoutError(
+                    "fixture timeout",
+                    export_uuid=export_uuid,
+                    last_status=status,
+                    timeout_phase="no_progress",
+                )
+
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        progress: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExportTimeoutError):
+                collect_vm_snapshot(
+                    client=StalledClient(origin="created"),  # type: ignore[arg-type]
+                    profile=profile,
+                    request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                    output_root=directory,
+                    run_id="run-staged-warning",
+                    progress_callback=progress.append,
+                    auto_cancel_on_timeout=False,
+                )
+
+        warnings = [
+            event
+            for event in progress
+            if event["event"] == "TENABLE_EXPORT_NO_PROGRESS_WARNING"
+        ]
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0]["idle_seconds"], 900)
+
     def test_current_run_no_progress_timeout_cancels_even_after_prior_chunk(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
         client = IncrementalTimeoutCollectionClient(timeout_phase="no_progress")

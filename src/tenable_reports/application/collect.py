@@ -454,6 +454,7 @@ def collect_vm_snapshot(
     plugin_catalog_callback: Callable[[Iterable[Mapping[str, Any]]], None] | None = None,
     snapshot_suffix: str | None = None,
     cancellation_probe: Callable[[], bool] | None = None,
+    auto_cancel_on_timeout: bool = True,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
     started_at = utc_now_iso()
@@ -611,7 +612,10 @@ def collect_vm_snapshot(
         query=sanitized_mapping(query),
     )
 
+    warning_emitted = False
+
     def update_progress(status: Mapping[str, Any]) -> None:
+        nonlocal warning_emitted
         remote_status = str(status.get("status") or "PROCESSING").upper()
         details = {
             str(key): value
@@ -622,6 +626,16 @@ def collect_vm_snapshot(
             }
         }
         emit_progress(remote_status, **details)
+        if bool(status.get("stalled")) and not warning_emitted:
+            warning_emitted = True
+            if progress_callback is not None:
+                progress_callback({
+                    "event": "TENABLE_EXPORT_NO_PROGRESS_WARNING",
+                    "source": "tenable_vm_vulnerabilities",
+                    "export_uuid": actual_export_uuid,
+                    "origin": job.origin,
+                    "idle_seconds": status.get("idle_seconds"),
+                })
 
     try:
         wait_method = client.wait_for_completion
@@ -661,7 +675,7 @@ def collect_vm_snapshot(
         exc.progress_made = bool(exc.progress_made or local_progress)
         auto_cancelled = False
         cancellation_error: str | None = None
-        if job.created_by_current_run and (
+        if auto_cancel_on_timeout and job.created_by_current_run and (
             not exc.progress_made
             or exc.timeout_phase == "no_progress"
         ):
@@ -769,6 +783,7 @@ def collect_vm_snapshot_by_state(
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     snapshot_suffix: str | None = None,
     cancellation_probe: Callable[[], bool] | None = None,
+    auto_cancel_on_timeout: bool = True,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
     normalized_strategy = str(strategy).strip().lower()
@@ -803,6 +818,7 @@ def collect_vm_snapshot_by_state(
             progress_callback=progress_callback,
             snapshot_suffix=snapshot_suffix,
             cancellation_probe=cancellation_probe,
+            auto_cancel_on_timeout=auto_cancel_on_timeout,
         )
 
     segments = (
@@ -846,6 +862,7 @@ def collect_vm_snapshot_by_state(
             progress_callback=forward_progress,
             snapshot_suffix=(f"{snapshot_suffix}-{segment_name}" if snapshot_suffix else segment_name),
             cancellation_probe=cancellation_probe,
+            auto_cancel_on_timeout=auto_cancel_on_timeout,
         )
         collected.append((segment_name, date_field, result))
 

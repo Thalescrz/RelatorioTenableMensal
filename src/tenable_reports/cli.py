@@ -473,6 +473,8 @@ def _client_from_environment(
     credentials: CredentialConfig,
     *,
     no_progress_timeout_seconds: float | None = None,
+    max_processing_wait_seconds: float | None = None,
+    stall_warning_seconds: float | None = None,
 ) -> TenableVmClient:
     return TenableVmClient(
         TenableVmConfig(
@@ -483,8 +485,16 @@ def _client_from_environment(
             poll_seconds=credentials.export_poll_seconds,
             max_poll_seconds=credentials.export_max_poll_seconds,
             max_wait_seconds=credentials.export_queue_timeout_seconds,
-            max_processing_wait_seconds=credentials.export_processing_timeout_seconds,
-            stall_warning_seconds=credentials.export_stall_warning_seconds,
+            max_processing_wait_seconds=(
+                credentials.export_processing_timeout_seconds
+                if max_processing_wait_seconds is None
+                else max_processing_wait_seconds
+            ),
+            stall_warning_seconds=(
+                credentials.export_stall_warning_seconds
+                if stall_warning_seconds is None
+                else stall_warning_seconds
+            ),
             no_progress_timeout_seconds=no_progress_timeout_seconds,
             ca_bundle=credentials.ca_bundle,
             validate_tls=credentials.validate_tls,
@@ -1514,7 +1524,16 @@ def _execute_period(
         ))
         client = _client_from_environment(
             credentials,
-            no_progress_timeout_seconds=no_progress_timeout_seconds,
+            no_progress_timeout_seconds=float(
+                getattr(args, "remote_processing_timeout_seconds", None)
+                or no_progress_timeout_seconds
+            ),
+            max_processing_wait_seconds=getattr(
+                args, "remote_processing_timeout_seconds", None
+            ),
+            stall_warning_seconds=getattr(
+                args, "remote_progress_warning_seconds", None
+            ),
         )
         was_client = _was_client_from_environment(credentials)
         inventory_client = _inventory_client_from_environment(credentials)
@@ -2406,6 +2425,15 @@ def command_collect_client(args: argparse.Namespace) -> int:
         raise ValueError(
             "A coleta remota exige --confirm-live-api; ela inicia exports reais no tenant."
         )
+    control = (
+        FileExecutionControl(args.job_control_file)
+        if getattr(args, "job_control_file", None)
+        else None
+    )
+    setattr(args, "execution_control", control)
+    setattr(args, "auto_cancel_on_timeout", False)
+    if control is not None:
+        control.raise_if_stop_requested()
     profile = load_client_profile(args.profile)
     period = _period_for_mode(args, profile)
     execution_type = "MANUAL" if args.mode == "manual" else "AUTOMATIC_MONTHLY"
@@ -2493,6 +2521,14 @@ def _build_from_collection_checkpoint(
 
 
 def command_build_client(args: argparse.Namespace) -> int:
+    control = (
+        FileExecutionControl(args.job_control_file)
+        if getattr(args, "job_control_file", None)
+        else None
+    )
+    setattr(args, "execution_control", control)
+    if control is not None:
+        control.raise_if_stop_requested()
     profile = load_client_profile(args.profile)
     request = LocalBuildRequest(
         storage_root=Path(args.output_root).resolve(),
@@ -4153,6 +4189,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_complete_collection_arguments(collect_client)
     collect_client.add_argument("--checkpoint", required=True)
+    collect_client.add_argument("--job-control-file")
+    collect_client.add_argument(
+        "--remote-processing-timeout-seconds", type=int, default=7200
+    )
+    collect_client.add_argument(
+        "--remote-progress-warning-seconds", type=int, default=900
+    )
     collect_client.set_defaults(handler=command_collect_client)
 
     build_client = subparsers.add_parser(
@@ -4161,6 +4204,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     build_client.add_argument("--profile", required=True)
     build_client.add_argument("--checkpoint", required=True)
+    build_client.add_argument("--job-control-file")
     build_client.add_argument("--output-root", default="data")
     build_client.add_argument(
         "--database-env-file", default="credentials/database.env"

@@ -21,6 +21,7 @@ from tenable_reports.domain.web_batches import (
 
 
 DurableRunner = Callable[[WebBatchJob], BatchJobResult]
+DurableResultHandler = Callable[[WebBatchJob, BatchJobResult], None]
 
 
 class DurableWorkerPool:
@@ -37,6 +38,7 @@ class DurableWorkerPool:
         poll_interval: float = 0.25,
         start_workers: bool = True,
         reconcile: bool = False,
+        result_handler: DurableResultHandler | None = None,
     ) -> None:
         self.repository = repository
         self.runner = runner
@@ -48,6 +50,9 @@ class DurableWorkerPool:
         if self.worker_count < 1:
             raise ValueError("workers deve ser positivo.")
         self.poll_interval = max(0.01, float(poll_interval))
+        self.result_handler = result_handler or (
+            lambda job, result: self.repository.complete_job(job.id, result)
+        )
         self.worker_ids = tuple(
             f"{self.worker_prefix}-{index}"
             for index in range(1, self.worker_count + 1)
@@ -171,7 +176,18 @@ class DurableWorkerPool:
                     error_code="UNEXPECTED",
                     error_message="Falha operacional sem detalhe.",
                 )
-            self.repository.complete_job(job.id, result)
+            try:
+                self.result_handler(job, result)
+            except Exception:
+                self.repository.complete_job(
+                    job.id,
+                    BatchJobResult(
+                        status=BatchJobStatus.FAILED,
+                        exit_code=1,
+                        error_code="PHASE_TRANSITION_FAILED",
+                        error_message="Falha ao registrar a transicao de fase.",
+                    ),
+                )
 
 
 class DurableWorkerPoolGroup:

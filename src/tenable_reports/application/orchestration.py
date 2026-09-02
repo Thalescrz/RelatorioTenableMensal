@@ -73,6 +73,11 @@ class OrchestrationConfig:
     successful_raw_days: int
     normalized_days: int
     documents_days: int
+    remote_collection_workers: int
+    local_build_workers: int
+    remote_processing_timeout_seconds: int
+    remote_progress_warning_seconds: int
+    max_clients_per_batch: int
     clients: tuple[OrchestrationClient, ...]
 
 
@@ -375,6 +380,46 @@ def load_orchestration_config(path: str | Path) -> OrchestrationConfig:
         field="defaults.cleanup_after_publish",
         default=True,
     )
+    remote_collection_workers = _bounded_integer(
+        defaults.get("remote_collection_workers"),
+        field="defaults.remote_collection_workers",
+        default=0,
+        minimum=0,
+        maximum=64,
+    )
+    local_build_workers = _bounded_integer(
+        defaults.get("local_build_workers"),
+        field="defaults.local_build_workers",
+        default=1,
+        minimum=1,
+        maximum=1,
+    )
+    remote_processing_timeout_seconds = _bounded_integer(
+        defaults.get("remote_processing_timeout_seconds"),
+        field="defaults.remote_processing_timeout_seconds",
+        default=7200,
+        minimum=60,
+        maximum=86400,
+    )
+    remote_progress_warning_seconds = _bounded_integer(
+        defaults.get("remote_progress_warning_seconds"),
+        field="defaults.remote_progress_warning_seconds",
+        default=900,
+        minimum=60,
+        maximum=86400,
+    )
+    if remote_progress_warning_seconds >= remote_processing_timeout_seconds:
+        raise ValueError(
+            "remote_progress_warning_seconds deve ser menor que "
+            "remote_processing_timeout_seconds."
+        )
+    max_clients_per_batch = _bounded_integer(
+        defaults.get("max_clients_per_batch"),
+        field="defaults.max_clients_per_batch",
+        default=64,
+        minimum=1,
+        maximum=64,
+    )
     default_include_output = _boolean(
         defaults.get("include_output"), field="defaults.include_output", default=False
     )
@@ -457,8 +502,28 @@ def load_orchestration_config(path: str | Path) -> OrchestrationConfig:
         successful_raw_days=successful_raw_days,
         normalized_days=normalized_days,
         documents_days=documents_days,
+        remote_collection_workers=remote_collection_workers,
+        local_build_workers=local_build_workers,
+        remote_processing_timeout_seconds=remote_processing_timeout_seconds,
+        remote_progress_warning_seconds=remote_progress_warning_seconds,
+        max_clients_per_batch=max_clients_per_batch,
         clients=tuple(clients),
     )
+
+
+def resolve_remote_worker_capacity(
+    *,
+    eligible_client_count: int,
+    configured_workers: int,
+    max_clients_per_batch: int,
+) -> int:
+    eligible = max(1, int(eligible_client_count))
+    limit = max(1, min(64, int(max_clients_per_batch)))
+    configured = int(configured_workers)
+    if configured < 0 or configured > 64:
+        raise ValueError("remote_collection_workers deve estar entre 0 e 64.")
+    requested = eligible if configured == 0 else configured
+    return max(1, min(requested, eligible, limit))
 
 
 def _validate_request(request: OrchestrationRequest) -> None:

@@ -433,7 +433,6 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 remote_ended_at=changed_at,
                 worker_id=None,
                 process_id=None,
-                control_file=None,
                 ended_at=None,
             )
             self._jobs[job_id] = advanced

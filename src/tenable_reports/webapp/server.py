@@ -32,7 +32,10 @@ from tenable_reports.application.web_batches import (
 )
 from tenable_reports.application.cloud_contract import probe_cloud_contract
 from tenable_reports.application.orchestration import SAFE_ID_PATTERN
-from tenable_reports.application.orchestration import load_orchestration_config
+from tenable_reports.application.orchestration import (
+    load_orchestration_config,
+    resolve_remote_worker_capacity,
+)
 from tenable_reports.application.postgresql_migration import (
     MainBackfillSourceState,
     main_backfill_source_state,
@@ -457,6 +460,11 @@ class DashboardConfigStore:
                     self.config_path.parent,
                 ),
                 "max_parallel": 1,
+                "remote_collection_workers": 0,
+                "local_build_workers": 1,
+                "remote_processing_timeout_seconds": 7200,
+                "remote_progress_warning_seconds": 900,
+                "max_clients_per_batch": 64,
                 "retention_days": 395,
                 "failed_staging_days": 7,
                 "logs_days": 90,
@@ -1310,6 +1318,7 @@ def _default_runner(
                         "TAG_REPORT_PROGRESS",
                         "TENABLE_EXPORT_PROGRESS",
                         "TENABLE_CLOUD_PROGRESS",
+                        "TENABLE_EXPORT_NO_PROGRESS_WARNING",
                     }
                 ):
                     try:
@@ -1788,6 +1797,129 @@ class JobQueue:
                     str(job["_cloud_template_path"]),
                     "--confirm-live-api",
                 ]
+            elif job.get("operation") == "staged_remote":
+                config = load_orchestration_config(self.config_path)
+                client = next(
+                    (
+                        item
+                        for item in config.clients
+                        if item.client_id == job["client_id"]
+                    ),
+                    None,
+                )
+                if client is None or not client.enabled:
+                    raise ValueError("Cliente staged não encontrado ou inativo.")
+                run_id = str(job.get("run_id") or f"{job_id}-{job['client_id']}")
+                logical_job_id = str(job.get("logical_job_id") or job_id)
+                command = [
+                    sys.executable,
+                    "-m",
+                    "tenable_reports",
+                    "collect-client",
+                    "--mode",
+                    str(job["mode"]),
+                    "--profile",
+                    str(client.profile_path),
+                    "--env-file",
+                    str(client.env_file),
+                    "--database-env-file",
+                    str(config.database_env_file),
+                    "--output-root",
+                    str(config.output_root),
+                    "--checkpoint",
+                    str(job["_collection_checkpoint_path"]),
+                    "--run-id",
+                    run_id,
+                    "--logical-job-id",
+                    logical_job_id,
+                    "--attempt-number",
+                    str(job.get("attempt_number") or 1),
+                    "--origin",
+                    (
+                        "SCHEDULED"
+                        if job["mode"] == "automatic"
+                        else "MANUAL"
+                    ),
+                    "--remote-processing-timeout-seconds",
+                    str(config.remote_processing_timeout_seconds),
+                    "--remote-progress-warning-seconds",
+                    str(config.remote_progress_warning_seconds),
+                    "--template",
+                    str(config.template_path),
+                    "--assets-dir",
+                    str(config.assets_dir),
+                    "--minimum-free-gb",
+                    str(config.minimum_free_gb),
+                    "--confirm-live-api",
+                ]
+                if job.get("_job_control_file"):
+                    command.extend((
+                        "--job-control-file", str(job["_job_control_file"])
+                    ))
+                if job.get("force_live_collection"):
+                    command.append("--force-live-collection")
+                if job.get("vm_selective_mode"):
+                    command.extend(("--vm-selective-mode", job["vm_selective_mode"]))
+                if job.get("vm_export_strategy"):
+                    command.extend(("--vm-export-strategy", job["vm_export_strategy"]))
+                if job.get("vm_export_uuid"):
+                    command.extend(("--vm-export-uuid", job["vm_export_uuid"]))
+                if job.get("historical_source"):
+                    command.extend(("--historical-source", job["historical_source"]))
+                if job.get("was_failure_policy"):
+                    command.extend(("--was-failure-policy", job["was_failure_policy"]))
+                if job["days"] is not None:
+                    command.extend(("--days", str(job["days"])))
+                if job["start_at"]:
+                    command.extend(("--start-at", job["start_at"], "--end-at", job["end_at"]))
+                for tag in client.tags:
+                    command.extend(("--tag", tag))
+                if client.include_output:
+                    command.append("--include-output")
+                if client.include_software_vulns:
+                    command.append("--include-software-vulns")
+                if client.mask_sensitive:
+                    command.append("--mask-sensitive")
+            elif job.get("operation") == "staged_build":
+                config = load_orchestration_config(self.config_path)
+                client = next(
+                    (
+                        item
+                        for item in config.clients
+                        if item.client_id == job["client_id"]
+                    ),
+                    None,
+                )
+                if client is None:
+                    raise ValueError("Cliente staged não encontrado.")
+                command = [
+                    sys.executable,
+                    "-m",
+                    "tenable_reports",
+                    "build-client",
+                    "--profile",
+                    str(client.profile_path),
+                    "--checkpoint",
+                    str(job["_collection_checkpoint_path"]),
+                    "--output-root",
+                    str(config.output_root),
+                    "--database-env-file",
+                    str(config.database_env_file),
+                    "--template",
+                    str(config.template_path),
+                    "--assets-dir",
+                    str(config.assets_dir),
+                ]
+                if job.get("_job_control_file"):
+                    command.extend((
+                        "--job-control-file", str(job["_job_control_file"])
+                    ))
+                if client.include_output:
+                    command.append("--include-output")
+                if client.mask_sensitive:
+                    command.append("--mask-sensitive")
+                if not config.cleanup_after_publish:
+                    command.append("--no-cleanup-after-publish")
             elif job.get("operation") in {"was_continue", "was_retry"}:
                 command = [
                     sys.executable,
@@ -1928,6 +2060,15 @@ class JobQueue:
                             int(current_job.get("progress") or 0),
                             45 if progress_key == "was_export_progress" else 35,
                         )
+                        return
+                    if event.get("event") == "TENABLE_EXPORT_NO_PROGRESS_WARNING":
+                        current_job["warnings"] = [
+                            *list(current_job.get("warnings") or ()),
+                            {
+                                "code": "TENABLE_EXPORT_NO_PROGRESS_WARNING",
+                                "idle_seconds": event.get("idle_seconds"),
+                            },
+                        ]
                         return
                     current = int(event.get("current") or 0)
                     total = max(1, int(event.get("total") or 0))
@@ -2139,6 +2280,24 @@ class DashboardApplication:
             )
         self.require_durable_batches = bool(require_durable_batches)
         if self.batch_repository is not None:
+            eligible_client_count = sum(
+                bool(row.get("enabled")) and bool(row.get("credentials_ready"))
+                for row in self.config.list_clients()
+            )
+            if eligible_client_count:
+                staged_config = load_orchestration_config(self.config.config_path)
+                configured_remote_workers = staged_config.remote_collection_workers
+                max_clients_per_batch = staged_config.max_clients_per_batch
+                staged_output_root = staged_config.output_root
+            else:
+                configured_remote_workers = 0
+                max_clients_per_batch = 64
+                staged_output_root = self.project_root / "data"
+            remote_workers = resolve_remote_worker_capacity(
+                eligible_client_count=eligible_client_count,
+                configured_workers=configured_remote_workers,
+                max_clients_per_batch=max_clients_per_batch,
+            )
             executor = JobQueue(
                 self.project_root,
                 self.config.config_path,
@@ -2149,6 +2308,9 @@ class DashboardApplication:
                 repository=self.batch_repository,
                 executor=executor,
                 worker_id=f"web-{os.getpid()}-{uuid.uuid4().hex[:8]}",
+                remote_workers=remote_workers,
+                enable_staged_executor=True,
+                staged_output_root=staged_output_root,
             )
         else:
             self.jobs = JobQueue(self.project_root, self.config.config_path, runner)
@@ -2826,9 +2988,9 @@ class DashboardApplication:
             raise ValueError("Escopo de execucao invalido.")
         client_rows = self.config.list_clients()
         clients = {item["client_id"]: item for item in client_rows}
-        batch_options: dict[str, Any] | None = None
+        batch_options: dict[str, Any] = {"execution_model": "STAGED_V1"}
         if run_scope == "all":
-            batch_options = build_manual_batch_options(
+            batch_options.update(build_manual_batch_options(
                 clients=client_rows,
                 selected_client_ids=client_ids,
                 selection_filter_snapshot=(
@@ -2839,7 +3001,7 @@ class DashboardApplication:
                         "unassigned": False,
                     }
                 ),
-            )
+            ))
         exact_period = bool(
             (request.get("start_at") and request.get("end_at"))
             or (request.get("start_date") and request.get("end_date"))
@@ -3292,7 +3454,9 @@ class DashboardApplication:
             "was_recoveries": was_recoveries,
             "database_error": database_error,
             "server_time": _utc_now(),
-            "queue_mode": "sequential",
+            "queue_mode": (
+                "staged_v1" if self.batch_repository is not None else "legacy"
+            ),
             "storage": self.storage_status(),
         }
 
@@ -4046,7 +4210,7 @@ def serve_dashboard(
         "status": "ready",
         "url": url,
         "config": str(app.config.config_path),
-        "queue_mode": "sequential",
+        "queue_mode": "staged_v1",
     }, ensure_ascii=False))
     if open_browser:
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
