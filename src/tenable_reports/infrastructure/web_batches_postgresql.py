@@ -629,6 +629,147 @@ class PostgresWebBatchRepository(WebBatchRepository):
             ).fetchall()
         return tuple(sorted(str(row[0]) for row in rows))
 
+    def request_job_stop(
+        self,
+        job_id: UUID,
+        *,
+        actor: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> WebBatchJob:
+        normalized_actor = str(actor or "").strip()[:200] or None
+        normalized_reason = str(reason or "").strip()[:500]
+        normalized_key = str(idempotency_key or "").strip()[:200] or None
+        with self.database.connection() as connection:
+            current_row = connection.execute(
+                f"""
+                select {_JOB_COLUMNS}
+                from {SCHEMA_NAME}.web_batch_jobs
+                where id = %s
+                for update
+                """,
+                (job_id,),
+            ).fetchone()
+            if current_row is None:
+                raise KeyError("Trabalho de lote nao encontrado.")
+            current = _job_from_row(current_row)
+            if current.status in BATCH_JOB_TERMINAL_STATUSES:
+                return current
+
+            updated_row = connection.execute(
+                f"""
+                update {SCHEMA_NAME}.web_batch_jobs
+                set status = case
+                        when status in ('QUEUED', 'WAITING_WAS_DECISION')
+                            then 'CANCELLED_BY_USER'
+                        else 'INTERRUPT_REQUESTED'
+                    end,
+                    phase = case
+                        when status in ('QUEUED', 'WAITING_WAS_DECISION')
+                            then 'TERMINAL'
+                        else phase
+                    end,
+                    worker_id = case
+                        when status in ('QUEUED', 'WAITING_WAS_DECISION')
+                            then null
+                        else worker_id
+                    end,
+                    process_id = case
+                        when status in ('QUEUED', 'WAITING_WAS_DECISION')
+                            then null
+                        else process_id
+                    end,
+                    control_file = case
+                        when status in ('QUEUED', 'WAITING_WAS_DECISION')
+                            then null
+                        else control_file
+                    end,
+                    ended_at = case
+                        when status in ('QUEUED', 'WAITING_WAS_DECISION')
+                            then now()
+                        else ended_at
+                    end
+                where id = %s
+                  and status in (
+                      'QUEUED', 'RUNNING', 'WAITING_WAS_DECISION',
+                      'INTERRUPT_REQUESTED'
+                  )
+                returning {_JOB_COLUMNS}
+                """,
+                (job_id,),
+            ).fetchone()
+            if updated_row is None:
+                raise ValueError("O trabalho nao pode ser parado neste estado.")
+            updated = _job_from_row(updated_row)
+
+            connection.execute(
+                f"""
+                update {SCHEMA_NAME}.web_batches batch
+                set status = case
+                        when exists (
+                            select 1 from {SCHEMA_NAME}.web_batch_jobs child
+                            where child.batch_id = batch.id
+                              and child.status in (
+                                  'QUEUED', 'RUNNING', 'WAITING_WAS_DECISION',
+                                  'INTERRUPT_REQUESTED'
+                              )
+                        ) then batch.status
+                        when batch.status = 'STOP_REQUESTED' then 'STOPPED'
+                        when exists (
+                            select 1 from {SCHEMA_NAME}.web_batch_jobs child
+                            where child.batch_id = batch.id
+                              and child.status = 'FAILED'
+                        ) then 'COMPLETE_WITH_FAILURES'
+                        when exists (
+                            select 1 from {SCHEMA_NAME}.web_batch_jobs child
+                            where child.batch_id = batch.id
+                              and child.status = 'COMPLETE_WITH_WARNINGS'
+                        ) then 'COMPLETE_WITH_WARNINGS'
+                        else 'COMPLETE'
+                    end,
+                    ended_at = case
+                        when exists (
+                            select 1 from {SCHEMA_NAME}.web_batch_jobs child
+                            where child.batch_id = batch.id
+                              and child.status in (
+                                  'QUEUED', 'RUNNING', 'WAITING_WAS_DECISION',
+                                  'INTERRUPT_REQUESTED'
+                              )
+                        ) then ended_at
+                        else now()
+                    end,
+                    version = version + 1
+                where id = %s
+                returning {_BATCH_COLUMNS}
+                """,
+                (updated.batch_id,),
+            ).fetchone()
+            connection.execute(
+                f"""
+                insert into {SCHEMA_NAME}.web_batch_events (
+                    batch_id, job_id, event_type, actor,
+                    idempotency_key, payload
+                ) values (%s, %s, %s, %s, %s, %s)
+                on conflict (idempotency_key) where idempotency_key is not null
+                do nothing
+                returning id
+                """,
+                (
+                    updated.batch_id,
+                    updated.id,
+                    "JOB_STOP_REQUESTED",
+                    normalized_actor,
+                    normalized_key,
+                    _jsonb(
+                        {
+                            "status": updated.status.value,
+                            "reason": normalized_reason,
+                        }
+                    ),
+                ),
+            ).fetchone()
+        return updated
+
     def claim_next_job(
         self,
         *,

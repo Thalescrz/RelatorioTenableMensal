@@ -309,3 +309,35 @@ def test_postgresql_records_local_process_id_and_event() -> None:
     event_sql, event_params = database.connection_value.calls[1]
     assert "JOB_PROCESS_STARTED" == event_params[2]
     assert event_params[3].obj["process_id"] == 4242
+
+
+def test_postgresql_stops_one_queued_job_without_stopping_its_batch() -> None:
+    database = _Database(
+        [
+            _Cursor(one=_job_row(status="QUEUED")),
+            _Cursor(one=_job_row(status="CANCELLED_BY_USER")),
+            _Cursor(one=_batch_row(status="COMPLETE", version=1)),
+            _Cursor(one=(1,)),
+        ]
+    )
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    job = repository.request_job_stop(
+        UUID(int=11),
+        actor="analista-local",
+        reason="substituir a geracao deste cliente",
+        idempotency_key="job-stop:fixture",
+    )
+
+    assert job.status is BatchJobStatus.CANCELLED_BY_USER
+    lock_sql, lock_params = database.connection_value.calls[0]
+    assert "for update" in lock_sql.lower()
+    assert lock_params == (UUID(int=11),)
+    update_sql, _ = database.connection_value.calls[1]
+    normalized = " ".join(update_sql.lower().split())
+    assert "when status in ('queued', 'waiting_was_decision')" in normalized
+    assert "then 'cancelled_by_user'" in normalized
+    batch_sql, _ = database.connection_value.calls[2]
+    assert "complete_with_failures" in batch_sql.lower()
+    _event_sql, event_params = database.connection_value.calls[3]
+    assert "job_stop_requested" in str(event_params).lower()

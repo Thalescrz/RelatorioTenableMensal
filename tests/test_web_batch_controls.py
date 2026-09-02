@@ -200,6 +200,30 @@ def test_stop_race_preserves_a_job_that_completed_before_interrupting() -> None:
     assert batch.status is BatchStatus.STOPPED
     assert repository.list_batch_jobs(BATCH_ID)[0].status is BatchJobStatus.COMPLETE
 
+
+def test_stop_single_queued_job_preserves_siblings_and_finishes_batch() -> None:
+    repository = _repository(
+        batch_status=BatchStatus.RUNNING,
+        job_statuses=(BatchJobStatus.QUEUED, BatchJobStatus.FAILED),
+    )
+
+    stopped = repository.request_job_stop(
+        UUID(int=701),
+        actor="analista-local",
+        reason="substituir a geracao deste cliente",
+        idempotency_key="job-stop:701",
+    )
+
+    assert stopped.status is BatchJobStatus.CANCELLED_BY_USER
+    assert tuple(job.status for job in repository.list_batch_jobs(BATCH_ID)) == (
+        BatchJobStatus.CANCELLED_BY_USER,
+        BatchJobStatus.FAILED,
+    )
+    batch = repository.get_batch(BATCH_ID)
+    assert batch is not None
+    assert batch.status is BatchStatus.COMPLETE_WITH_FAILURES
+    assert repository.list_events(BATCH_ID)[-1].event_type == "JOB_STOP_REQUESTED"
+
 def test_domain_accepts_immediate_pause_and_stop_without_active_job() -> None:
     assert transition_batch(
         BatchStatus.QUEUED,

@@ -341,3 +341,39 @@ def test_stop_signals_all_staged_jobs_and_preserves_recovery_artifacts(
         is True
         for job in stopped
     )
+
+
+def test_stop_single_running_job_signals_only_that_client(tmp_path: Path) -> None:
+    def runner(command, cwd, progress_callback=None):
+        raise AssertionError("A parada individual nao deve executar coleta.")
+
+    repository, queue = _queue(tmp_path, runner)
+    try:
+        created = queue.enqueue(
+            ["client-a", "client-b"],
+            {"mode": "manual", "days": 30},
+        )
+        batch_id = UUID(str(created[0]["batch_id"]))
+        first = repository.claim_next_job(worker_id="worker-a")
+        second = repository.claim_next_job(worker_id="worker-b")
+        assert first is not None
+        assert second is not None
+
+        stopped = queue.request_job_stop(
+            first.id,
+            actor="analista-local",
+            reason="substituir a geracao deste cliente",
+            idempotency_key="job-stop:running",
+        )
+        stored = repository.list_batch_jobs(batch_id)
+    finally:
+        queue.close()
+
+    assert stopped.status is BatchJobStatus.INTERRUPT_REQUESTED
+    assert stored[0].status is BatchJobStatus.INTERRUPT_REQUESTED
+    assert stored[1].status is BatchJobStatus.RUNNING
+    assert repository.get_batch(batch_id).status is BatchStatus.RUNNING
+    assert json.loads(Path(first.control_file).read_text(encoding="utf-8"))[
+        "stop_requested"
+    ] is True
+    assert not Path(second.control_file).exists()

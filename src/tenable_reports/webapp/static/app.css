@@ -288,9 +288,10 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
 .selection-toolbar .search { width: 100%; }
 .selection-actions { display: flex; gap: 10px; margin-top: 10px; }
 .selection-list { display: grid; gap: 8px; max-height: 42vh; margin-top: 14px; overflow: auto; }
-.selection-row { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 11px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); cursor: pointer; }
-.selection-row:hover { border-color: #46545f; }.selection-row input { width: 17px; height: 17px; margin: 0; }
+.selection-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.selection-row:hover { border-color: #46545f; }.selection-row.has-conflict { border-color: rgba(255,94,100,.48); background: rgba(255,94,100,.045); }.selection-row-main { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 11px; min-width: 0; cursor: pointer; }.selection-row input { width: 17px; height: 17px; margin: 0; }
 .selection-row strong, .selection-row small { display: block; }.selection-row strong { font-size: 13px; }.selection-row small { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.35; }
+.selection-conflict { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }.selection-conflict span { color: var(--danger); font-size: 10px; white-space: nowrap; }.selection-conflict .mini-button { white-space: nowrap; }
 .selection-footer { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; padding: 15px 0 24px; border-top: 1px solid var(--line); background: #14191e; }
 .selection-footer span { color: var(--muted); font-size: 12px; }
 
@@ -301,7 +302,7 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
   .manager-layout { grid-template-columns: 1fr; }.client-form { border-left: 0; border-top: 1px solid var(--line); padding: 25px 0 0; }.period-options { grid-template-columns: 1fr; }.field-row { grid-template-columns: 1fr; }.check-grid { grid-template-columns: 1fr; }
   .tag-toolbar { grid-template-columns: 1fr; }.tag-row { grid-template-columns: 1fr 1fr; }.cloud-config-head, .vm-export-head { align-items: flex-start; flex-direction: column; }.cloud-config-grid, .vm-export-grid { grid-template-columns: 1fr; }.tag-row > div { grid-column: 1 / -1; }.report-document { align-items: flex-start; flex-direction: column; }
   .dialog > * { margin-left: 18px; margin-right: 18px; }
-  .selection-toolbar { grid-template-columns: 1fr; }.selection-footer { align-items: stretch; flex-direction: column; }.selection-footer .button { width: 100%; }.analyst-row { align-items: stretch; flex-direction: column; }.analyst-actions { justify-content: flex-start; }
+  .selection-toolbar { grid-template-columns: 1fr; }.selection-row { grid-template-columns: 1fr; }.selection-conflict { align-items: flex-start; flex-direction: column; }.selection-conflict span { white-space: normal; }.selection-footer { align-items: stretch; flex-direction: column; }.selection-footer .button { width: 100%; }.analyst-row { align-items: stretch; flex-direction: column; }.analyst-actions { justify-content: flex-start; }
   .report-row { grid-template-columns: 1fr; }.report-actions { justify-content: flex-start; }.component-retry-footer { align-items: stretch; flex-direction: column; }.component-retry-footer .button { width: 100%; }
   .storage-strip { align-items: stretch; flex-direction: column; gap: 8px; }.storage-strip button { margin-left: 0; }
   .batch-panel-head { align-items: stretch; flex-direction: column; }.batch-state { align-self: flex-start; }.batch-panel-body { grid-template-columns: 1fr; }.batch-phase-summary { grid-template-columns: 1fr 1fr; }.batch-counters { grid-template-columns: 1fr 1fr; }.batch-actions { justify-content: stretch; max-width: none; }.batch-actions .button { flex: 1 1 145px; }.batch-choice-options { grid-template-columns: 1fr; }

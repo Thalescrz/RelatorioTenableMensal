@@ -264,7 +264,7 @@
 
   <dialog id="run-selection-dialog" class="dialog run-selection-dialog">
     <div class="dialog-head">
-      <div><p class="eyebrow">GERAR TODOS</p><h2>Selecionar clientes</h2><p>Escolha os clientes que entrarão neste lote.</p></div>
+      <div><p class="eyebrow">GERAR TODOS</p><h2>Selecionar clientes</h2><p>Escolha os clientes. Execuções em andamento são tratadas individualmente.</p></div>
       <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
     </div>
     <div class="selection-toolbar">
@@ -306,7 +306,7 @@
         <input name="force_live_collection" type="checkbox">
         <span><strong>Forçar nova coleta pela API</strong><small>Ignora o snapshot deste período sem apagá-lo.</small></span>
       </label>
-      <div class="queue-note"><span>→</span><p><strong>Execução em fila</strong><br>Um cliente por vez para reduzir limites e falhas na API.</p></div>
+      <div class="queue-note"><span>→</span><p><strong>Coletas remotas em paralelo</strong><br>Clientes diferentes coletam ao mesmo tempo; a montagem local dos documentos permanece controlada.</p></div>
       <button class="button primary full" type="submit">Adicionar à fila</button>
     </form>
   </dialog>

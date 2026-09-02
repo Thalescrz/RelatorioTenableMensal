@@ -102,6 +102,12 @@ trabalho preservado em nova coleta: o painel reconcilia a fase e o checkpoint.
 
 No painel do lote:
 
+- **Gerar todos** sempre abre a seleção de clientes; lotes pausados ou concluídos
+  não bloqueiam novas solicitações. Somente um trabalho ativo do mesmo cliente é
+  destacado como conflito;
+- no conflito, o analista pode excluir o cliente da nova solicitação ou usar
+  **Parar execução atual**. A parada é individual, preserva export, UUID, chunks e
+  checkpoint remotos, e não interfere nos demais clientes do lote;
 - **Pausar após o atual** impede novas reivindicações e deixa as fases ativas
   salvarem seu checkpoint;
 - **Parar lote** sinaliza cooperativamente todos os processos locais ativos,

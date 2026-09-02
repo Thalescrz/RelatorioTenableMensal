@@ -15,6 +15,7 @@ from tenable_reports.webapp.server import DashboardHTTPServer
 class _BatchApp:
     def __init__(self) -> None:
         self.actions: list[tuple[UUID, BatchAction, str, str, str]] = []
+        self.job_stops: list[tuple[UUID, str, str, str, str]] = []
         self.derivations = []
         self.conflict = False
 
@@ -55,6 +56,28 @@ class _BatchApp:
             },
             "jobs": [],
             "events": [],
+        }
+
+    def request_job_stop(
+        self,
+        job_id: str,
+        *,
+        actor: str,
+        reason: str,
+        idempotency_key: str,
+        confirmation: str,
+    ):
+        normalized = UUID(str(job_id))
+        expected = f"PARAR {str(normalized)[:8]}"
+        if confirmation != expected:
+            raise ValueError(f'Digite exatamente "{expected}" para confirmar.')
+        self.job_stops.append(
+            (normalized, actor, reason, idempotency_key, confirmation)
+        )
+        return {
+            "job_id": str(normalized),
+            "client_id": "client-fixture",
+            "status": "INTERRUPT_REQUESTED",
         }
 
 
@@ -232,3 +255,37 @@ def test_batch_action_requires_idempotency_key(batch_server) -> None:
     assert captured.value.code == 400
     payload = json.loads(captured.value.read().decode("utf-8"))
     assert "idempot" in payload["error"].lower()
+
+
+def test_job_stop_route_stops_only_the_confirmed_client_job(batch_server) -> None:
+    app, base = batch_server
+    job_id = UUID(int=907)
+    confirmation = f"PARAR {str(job_id)[:8]}"
+    request = Request(
+        f"{base}/api/jobs/{job_id}/stop",
+        data=json.dumps(
+            {
+                "idempotency_key": "fixture:job-stop",
+                "actor": "analista-local",
+                "reason": "substituir a geracao deste cliente",
+                "confirmation": confirmation,
+            }
+        ).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/json", "X-Tenable-UI": "1"},
+    )
+
+    with urlopen(request, timeout=3) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+
+    assert response.status == 200
+    assert payload["job"]["status"] == "INTERRUPT_REQUESTED"
+    assert app.job_stops == [
+        (
+            job_id,
+            "analista-local",
+            "substituir a geracao deste cliente",
+            "fixture:job-stop",
+            confirmation,
+        )
+    ]

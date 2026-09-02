@@ -334,6 +334,100 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 )
             )
 
+    def request_job_stop(
+        self,
+        job_id: UUID,
+        *,
+        actor: str | None = None,
+        reason: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> WebBatchJob:
+        normalized_actor = str(actor or "").strip()[:200] or None
+        normalized_reason = str(reason or "").strip()[:500]
+        normalized_key = str(idempotency_key or "").strip()[:200] or None
+        active_statuses = {
+            BatchJobStatus.QUEUED,
+            BatchJobStatus.RUNNING,
+            BatchJobStatus.WAITING_WAS_DECISION,
+            BatchJobStatus.INTERRUPT_REQUESTED,
+        }
+        with self._lock:
+            current = self._jobs[job_id]
+            if normalized_key:
+                previous = next(
+                    (
+                        event
+                        for event in self._events
+                        if event.idempotency_key == normalized_key
+                    ),
+                    None,
+                )
+                if previous is not None:
+                    return current
+            if current.status not in active_statuses:
+                return current
+
+            changed_at = _now()
+            immediate = current.status in {
+                BatchJobStatus.QUEUED,
+                BatchJobStatus.WAITING_WAS_DECISION,
+            }
+            updated = replace(
+                current,
+                status=(
+                    BatchJobStatus.CANCELLED_BY_USER
+                    if immediate
+                    else BatchJobStatus.INTERRUPT_REQUESTED
+                ),
+                phase=BatchJobPhase.TERMINAL if immediate else current.phase,
+                worker_id=None if immediate else current.worker_id,
+                process_id=None if immediate else current.process_id,
+                control_file=None if immediate else current.control_file,
+                ended_at=changed_at if immediate else current.ended_at,
+            )
+            self._jobs[job_id] = updated
+
+            batch = self._batches[current.batch_id]
+            jobs = tuple(
+                job
+                for job in self._jobs.values()
+                if job.batch_id == current.batch_id
+            )
+            if not any(job.status in active_statuses for job in jobs):
+                if batch.status is BatchStatus.STOP_REQUESTED:
+                    next_status = BatchStatus.STOPPED
+                elif any(job.status is BatchJobStatus.FAILED for job in jobs):
+                    next_status = BatchStatus.COMPLETE_WITH_FAILURES
+                elif any(
+                    job.status is BatchJobStatus.COMPLETE_WITH_WARNINGS
+                    for job in jobs
+                ):
+                    next_status = BatchStatus.COMPLETE_WITH_WARNINGS
+                else:
+                    next_status = BatchStatus.COMPLETE
+                self._batches[current.batch_id] = replace(
+                    batch,
+                    status=next_status,
+                    ended_at=changed_at,
+                    version=batch.version + 1,
+                )
+
+            self._events.append(
+                WebBatchEvent(
+                    batch_id=current.batch_id,
+                    job_id=current.id,
+                    event_type="JOB_STOP_REQUESTED",
+                    payload={
+                        "status": updated.status.value,
+                        "reason": normalized_reason,
+                    },
+                    actor=normalized_actor,
+                    idempotency_key=normalized_key,
+                    created_at=changed_at,
+                )
+            )
+            return updated
+
     def claim_next_job(
         self,
         *,
