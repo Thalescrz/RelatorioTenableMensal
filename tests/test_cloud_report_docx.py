@@ -8,6 +8,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from docx import Document
+from docx.oxml.ns import qn
 import pytest
 
 
@@ -18,6 +19,10 @@ from tenable_reports.presentation.cloud_editorial_catalog import (
 from tenable_reports.presentation.cloud_report_docx import (
     CloudReportVariant,
     generate_cloud_report,
+)
+from tenable_reports.presentation.cloud_report_sections import (
+    CloudDocumentBuilder,
+    SEVERITY_FILLS,
 )
 
 
@@ -39,6 +44,29 @@ def _all_text(path: Path) -> str:
                 for row in table.rows:
                     chunks.extend(cell.text for cell in row.cells)
     return "\n".join(chunks)
+
+
+def _cell_fill(cell) -> str | None:
+    shading = cell._tc.get_or_add_tcPr().find(qn("w:shd"))
+    return None if shading is None else shading.get(qn("w:fill"))
+
+
+def test_cloud_table_uses_its_existing_palette_for_semantic_risk_labels() -> None:
+    document = Document()
+    anchor = document.add_paragraph("fixture-anchor")
+    table = CloudDocumentBuilder(document, anchor).table(
+        ("Crítica", "Alta", "Média", "Baixa"),
+        (("Crítica", "Alta", "Média", "Baixa"),),
+    )
+    assert table is not None
+    expected = [
+        SEVERITY_FILLS["CRITICAL"],
+        SEVERITY_FILLS["HIGH"],
+        SEVERITY_FILLS["MEDIUM"],
+        SEVERITY_FILLS["LOW"],
+    ]
+    assert [_cell_fill(cell) for cell in table.rows[0].cells] == expected
+    assert [_cell_fill(cell) for cell in table.rows[1].cells] == expected
 
 
 def _profile():

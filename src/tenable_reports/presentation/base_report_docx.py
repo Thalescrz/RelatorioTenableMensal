@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -31,6 +33,75 @@ CRITICAL = "FF0000"
 HIGH = "F28C00"
 MEDIUM = "FFF200"
 LOW = "00B050"
+
+
+def risk_band_key(value: Any) -> str | None:
+    """Classifica somente rótulos integrais de severidade/faixa CVSS/VPR."""
+
+    text = " ".join(str(value or "").split())
+    if not text:
+        return None
+    normalized = unicodedata.normalize("NFKD", text)
+    normalized = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    ).upper()
+    words = {
+        "CRITICA": "CRITICAL",
+        "CRITICO": "CRITICAL",
+        "CRITICAL": "CRITICAL",
+        "ALTA": "HIGH",
+        "ALTO": "HIGH",
+        "HIGH": "HIGH",
+        "MEDIA": "MEDIUM",
+        "MEDIO": "MEDIUM",
+        "MEDIUM": "MEDIUM",
+        "BAIXA": "LOW",
+        "BAIXO": "LOW",
+        "LOW": "LOW",
+    }
+    exact = words.get(normalized)
+    if exact is not None:
+        return exact
+    structured = re.fullmatch(
+        r"(?:CVSSV3\s+)?"
+        r"(CRITICA|CRITICO|CRITICAL|ALTA|ALTO|HIGH|MEDIA|MEDIO|MEDIUM|"
+        r"BAIXA|BAIXO|LOW)\s*\([^)]*\)",
+        normalized,
+    )
+    if structured is not None:
+        return words[structured.group(1)]
+    cvss = re.fullmatch(
+        r"CVSSV3\s+(\d+(?:\.\d+)?)"
+        r"(?:\s*-\s*\d+(?:\.\d+)?)?",
+        normalized,
+    )
+    if cvss is not None:
+        score = float(cvss.group(1))
+        return (
+            "CRITICAL"
+            if score >= 9
+            else "HIGH"
+            if score >= 7
+            else "MEDIUM"
+            if score >= 4
+            else "LOW"
+        )
+    rating = re.fullmatch(
+        r"RATING\s+(\d+(?:\.\d+)?)\s*-\s*\d+(?:\.\d+)?",
+        normalized,
+    )
+    if rating is not None:
+        score = float(rating.group(1))
+        return (
+            "CRITICAL"
+            if score >= 9
+            else "HIGH"
+            if score >= 7
+            else "MEDIUM"
+            if score >= 4
+            else "LOW"
+        )
+    return None
 
 ASSET_HEADERS = (
     "IP Address",

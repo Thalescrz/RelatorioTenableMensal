@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -20,7 +19,10 @@ from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation import base_report_docx as base
 from tenable_reports.presentation import editorial_catalog as copy
 from tenable_reports.presentation.source_filters import add_source_filter_note
-from tenable_reports.presentation.translation import TextTranslator, translate_in_chunks
+from tenable_reports.presentation.translation import (
+    TextTranslator,
+    translate_semantic_text,
+)
 
 
 FULL_TEMPLATE_VERSION = "base-fiel-v2.0"
@@ -257,7 +259,16 @@ def _simple_table(
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
     table.autofit = False
     base._set_table_fixed(table, sum(widths))
-    fills = tuple(header_fills or (base.BLUE,) * len(headers))
+    palette = {
+        "CRITICAL": base.CRITICAL,
+        "HIGH": base.HIGH,
+        "MEDIUM": base.MEDIUM,
+        "LOW": base.LOW,
+    }
+    fills = tuple(
+        header_fills
+        or tuple(palette.get(base.risk_band_key(header), base.BLUE) for header in headers)
+    )
     for index, (header, width) in enumerate(zip(headers, widths, strict=True)):
         cell = table.cell(0, index)
         cell.text = header
@@ -281,7 +292,12 @@ def _simple_table(
         for column, (cell, value) in enumerate(zip(row.cells, values, strict=True)):
             cell.text = "" if value is None else str(value)
             base._set_cell_width(cell, widths[column])
-            base._set_cell_shading(cell, base.WHITE if row_index % 2 else base.LIGHT_GRAY)
+            semantic_fill = palette.get(base.risk_band_key(value))
+            base._set_cell_shading(
+                cell,
+                semantic_fill
+                or (base.WHITE if row_index % 2 else base.LIGHT_GRAY),
+            )
             _cell_margins(cell)
             cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
             paragraph = cell.paragraphs[0]
@@ -453,37 +469,11 @@ def _principal_vulnerabilities(
 
 
 def _description_chunks(text: str, *, max_chars: int = 900) -> tuple[str, ...]:
-    normalized = " ".join(str(text or "").split())
-    if not normalized:
-        return ()
-    sentences = re.split(r"(?<=[.!?;:])\s+", normalized)
-    chunks: list[str] = []
-    current = ""
-    for sentence in sentences:
-        pieces = [sentence]
-        if len(sentence) > max_chars:
-            words = sentence.split()
-            pieces = []
-            part = ""
-            for word in words:
-                candidate = f"{part} {word}".strip()
-                if part and len(candidate) > max_chars:
-                    pieces.append(part)
-                    part = word
-                else:
-                    part = candidate
-            if part:
-                pieces.append(part)
-        for piece in pieces:
-            candidate = f"{current} {piece}".strip()
-            if current and len(candidate) > max_chars:
-                chunks.append(current)
-                current = piece
-            else:
-                current = candidate
-    if current:
-        chunks.append(current)
-    return tuple(chunks)
+    return translate_semantic_text(
+        str(text or ""),
+        None,
+        max_chars=max_chars,
+    ).chunks
 
 
 def _labeled_blocks(
@@ -494,11 +484,11 @@ def _labeled_blocks(
     translator: TextTranslator | None = None,
 ) -> None:
     _heading(document, label, 4)
-    chunks = (
-        translate_in_chunks(str(text or ""), translator, max_chars=900)
-        if translator is not None
-        else _description_chunks(str(text or ""))
-    )
+    chunks = translate_semantic_text(
+        str(text or ""),
+        translator,
+        max_chars=900,
+    ).chunks
     for chunk in chunks:
         _paragraph(document, chunk)
 

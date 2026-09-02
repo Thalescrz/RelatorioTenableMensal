@@ -24,8 +24,7 @@ from tenable_reports.presentation.cloud_visuals import (
 from tenable_reports.presentation.source_filters import format_source_filter_note
 from tenable_reports.presentation.translation import (
     TextTranslator,
-    split_translation_chunks,
-    translate_in_chunks,
+    translate_semantic_text,
 )
 
 
@@ -209,19 +208,30 @@ class CloudDocumentBuilder:
         base._set_repeat_table_header(header)
         base._prevent_row_split(header)
         for index, (cell, label, width) in enumerate(zip(header.cells, headers, widths)):
+            band = base.risk_band_key(label)
+            fill = SEVERITY_FILLS.get(band, BLUE)
             base._set_cell_width(cell, width)
-            base._set_cell_shading(cell, BLUE)
+            base._set_cell_shading(cell, fill)
             cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
             paragraph = cell.paragraphs[0]
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             run = paragraph.add_run(str(label))
-            base._set_run_font(run, size=7.5, color=WHITE, bold=True, name="Arial")
+            base._set_run_font(
+                run,
+                size=7.5,
+                color=NAVY if band is not None else WHITE,
+                bold=True,
+                name="Arial",
+            )
         for row_index, values in enumerate(rows):
             row = table.add_row()
             base._prevent_row_split(row)
             for column, (cell, value, width) in enumerate(zip(row.cells, values, widths)):
                 base._set_cell_width(cell, width)
-                if row_index % 2:
+                band = base.risk_band_key(value)
+                if band is not None:
+                    base._set_cell_shading(cell, SEVERITY_FILLS[band])
+                elif row_index % 2:
                     base._set_cell_shading(cell, LIGHT_GRAY)
                 cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
                 paragraph = cell.paragraphs[0]
@@ -480,12 +490,8 @@ def _translated_description(
     text: str,
     translator: TextTranslator | None,
 ) -> tuple[tuple[str, ...], bool]:
-    if translator is None:
-        return split_translation_chunks(text, max_chars=900), False
-    try:
-        return translate_in_chunks(text, translator, max_chars=900), False
-    except (TypeError, ValueError, RuntimeError):
-        return split_translation_chunks(text, max_chars=900), True
+    result = translate_semantic_text(text, translator, max_chars=900)
+    return result.chunks, result.had_failures
 
 
 def render_critical_details(

@@ -9,12 +9,15 @@ from dataclasses import replace
 from pathlib import Path
 
 from docx import Document
+from docx.oxml.ns import qn
 
 from tenable_reports.config.profile import load_client_profile
+from tenable_reports.presentation import base_report_docx as base
 from tenable_reports.presentation.base_report_docx import ASSET_HEADERS
 from tenable_reports.presentation.full_base_report_docx import (
     FULL_TEMPLATE_VERSION,
     _description_chunks,
+    _simple_table,
     generate_full_base_report,
 )
 
@@ -40,7 +43,78 @@ def all_document_text(document):
     return "\n".join(chunks)
 
 
+def _cell_fill(cell) -> str | None:
+    shading = cell._tc.get_or_add_tcPr().find(qn("w:shd"))
+    return None if shading is None else shading.get(qn("w:fill"))
+
+
 class FullBaseReportDocxTests(unittest.TestCase):
+    def test_risk_band_labels_in_highlight_tables_use_approved_palette(self) -> None:
+        document = Document()
+        aging = _simple_table(
+            document,
+            ("", "90+ Dias"),
+            (("Crítica", 1), ("Alta", 2), ("Média", 3), ("Baixa", 4),
+             ("Texto crítico para análise", 5)),
+        )
+        self.assertEqual(
+            [_cell_fill(row.cells[0]) for row in aging.rows[1:5]],
+            [base.CRITICAL, base.HIGH, base.MEDIUM, base.LOW],
+        )
+        self.assertNotIn(
+            _cell_fill(aging.rows[5].cells[0]),
+            {base.CRITICAL, base.HIGH, base.MEDIUM, base.LOW},
+        )
+
+        cvss = _simple_table(
+            document,
+            ("", "Total"),
+            (("CVSSv3 10.0", 1), ("CVSSv3 7.0 - 9.9", 2),
+             ("CVSSv3 4.0 - 6.9", 3), ("CVSSv3 0.0 - 3.9", 4)),
+        )
+        self.assertEqual(
+            [_cell_fill(row.cells[0]) for row in cvss.rows[1:]],
+            [base.CRITICAL, base.HIGH, base.MEDIUM, base.LOW],
+        )
+
+        heatmap = _simple_table(
+            document,
+            (
+                "",
+                "Baixo (VPR 0.0-3.9)",
+                "Médio (VPR 4.0-6.9)",
+                "Alto (VPR7.0-8.9)",
+                "Crítico (VPR 9.0-10)",
+            ),
+            (("CVSSv3 Baixo (0.0-3.9)", 1, 2, 3, 4),
+             ("CVSSv3 Médio (4.0-6.9)", 1, 2, 3, 4),
+             ("CVSSv3 Alto (VPR7.0-8.9)", 1, 2, 3, 4),
+             ("CVSSv3 Crítico (VPR 9.0-10)", 1, 2, 3, 4)),
+        )
+        self.assertEqual(
+            [_cell_fill(cell) for cell in heatmap.rows[0].cells[1:]],
+            [base.LOW, base.MEDIUM, base.HIGH, base.CRITICAL],
+        )
+        self.assertEqual(
+            [_cell_fill(row.cells[0]) for row in heatmap.rows[1:]],
+            [base.LOW, base.MEDIUM, base.HIGH, base.CRITICAL],
+        )
+
+        rating = _simple_table(
+            document,
+            (
+                "RATING 10.0 - 9.0",
+                "RATING 8.9-7.0",
+                "RATING 6.9-4.0",
+                "RATING 3.9-0.1",
+            ),
+            ((1, 2, 3, 4),),
+        )
+        self.assertEqual(
+            [_cell_fill(cell) for cell in rating.rows[0].cells],
+            [base.CRITICAL, base.HIGH, base.MEDIUM, base.LOW],
+        )
+
     def test_compact_vulnerability_table_displays_missing_and_numeric_zero_vpr_as_zero(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             dataset = json.loads(FIXTURE.read_text(encoding="utf-8"))
