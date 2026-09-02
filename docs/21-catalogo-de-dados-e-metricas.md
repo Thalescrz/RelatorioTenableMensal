@@ -146,7 +146,7 @@ e Low.
   independentes e podem se sobrepor; os nomes completos dos sistemas operacionais
   dos ativos não criam linhas adicionais.
 - Top 5 VM: ranking local de findings não mitigados usando VPR, severidade e ativos
-  afetados, seguido do detalhamento e conjunto de hosts.
+  afetados, seguido do detalhamento com Plugin ID antes do VPR e conjunto de hosts.
 - Top 5 WAS: ranking equivalente no conjunto WEB suportado.
 - OWASP Top 10: distribuição apenas dos achados que possuem classificação mapeável;
   categorias sem ocorrências podem permanecer zeradas, acompanhadas de texto quando

@@ -534,6 +534,7 @@ def _vulnerability_details(
             continue
         rendered += 1
         _heading(document, f"{number_prefix}.{index}. {item.get('plugin_name') or ''}", heading_level)
+        _paragraph(document, f"Plugin ID: {item.get('plugin_id') if item.get('plugin_id') is not None else ''}")
         _paragraph(document, f"VPR: {item.get('vpr_score') if item.get('vpr_score') is not None else ''}")
         _labeled_blocks(document, "Descrição:", item.get("description") or item.get("synopsis") or "", translator=translator)
         _labeled_blocks(document, "Solução:", item.get("solution") or "", translator=translator)

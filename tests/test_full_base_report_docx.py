@@ -144,6 +144,29 @@ class FullBaseReportDocxTests(unittest.TestCase):
             self.assertEqual(rows_by_plugin_id["900001"].cells[5].text, "0")
             self.assertEqual(rows_by_plugin_id["900002"].cells[5].text, "0")
 
+    def test_detailed_vm_vulnerability_places_plugin_id_immediately_before_vpr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "plugin-id.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=FIXTURE,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+            )
+
+            paragraphs = [paragraph.text for paragraph in Document(output).paragraphs]
+            heading_index = next(
+                index
+                for index, text in enumerate(paragraphs)
+                if text.startswith("5.1.")
+            )
+            self.assertEqual(paragraphs[heading_index + 1], "Plugin ID: 900001")
+            self.assertEqual(paragraphs[heading_index + 2], "VPR: 9.8")
+            self.assertEqual(paragraphs[heading_index + 3], "Descri\u00e7\u00e3o:")
+
     def test_full_sanitised_report_contains_contractual_sections(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "full.docx"
