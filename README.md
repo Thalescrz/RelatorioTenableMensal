@@ -97,8 +97,11 @@ Novos lotes usam o modelo `STAGED_V1`: coletas remotas de clientes diferentes
 podem ocorrer em paralelo, enquanto a normalização final, a montagem dos DOCX e a
 publicação passam por um único worker local. A capacidade remota automática é
 limitada ao menor valor entre clientes elegíveis e 64; a montagem permanece em 1.
-Lotes antigos continuam como `LEGACY`. Reiniciar a interface não transforma
-trabalho preservado em nova coleta: o painel reconcilia a fase e o checkpoint.
+Lotes antigos continuam como `LEGACY`. A exceção é uma retentativa derivada de um
+lote importado como `RECOVERED`: ela preserva UUID, período e manifesto, mas entra
+em `STAGED_V1` para consultar e baixar os exports de clientes distintos em paralelo.
+Reiniciar a interface não transforma trabalho preservado em nova coleta: o painel
+reconcilia a fase e o checkpoint.
 
 No painel do lote:
 
@@ -117,12 +120,14 @@ No painel do lote:
 - **Retomar lote** libera somente trabalhos que permanecem retomáveis na própria
   fase;
 - **Tentar falhas/interrompidos** cria outro lote apenas com falhas, interrupções e
-  cancelamentos;
+  cancelamentos; a interface seleciona o lote derivado assim que ele é criado;
 - **Gerar todos novamente** abre a seleção explícita e cria outro lote somente com
   os clientes confirmados.
 
 O painel distingue coleta remota, espera por decisão WEB, pronto para montagem,
 montando documento e terminal. Após 900 segundos sem progresso remoto há alerta.
+O seletor de lotes mostra horário, tipo da operação e os oito primeiros caracteres
+do ID; confira esses dados antes de retentar um conjunto antigo.
 O teto padrão é de 36.000 segundos (10 horas) por UUID, somando fila e
 processamento e sobrevivendo a reinícios/retentativas; ao expirar, UUID e chunks
 continuam preservados e o export não é cancelado na Tenable. A API expõe apenas

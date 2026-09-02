@@ -134,7 +134,7 @@ continuam `LEGACY`. O card oferece:
   como `CANCELLED_BY_USER` e preserva exports/chunks;
 - **Retomar lote**: continua somente trabalhos retomáveis em sua fase;
 - **Tentar falhas/interrompidos**: cria outro lote com falhas, interrupções e
-  cancelamentos;
+  cancelamentos e seleciona esse novo lote no painel;
 - **Gerar todos novamente**: recria a seleção após confirmação.
 
 `COMPLETE_WITH_FAILURES` e `STOPPED` são estados terminais. Não use retomada para
@@ -147,8 +147,13 @@ execute `import-web-batch-recovery --dry-run`. Revise os totais e só então use
 como `PAUSED` e não inicia clientes automaticamente.
 
 No lote `RECOVERED/PAUSED`, use **Tentar falhas/interrompidos**. A derivação
-preserva período e `vm_export_uuid`; não use **Retomar lote**, pois os trabalhos
-importados já são terminais.
+preserva período, `vm_export_uuid` e manifesto, mas executa a consulta/download de
+clientes distintos em paralelo pelo `STAGED_V1`; não use **Retomar lote**, pois os
+trabalhos importados já são terminais. A montagem local permanece serial.
+
+Antes de derivar, confira no seletor a data/hora, o tipo e o prefixo de oito
+caracteres do ID. Para repetir a geração coletiva mais recente, selecione o item
+identificado como **Gerar todos**, não um **Lote recuperado** antigo.
 
 ## Export sem progresso
 

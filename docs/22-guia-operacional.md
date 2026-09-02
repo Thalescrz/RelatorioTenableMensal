@@ -177,7 +177,8 @@ reduzi-la. `local_build_workers` permanece obrigatoriamente em 1. Use:
 - **Retomar lote** para liberar somente trabalhos preservados e retomáveis em sua
   fase;
 - **Tentar falhas/interrompidos** depois do término para criar uma fila somente de
-  `FAILED`, `INTERRUPTED` e `CANCELLED_BY_USER`;
+  `FAILED`, `INTERRUPTED` e `CANCELLED_BY_USER`; o lote derivado passa a ser a
+  seleção ativa do painel assim que a API o cria;
 - **Gerar todos novamente** quando a seleção precisa de nova execução.
 
 A pausa não repete cliente concluído. A retomada também não reabre falha ou
@@ -191,7 +192,14 @@ responder, o fallback encerra somente sua árvore e registra PID/evento. Depois,
 a ação de falhas/interrompidos em vez de reabrir resultado terminal.
 
 Lotes anteriores permanecem em `LEGACY`. Eles conservam o worker monolítico e não
-são migrados automaticamente para o pipeline em fases.
+são migrados automaticamente para o pipeline em fases. Uma retentativa derivada de
+um lote importado `RECOVERED` é a exceção: período, UUID e manifesto continuam
+preservados, enquanto os jobs derivados entram em `STAGED_V1` para consulta e
+download remotos concorrentes. A montagem local continua serial.
+
+O seletor de lotes apresenta data e hora, tipo, prefixo do ID e estado. Antes de
+usar **Tentar falhas/interrompidos**, confirme especialmente o tipo `Gerar todos` e
+o prefixo do lote desejado.
 
 ### Automático mensal
 
