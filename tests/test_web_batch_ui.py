@@ -348,7 +348,23 @@ def test_frontend_exposes_recent_batch_selector_and_client_detail() -> None:
     assert "data-copy-vm-uuid" in javascript
     assert "Verificar export preservado" in javascript
     assert "job aceito; a Tenable ainda não anunciou" in javascript
+    assert "batchKindLabel(item.kind)" in javascript
+    assert "item.id.slice(0, 8)" in javascript
     assert ".batch-client-row" in css
+
+
+def test_derived_batch_action_selects_the_new_batch_before_refresh() -> None:
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+    start = javascript.index("async function runBatchAction")
+    end = javascript.index("function renderBatches", start)
+    action = javascript[start:end]
+
+    assert "const response = await api" in action
+    assert "response.batch?.id" in action
+    assert "state.selectedBatchId = derivedBatchId" in action
+    assert action.index("state.selectedBatchId = derivedBatchId") < action.index(
+        "await refresh()"
+    )
 
 
 def test_generate_all_uses_per_client_conflicts_instead_of_global_batch_lock() -> None:

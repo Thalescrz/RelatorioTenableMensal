@@ -364,6 +364,13 @@ class DurableDashboardJobQueue:
         if not selected:
             raise NoEligibleBatchJobsError(source.id)
 
+        execution_model = str(
+            source.options.get("execution_model") or (
+                "STAGED_V1" if source.kind == "RECOVERED" else "LEGACY"
+            )
+        ).strip().upper()
+        staged_model = execution_model == "STAGED_V1"
+
         selected_clients = {job.client_id for job in selected}
         conflicts = self.repository.active_client_conflicts(
             tuple(selected_clients),
@@ -381,6 +388,7 @@ class DurableDashboardJobQueue:
             options={
                 **dict(source.options),
                 "derived_action": request.kind.value,
+                "execution_model": execution_model,
             },
             source_batch_id=source.id,
             created_at=created_at,
@@ -432,10 +440,6 @@ class DurableDashboardJobQueue:
                     "created_at": created_at,
                     "_job_control_file": control_file,
                 }
-            )
-            staged_model = (
-                str(source.options.get("execution_model") or "").upper()
-                == "STAGED_V1"
             )
             reusable_checkpoint = (
                 source_job.collection_checkpoint_path

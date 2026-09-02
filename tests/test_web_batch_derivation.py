@@ -183,7 +183,11 @@ def test_retry_incomplete_accepts_paused_recovery_and_preserves_uuid(
         queue.close()
 
     jobs = repository.list_batch_jobs(UUID(retry["batch"]["id"]))
+    derived_batch = repository.get_batch(UUID(retry["batch"]["id"]))
+    assert derived_batch is not None
+    assert derived_batch.options["execution_model"] == "STAGED_V1"
     assert len(jobs) == 1
+    assert jobs[0].phase is BatchJobPhase.REMOTE_QUEUED
     assert jobs[0].payload["vm_export_uuid"] == export_uuid
     assert jobs[0].payload["start_at"] == "2026-07-01T03:00:00Z"
 

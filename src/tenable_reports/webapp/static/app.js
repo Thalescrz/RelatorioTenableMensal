@@ -209,6 +209,16 @@ function batchStatusLabel(status) {
   })[status] || status;
 }
 
+function batchKindLabel(kind) {
+  return ({
+    GENERATE_ALL: "Gerar todos",
+    RECOVERED: "Lote recuperado",
+    RETRY_INCOMPLETE: "Retentativa",
+    RERUN_ALL: "Nova geração integral",
+    GENERATE_ONE: "Geração individual",
+  })[kind] || kind;
+}
+
 async function runBatchAction(button, batch, action) {
   if (!batch || button.disabled) return;
   const body = {
@@ -228,10 +238,12 @@ async function runBatchAction(button, batch, action) {
   }
   button.disabled = true;
   try {
-    await api(`/api/batches/${encodeURIComponent(batch.id)}${BATCH_ACTION_ROUTES[action]}`, {
+    const response = await api(`/api/batches/${encodeURIComponent(batch.id)}${BATCH_ACTION_ROUTES[action]}`, {
       method: "POST",
       body,
     });
+    const derivedBatchId = response.batch?.id;
+    if (derivedBatchId) state.selectedBatchId = derivedBatchId;
     await refresh();
     toast(action === "pause" ? "Pausa solicitada após o cliente atual." : action === "resume" ? "Lote retomado." : action === "stop" ? "Parada cooperativa solicitada." : "Novo lote adicionado à fila.");
   } catch (error) {
@@ -253,7 +265,7 @@ function renderBatches() {
   const select = $("#batch-select");
   select.innerHTML = batches.slice(0, 10).map(item => {
     const date = item.created_at ? formatDate(item.created_at) : item.id.slice(0, 8);
-    return `<option value="${escapeHtml(item.id)}">${escapeHtml(date)} · ${escapeHtml(batchStatusLabel(item.status))}</option>`;
+    return `<option value="${escapeHtml(item.id)}">${escapeHtml(date)} · ${escapeHtml(batchKindLabel(item.kind))} · ${escapeHtml(item.id.slice(0, 8))} · ${escapeHtml(batchStatusLabel(item.status))}</option>`;
   }).join("");
   select.value = batch.id;
   const finished = Number(batch.completed_count || 0) + Number(batch.failed_count || 0) + Number(batch.interrupted_count || 0) + Number(batch.cancelled_count || 0);
