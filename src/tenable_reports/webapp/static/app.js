@@ -310,8 +310,47 @@ async function openBatchClients(batchId) {
     const jobs = detail.jobs || [];
     $("#batch-client-list").innerHTML = jobs.length ? jobs.map(job => {
       const was = job.was_attempts ? `WEB: ${job.was_attempts} tentativa(s) · ${job.was_retry_outcome || "sem resultado"}` : "WEB: sem tentativa registrada";
-      return `<article class="batch-client-row"><div><strong>${escapeHtml(job.client_id)}</strong><span>${escapeHtml(JOB_PHASE_LABELS[job.phase] || job.phase)} · ${escapeHtml(job.status)} · tentativa ${Number(job.attempt_number || 1)}</span></div><div><span>${escapeHtml(was)}</span>${job.error_code ? `<small>${escapeHtml(job.error_code)} · ${escapeHtml(job.error_message || "")}</small>` : ""}</div></article>`;
+      const vm = job.vm_export || {};
+      const vmUuid = vm.export_uuid || job.vm_export_uuid;
+      const totalChunks = Number(vm.total_chunks || 0);
+      const chunkCopy = totalChunks === 0 && ["QUEUED", "PROCESSING", "STARTED"].includes(String(vm.status || "").toUpperCase())
+        ? "job aceito; a Tenable ainda não anunciou a quantidade de chunks"
+        : `${Number(vm.persisted_chunks || vm.completed_chunks || 0)}/${totalChunks} chunks`;
+      const vmCopy = vmUuid
+        ? `VM: ${String(vmUuid).slice(0, 8)}… · ${vm.status || "desconhecido"} · ${chunkCopy}`
+        : "VM: UUID ainda não registrado";
+      const remoteCopy = job.remote_status_at
+        ? `Tenable confirmou em ${formatDate(job.remote_status_at)} · último progresso ${formatDate(job.remote_progress_at)}`
+        : "";
+      const copyUuid = vmUuid
+        ? `<button class="mini-button" data-copy-vm-uuid="${escapeHtml(vmUuid)}" type="button">Copiar UUID</button>`
+        : "";
+      const retry = job.vm_export_uuid && ["FAILED", "INTERRUPTED", "CANCELLED_BY_USER"].includes(job.status)
+        ? `<button class="mini-button" data-retry-preserved-job="${escapeHtml(job.id)}" type="button">Verificar export preservado</button>`
+        : "";
+      return `<article class="batch-client-row"><div><strong>${escapeHtml(job.client_id)}</strong><span>${escapeHtml(JOB_PHASE_LABELS[job.phase] || job.phase)} · ${escapeHtml(job.status)} · tentativa ${Number(job.attempt_number || 1)}</span>${copyUuid}${retry}</div><div><span>${escapeHtml(vmCopy)}</span><span>${escapeHtml(remoteCopy)}</span><span>${escapeHtml(was)}</span>${job.error_code ? `<small>${escapeHtml(job.error_code)} · ${escapeHtml(job.error_message || "")}</small>` : ""}</div></article>`;
     }).join("") : '<div class="loading">Nenhum cliente registrado neste lote.</div>';
+    dialog.querySelectorAll("[data-copy-vm-uuid]").forEach(button => button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(button.dataset.copyVmUuid);
+        toast("UUID copiado.");
+      } catch (_error) {
+        toast("Não foi possível copiar o UUID automaticamente.", "error");
+      }
+    }));
+    dialog.querySelectorAll("[data-retry-preserved-job]").forEach(button => button.addEventListener("click", async () => {
+      if (!window.confirm("Consultar o mesmo UUID preservado e baixar apenas os chunks disponíveis? Esta ação não cria um export novo enquanto o UUID continuar válido.")) return;
+      button.disabled = true;
+      try {
+        await api(`/api/jobs/${encodeURIComponent(button.dataset.retryPreservedJob)}/retry`, { method: "POST", body: {} });
+        dialog.close();
+        await refresh(true, { ensureAfterCurrent: true });
+        toast("Verificação do export preservado adicionada à fila.");
+      } catch (error) {
+        toast(error.message, "error");
+        button.disabled = false;
+      }
+    }));
   } catch (error) {
     $("#batch-client-list").innerHTML = `<div class="loading">${escapeHtml(error.message)}</div>`;
   }

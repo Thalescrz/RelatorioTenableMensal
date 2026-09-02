@@ -89,6 +89,7 @@ from tenable_reports.application.report_dataset import (
     load_published_report_dataset,
     load_report_dataset_inputs,
 )
+from tenable_reports.infrastructure.jsonl_io import resolve_jsonl_artifact
 from tenable_reports.application.tag_report_dataset import (
     build_tag_report_datasets_from_snapshot,
 )
@@ -473,6 +474,7 @@ def _client_from_environment(
     credentials: CredentialConfig,
     *,
     no_progress_timeout_seconds: float | None = None,
+    max_wait_seconds: float | None = None,
     max_processing_wait_seconds: float | None = None,
     stall_warning_seconds: float | None = None,
 ) -> TenableVmClient:
@@ -484,7 +486,11 @@ def _client_from_environment(
             timeout_seconds=credentials.timeout_seconds,
             poll_seconds=credentials.export_poll_seconds,
             max_poll_seconds=credentials.export_max_poll_seconds,
-            max_wait_seconds=credentials.export_queue_timeout_seconds,
+            max_wait_seconds=(
+                credentials.export_queue_timeout_seconds
+                if max_wait_seconds is None
+                else max_wait_seconds
+            ),
             max_processing_wait_seconds=(
                 credentials.export_processing_timeout_seconds
                 if max_processing_wait_seconds is None
@@ -1531,6 +1537,9 @@ def _execute_period(
             max_processing_wait_seconds=getattr(
                 args, "remote_processing_timeout_seconds", None
             ),
+            max_wait_seconds=getattr(
+                args, "remote_processing_timeout_seconds", None
+            ),
             stall_warning_seconds=getattr(
                 args, "remote_progress_warning_seconds", None
             ),
@@ -2042,6 +2051,52 @@ def _checkpoint_from_collected_period(
             collected.normalized_findings_path,
         ),
     ]
+    normalized_directory = Path(collected.normalized_findings_path).resolve().parent
+    supporting_paths = {
+        "canonical_manifest": Path(collected.artifact.manifest_path),
+        "normalized_manifest": normalized_directory / "manifest.json",
+        "normalized_assets": resolve_jsonl_artifact(
+            normalized_directory, "assets"
+        ),
+        "asset_snapshot": (
+            Path(collected.output_root)
+            / "snapshots"
+            / request.client_id
+            / request.run_id
+            / "tenable_vm_assets_v2.snapshot.json"
+        ),
+        "finding_snapshot": (
+            Path(collected.output_root)
+            / "snapshots"
+            / request.client_id
+            / request.run_id
+            / "tenable_vm_vulnerabilities.snapshot.json"
+        ),
+    }
+    for kind, path in supporting_paths.items():
+        artifacts.append(_checkpoint_artifact("VM_CORE", kind, path))
+    optional_supporting_paths = {
+        "normalized_was_findings": (
+            normalized_directory / "was-findings.jsonl.gz"
+        ),
+        "was_snapshot": (
+            Path(collected.output_root)
+            / "snapshots"
+            / request.client_id
+            / request.run_id
+            / "tenable_was_findings.snapshot.json"
+        ),
+        "tag_scope_snapshot": (
+            Path(collected.output_root)
+            / "snapshots"
+            / request.client_id
+            / request.run_id
+            / "tenable_vm_tag_scope.snapshot.json"
+        ),
+    }
+    for kind, path in optional_supporting_paths.items():
+        if path.is_file():
+            artifacts.append(_checkpoint_artifact("VM_CORE", kind, path))
     tag_metadata: list[dict[str, object]] = []
     tag_config_by_uuid = {
         selection.tag_uuid: selection.include_temporal_comparison
@@ -2326,7 +2381,10 @@ def _materialize_period_from_checkpoint(
             )
         )
 
-    output_root = Path(args.output_root).resolve()
+    output_root = _scoped_output_root(
+        args.output_root,
+        checkpoint.execution_type,
+    ).resolve()
     tag_dataset_paths = {
         item.tag.uuid: item.dataset_path for item in tag_artifacts
     }
@@ -4191,7 +4249,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect_client.add_argument("--checkpoint", required=True)
     collect_client.add_argument("--job-control-file")
     collect_client.add_argument(
-        "--remote-processing-timeout-seconds", type=int, default=7200
+        "--remote-processing-timeout-seconds", type=int, default=36000
     )
     collect_client.add_argument(
         "--remote-progress-warning-seconds", type=int, default=900

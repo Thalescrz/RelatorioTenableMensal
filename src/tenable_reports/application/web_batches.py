@@ -281,6 +281,8 @@ class WebBatchRepository(Protocol):
 
     def get_batch(self, batch_id: UUID) -> WebBatch | None: ...
 
+    def get_job(self, job_id: UUID) -> WebBatchJob | None: ...
+
     def list_batches(self, *, limit: int = 50) -> tuple[WebBatch, ...]: ...
 
     def list_batch_jobs(self, batch_id: UUID) -> tuple[WebBatchJob, ...]: ...
@@ -296,6 +298,22 @@ class WebBatchRepository(Protocol):
         process_id: int,
         *,
         control_file: str | None = None,
+    ) -> WebBatchJob: ...
+
+    def record_vm_export_progress(
+        self,
+        job_id: UUID,
+        *,
+        export_uuid: str,
+        resume_manifest_path: str | None,
+        origin: str | None,
+        remote_status: str,
+        observed_at: str,
+        progress_at: str | None,
+        completed_chunks: int,
+        total_chunks: int,
+        persisted_chunks: Sequence[int],
+        status_confirmed: bool = True,
     ) -> WebBatchJob: ...
 
     def request_action(

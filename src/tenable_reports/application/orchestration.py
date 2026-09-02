@@ -397,7 +397,7 @@ def load_orchestration_config(path: str | Path) -> OrchestrationConfig:
     remote_processing_timeout_seconds = _bounded_integer(
         defaults.get("remote_processing_timeout_seconds"),
         field="defaults.remote_processing_timeout_seconds",
-        default=7200,
+        default=36000,
         minimum=60,
         maximum=86400,
     )

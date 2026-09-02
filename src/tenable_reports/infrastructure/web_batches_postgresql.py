@@ -41,7 +41,8 @@ _JOB_COLUMNS = """
     orchestration_run_id, logical_job_id, run_id, exit_code, error_code,
     error_message, created_at, started_at, ended_at, phase,
     collection_checkpoint_path, remote_started_at, remote_ended_at,
-    build_started_at
+    build_started_at, vm_export_uuid, vm_resume_manifest_path,
+    remote_export_started_at, remote_status_at, remote_progress_at
 """
 
 
@@ -109,6 +110,11 @@ def _job_from_row(row: Sequence[Any]) -> WebBatchJob:
         remote_started_at=_iso(row[22]),
         remote_ended_at=_iso(row[23]),
         build_started_at=_iso(row[24]),
+        vm_export_uuid=str(row[25]) if row[25] is not None else None,
+        vm_resume_manifest_path=str(row[26]) if row[26] is not None else None,
+        remote_export_started_at=_iso(row[27]),
+        remote_status_at=_iso(row[28]),
+        remote_progress_at=_iso(row[29]),
     )
 
 
@@ -176,10 +182,13 @@ class PostgresWebBatchRepository(WebBatchRepository):
                         id, batch_id, client_id, position, status,
                         attempt_number, payload, retry_of_batch_job_id,
                         logical_job_id, phase, collection_checkpoint_path,
-                        remote_started_at, remote_ended_at, build_started_at
+                        remote_started_at, remote_ended_at, build_started_at,
+                        vm_export_uuid, vm_resume_manifest_path,
+                        remote_export_started_at, remote_status_at,
+                        remote_progress_at
                     ) values (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
                     on conflict (id) do nothing
                     returning id
@@ -199,6 +208,11 @@ class PostgresWebBatchRepository(WebBatchRepository):
                         job.remote_started_at,
                         job.remote_ended_at,
                         job.build_started_at,
+                        job.vm_export_uuid,
+                        job.vm_resume_manifest_path,
+                        job.remote_export_started_at,
+                        job.remote_status_at,
+                        job.remote_progress_at,
                     ),
                 ).fetchone()
         return _batch_from_row(row)
@@ -264,10 +278,14 @@ class PostgresWebBatchRepository(WebBatchRepository):
                         id, batch_id, client_id, position, status,
                         attempt_number, payload, retry_of_batch_job_id,
                         logical_job_id, run_id, exit_code, error_code,
-                        error_message, created_at, started_at, ended_at
+                        error_message, created_at, started_at, ended_at,
+                        vm_export_uuid, vm_resume_manifest_path,
+                        remote_export_started_at, remote_status_at,
+                        remote_progress_at
                     ) values (
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s
                     )
                     returning id
                     """,
@@ -288,6 +306,11 @@ class PostgresWebBatchRepository(WebBatchRepository):
                         job.created_at,
                         job.started_at,
                         job.ended_at,
+                        job.vm_export_uuid,
+                        job.vm_resume_manifest_path,
+                        job.remote_export_started_at,
+                        job.remote_status_at,
+                        job.remote_progress_at,
                     ),
                 ).fetchone()
             connection.execute(
@@ -334,6 +357,14 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 (batch_id,),
             ).fetchone()
         return _batch_from_row(row) if row is not None else None
+
+    def get_job(self, job_id: UUID) -> WebBatchJob | None:
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"select {_JOB_COLUMNS} from {SCHEMA_NAME}.web_batch_jobs where id = %s",
+                (job_id,),
+            ).fetchone()
+        return _job_from_row(row) if row is not None else None
 
     def list_batches(self, *, limit: int = 50) -> tuple[WebBatch, ...]:
         normalized_limit = max(1, min(int(limit), 500))
@@ -429,6 +460,65 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 ),
             ).fetchone()
         return job
+
+    def record_vm_export_progress(
+        self,
+        job_id: UUID,
+        *,
+        export_uuid: str,
+        resume_manifest_path: str | None,
+        origin: str | None,
+        remote_status: str,
+        observed_at: str,
+        progress_at: str | None,
+        completed_chunks: int,
+        total_chunks: int,
+        persisted_chunks: Sequence[int],
+        status_confirmed: bool = True,
+    ) -> WebBatchJob:
+        remote_payload = {
+            "vm_export_uuid": export_uuid,
+            "vm_resume_manifest": resume_manifest_path,
+            "vm_remote": {
+                "origin": origin,
+                "status": remote_status,
+                "completed_chunks": int(completed_chunks),
+                "total_chunks": int(total_chunks),
+                "persisted_chunks": [int(item) for item in persisted_chunks],
+                "observed_at": observed_at,
+                "progress_at": progress_at,
+            },
+        }
+        assert_sanitized_payload(remote_payload, path="job.vm_remote")
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                update {SCHEMA_NAME}.web_batch_jobs
+                set vm_export_uuid = coalesce(vm_export_uuid, %s),
+                    vm_resume_manifest_path = coalesce(%s, vm_resume_manifest_path),
+                    remote_export_started_at = coalesce(remote_export_started_at, %s),
+                    remote_status_at = case when %s then %s else remote_status_at end,
+                    remote_progress_at = coalesce(%s, remote_progress_at),
+                    payload = payload || %s
+                where id = %s
+                  and (vm_export_uuid is null or vm_export_uuid = %s)
+                returning {_JOB_COLUMNS}
+                """,
+                (
+                    export_uuid,
+                    resume_manifest_path,
+                    observed_at,
+                    status_confirmed,
+                    observed_at,
+                    progress_at,
+                    _jsonb(remote_payload),
+                    job_id,
+                    export_uuid,
+                ),
+            ).fetchone()
+        if row is None:
+            raise ValueError("O UUID VM do trabalho nao pode ser substituido.")
+        return _job_from_row(row)
 
     def request_action(
         self,

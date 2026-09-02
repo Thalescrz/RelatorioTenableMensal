@@ -345,6 +345,9 @@ def test_frontend_exposes_recent_batch_selector_and_client_detail() -> None:
     assert "data-open-batch-clients" in javascript
     assert "/api/batches/" in javascript
     assert "was_attempts" in javascript
+    assert "data-copy-vm-uuid" in javascript
+    assert "Verificar export preservado" in javascript
+    assert "job aceito; a Tenable ainda não anunciou" in javascript
     assert ".batch-client-row" in css
 
 

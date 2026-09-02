@@ -367,7 +367,7 @@ def _validate_artifact_files(
             )
         if not path.is_file():
             raise CheckpointValidationError(
-                "CHECKPOINT_HASH_MISMATCH",
+                "CHECKPOINT_ARTIFACT_MISSING",
                 "Artefato do checkpoint ausente ou inválido.",
             )
         try:

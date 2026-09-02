@@ -94,6 +94,7 @@ class DurableDashboardJobQueue:
         )
         self._active_lock = threading.RLock()
         self._active_jobs: dict[str, WebBatchJob] = {}
+        self._progress_events: dict[str, tuple[tuple[Any, ...], datetime]] = {}
         self.executor.progress_sink = self._persist_progress
         self.executor.process_sink = self._persist_process
         self.executor.fallback_sink = self._persist_fallback
@@ -287,6 +288,40 @@ class DurableDashboardJobQueue:
         self,
         request: DerivedBatchRequest,
     ) -> dict[str, Any]:
+        return self._derive_batch(request)
+
+    def retry(
+        self,
+        job_id: str,
+        *,
+        explicit_export_recovery: bool = False,
+    ) -> dict[str, Any]:
+        del explicit_export_recovery
+        try:
+            normalized_id = UUID(str(job_id))
+        except ValueError:
+            normalized_id = UUID(hex=str(job_id))
+        source_job = self.repository.get_job(normalized_id)
+        if source_job is None:
+            raise KeyError("Trabalho nao encontrado.")
+        detail = self._derive_batch(
+            DerivedBatchRequest(
+                source_batch_id=source_job.batch_id,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key=f"retry-job:{source_job.id}:{uuid4()}",
+                actor="interface-local",
+                reason="Retentativa individual do export preservado.",
+            ),
+            selected_job_id=source_job.id,
+        )
+        return detail["jobs"][0]
+
+    def _derive_batch(
+        self,
+        request: DerivedBatchRequest,
+        *,
+        selected_job_id: UUID | None = None,
+    ) -> dict[str, Any]:
         source = self.repository.get_batch(request.source_batch_id)
         if source is None:
             raise KeyError("Lote de origem nao encontrado.")
@@ -319,8 +354,11 @@ class DurableDashboardJobQueue:
             job
             for job in source_jobs
             if (
-                request.kind is BatchAction.RERUN_ALL
-                or job.status in RETRYABLE_BATCH_JOB_STATUSES
+                (selected_job_id is None or job.id == selected_job_id)
+                and (
+                    request.kind is BatchAction.RERUN_ALL
+                    or job.status in RETRYABLE_BATCH_JOB_STATUSES
+                )
             )
         )
         if not selected:
@@ -374,6 +412,11 @@ class DurableDashboardJobQueue:
                 for key, value in dict(source_job.payload).items()
                 if key not in transient_keys
             }
+            is_retry = request.kind is BatchAction.RETRY_INCOMPLETE
+            if is_retry and source_job.vm_export_uuid:
+                payload["vm_export_uuid"] = source_job.vm_export_uuid
+            if is_retry and source_job.vm_resume_manifest_path:
+                payload["vm_resume_manifest"] = source_job.vm_resume_manifest_path
             mode = str(payload.get("mode") or "manual")
             control_file = self._control_file(
                 batch_id=batch_id,
@@ -390,7 +433,6 @@ class DurableDashboardJobQueue:
                     "_job_control_file": control_file,
                 }
             )
-            is_retry = request.kind is BatchAction.RETRY_INCOMPLETE
             staged_model = (
                 str(source.options.get("execution_model") or "").upper()
                 == "STAGED_V1"
@@ -425,6 +467,21 @@ class DurableDashboardJobQueue:
                     logical_job_id=source_job.logical_job_id,
                     collection_checkpoint_path=(
                         reusable_checkpoint
+                    ),
+                    vm_export_uuid=(
+                        source_job.vm_export_uuid if is_retry else None
+                    ),
+                    vm_resume_manifest_path=(
+                        source_job.vm_resume_manifest_path if is_retry else None
+                    ),
+                    remote_export_started_at=(
+                        source_job.remote_export_started_at if is_retry else None
+                    ),
+                    remote_status_at=(
+                        source_job.remote_status_at if is_retry else None
+                    ),
+                    remote_progress_at=(
+                        source_job.remote_progress_at if is_retry else None
                     ),
                     control_file=control_file,
                     created_at=created_at,
@@ -751,11 +808,24 @@ class DurableDashboardJobQueue:
             raise KeyError("Lote nao encontrado.")
         events = self.repository.list_events(normalized_id)
         was_by_job: dict[UUID, dict[str, Any]] = {}
+        vm_by_job: dict[UUID, dict[str, Any]] = {}
         for event in events:
             if event.job_id is None or event.event_type != "JOB_PROGRESS":
                 continue
             payload = event.payload
-            if str(payload.get("source") or "") != "tenable_was_findings":
+            source = str(payload.get("source") or "")
+            if source == "tenable_vm_vulnerabilities":
+                vm_by_job[event.job_id] = {
+                    "export_uuid": str(payload.get("export_uuid") or "") or None,
+                    "origin": str(payload.get("origin") or "") or None,
+                    "status": str(payload.get("status") or "").upper() or None,
+                    "completed_chunks": int(payload.get("completed_chunks") or 0),
+                    "total_chunks": int(payload.get("total_chunks") or 0),
+                    "persisted_chunks": len(payload.get("persisted_chunks") or ()),
+                    "observed_at": event.created_at,
+                }
+                continue
+            if source != "tenable_was_findings":
                 continue
             status = str(payload.get("status") or "").upper()
             summary = was_by_job.setdefault(
@@ -805,6 +875,11 @@ class DurableDashboardJobQueue:
                     "remote_ended_at": job.remote_ended_at,
                     "build_started_at": job.build_started_at,
                     "ended_at": job.ended_at,
+                    "vm_export_uuid": job.vm_export_uuid,
+                    "remote_export_started_at": job.remote_export_started_at,
+                    "remote_status_at": job.remote_status_at,
+                    "remote_progress_at": job.remote_progress_at,
+                    "vm_export": vm_by_job.get(job.id),
                     "was_attempts": int(
                         was_by_job.get(job.id, {}).get("attempts") or 0
                     ),
@@ -851,6 +926,94 @@ class DurableDashboardJobQueue:
         with self._active_lock:
             active = self._active_jobs.get(str(job_id))
         if active is None:
+            return
+        should_append = True
+        if (
+            str(event.get("event") or "") == "TENABLE_EXPORT_PROGRESS"
+            and str(event.get("source") or "") == "tenable_vm_vulnerabilities"
+            and str(event.get("export_uuid") or "").strip()
+        ):
+            observed = datetime.now(UTC)
+            if event.get("status_query_ok") is False:
+                error_key = f"{job_id}:status-query-error"
+                error_fingerprint = (
+                    "STATUS_QUERY_ERROR",
+                    str(event.get("status_query_error") or ""),
+                )
+                previous_error = self._progress_events.get(error_key)
+                should_append = bool(
+                    previous_error is None
+                    or previous_error[0] != error_fingerprint
+                    or (observed - previous_error[1]).total_seconds() >= 300
+                )
+                if should_append:
+                    self._progress_events[error_key] = (
+                        error_fingerprint,
+                        observed,
+                    )
+                if not active.vm_export_uuid:
+                    observed_at = observed.isoformat().replace("+00:00", "Z")
+                    updated = self.repository.record_vm_export_progress(
+                        active.id,
+                        export_uuid=str(event["export_uuid"]),
+                        resume_manifest_path=(
+                            str(event.get("partial_manifest"))
+                            if event.get("partial_manifest")
+                            else None
+                        ),
+                        origin=str(event.get("origin") or "") or None,
+                        remote_status=str(event.get("status") or "STARTED").upper(),
+                        observed_at=observed_at,
+                        progress_at=None,
+                        completed_chunks=int(event.get("completed_chunks") or 0),
+                        total_chunks=int(event.get("total_chunks") or 0),
+                        persisted_chunks=tuple(
+                            int(item) for item in (event.get("persisted_chunks") or ())
+                        ),
+                        status_confirmed=False,
+                    )
+                    with self._active_lock:
+                        self._active_jobs[str(job_id)] = updated
+            else:
+                persisted = tuple(
+                    sorted(int(item) for item in (event.get("persisted_chunks") or ()))
+                )
+                fingerprint = (
+                    str(event.get("status") or "").upper(),
+                    int(event.get("completed_chunks") or 0),
+                    int(event.get("total_chunks") or 0),
+                    persisted,
+                )
+                previous = self._progress_events.get(str(job_id))
+                progressed = previous is None or previous[0] != fingerprint
+                observed_at = observed.isoformat().replace("+00:00", "Z")
+                updated = self.repository.record_vm_export_progress(
+                    active.id,
+                    export_uuid=str(event["export_uuid"]),
+                    resume_manifest_path=(
+                        str(event.get("partial_manifest"))
+                        if event.get("partial_manifest")
+                        else None
+                    ),
+                    origin=str(event.get("origin") or "") or None,
+                    remote_status=str(event.get("status") or "UNKNOWN").upper(),
+                    observed_at=observed_at,
+                    progress_at=observed_at if progressed else None,
+                    completed_chunks=int(event.get("completed_chunks") or 0),
+                    total_chunks=int(event.get("total_chunks") or 0),
+                    persisted_chunks=persisted,
+                    status_confirmed=True,
+                )
+                with self._active_lock:
+                    self._active_jobs[str(job_id)] = updated
+                should_append = bool(
+                    progressed
+                    or previous is None
+                    or (observed - previous[1]).total_seconds() >= 300
+                )
+                if should_append:
+                    self._progress_events[str(job_id)] = (fingerprint, observed)
+        if not should_append:
             return
         self.repository.append_event(
             WebBatchEvent(
@@ -972,6 +1135,25 @@ class DurableDashboardJobQueue:
             payload["_collection_checkpoint_path"] = checkpoint_path
         payload["attempt_number"] = job.attempt_number
         payload["logical_job_id"] = job.logical_job_id or job.id.hex
+        if job.vm_export_uuid:
+            payload["vm_export_uuid"] = job.vm_export_uuid
+        if job.vm_resume_manifest_path:
+            payload["vm_resume_manifest"] = job.vm_resume_manifest_path
+        if job.vm_export_uuid and job.remote_export_started_at:
+            try:
+                remote_started = datetime.fromisoformat(
+                    job.remote_export_started_at.replace("Z", "+00:00")
+                )
+                elapsed = max(
+                    0,
+                    int((datetime.now(UTC) - remote_started).total_seconds()),
+                )
+                payload["remote_processing_timeout_seconds"] = max(
+                    1,
+                    36_000 - elapsed,
+                )
+            except (TypeError, ValueError):
+                payload["remote_processing_timeout_seconds"] = 36_000
         with self.executor._lock:
             self.executor._jobs[job_id] = payload
         with self._active_lock:
@@ -983,6 +1165,8 @@ class DurableDashboardJobQueue:
         finally:
             with self._active_lock:
                 self._active_jobs.pop(job_id, None)
+            self._progress_events.pop(job_id, None)
+            self._progress_events.pop(f"{job_id}:status-query-error", None)
         raw_status = str(result.get("status") or "FAILED").upper()
         if raw_status == "WAITING_WAS_DECISION":
             status = BatchJobStatus.WAITING_WAS_DECISION

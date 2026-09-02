@@ -962,6 +962,65 @@ def test_executor_preserves_structured_failure_classification(tmp_path) -> None:
     assert result.payload["retryable"] is True
 
 
+def test_vm_progress_is_persisted_on_job_before_retry_derivation(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(_job(1, status=BatchJobStatus.RUNNING), phase=BatchJobPhase.REMOTE_RUNNING)
+    repository.create_batch(batch, (job,))
+    legacy = JobQueue(tmp_path, tmp_path / "orchestration" / "clients.json", lambda *args, **kwargs: None, start_worker=False)
+    queue = DurableDashboardJobQueue(repository=repository, executor=legacy, worker_id="worker-vm-state", start_worker=False)
+    with queue._active_lock:
+        queue._active_jobs[job.id.hex] = job
+    try:
+        queue._persist_progress(job.id.hex, {
+            "event": "TENABLE_EXPORT_PROGRESS",
+            "source": "tenable_vm_vulnerabilities",
+            "export_uuid": "00000000-0000-0000-0000-000000000777",
+            "origin": "created",
+            "status": "STARTED",
+            "status_query_ok": False,
+            "completed_chunks": 0,
+            "total_chunks": 0,
+            "persisted_chunks": [],
+            "partial_manifest": str((tmp_path / "manifest.partial.json").resolve()),
+        })
+        started = repository.list_batch_jobs(batch.id)[0]
+        queue._persist_progress(job.id.hex, {
+            "event": "TENABLE_EXPORT_PROGRESS",
+            "source": "tenable_vm_vulnerabilities",
+            "export_uuid": "00000000-0000-0000-0000-000000000777",
+            "origin": "created",
+            "status": "PROCESSING",
+            "status_query_ok": True,
+            "completed_chunks": 1,
+            "total_chunks": 2,
+            "persisted_chunks": [1],
+            "partial_manifest": str((tmp_path / "manifest.partial.json").resolve()),
+        })
+        stored = repository.list_batch_jobs(batch.id)[0]
+        confirmed_at = stored.remote_status_at
+        queue._persist_progress(job.id.hex, {
+            "event": "TENABLE_EXPORT_PROGRESS",
+            "source": "tenable_vm_vulnerabilities",
+            "export_uuid": "00000000-0000-0000-0000-000000000777",
+            "status": "PROCESSING",
+            "status_query_ok": False,
+            "status_query_error": "HTTP 503",
+        })
+        after_transient_error = repository.list_batch_jobs(batch.id)[0]
+    finally:
+        queue.close()
+    assert started.vm_export_uuid == "00000000-0000-0000-0000-000000000777"
+    assert started.remote_export_started_at is not None
+    assert started.remote_status_at is None
+    assert stored.vm_export_uuid == "00000000-0000-0000-0000-000000000777"
+    assert stored.vm_resume_manifest_path.endswith("manifest.partial.json")
+    assert stored.remote_export_started_at is not None
+    assert stored.remote_status_at is not None
+    assert stored.remote_progress_at is not None
+    assert after_transient_error.remote_status_at == confirmed_at
+
+
 def test_dashboard_bootstraps_automatic_remote_capacity_and_serial_build(tmp_path) -> None:
     config_path = tmp_path / "orchestration" / "clients.json"
     store = DashboardConfigStore(project_root=tmp_path, config_path=config_path)
@@ -1051,7 +1110,7 @@ def test_staged_workers_construct_collect_then_build_commands(tmp_path) -> None:
     collect_command, build_command = commands
     assert "--confirm-live-api" in collect_command
     assert "--confirm-live-api" not in build_command
-    assert collect_command[collect_command.index("--remote-processing-timeout-seconds") + 1] == "7200"
+    assert collect_command[collect_command.index("--remote-processing-timeout-seconds") + 1] == "36000"
     assert collect_command[collect_command.index("--remote-progress-warning-seconds") + 1] == "900"
     assert "--job-control-file" in collect_command
     assert "--job-control-file" in build_command

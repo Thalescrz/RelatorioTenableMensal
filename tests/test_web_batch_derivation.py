@@ -17,6 +17,7 @@ from tenable_reports.application.web_batches_memory import (
 )
 from tenable_reports.domain.web_batches import (
     BatchAction,
+    BatchJobPhase,
     BatchJobStatus,
     BatchStatus,
     WebBatch,
@@ -187,6 +188,80 @@ def test_retry_incomplete_accepts_paused_recovery_and_preserves_uuid(
     assert jobs[0].payload["start_at"] == "2026-07-01T03:00:00Z"
 
 
+def test_retry_preserves_uuid_manifest_and_original_remote_budget(tmp_path: Path) -> None:
+    repository = InMemoryWebBatchRepository()
+    source = WebBatch(
+        id=UUID(int=1250),
+        idempotency_key="batch:preserved:vm",
+        kind="GENERATE_ALL",
+        status=BatchStatus.COMPLETE_WITH_FAILURES,
+    )
+    manifest = (tmp_path / "manifest.partial.json").resolve()
+    manifest.write_text("{}", encoding="utf-8")
+    repository.create_batch(source, (WebBatchJob(
+        id=UUID(int=1251),
+        batch_id=source.id,
+        client_id="client-preserved",
+        position=1,
+        status=BatchJobStatus.FAILED,
+        phase=BatchJobPhase.TERMINAL,
+        attempt_number=1,
+        payload={"mode": "manual", "days": 30},
+        vm_export_uuid="00000000-0000-0000-0000-000000000888",
+        vm_resume_manifest_path=str(manifest),
+        remote_export_started_at="2026-09-02T00:00:00Z",
+    ),))
+    queue = _queue(tmp_path, repository)
+    try:
+        detail = queue.derive_batch(DerivedBatchRequest(
+            source_batch_id=source.id,
+            kind=BatchAction.RETRY_INCOMPLETE,
+            idempotency_key="retry:preserved:vm",
+        ))
+    finally:
+        queue.close()
+    retried = repository.list_batch_jobs(UUID(detail["batch"]["id"]))[0]
+    assert retried.payload["vm_export_uuid"].endswith("0888")
+    assert retried.payload["vm_resume_manifest"] == str(manifest)
+    assert retried.remote_export_started_at == "2026-09-02T00:00:00Z"
+
+
+def test_individual_retry_derives_only_selected_failed_job(tmp_path: Path) -> None:
+    repository = _source_repository(
+        (BatchJobStatus.FAILED, BatchJobStatus.FAILED)
+    )
+    first, second = repository.list_batch_jobs(SOURCE_ID)
+    repository.record_vm_export_progress(
+        first.id,
+        export_uuid="00000000-0000-0000-0000-000000000999",
+        resume_manifest_path=str(tmp_path / "manifest.partial.json"),
+        origin="created",
+        remote_status="PROCESSING",
+        observed_at="2026-09-02T10:00:00Z",
+        progress_at="2026-09-02T10:00:00Z",
+        completed_chunks=1,
+        total_chunks=2,
+        persisted_chunks=(1,),
+    )
+    queue = _queue(tmp_path, repository)
+
+    try:
+        retried = queue.retry(first.id.hex)
+    finally:
+        queue.close()
+
+    derived_id = next(
+        batch.id for batch in repository.list_batches() if batch.id != SOURCE_ID
+    )
+    jobs = repository.list_batch_jobs(derived_id)
+    assert len(jobs) == 1
+    assert jobs[0].client_id == first.client_id
+    assert jobs[0].retry_of_batch_job_id == first.id
+    assert jobs[0].vm_export_uuid.endswith("0999")
+    assert jobs[0].payload["vm_export_uuid"].endswith("0999")
+    assert second.id != jobs[0].retry_of_batch_job_id
+
+
 def test_retry_incomplete_rejects_source_without_eligible_jobs(
     tmp_path: Path,
 ) -> None:
@@ -278,4 +353,3 @@ def test_derived_batch_rejects_client_already_active_elsewhere(
 
     assert captured.value.client_ids == ("client-1",)
     assert len(repository.list_batches()) == 2
-

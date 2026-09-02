@@ -107,6 +107,11 @@ def _job_row(
         "2026-08-31T12:00:01Z" if phase == "REMOTE_RUNNING" else None,
         "2026-08-31T12:10:00Z" if phase == "READY_FOR_BUILD" else None,
         "2026-08-31T12:10:01Z" if phase == "BUILD_RUNNING" else None,
+        None,
+        None,
+        None,
+        None,
+        None,
     )
 
 
@@ -147,6 +152,21 @@ def test_phase_migration_preserves_legacy_rows_and_adds_claim_index() -> None:
     assert "remote_ended_at" in sql
     assert "build_started_at" in sql
     assert "web_batch_jobs_phase_status_created_idx" in sql
+
+
+def test_vm_recovery_migration_adds_durable_remote_fields() -> None:
+    sql = (
+        ROOT
+        / "src/tenable_reports/infrastructure/postgresql_migrations/0012_vm_export_recovery.sql"
+    ).read_text(encoding="utf-8")
+    for field in (
+        "vm_export_uuid",
+        "vm_resume_manifest_path",
+        "remote_export_started_at",
+        "remote_status_at",
+        "remote_progress_at",
+    ):
+        assert f"add column if not exists {field}" in sql.lower()
 
 
 def test_repository_creates_batch_and_jobs_in_one_connection() -> None:

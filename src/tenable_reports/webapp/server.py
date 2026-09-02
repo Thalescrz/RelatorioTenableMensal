@@ -462,7 +462,7 @@ class DashboardConfigStore:
                 "max_parallel": 1,
                 "remote_collection_workers": 0,
                 "local_build_workers": 1,
-                "remote_processing_timeout_seconds": 7200,
+                "remote_processing_timeout_seconds": 36000,
                 "remote_progress_warning_seconds": 900,
                 "max_clients_per_batch": 64,
                 "retention_days": 395,
@@ -804,8 +804,8 @@ class DashboardConfigStore:
                 "TENABLE_VALIDATE_TLS": "true",
                 "TENABLE_EXPORT_POLL_SECONDS": "10",
                 "TENABLE_EXPORT_MAX_POLL_SECONDS": "30",
-                "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS": "1800",
-                "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS": "7200",
+                "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS": "36000",
+                "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS": "36000",
                 "TENABLE_EXPORT_STALL_WARNING_SECONDS": "1800",
                 "TCS_API_SECRET": cloud_secret,
                 "TCS_HTTP_TIMEOUT_SECONDS": "180",
@@ -1841,7 +1841,7 @@ class JobQueue:
                         else "MANUAL"
                     ),
                     "--remote-processing-timeout-seconds",
-                    str(config.remote_processing_timeout_seconds),
+                    str(job.get("remote_processing_timeout_seconds") or config.remote_processing_timeout_seconds),
                     "--remote-progress-warning-seconds",
                     str(config.remote_progress_warning_seconds),
                     "--template",
@@ -1864,6 +1864,8 @@ class JobQueue:
                     command.extend(("--vm-export-strategy", job["vm_export_strategy"]))
                 if job.get("vm_export_uuid"):
                     command.extend(("--vm-export-uuid", job["vm_export_uuid"]))
+                if job.get("vm_resume_manifest"):
+                    command.extend(("--vm-resume-manifest", job["vm_resume_manifest"]))
                 if job.get("historical_source"):
                     command.extend(("--historical-source", job["historical_source"]))
                 if job.get("was_failure_policy"):
@@ -1976,6 +1978,10 @@ class JobQueue:
                 if job.get("vm_export_uuid"):
                     command.extend((
                         "--vm-export-uuid", job["vm_export_uuid"]
+                    ))
+                if job.get("vm_resume_manifest"):
+                    command.extend((
+                        "--vm-resume-manifest", job["vm_resume_manifest"]
                     ))
                 if job.get("historical_source"):
                     command.extend((

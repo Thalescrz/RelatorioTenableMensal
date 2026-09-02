@@ -72,6 +72,11 @@ def _job_row(*, status: str) -> tuple[object, ...]:
         None,
         None,
         None,
+        None,
+        None,
+        None,
+        None,
+        None,
     )
 
 

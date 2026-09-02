@@ -5,6 +5,8 @@ import gzip
 import inspect
 import json
 import os
+import tempfile
+import time
 import uuid
 import zlib
 from dataclasses import dataclass
@@ -121,13 +123,37 @@ def _write_exclusive(path: Path, content: bytes) -> None:
 
 
 def _write_json_replace(path: Path, payload: Mapping[str, Any]) -> None:
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.unlink(missing_ok=True)
-    _write_exclusive(
-        temporary,
-        (json.dumps(dict(payload), ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, raw_temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
     )
-    os.replace(temporary, path)
+    temporary = Path(raw_temporary)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(
+                (
+                    json.dumps(dict(payload), ensure_ascii=False, indent=2)
+                    + "\n"
+                ).encode("utf-8")
+            )
+            stream.flush()
+            os.fsync(stream.fileno())
+        for attempt in range(5):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError as exc:
+                transient = (
+                    getattr(exc, "winerror", None) in {5, 32}
+                    or getattr(exc, "errno", None) in {13}
+                )
+                if not transient or attempt == 4:
+                    raise
+                time.sleep(0.05 * (2 ** attempt))
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _sha256_file(path: Path) -> str:
@@ -470,11 +496,16 @@ def collect_vm_snapshot(
         client_id=profile.client_id,
         tenant_id=profile.tenant_id,
     )
+    unavailable_recoveries: list[dict[str, str]] = []
     if resumed_export_uuid and not _resumable_export_is_available(
         client,
         resumed_export_uuid,
         resumed_chunks,
     ):
+        unavailable_recoveries.append({
+            "previous_export_uuid": resumed_export_uuid,
+            "recovery_origin": "resume_manifest",
+        })
         resumed_export_uuid = None
         resumed_chunks = {}
     provided_export_uuid = export_uuid
@@ -483,6 +514,10 @@ def collect_vm_snapshot(
         provided_export_uuid,
         {},
     ):
+        unavailable_recoveries.append({
+            "previous_export_uuid": provided_export_uuid,
+            "recovery_origin": "provided_uuid",
+        })
         provided_export_uuid = None
     start_arguments = {
         "filters": request.filters,
@@ -609,8 +644,20 @@ def collect_vm_snapshot(
         total_chunks=0,
         progress_made=False,
         auto_cancelled=False,
+        status_query_ok=False,
         query=sanitized_mapping(query),
     )
+    if progress_callback is not None:
+        for recovery in unavailable_recoveries:
+            progress_callback({
+                "event": "TENABLE_EXPORT_RECOVERY_UNAVAILABLE",
+                "source": "tenable_vm_vulnerabilities",
+                **recovery,
+                "replacement_export_uuid": actual_export_uuid,
+                "replacement_origin": job.origin,
+                "replacement_started": job.origin == "created",
+                "reason": "UUID anterior terminal, expirado ou sem chunks recuperaveis.",
+            })
 
     warning_emitted = False
 
