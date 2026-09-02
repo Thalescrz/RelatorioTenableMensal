@@ -396,6 +396,29 @@ def test_reconcile_abandoned_staged_jobs_returns_each_to_its_queue(
     assert stored_build.collection_checkpoint_path == str(checkpoint.resolve())
 
 
+def test_reconcile_abandoned_stop_request_finishes_batch() -> None:
+    repository = InMemoryWebBatchRepository()
+    job = _job(
+        position=1,
+        status=BatchJobStatus.INTERRUPT_REQUESTED,
+        worker_id=None,
+    )
+    _store_jobs(repository, (job,), batch_status=BatchStatus.STOP_REQUESTED)
+
+    reconciled = repository.reconcile_abandoned_jobs(active_worker_ids=set())
+
+    assert reconciled == 1
+    (stored_job,) = repository.list_batch_jobs(job.batch_id)
+    assert (stored_job.status, stored_job.phase) == (
+        BatchJobStatus.INTERRUPTED,
+        BatchJobPhase.TERMINAL,
+    )
+    stored_batch = repository.get_batch(job.batch_id)
+    assert stored_batch is not None
+    assert stored_batch.status is BatchStatus.STOPPED
+    assert stored_batch.ended_at is not None
+
+
 def _store_jobs(
     repository: InMemoryWebBatchRepository,
     jobs: tuple[WebBatchJob, ...],

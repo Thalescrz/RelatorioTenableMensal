@@ -515,10 +515,33 @@ def test_repository_reconciles_jobs_owned_by_inactive_workers() -> None:
     assert reconciled == 1
     reconcile_sql, reconcile_params = database.connection_value.calls[0]
     assert "else 'interrupted'" in reconcile_sql.lower()
+    assert "interrupt_requested" in reconcile_sql.lower()
     assert "worker_id <> all" in reconcile_sql.lower()
     assert reconcile_params == (["new-worker"],)
     event_sql, event_params = database.connection_value.calls[2]
     assert event_params[2] == "JOB_RECOVERED_AS_INTERRUPTED"
+
+
+def test_repository_finishes_abandoned_stop_requested_batch() -> None:
+    database = _Database(
+        [
+            _Cursor(many=(_job_row(status="INTERRUPTED"),)),
+            _Cursor(one=_batch_row(status="STOPPED")),
+            _Cursor(one=(1,)),
+            _Cursor(many=()),
+        ]
+    )
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    reconciled = repository.reconcile_abandoned_jobs(active_worker_ids=set())
+
+    assert reconciled == 1
+    reconcile_sql, _ = database.connection_value.calls[0]
+    assert "interrupt_requested" in reconcile_sql.lower()
+    batch_sql, _ = database.connection_value.calls[1]
+    normalized_sql = " ".join(batch_sql.lower().split())
+    assert "when status = 'stop_requested' then 'stopped'" in normalized_sql
+    assert "ended_at" in normalized_sql
 
 
 def test_repository_requeues_abandoned_remote_and_build_jobs(

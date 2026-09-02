@@ -496,16 +496,33 @@ class PostgresWebBatchRepository(WebBatchRepository):
                     f"""
                     update {SCHEMA_NAME}.web_batch_jobs
                     set status = case
-                            when status = 'QUEUED'
+                            when status in ('QUEUED', 'WAITING_WAS_DECISION')
                                 then 'CANCELLED_BY_USER'
                             else 'INTERRUPT_REQUESTED'
                         end,
                         phase = case
-                            when status = 'QUEUED' then 'TERMINAL'
+                            when status in ('QUEUED', 'WAITING_WAS_DECISION')
+                                then 'TERMINAL'
                             else phase
                         end,
+                        worker_id = case
+                            when status in ('QUEUED', 'WAITING_WAS_DECISION')
+                                then null
+                            else worker_id
+                        end,
+                        process_id = case
+                            when status in ('QUEUED', 'WAITING_WAS_DECISION')
+                                then null
+                            else process_id
+                        end,
+                        control_file = case
+                            when status in ('QUEUED', 'WAITING_WAS_DECISION')
+                                then null
+                            else control_file
+                        end,
                         ended_at = case
-                            when status = 'QUEUED' then now()
+                            when status in ('QUEUED', 'WAITING_WAS_DECISION')
+                                then now()
                             else ended_at
                         end
                     where batch_id = %s
@@ -868,34 +885,42 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 f"""
                 update {SCHEMA_NAME}.web_batch_jobs
                 set status = case
+                        when status = 'INTERRUPT_REQUESTED' then 'INTERRUPTED'
                         when phase in ('REMOTE_RUNNING', 'BUILD_RUNNING')
                             then 'QUEUED'
                         else 'INTERRUPTED'
                     end,
                     phase = case
+                        when status = 'INTERRUPT_REQUESTED' then 'TERMINAL'
                         when phase = 'REMOTE_RUNNING' then 'REMOTE_QUEUED'
                         when phase = 'BUILD_RUNNING' then 'READY_FOR_BUILD'
                         else phase
                     end,
-                    worker_id = case
-                        when phase in ('REMOTE_RUNNING', 'BUILD_RUNNING') then null
-                        else worker_id
-                    end,
+                    worker_id = null,
                     process_id = null, control_file = null,
                     ended_at = case
-                        when phase = 'LEGACY' then now() else null
+                        when status = 'INTERRUPT_REQUESTED' or phase = 'LEGACY'
+                            then now()
+                        else null
                     end,
                     error_code = case
+                        when status = 'INTERRUPT_REQUESTED'
+                            then 'INTERRUPTED_BY_USER'
                         when phase = 'LEGACY' then 'LOCAL_WORKER_RESTARTED'
                         else null
                     end,
                     error_message = case
+                        when status = 'INTERRUPT_REQUESTED'
+                            then 'Execucao local interrompida por solicitacao do usuario.'
                         when phase = 'LEGACY'
                             then 'Execucao local interrompida por reinicio.'
                         else null
                     end
-                where status = 'RUNNING'
-                  and phase in ('LEGACY', 'REMOTE_RUNNING', 'BUILD_RUNNING')
+                where status in ('RUNNING', 'INTERRUPT_REQUESTED')
+                  and (
+                      status = 'INTERRUPT_REQUESTED'
+                      or phase in ('LEGACY', 'REMOTE_RUNNING', 'BUILD_RUNNING')
+                  )
                   and (worker_id is null or worker_id <> all(%s))
                 returning {_JOB_COLUMNS}
                 """,
@@ -925,7 +950,15 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 connection.execute(
                     f"""
                     update {SCHEMA_NAME}.web_batches
-                    set status = 'PAUSED', version = version + 1
+                    set status = case
+                            when status = 'STOP_REQUESTED' then 'STOPPED'
+                            else 'PAUSED'
+                        end,
+                        ended_at = case
+                            when status = 'STOP_REQUESTED' then now()
+                            else ended_at
+                        end,
+                        version = version + 1
                     where id = %s
                       and status not in (
                           'STOPPED', 'COMPLETE', 'COMPLETE_WITH_FAILURES',

@@ -106,6 +106,8 @@ No painel do lote:
   salvarem seu checkpoint;
 - **Parar lote** sinaliza cooperativamente todos os processos locais ativos,
   cancela os ainda não iniciados e preserva export, UUID e chunks remotos;
+- se o lote estiver aguardando uma decisao WAS sem processo local ativo, a parada
+  e concluida imediatamente; pedidos abandonados sao reconciliados no reinicio;
 - **Retomar lote** libera somente trabalhos que permanecem retomáveis na própria
   fase;
 - **Tentar falhas/interrompidos** cria outro lote apenas com falhas, interrupções e

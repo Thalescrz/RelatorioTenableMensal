@@ -244,7 +244,6 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 for job in jobs:
                     if job.status in {
                         BatchJobStatus.RUNNING,
-                        BatchJobStatus.WAITING_WAS_DECISION,
                         BatchJobStatus.INTERRUPT_REQUESTED,
                     }:
                         has_active = True
@@ -253,11 +252,17 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                                 job,
                                 status=BatchJobStatus.INTERRUPT_REQUESTED,
                             )
-                    elif job.status is BatchJobStatus.QUEUED:
+                    elif job.status in {
+                        BatchJobStatus.QUEUED,
+                        BatchJobStatus.WAITING_WAS_DECISION,
+                    }:
                         self._jobs[job.id] = replace(
                             job,
                             status=BatchJobStatus.CANCELLED_BY_USER,
                             phase=BatchJobPhase.TERMINAL,
+                            worker_id=None,
+                            process_id=None,
+                            control_file=None,
                             ended_at=_now(),
                         )
                 next_status = (
@@ -564,15 +569,23 @@ class InMemoryWebBatchRepository(WebBatchRepository):
         with self._lock:
             for job_id, job in tuple(self._jobs.items()):
                 if (
-                    job.status is not BatchJobStatus.RUNNING
+                    job.status
+                    not in {
+                        BatchJobStatus.RUNNING,
+                        BatchJobStatus.INTERRUPT_REQUESTED,
+                    }
                     or job.worker_id in active_worker_ids
                 ):
                     continue
                 ended_at = _now()
-                staged_phase = {
-                    BatchJobPhase.REMOTE_RUNNING: BatchJobPhase.REMOTE_QUEUED,
-                    BatchJobPhase.BUILD_RUNNING: BatchJobPhase.READY_FOR_BUILD,
-                }.get(job.phase)
+                staged_phase = (
+                    {
+                        BatchJobPhase.REMOTE_RUNNING: BatchJobPhase.REMOTE_QUEUED,
+                        BatchJobPhase.BUILD_RUNNING: BatchJobPhase.READY_FOR_BUILD,
+                    }.get(job.phase)
+                    if job.status is BatchJobStatus.RUNNING
+                    else None
+                )
                 if staged_phase is not None:
                     self._jobs[job_id] = replace(
                         job,
@@ -597,14 +610,36 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 self._jobs[job_id] = replace(
                     job,
                     status=BatchJobStatus.INTERRUPTED,
+                    phase=BatchJobPhase.TERMINAL,
+                    worker_id=None,
+                    process_id=None,
+                    control_file=None,
                     ended_at=ended_at,
-                    error_code="LOCAL_WORKER_RESTARTED",
-                    error_message="Execucao local interrompida por reinicio.",
+                    error_code=(
+                        "INTERRUPTED_BY_USER"
+                        if job.status is BatchJobStatus.INTERRUPT_REQUESTED
+                        else "LOCAL_WORKER_RESTARTED"
+                    ),
+                    error_message=(
+                        "Execucao local interrompida por solicitacao do usuario."
+                        if job.status is BatchJobStatus.INTERRUPT_REQUESTED
+                        else "Execucao local interrompida por reinicio."
+                    ),
                 )
                 batch = self._batches[job.batch_id]
+                next_batch_status = (
+                    BatchStatus.STOPPED
+                    if batch.status is BatchStatus.STOP_REQUESTED
+                    else BatchStatus.PAUSED
+                )
                 self._batches[job.batch_id] = replace(
                     batch,
-                    status=BatchStatus.PAUSED,
+                    status=next_batch_status,
+                    ended_at=(
+                        ended_at
+                        if next_batch_status is BatchStatus.STOPPED
+                        else batch.ended_at
+                    ),
                     version=batch.version + 1,
                 )
                 self._events.append(

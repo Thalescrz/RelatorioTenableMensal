@@ -172,6 +172,8 @@ reduzi-la. `local_build_workers` permanece obrigatoriamente em 1. Use:
   salvem seus checkpoints;
 - **Parar lote** para sinalizar cooperativamente todos os subprocessos locais ativos
   e cancelar os itens ainda não iniciados; confirme o identificador curto;
+- durante uma espera de decisao WAS, **Parar lote** encerra o item imediatamente;
+  um `INTERRUPT_REQUESTED` sem worker ativo e concluido no proximo reinicio;
 - **Retomar lote** para liberar somente trabalhos preservados e retomáveis em sua
   fase;
 - **Tentar falhas/interrompidos** depois do término para criar uma fila somente de

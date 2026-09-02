@@ -209,6 +209,34 @@ def test_postgresql_stop_marks_active_and_queued_jobs_atomically() -> None:
     assert batch_params[:2] == ("STOP_REQUESTED", "STOP")
     assert "ended_at" in batch_sql.lower()
 
+
+def test_postgresql_stop_finishes_when_only_was_decision_is_pending() -> None:
+    database = _Database(
+        [
+            _Cursor(one=_batch_row(status="PAUSED")),
+            _Cursor(many=((UUID(int=11), "CANCELLED_BY_USER"),)),
+            _Cursor(
+                one=_batch_row(
+                    status="STOPPED",
+                    requested_action="STOP",
+                    version=1,
+                )
+            ),
+            _Cursor(one=(1,)),
+        ]
+    )
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    batch = repository.request_action(UUID(int=1), BatchAction.STOP)
+
+    assert batch.status is BatchStatus.STOPPED
+    jobs_sql, _ = database.connection_value.calls[1]
+    normalized_sql = " ".join(jobs_sql.lower().split())
+    assert "status in ('queued', 'waiting_was_decision')" in normalized_sql
+    assert "then 'cancelled_by_user'" in normalized_sql
+    assert "then 'terminal'" in normalized_sql
+
+
 def test_completing_interrupted_job_finishes_stop_requested_batch() -> None:
     database = _Database(
         [

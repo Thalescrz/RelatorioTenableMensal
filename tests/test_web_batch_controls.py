@@ -169,6 +169,20 @@ def test_stop_without_active_job_is_immediate() -> None:
     )
 
 
+def test_stop_while_waiting_for_was_decision_is_immediate() -> None:
+    repository = _repository(
+        batch_status=BatchStatus.PAUSED,
+        job_statuses=(BatchJobStatus.WAITING_WAS_DECISION,),
+    )
+
+    stopped = repository.request_action(BATCH_ID, BatchAction.STOP)
+
+    assert stopped.status is BatchStatus.STOPPED
+    (job,) = repository.list_batch_jobs(BATCH_ID)
+    assert job.status is BatchJobStatus.CANCELLED_BY_USER
+    assert job.ended_at is not None
+
+
 def test_stop_race_preserves_a_job_that_completed_before_interrupting() -> None:
     repository = _repository(
         batch_status=BatchStatus.RUNNING,
