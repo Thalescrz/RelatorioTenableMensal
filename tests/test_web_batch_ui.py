@@ -9,9 +9,11 @@ from tenable_reports.application.web_batches_memory import (
     InMemoryWebBatchRepository,
 )
 from tenable_reports.domain.web_batches import (
+    BatchJobPhase,
     BatchJobStatus,
     BatchStatus,
     WebBatch,
+    WebBatchEvent,
     WebBatchJob,
 )
 from tenable_reports.webapp.durable_dashboard_queue import (
@@ -257,3 +259,157 @@ def test_batch_summary_counts_warnings_as_complete_not_retryable(
     assert summary["cancelled_count"] == 1
     assert summary["retryable_count"] == 3
     assert summary["progress_percent"] == 100
+
+
+def test_batch_snapshots_expose_safe_phase_counts_and_worker_capacity(
+    tmp_path: Path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    batch_id = UUID(int=1300)
+    checkpoint = tmp_path / "checkpoints" / "client-ready.json"
+    checkpoint.parent.mkdir(parents=True)
+    checkpoint.write_text("{}", encoding="utf-8")
+    jobs = tuple(
+        WebBatchJob(
+            id=UUID(int=1300 + position),
+            batch_id=batch_id,
+            client_id=f"client-{position}",
+            position=position,
+            status=status,
+            phase=phase,
+            attempt_number=1,
+            collection_checkpoint_path=(
+                str(checkpoint)
+                if phase in {BatchJobPhase.READY_FOR_BUILD, BatchJobPhase.BUILD_RUNNING}
+                else None
+            ),
+            remote_started_at=(
+                "2026-09-01T12:00:00Z"
+                if phase in {BatchJobPhase.REMOTE_RUNNING, BatchJobPhase.REMOTE_WAITING_DECISION}
+                else None
+            ),
+            remote_ended_at=(
+                "2026-09-01T12:30:00Z"
+                if phase in {BatchJobPhase.READY_FOR_BUILD, BatchJobPhase.BUILD_RUNNING}
+                else None
+            ),
+            build_started_at=(
+                "2026-09-01T12:31:00Z"
+                if phase is BatchJobPhase.BUILD_RUNNING
+                else None
+            ),
+            worker_id=(
+                "tenable-remote-worker-phase-ui-1"
+                if phase is BatchJobPhase.REMOTE_RUNNING
+                else "tenable-build-worker-phase-ui-1"
+                if phase is BatchJobPhase.BUILD_RUNNING
+                else None
+            ),
+        )
+        for position, (phase, status) in enumerate(
+            (
+                (BatchJobPhase.LEGACY, BatchJobStatus.QUEUED),
+                (BatchJobPhase.REMOTE_QUEUED, BatchJobStatus.QUEUED),
+                (BatchJobPhase.REMOTE_RUNNING, BatchJobStatus.RUNNING),
+                (
+                    BatchJobPhase.REMOTE_WAITING_DECISION,
+                    BatchJobStatus.WAITING_WAS_DECISION,
+                ),
+                (BatchJobPhase.READY_FOR_BUILD, BatchJobStatus.QUEUED),
+                (BatchJobPhase.BUILD_RUNNING, BatchJobStatus.RUNNING),
+                (BatchJobPhase.TERMINAL, BatchJobStatus.COMPLETE),
+            ),
+            start=1,
+        )
+    )
+    repository.create_batch(
+        WebBatch(
+            id=batch_id,
+            idempotency_key="batch:ui:phases",
+            kind="GENERATE_ALL",
+            status=BatchStatus.PAUSED,
+            options={"requests": []},
+        ),
+        jobs,
+    )
+    repository.append_event(
+        WebBatchEvent(
+            batch_id=batch_id,
+            job_id=jobs[4].id,
+            event_type="COLLECTION_READY",
+            payload={
+                "collection_checkpoint_path": str(checkpoint),
+                "checkpoint_ready": True,
+            },
+        )
+    )
+
+    def runner(command, cwd, progress_callback=None):
+        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+    executor = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        runner,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=executor,
+        worker_id="worker-phase-ui",
+        remote_runner=lambda job: None,
+        build_runner=lambda job: None,
+        remote_workers=3,
+        start_worker=False,
+    )
+    try:
+        summary = queue.batches_snapshot()[0]
+        detail = queue.batch_snapshot(batch_id)
+        state_jobs = queue.snapshot()
+    finally:
+        queue.close()
+
+    assert summary["phase_counts"] == {
+        "LEGACY": 1,
+        "REMOTE_QUEUED": 1,
+        "REMOTE_RUNNING": 1,
+        "REMOTE_WAITING_DECISION": 1,
+        "READY_FOR_BUILD": 1,
+        "BUILD_RUNNING": 1,
+        "TERMINAL": 1,
+    }
+    assert summary["remote_concurrency"] == {"active": 1, "capacity": 3}
+    assert summary["build_queue_count"] == 1
+    assert summary["build_concurrency"] == {"active": 1, "capacity": 1}
+    ready = next(job for job in detail["jobs"] if job["phase"] == "READY_FOR_BUILD")
+    assert ready["checkpoint_ready"] is True
+    assert ready["remote_ended_at"] == "2026-09-01T12:30:00Z"
+    assert next(job for job in state_jobs if job["client_id"] == "client-5")[
+        "checkpoint_ready"
+    ] is True
+    serialized = json.dumps({"detail": detail, "jobs": state_jobs})
+    assert "collection_checkpoint_path" not in serialized
+    assert str(checkpoint) not in serialized
+
+
+def test_frontend_exposes_staged_phase_labels_and_unknown_chunk_copy() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+    css = (STATIC / "app.css").read_text(encoding="utf-8")
+
+    assert 'id="batch-phase-summary"' in html
+    assert 'id="batch-capacity-copy"' in html
+    for label in (
+        "Coleta remota",
+        "Aguardando Tenable/chunks",
+        "Pronto para montagem",
+        "Montando documento",
+        "Concluído",
+        "Falhou",
+        "0/0 · aguardando a Tenable informar chunks",
+    ):
+        assert label in javascript
+    assert "phase_counts" in javascript
+    assert "remote_concurrency" in javascript
+    assert "build_queue_count" in javascript
+    assert ".batch-phase-summary" in css

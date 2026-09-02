@@ -28,9 +28,37 @@ function formatBytes(value) {
   while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit++; }
   return `${size.toFixed(unit ? 1 : 0)} ${units[unit]}`;
 }
+
+const JOB_PHASE_LABELS = {
+  LEGACY: "Execução compatível",
+  REMOTE_QUEUED: "Coleta remota na fila",
+  REMOTE_RUNNING: "Coleta remota",
+  REMOTE_WAITING_DECISION: "Aguardando decisão WEB",
+  READY_FOR_BUILD: "Pronto para montagem",
+  BUILD_RUNNING: "Montando documento",
+  TERMINAL: "Concluído",
+};
+
+function jobPhaseCopy(job) {
+  if (!job) return null;
+  if (["FAILED", "INTERRUPTED", "CANCELLED_BY_USER"].includes(job.status)) return "Falhou";
+  if (job.phase === "REMOTE_RUNNING") {
+    return cloudProgressCopy(job) || tagProgressCopy(job) || wasExportProgressCopy(job) || exportProgressCopy(job) || "Coleta remota · Aguardando Tenable/chunks";
+  }
+  if (job.phase === "TERMINAL" && job.status === "COMPLETE_WITH_WARNINGS") return "Concluído com alertas";
+  return JOB_PHASE_LABELS[job.phase] || null;
+}
+
 function statusFor(client) {
   const job = client.job;
   if (!client.enabled) return { key: "disabled", label: "Desabilitado" };
+  if (["FAILED", "INTERRUPTED", "CANCELLED_BY_USER"].includes(job?.status)) return { key: "failed", label: "Falhou" };
+  if (job?.phase === "REMOTE_QUEUED") return { key: "queued", label: "Coleta remota" };
+  if (job?.phase === "REMOTE_RUNNING") return { key: "running", label: "Coleta remota" };
+  if (job?.phase === "REMOTE_WAITING_DECISION") return { key: "queued", label: "Decisão WEB" };
+  if (job?.phase === "READY_FOR_BUILD") return { key: "queued", label: "Pronto para montagem" };
+  if (job?.phase === "BUILD_RUNNING") return { key: "running", label: "Montando documento" };
+  if (job?.phase === "TERMINAL" && ["COMPLETE", "COMPLETE_WITH_WARNINGS"].includes(job.status)) return { key: "ready", label: "Concluído" };
   if (job?.status === "RUNNING") return { key: "running", label: "Gerando" };
   if (job?.status === "QUEUED") return { key: "queued", label: `Fila ${job.queue_position || ""}` };
   if (job?.status === "WAITING_WAS_DECISION") return { key: "failed", label: "Decisão WEB" };
@@ -49,7 +77,9 @@ function sourceProgressCopy(progress, label) {
   if (!progress) return null;
   const current = Number(progress.completed_chunks || 0);
   const total = Number(progress.total_chunks || 0);
-  const chunks = total > 0 ? current + "/" + total + " chunks" : current + " chunks";
+  const chunks = current === 0 && total === 0
+    ? "0/0 · aguardando a Tenable informar chunks"
+    : total > 0 ? current + "/" + total + " chunks" : current + " chunks";
   const details = [
     chunks,
     progress.export_uuid ? "UUID " + progress.export_uuid : "",
@@ -208,7 +238,21 @@ function renderBatches() {
   $("#batch-progress-copy").textContent = `${finished} de ${batch.total_count} finalizados`;
   $("#batch-progress-percent").textContent = `${batch.progress_percent}%`;
   $("#batch-progress-bar").value = Number(batch.progress_percent || 0);
-  $("#batch-current-copy").textContent = batch.current_client_id ? `Cliente atual: ${batch.current_client_id}` : recoveredPaused ? `${Number(batch.retryable_count || 0)} falha(s) disponível(is) para retentativa controlada.` : batch.status === "PAUSED" ? "O lote aguarda retomada manual." : "Nenhum cliente em execução neste instante.";
+  const currentPhase = JOB_PHASE_LABELS[batch.current_phase] || "";
+  $("#batch-current-copy").textContent = batch.current_client_id ? `${currentPhase || "Em execução"}: ${batch.current_client_id}` : recoveredPaused ? `${Number(batch.retryable_count || 0)} falha(s) disponível(is) para retentativa controlada.` : batch.status === "PAUSED" ? "O lote aguarda retomada manual." : "Nenhum cliente em execução neste instante.";
+  const remoteConcurrency = batch.remote_concurrency || {};
+  const buildConcurrency = batch.build_concurrency || {};
+  $("#batch-capacity-copy").textContent = `Coleta remota: ${Number(remoteConcurrency.active || 0)}/${Number(remoteConcurrency.capacity || 0)} · Fila de montagem: ${Number(batch.build_queue_count || 0)} · Montagem: ${Number(buildConcurrency.active || 0)}/${Number(buildConcurrency.capacity || 0)}`;
+  const phaseCounts = batch.phase_counts || {};
+  $("#batch-phase-summary").innerHTML = [
+    ["Coleta na fila", phaseCounts.REMOTE_QUEUED],
+    ["Coleta remota", phaseCounts.REMOTE_RUNNING],
+    ["Aguardando decisão", phaseCounts.REMOTE_WAITING_DECISION],
+    ["Pronto para montagem", phaseCounts.READY_FOR_BUILD],
+    ["Montando documento", phaseCounts.BUILD_RUNNING],
+    ["Legado", phaseCounts.LEGACY],
+    ["Terminal", phaseCounts.TERMINAL],
+  ].map(([label, value]) => `<span><strong>${Number(value || 0)}</strong>${label}</span>`).join("");
   $("#batch-counters").innerHTML = [
     ["Concluídos", batch.completed_count],
     ["Falhas", batch.failed_count],
@@ -335,9 +379,10 @@ function render() {
     const report = client.latest_report;
     const connectionCheck = state.connectionChecks[client.client_id];
     const warning = client.alert || job?.error || job?.warnings?.length || job?.status === "WAITING_WAS_DECISION" || client.was_recoveries?.length || job?.export_progress?.stalled || job?.was_export_progress?.stalled || !client.credentials_ready || client.profile_error || connectionCheck?.ok === false || connectionCheck?.cloud?.ok === false || (client.cloud_enabled && !client.cloud_token_saved);
+    const phaseCopy = jobPhaseCopy(job);
     const runningCopy = job?.vm_selective_mode === "validation"
       ? "Validando export completo x otimizado"
-      : cloudProgressCopy(job) || tagProgressCopy(job) || wasExportProgressCopy(job) || exportProgressCopy(job) || "Coletando e gerando documentos";
+      : phaseCopy || cloudProgressCopy(job) || tagProgressCopy(job) || wasExportProgressCopy(job) || exportProgressCopy(job) || "Coletando e gerando documentos";
     const displayRunningCopy = job?.force_live_collection ? `API ao vivo · ${runningCopy}` : runningCopy;
     const queuedCopy = job?.force_live_collection ? "Aguardando execução · API ao vivo" : "Aguardando execução";
     const componentProgress = [
@@ -353,7 +398,7 @@ function render() {
       <div class="card-top"><span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? '<span class="warning-badge" title="Há um alerta">!</span>' : ""}</div>
       <h3>${escapeHtml(client.display_name)}</h3><span class="analyst-chip">${escapeHtml(client.responsible_analyst_name || "Sem responsável")}</span><p class="client-meta">${escapeHtml(client.client_id)}<br>${escapeHtml(client.tenant_id || "tenant não informado")}</p>
       <div class="card-report"><span>Último relatório</span><strong>${report ? escapeHtml(report.period_id || formatDate(report.ended_at)) : "Ainda não gerado"}</strong></div>
-      <div class="progress-wrap"><div class="progress-copy"><span>${job?.status === "RUNNING" ? escapeHtml(displayRunningCopy) : job?.status === "QUEUED" ? queuedCopy : job?.status === "FAILED" ? "Execução interrompida" : job?.status === "WAITING_WAS_DECISION" ? "VM concluído · escolha como tratar o WEB" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div>${componentProgress.length ? `<div class="component-progress">${componentProgress.map(item => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}</div>
+      <div class="progress-wrap"><div class="progress-copy"><span>${phaseCopy ? escapeHtml(job?.force_live_collection ? `API ao vivo · ${phaseCopy}` : phaseCopy) : job?.status === "RUNNING" ? escapeHtml(displayRunningCopy) : job?.status === "QUEUED" ? queuedCopy : job?.status === "FAILED" ? "Execução interrompida" : job?.status === "WAITING_WAS_DECISION" ? "VM concluído · escolha como tratar o WEB" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div>${componentProgress.length ? `<div class="component-progress">${componentProgress.map(item => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}</div>
     </article>`;
   }).join("");
   document.querySelectorAll(".client-card").forEach(card => {
@@ -513,7 +558,9 @@ async function openClient(clientId) {
   state.selectedClient = clientId;
   $("#detail-title").textContent = client.display_name; $("#detail-subtitle").textContent = `${client.client_id} · ${client.tenant_id || "sem tenant"}`;
   const status = statusFor(client); const warning = client.job?.error || client.job?.warnings?.[0]?.message || client.alert?.message || client.profile_error || (!client.credentials_ready ? "As credenciais Tenable ainda não foram preenchidas." : client.cloud_enabled && !client.cloud_token_saved ? "Cloud Security está ativo, mas o token Cloud ainda não foi salvo. Os relatórios VM continuam disponíveis." : "");
-  $("#detail-status").innerHTML = `<span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? `<p>${escapeHtml(warning)}</p>` : "<p>Cliente configurado e pronto para uma nova execução.</p>"}`;
+  const detailPhase = jobPhaseCopy(client.job);
+  const checkpointCopy = client.job?.checkpoint_ready ? " · checkpoint validado" : "";
+  $("#detail-status").innerHTML = `<span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? `<p>${escapeHtml(warning)}</p>` : "<p>Cliente configurado e pronto para uma nova execução.</p>"}${detailPhase ? `<p class="client-phase-detail">Fase: ${escapeHtml(detailPhase + checkpointCopy)}</p>` : ""}`;
   $("#detail-run-button").disabled = !client.enabled || !client.credentials_ready || ["QUEUED","RUNNING"].includes(client.job?.status);
   $("#detail-check-button").disabled = !client.credentials_ready;
   $("#report-list").innerHTML = '<div class="loading">Carregando relatórios…</div>'; $("#client-dialog").showModal();

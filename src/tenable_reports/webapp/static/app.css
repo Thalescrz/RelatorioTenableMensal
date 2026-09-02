@@ -264,6 +264,11 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
 .batch-progress progress::-webkit-progress-value { background: linear-gradient(90deg, var(--blue), var(--green)); }
 .batch-progress progress::-moz-progress-bar { background: linear-gradient(90deg, var(--blue), var(--green)); }
 .batch-progress p { margin: 8px 0 0; color: var(--muted); font-size: 10px; }
+.batch-capacity-copy { line-height: 1.45; }
+.batch-phase-summary { display: grid; grid-template-columns: repeat(4, minmax(92px, 1fr)); gap: 6px; margin-top: 12px; }
+.batch-phase-summary span { min-width: 0; padding: 7px 8px; border: 1px solid rgba(109,169,255,.16); border-radius: 8px; color: var(--muted); background: rgba(10,14,17,.28); font-size: 8px; line-height: 1.3; }
+.batch-phase-summary strong { display: block; margin-bottom: 2px; color: var(--ink); font: 650 13px var(--display); }
+.client-phase-detail { color: var(--blue) !important; font-size: 11px !important; }
 .batch-counters { display: grid; grid-template-columns: repeat(4, minmax(64px, 1fr)); gap: 7px; }
 .batch-counters div { min-width: 68px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: rgba(10,14,17,.35); }
 .batch-counters strong, .batch-counters span { display: block; }
@@ -299,6 +304,6 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
   .selection-toolbar { grid-template-columns: 1fr; }.selection-footer { align-items: stretch; flex-direction: column; }.selection-footer .button { width: 100%; }.analyst-row { align-items: stretch; flex-direction: column; }.analyst-actions { justify-content: flex-start; }
   .report-row { grid-template-columns: 1fr; }.report-actions { justify-content: flex-start; }.component-retry-footer { align-items: stretch; flex-direction: column; }.component-retry-footer .button { width: 100%; }
   .storage-strip { align-items: stretch; flex-direction: column; gap: 8px; }.storage-strip button { margin-left: 0; }
-  .batch-panel-head { align-items: stretch; flex-direction: column; }.batch-state { align-self: flex-start; }.batch-panel-body { grid-template-columns: 1fr; }.batch-counters { grid-template-columns: 1fr 1fr; }.batch-actions { justify-content: stretch; max-width: none; }.batch-actions .button { flex: 1 1 145px; }.batch-choice-options { grid-template-columns: 1fr; }
+  .batch-panel-head { align-items: stretch; flex-direction: column; }.batch-state { align-self: flex-start; }.batch-panel-body { grid-template-columns: 1fr; }.batch-phase-summary { grid-template-columns: 1fr 1fr; }.batch-counters { grid-template-columns: 1fr 1fr; }.batch-actions { justify-content: stretch; max-width: none; }.batch-actions .button { flex: 1 1 145px; }.batch-choice-options { grid-template-columns: 1fr; }
   .backfill-intro { grid-template-columns: auto 1fr; }.backfill-intro .button { grid-column: 1 / -1; }.backfill-summary { grid-template-columns: 1fr 1fr; }.backfill-actions { align-items: stretch; flex-direction: column; }.backfill-actions .button { width: 100%; }
 }

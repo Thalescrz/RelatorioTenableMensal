@@ -42,6 +42,14 @@ from tenable_reports.domain.report_components import (
     ComponentStatus,
     ReportComponent,
 )
+from tenable_reports.domain.web_batches import (
+    BatchJobPhase,
+    BatchJobStatus,
+    BatchStatus,
+    WebBatch,
+    WebBatchEvent,
+    WebBatchJob,
+)
 from tenable_reports.domain.report_reference import READY_STATUS, ReportCandidate, ReportOrigin, reference_key_for_candidate
 from tenable_reports.webapp.server import (
     DashboardApplication,
@@ -207,6 +215,75 @@ class _ArchiveDashboardDatabase:
 
 
 class WebDashboardTests(unittest.TestCase):
+    def test_phase_api_exposes_checkpoint_readiness_without_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = root / "data" / "checkpoints" / "fixture.json"
+            checkpoint.parent.mkdir(parents=True)
+            checkpoint.write_text("{}", encoding="utf-8")
+            repository = InMemoryWebBatchRepository()
+            batch_id = UUID(int=1400)
+            job = WebBatchJob(
+                id=UUID(int=1401),
+                batch_id=batch_id,
+                client_id="cliente-fase",
+                position=1,
+                status=BatchJobStatus.QUEUED,
+                phase=BatchJobPhase.READY_FOR_BUILD,
+                attempt_number=1,
+                collection_checkpoint_path=str(checkpoint),
+                remote_started_at="2026-09-01T12:00:00Z",
+                remote_ended_at="2026-09-01T12:20:00Z",
+            )
+            repository.create_batch(
+                WebBatch(
+                    id=batch_id,
+                    idempotency_key="batch:http:phase-safe",
+                    kind="GENERATE_ALL",
+                    status=BatchStatus.PAUSED,
+                    options={"requests": []},
+                ),
+                (job,),
+            )
+            repository.append_event(
+                WebBatchEvent(
+                    batch_id=batch_id,
+                    job_id=job.id,
+                    event_type="COLLECTION_READY",
+                    payload={"collection_checkpoint_path": str(checkpoint)},
+                )
+            )
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=repository,
+            )
+            client = LocalClient(app)
+            try:
+                state_status, state_payload = client.request("GET", "/api/state")
+                detail_status, detail_payload = client.request(
+                    "GET", f"/api/batches/{batch_id}"
+                )
+            finally:
+                client.close()
+                app.jobs.close()
+
+        self.assertEqual(state_status, 200)
+        self.assertEqual(detail_status, 200)
+        self.assertEqual(state_payload["jobs"][0]["phase"], "READY_FOR_BUILD")
+        self.assertTrue(state_payload["jobs"][0]["checkpoint_ready"])
+        self.assertEqual(
+            state_payload["batches"][0]["phase_counts"]["READY_FOR_BUILD"],
+            1,
+        )
+        self.assertTrue(detail_payload["jobs"][0]["checkpoint_ready"])
+        serialized = json.dumps(
+            {"state": state_payload, "detail": detail_payload},
+            ensure_ascii=False,
+        )
+        self.assertNotIn("collection_checkpoint_path", serialized)
+        self.assertNotIn(str(checkpoint), serialized)
+
     def test_client_selection_static_asset_is_served_as_javascript(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

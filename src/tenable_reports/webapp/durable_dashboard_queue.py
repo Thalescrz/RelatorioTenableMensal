@@ -42,6 +42,24 @@ def _now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
+_PRIVATE_DASHBOARD_KEYS = frozenset(
+    {"checkpoint", "checkpoint_path", "collection_checkpoint_path"}
+)
+
+
+def _safe_dashboard_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _safe_dashboard_value(item)
+            for key, item in value.items()
+            if not str(key).startswith("_")
+            and str(key).casefold() not in _PRIVATE_DASHBOARD_KEYS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_safe_dashboard_value(item) for item in value]
+    return value
+
+
 class DurableDashboardJobQueue:
     """Expose the legacy dashboard API while PostgreSQL owns job state."""
 
@@ -469,6 +487,17 @@ class DurableDashboardJobQueue:
 
     def batches_snapshot(self, *, limit: int = 50) -> list[dict[str, Any]]:
         summaries: list[dict[str, Any]] = []
+        capacities = self.capacity_snapshot()
+        remote_capacity = sum(
+            int(pool.get("workers") or 0)
+            for pool in capacities
+            if BatchJobPhase.REMOTE_QUEUED.value in tuple(pool.get("phases") or ())
+        )
+        build_capacity = sum(
+            int(pool.get("workers") or 0)
+            for pool in capacities
+            if BatchJobPhase.READY_FOR_BUILD.value in tuple(pool.get("phases") or ())
+        )
         terminal_jobs = {
             BatchJobStatus.COMPLETE,
             BatchJobStatus.COMPLETE_WITH_WARNINGS,
@@ -481,6 +510,10 @@ class DurableDashboardJobQueue:
             counts = {
                 status: sum(job.status is status for job in jobs)
                 for status in BatchJobStatus
+            }
+            phase_counts = {
+                phase.value: sum(job.phase is phase for job in jobs)
+                for phase in BatchJobPhase
             }
             finished = sum(job.status in terminal_jobs for job in jobs)
             current = next(
@@ -545,6 +578,21 @@ class DurableDashboardJobQueue:
                     "current_client_id": (
                         current.client_id if current is not None else None
                     ),
+                    "current_phase": (
+                        current.phase.value if current is not None else None
+                    ),
+                    "phase_counts": phase_counts,
+                    "remote_concurrency": {
+                        "active": phase_counts[BatchJobPhase.REMOTE_RUNNING.value],
+                        "capacity": remote_capacity,
+                    },
+                    "build_queue_count": phase_counts[
+                        BatchJobPhase.READY_FOR_BUILD.value
+                    ],
+                    "build_concurrency": {
+                        "active": phase_counts[BatchJobPhase.BUILD_RUNNING.value],
+                        "capacity": build_capacity,
+                    },
                     "mode": str(first_request.get("mode") or ""),
                     "days": first_request.get("days"),
                     "start_at": first_request.get("start_at"),
@@ -586,6 +634,8 @@ class DurableDashboardJobQueue:
                     "client_id": job.client_id,
                     "position": job.position,
                     "status": job.status.value,
+                    "phase": job.phase.value,
+                    "checkpoint_ready": bool(job.collection_checkpoint_path),
                     "attempt_number": job.attempt_number,
                     "run_id": job.run_id,
                     "exit_code": job.exit_code,
@@ -593,6 +643,9 @@ class DurableDashboardJobQueue:
                     "error_message": job.error_message,
                     "created_at": job.created_at,
                     "started_at": job.started_at,
+                    "remote_started_at": job.remote_started_at,
+                    "remote_ended_at": job.remote_ended_at,
+                    "build_started_at": job.build_started_at,
                     "ended_at": job.ended_at,
                 }
                 for job in self.repository.list_batch_jobs(normalized_id)
@@ -601,7 +654,7 @@ class DurableDashboardJobQueue:
                 {
                     "job_id": str(event.job_id) if event.job_id else None,
                     "event_type": event.event_type,
-                    "payload": dict(event.payload),
+                    "payload": _safe_dashboard_value(event.payload),
                     "created_at": event.created_at,
                 }
                 for event in self.repository.list_events(normalized_id)
@@ -617,11 +670,7 @@ class DurableDashboardJobQueue:
                 if event.job_id is not None:
                     events_by_job.setdefault(event.job_id, []).append(event)
             for job in self.repository.list_batch_jobs(batch.id):
-                row = {
-                    key: value
-                    for key, value in dict(job.payload).items()
-                    if not str(key).startswith("_")
-                }
+                row = _safe_dashboard_value(job.payload)
                 row.update(
                     {
                         "job_id": job.id.hex,
@@ -635,7 +684,12 @@ class DurableDashboardJobQueue:
                         ),
                         "client_id": job.client_id,
                         "status": job.status.value,
+                        "phase": job.phase.value,
+                        "checkpoint_ready": bool(job.collection_checkpoint_path),
                         "started_at": job.started_at,
+                        "remote_started_at": job.remote_started_at,
+                        "remote_ended_at": job.remote_ended_at,
+                        "build_started_at": job.build_started_at,
                         "ended_at": job.ended_at,
                         "error": job.error_message,
                         "run_id": job.run_id or row.get("run_id"),
