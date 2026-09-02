@@ -192,6 +192,14 @@ class DurableDashboardJobQueue:
         ).strip().upper()
         if execution_model not in {"LEGACY", "STAGED_V1"}:
             raise ValueError("execution_model invalido.")
+        batch_id = uuid4()
+        requested_client_ids = tuple(client_id for client_id, _ in requests)
+        conflicts = self.repository.active_client_conflicts(
+            requested_client_ids,
+            excluding_batch_id=batch_id,
+        )
+        if conflicts:
+            raise BatchClientConflictError(conflicts)
         created: list[dict[str, Any]] = []
         normalized_requests: list[dict[str, Any]] = []
         for client_id, request in requests:
@@ -202,7 +210,6 @@ class DurableDashboardJobQueue:
             )
         if not created:
             return []
-        batch_id = uuid4()
         created_at = _now()
         options = {
             "requests": normalized_requests,

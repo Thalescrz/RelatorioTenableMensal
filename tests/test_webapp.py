@@ -489,6 +489,63 @@ class WebDashboardTests(unittest.TestCase):
             self.assertIn("EMPTY_CLIENT_SELECTION", payload["error"])
             self.assertEqual(repository.list_batches(), ())
 
+    def test_distinct_clients_can_be_enqueued_while_first_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = InMemoryWebBatchRepository()
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=repository,
+            )
+            for client_id in ("cliente-a", "cliente-b"):
+                app.config.add_client(
+                    {
+                        "client_id": client_id,
+                        "display_name": client_id,
+                    }
+                )
+            client = LocalClient(app)
+            try:
+                first_status, first = client.request(
+                    "POST",
+                    "/api/jobs",
+                    {
+                        "client_ids": ["cliente-a"],
+                        "run_scope": "single",
+                        "mode": "manual",
+                    },
+                )
+                second_status, second = client.request(
+                    "POST",
+                    "/api/jobs",
+                    {
+                        "client_ids": ["cliente-b"],
+                        "run_scope": "single",
+                        "mode": "manual",
+                    },
+                )
+                duplicate_status, duplicate = client.request(
+                    "POST",
+                    "/api/jobs",
+                    {
+                        "client_ids": ["cliente-a"],
+                        "run_scope": "single",
+                        "mode": "manual",
+                    },
+                )
+            finally:
+                client.close()
+                app.jobs.close()
+
+        self.assertEqual(first_status, 202)
+        self.assertEqual(second_status, 202)
+        self.assertEqual(len(first["jobs"]), 1)
+        self.assertEqual(len(second["jobs"]), 1)
+        self.assertEqual(duplicate_status, 409)
+        self.assertIn("cliente-a", duplicate["error"])
+        self.assertEqual(len(repository.list_batches()), 2)
+
     def test_analyst_crud_and_client_assignment_are_validated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

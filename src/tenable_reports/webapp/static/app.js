@@ -2,6 +2,21 @@ const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValu
 const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "", selectedBatchId: null, componentRetryRunId: null, componentRetryState: null };
 const { createLatestRequestGuard } = window.TenableReportRequestGuard;
 const reportRequestGuard = createLatestRequestGuard();
+const { createRefreshCoordinator } = window.TenableDashboardRefresh;
+let refreshErrorShouldToast = false;
+const refreshCoordinator = createRefreshCoordinator({
+  load: () => api("/api/state"),
+  apply: payload => {
+    state.data = payload;
+    render();
+    refreshErrorShouldToast = false;
+  },
+  onError: error => {
+    if (refreshErrorShouldToast) toast(error.message, "error");
+    $("#connection-label").textContent = "servidor indisponível";
+    refreshErrorShouldToast = false;
+  },
+});
 const CLOUD_PROGRESS_EVENT = "TENABLE_CLOUD_PROGRESS";
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
@@ -449,9 +464,9 @@ function render() {
   renderManageList(); renderAlerts();
 }
 
-async function refresh(silent = true) {
-  try { state.data = await api("/api/state"); render(); }
-  catch (error) { if (!silent) toast(error.message, "error"); $("#connection-label").textContent = "servidor indisponível"; }
+function refresh(silent = true, options = {}) {
+  if (!silent) refreshErrorShouldToast = true;
+  return refreshCoordinator.refresh(options);
 }
 
 function startBrowserDownload(url) {
@@ -1351,7 +1366,7 @@ $("#run-form").addEventListener("submit", async event => {
   }
 
   const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
-  try { const result = await api("/api/jobs", { method: "POST", body: payload }); $("#run-dialog").close(); await refresh(); toast(`${result.jobs.length} execução(ões) adicionada(s) à fila.`); }
+  try { const result = await api("/api/jobs", { method: "POST", body: payload }); $("#run-dialog").close(); toast(`${result.jobs.length} execução(ões) adicionada(s) à fila.`); button.disabled = false; void refresh(true, { ensureAfterCurrent: true }); }
   catch (error) { toast(error.message, "error"); } finally { button.disabled = false; }
 });
 
