@@ -362,6 +362,34 @@ class PostgresWebBatchRepository(WebBatchRepository):
             ).fetchall()
         return tuple(_job_from_row(row) for row in rows)
 
+    def list_batch_jobs_for_batches(
+        self,
+        batch_ids: Sequence[UUID],
+    ) -> dict[UUID, tuple[WebBatchJob, ...]]:
+        requested = tuple(dict.fromkeys(batch_ids))
+        if not requested:
+            return {}
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                f"""
+                select {_JOB_COLUMNS}
+                from {SCHEMA_NAME}.web_batch_jobs
+                where batch_id = any(%s)
+                order by batch_id, position, id
+                """,
+                (list(requested),),
+            ).fetchall()
+        grouped: dict[UUID, list[WebBatchJob]] = {
+            batch_id: [] for batch_id in requested
+        }
+        for row in rows:
+            job = _job_from_row(row)
+            grouped[job.batch_id].append(job)
+        return {
+            batch_id: tuple(grouped[batch_id])
+            for batch_id in requested
+        }
+
     def record_job_process(
         self,
         job_id: UUID,
@@ -1187,6 +1215,35 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 (batch_id,),
             ).fetchall()
         return tuple(_event_from_row(row) for row in rows)
+
+    def list_events_for_batches(
+        self,
+        batch_ids: Sequence[UUID],
+    ) -> dict[UUID, tuple[WebBatchEvent, ...]]:
+        requested = tuple(dict.fromkeys(batch_ids))
+        if not requested:
+            return {}
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                f"""
+                select batch_id, job_id, event_type, actor, idempotency_key,
+                       payload, created_at
+                from {SCHEMA_NAME}.web_batch_events
+                where batch_id = any(%s)
+                order by batch_id, created_at, id
+                """,
+                (list(requested),),
+            ).fetchall()
+        grouped: dict[UUID, list[WebBatchEvent]] = {
+            batch_id: [] for batch_id in requested
+        }
+        for row in rows:
+            event = _event_from_row(row)
+            grouped[event.batch_id].append(event)
+        return {
+            batch_id: tuple(grouped[batch_id])
+            for batch_id in requested
+        }
 
 
 __all__ = ["PostgresWebBatchRepository"]

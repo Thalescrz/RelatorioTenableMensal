@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -58,6 +58,13 @@ def _safe_dashboard_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_safe_dashboard_value(item) for item in value]
     return value
+
+
+@dataclass(frozen=True, slots=True)
+class DashboardQueueSnapshot:
+    jobs: tuple[dict[str, Any], ...]
+    batches: tuple[dict[str, Any], ...]
+    active_job_count: int
 
 
 class DurableDashboardJobQueue:
@@ -532,7 +539,19 @@ class DurableDashboardJobQueue:
                 ) from exc
         return updated
 
-    def batches_snapshot(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def dashboard_snapshot(
+        self,
+        *,
+        job_batch_limit: int = 500,
+        summary_batch_limit: int = 50,
+    ) -> DashboardQueueSnapshot:
+        normalized_job_limit = max(1, min(int(job_batch_limit), 500))
+        normalized_summary_limit = max(0, min(int(summary_batch_limit), 500))
+        batches = self.repository.list_batches(limit=normalized_job_limit)
+        batch_ids = tuple(batch.id for batch in batches)
+        jobs_by_batch = self.repository.list_batch_jobs_for_batches(batch_ids)
+        events_by_batch = self.repository.list_events_for_batches(batch_ids)
+
         summaries: list[dict[str, Any]] = []
         capacities = self.capacity_snapshot()
         remote_capacity = sum(
@@ -552,8 +571,8 @@ class DurableDashboardJobQueue:
             BatchJobStatus.INTERRUPTED,
             BatchJobStatus.CANCELLED_BY_USER,
         }
-        for batch in self.repository.list_batches(limit=limit):
-            jobs = self.repository.list_batch_jobs(batch.id)
+        for batch in batches[:normalized_summary_limit]:
+            jobs = jobs_by_batch[batch.id]
             counts = {
                 status: sum(job.status is status for job in jobs)
                 for status in BatchJobStatus
@@ -646,7 +665,81 @@ class DurableDashboardJobQueue:
                     "end_at": first_request.get("end_at"),
                 }
             )
-        return summaries
+        rows: list[dict[str, Any]] = []
+        queued_ids: list[str] = []
+        active_statuses = {
+            BatchJobStatus.QUEUED,
+            BatchJobStatus.RUNNING,
+            BatchJobStatus.WAITING_WAS_DECISION,
+            BatchJobStatus.INTERRUPT_REQUESTED,
+        }
+        active_job_count = 0
+        for batch in batches:
+            events_by_job: dict[UUID, list[WebBatchEvent]] = {}
+            for event in events_by_batch[batch.id]:
+                if event.job_id is not None:
+                    events_by_job.setdefault(event.job_id, []).append(event)
+            for job in jobs_by_batch[batch.id]:
+                if job.status in active_statuses:
+                    active_job_count += 1
+                row = _safe_dashboard_value(job.payload)
+                row.update(
+                    {
+                        "job_id": job.id.hex,
+                        "batch_id": str(batch.id),
+                        "batch_status": batch.status.value,
+                        "batch_kind": batch.kind,
+                        "batch_requested_action": (
+                            batch.requested_action.value
+                            if batch.requested_action is not None
+                            else None
+                        ),
+                        "client_id": job.client_id,
+                        "status": job.status.value,
+                        "phase": job.phase.value,
+                        "checkpoint_ready": bool(job.collection_checkpoint_path),
+                        "created_at": job.created_at,
+                        "started_at": job.started_at,
+                        "remote_started_at": job.remote_started_at,
+                        "remote_ended_at": job.remote_ended_at,
+                        "build_started_at": job.build_started_at,
+                        "ended_at": job.ended_at,
+                        "error": job.error_message,
+                        "run_id": job.run_id or row.get("run_id"),
+                        "queue_position": None,
+                    }
+                )
+                for event in events_by_job.get(job.id, ()):
+                    if event.event_type == "JOB_PROGRESS":
+                        _apply_progress(row, event.payload)
+                if job.status is BatchJobStatus.QUEUED:
+                    queued_ids.append(job.id.hex)
+                rows.append(row)
+        positions = {
+            job_id: position for position, job_id in enumerate(queued_ids, start=1)
+        }
+        for row in rows:
+            row["queue_position"] = positions.get(str(row["job_id"]))
+        ordered_rows = tuple(
+            sorted(
+                rows,
+                key=lambda row: str(row.get("created_at") or ""),
+                reverse=True,
+            )
+        )
+        return DashboardQueueSnapshot(
+            jobs=ordered_rows,
+            batches=tuple(summaries),
+            active_job_count=active_job_count,
+        )
+
+    def batches_snapshot(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        return list(
+            self.dashboard_snapshot(
+                job_batch_limit=limit,
+                summary_batch_limit=limit,
+            ).batches
+        )
 
     def batch_snapshot(self, batch_id: UUID | str) -> dict[str, Any]:
         normalized_id = (
@@ -709,56 +802,7 @@ class DurableDashboardJobQueue:
         }
 
     def snapshot(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        queued_ids: list[str] = []
-        for batch in self.repository.list_batches(limit=500):
-            events_by_job: dict[UUID, list[WebBatchEvent]] = {}
-            for event in self.repository.list_events(batch.id):
-                if event.job_id is not None:
-                    events_by_job.setdefault(event.job_id, []).append(event)
-            for job in self.repository.list_batch_jobs(batch.id):
-                row = _safe_dashboard_value(job.payload)
-                row.update(
-                    {
-                        "job_id": job.id.hex,
-                        "batch_id": str(batch.id),
-                        "batch_status": batch.status.value,
-                        "batch_kind": batch.kind,
-                        "batch_requested_action": (
-                            batch.requested_action.value
-                            if batch.requested_action is not None
-                            else None
-                        ),
-                        "client_id": job.client_id,
-                        "status": job.status.value,
-                        "phase": job.phase.value,
-                        "checkpoint_ready": bool(job.collection_checkpoint_path),
-                        "started_at": job.started_at,
-                        "remote_started_at": job.remote_started_at,
-                        "remote_ended_at": job.remote_ended_at,
-                        "build_started_at": job.build_started_at,
-                        "ended_at": job.ended_at,
-                        "error": job.error_message,
-                        "run_id": job.run_id or row.get("run_id"),
-                        "queue_position": None,
-                    }
-                )
-                for event in events_by_job.get(job.id, ()):
-                    if event.event_type == "JOB_PROGRESS":
-                        _apply_progress(row, event.payload)
-                if job.status is BatchJobStatus.QUEUED:
-                    queued_ids.append(job.id.hex)
-                rows.append(row)
-        positions = {
-            job_id: position for position, job_id in enumerate(queued_ids, start=1)
-        }
-        for row in rows:
-            row["queue_position"] = positions.get(str(row["job_id"]))
-        return sorted(
-            rows,
-            key=lambda row: str(row.get("created_at") or ""),
-            reverse=True,
-        )
+        return list(self.dashboard_snapshot().jobs)
 
     def wait_until_idle(self, *, timeout: float) -> bool:
         return self._dispatcher.wait_until_idle(timeout=timeout)

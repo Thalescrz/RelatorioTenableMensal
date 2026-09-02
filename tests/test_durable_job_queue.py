@@ -583,6 +583,89 @@ def test_dashboard_queue_persists_completed_jobs_across_recreation(tmp_path) -> 
     assert all(row["export_progress"]["status"] == "FINISHED" for row in second_snapshot)
 
 
+def test_dashboard_snapshot_loads_batches_jobs_and_events_once(tmp_path) -> None:
+    class TrackingRepository(InMemoryWebBatchRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = {
+                "list_batches": 0,
+                "list_batch_jobs_for_batches": 0,
+                "list_events_for_batches": 0,
+            }
+
+        def list_batches(self, *, limit: int = 50):
+            self.calls["list_batches"] += 1
+            return super().list_batches(limit=limit)
+
+        def list_batch_jobs_for_batches(self, batch_ids):
+            self.calls["list_batch_jobs_for_batches"] += 1
+            return super().list_batch_jobs_for_batches(batch_ids)
+
+        def list_events_for_batches(self, batch_ids):
+            self.calls["list_events_for_batches"] += 1
+            return super().list_events_for_batches(batch_ids)
+
+    repository = TrackingRepository()
+    for index in range(1, 8):
+        batch_id = UUID(int=1000 + index)
+        status = (
+            BatchJobStatus.QUEUED
+            if index <= 2
+            else BatchJobStatus.COMPLETE
+        )
+        repository.create_batch(
+            WebBatch(
+                id=batch_id,
+                idempotency_key=f"batch:snapshot:{index}",
+                kind="GENERATE_ONE",
+                status=(
+                    BatchStatus.RUNNING
+                    if index <= 2
+                    else BatchStatus.COMPLETE
+                ),
+                created_at=f"2026-09-01T12:{index:02d}:00Z",
+            ),
+            (
+                WebBatchJob(
+                    id=UUID(int=2000 + index),
+                    batch_id=batch_id,
+                    client_id=f"client-{index}",
+                    position=1,
+                    status=status,
+                    attempt_number=1,
+                    created_at=f"2026-09-01T12:{index:02d}:00Z",
+                ),
+            ),
+        )
+    repository.calls = {key: 0 for key in repository.calls}
+    legacy = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=legacy,
+        worker_id="worker-snapshot",
+        start_worker=False,
+    )
+    repository.calls = {key: 0 for key in repository.calls}
+    try:
+        snapshot = queue.dashboard_snapshot()
+    finally:
+        queue.close()
+
+    assert repository.calls == {
+        "list_batches": 1,
+        "list_batch_jobs_for_batches": 1,
+        "list_events_for_batches": 1,
+    }
+    assert snapshot.active_job_count == 2
+    assert snapshot.jobs[0]["created_at"] >= snapshot.jobs[-1]["created_at"]
+    assert len(snapshot.batches) == 7
+
+
 def test_dashboard_application_groups_generate_all_in_one_durable_batch(tmp_path) -> None:
     repository = InMemoryWebBatchRepository()
 

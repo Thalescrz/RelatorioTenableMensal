@@ -285,6 +285,11 @@ class WebBatchRepository(Protocol):
 
     def list_batch_jobs(self, batch_id: UUID) -> tuple[WebBatchJob, ...]: ...
 
+    def list_batch_jobs_for_batches(
+        self,
+        batch_ids: Sequence[UUID],
+    ) -> Mapping[UUID, tuple[WebBatchJob, ...]]: ...
+
     def record_job_process(
         self,
         job_id: UUID,
@@ -340,6 +345,11 @@ class WebBatchRepository(Protocol):
     def append_event(self, event: WebBatchEvent) -> None: ...
 
     def list_events(self, batch_id: UUID) -> tuple[WebBatchEvent, ...]: ...
+
+    def list_events_for_batches(
+        self,
+        batch_ids: Sequence[UUID],
+    ) -> Mapping[UUID, tuple[WebBatchEvent, ...]]: ...
 
     def reconcile_abandoned_jobs(
         self,

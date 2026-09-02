@@ -127,17 +127,27 @@ class InMemoryWebBatchRepository(WebBatchRepository):
             return tuple(ordered[: max(1, min(int(limit), 500))])
 
     def list_batch_jobs(self, batch_id: UUID) -> tuple[WebBatchJob, ...]:
+        return self.list_batch_jobs_for_batches((batch_id,))[batch_id]
+
+    def list_batch_jobs_for_batches(
+        self,
+        batch_ids: Sequence[UUID],
+    ) -> dict[UUID, tuple[WebBatchJob, ...]]:
+        requested = tuple(dict.fromkeys(batch_ids))
         with self._lock:
-            return tuple(
-                sorted(
-                    (
-                        job
-                        for job in self._jobs.values()
-                        if job.batch_id == batch_id
-                    ),
-                    key=lambda job: (job.position, str(job.id)),
+            return {
+                batch_id: tuple(
+                    sorted(
+                        (
+                            job
+                            for job in self._jobs.values()
+                            if job.batch_id == batch_id
+                        ),
+                        key=lambda job: (job.position, str(job.id)),
+                    )
                 )
-            )
+                for batch_id in requested
+            }
 
     def record_job_process(
         self,
@@ -649,10 +659,20 @@ class InMemoryWebBatchRepository(WebBatchRepository):
             )
 
     def list_events(self, batch_id: UUID) -> tuple[WebBatchEvent, ...]:
+        return self.list_events_for_batches((batch_id,))[batch_id]
+
+    def list_events_for_batches(
+        self,
+        batch_ids: Sequence[UUID],
+    ) -> dict[UUID, tuple[WebBatchEvent, ...]]:
+        requested = tuple(dict.fromkeys(batch_ids))
         with self._lock:
-            return tuple(
-                event for event in self._events if event.batch_id == batch_id
-            )
+            return {
+                batch_id: tuple(
+                    event for event in self._events if event.batch_id == batch_id
+                )
+                for batch_id in requested
+            }
 
     def reconcile_abandoned_jobs(
         self,
