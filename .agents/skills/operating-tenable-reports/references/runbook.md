@@ -93,8 +93,9 @@ visíveis e confirme o total. Todos os IDs são revalidados no servidor. Acompan
 6. **Montando documento** no worker local;
 7. registro, publicação e limpeza.
 
-Para VM, registre UUID, origem (`created`, `resumed` ou equivalente), estado,
-chunks persistidos e última mudança. Só `FINISHED` com chunks tratados encerra a
+Para VM, registre UUID, origem (`created`, `provided`, `resumed` ou equivalente),
+estado, chunks persistidos, última confirmação 200 e último progresso real. Só
+`FINISHED` com chunks tratados encerra a
 etapa. `0/0 · aguardando a Tenable informar chunks` significa total remoto ainda
 desconhecido, não zero findings. A UI pode informar checkpoint validado, mas nunca
 mostra seu caminho.
@@ -151,11 +152,22 @@ importados já são terminais.
 
 ## Export sem progresso
 
-Em `STAGED_V1`, 900 segundos sem progresso emitem alerta. O limite remoto padrão
-de 7.200 segundos termina a tentativa local como retentável e preserva UUID,
+Em `STAGED_V1`, 900 segundos sem progresso emitem alerta. O orçamento padrão de
+36.000 segundos (10 horas) por UUID soma fila e processamento, sobrevive a reinício
+e retentativa e termina a tentativa local como retentável preservando UUID,
 checkpoint, manifesto e chunks. Nenhum export remoto é cancelado automaticamente.
 Use **Cancelar export e tentar novamente** somente manualmente, com confirmação do
 UUID, execução e impacto.
+
+Uma resposta 200 `QUEUED`/`PROCESSING` confirma existência, não progresso. Somente
+mudança de estado/contador ou novo chunk avança o progresso real. Erros transitórios
+de polling usam backoff dentro das mesmas 10 horas; 401 encerra imediatamente.
+Abra um lote em **Lotes recentes** e use **Ver clientes do lote** para conferir os
+sinais. **Verificar export preservado** deriva somente o cliente escolhido e consulta
+primeiro o mesmo UUID.
+
+Chunks VM podem expirar 24 horas depois de criados. Persista cada chunk anunciado
+imediatamente e interprete 404 do download à luz dessa janela oficial.
 
 Não apague o manifesto parcial antes de diagnosticar, mesmo quando nenhum chunk
 chegou. Ele é criado ao receber o UUID e permite que a tentativa seguinte consulte
@@ -166,6 +178,15 @@ espera; se estiver `FINISHED`, baixe os chunks ainda disponíveis e reutilize os
 locais. Só abra um novo export quando o anterior estiver terminal, retornar HTTP
 404 ou tiver finalizado com chunks restantes já expirados. Não transforme
 autenticação, rate limit ou erro de servidor em um novo POST.
+
+Quando a substituição for necessária, confirme o evento
+`TENABLE_EXPORT_RECOVERY_UNAVAILABLE`, com UUID anterior e substituto. A ausência
+desse evento indica que não houve autorização operacional para fallback silencioso.
+
+Falhas `CHECKPOINT_ARTIFACT_MISSING` ou `LOCAL_ARTIFACT_SCOPE_MISMATCH` apontam
+dependência/escopo staged local, não falha da Tenable. `LOCAL_FILESYSTEM_TRANSIENT`
+indica contenção persistente do Windows; `WAS_LOCAL_STATE_TRANSIENT` preserva VM e
+isola a falha opcional WEB.
 
 ## Propriedades seletivas
 

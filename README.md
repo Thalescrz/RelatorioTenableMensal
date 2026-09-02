@@ -122,9 +122,17 @@ No painel do lote:
   os clientes confirmados.
 
 O painel distingue coleta remota, espera por decisão WEB, pronto para montagem,
-montando documento e terminal. Após 900 segundos sem progresso remoto há alerta;
-em 7.200 segundos a tentativa local expira sem cancelar automaticamente o export
-na Tenable. A API expõe apenas que existe checkpoint validado, nunca seu caminho.
+montando documento e terminal. Após 900 segundos sem progresso remoto há alerta.
+O teto padrão é de 36.000 segundos (10 horas) por UUID, somando fila e
+processamento e sobrevivendo a reinícios/retentativas; ao expirar, UUID e chunks
+continuam preservados e o export não é cancelado na Tenable. A API expõe apenas
+que existe checkpoint validado, nunca seu caminho.
+
+O estado geral usa uma única atualização por navegador e carrega os clientes de
+um lote somente quando **Ver clientes do lote** é aberto. Um POST confirmado
+libera o formulário imediatamente; a atualização visual posterior não impede
+adicionar outro cliente. No detalhe, **Verificar export preservado** deriva uma
+retentativa somente daquele cliente e consulta primeiro o mesmo UUID.
 
 VM, WAS e Cloud possuem resultados independentes. Um conjunto parcial preserva os
 documentos válidos e mostra somente componentes falhos/interrompidos e retentáveis.
