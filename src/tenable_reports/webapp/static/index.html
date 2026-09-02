@@ -54,7 +54,12 @@
     <section class="batch-panel hidden" id="batch-panel" aria-live="polite">
       <div class="batch-panel-head">
         <div><p class="eyebrow">LOTE DE GERAÇÃO</p><h2 id="batch-title">Acompanhamento da carteira</h2></div>
-        <span class="batch-state" id="batch-state">—</span>
+        <div class="batch-panel-picker">
+          <label for="batch-select">Lotes recentes</label>
+          <select id="batch-select" aria-label="Selecionar lote recente"></select>
+          <button class="mini-button" data-open-batch-clients type="button">Ver clientes do lote</button>
+          <span class="batch-state" id="batch-state">—</span>
+        </div>
       </div>
       <div class="batch-panel-body">
         <div class="batch-progress">
@@ -91,6 +96,14 @@
   </main>
 
   <div class="toast-stack" id="toast-stack" aria-live="assertive"></div>
+
+  <dialog id="batch-client-dialog" class="dialog batch-client-dialog">
+    <div class="dialog-head">
+      <div><p class="eyebrow">LOTE DE GERAÇÃO</p><h2 id="batch-client-title">Clientes do lote</h2><p id="batch-client-subtitle"></p></div>
+      <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
+    </div>
+    <div id="batch-client-list" class="batch-client-list" aria-live="polite"></div>
+  </dialog>
 
   <dialog id="client-dialog" class="dialog detail-dialog">
     <div class="dialog-head">

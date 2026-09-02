@@ -4,6 +4,21 @@ from tenable_reports.application.failures import FailureCode, classify_failure
 from tenable_reports.infrastructure.tenable_vm.client import ExportTimeoutError
 
 
+def test_observed_failure_messages_keep_actionable_classification() -> None:
+    cases = (
+        ("Tempo maximo excedido na fila do export VM.", FailureCode.TENABLE_TEMPORARY, True),
+        ("endpoint=/assets/v2/export status=401", FailureCode.TENABLE_AUTH_INVALID, False),
+        ("Falha de transporte ao acessar a Tenable.", FailureCode.TENABLE_TEMPORARY, True),
+        ("Nao foi possivel ler o artefato: C:/dados/normalized/cliente/manifest.json", FailureCode.LOCAL_ARTIFACT_SCOPE_MISMATCH, False),
+        ("CHECKPOINT_ARTIFACT_MISSING: dependencia declarada ausente", FailureCode.CHECKPOINT_ARTIFACT_MISSING, False),
+        ("[WinError 5] Access is denied: export-state.json", FailureCode.LOCAL_FILESYSTEM_TRANSIENT, True),
+    )
+    for message, expected_code, expected_retryable in cases:
+        failure = classify_failure(message)
+        assert failure.code is expected_code
+        assert failure.retryable is expected_retryable
+
+
 def test_rate_limit_is_retryable_but_invalid_credentials_are_not() -> None:
     rate_limit = classify_failure({"error_code": "TENABLE_RATE_LIMIT", "message": "429"})
     invalid_auth = classify_failure({

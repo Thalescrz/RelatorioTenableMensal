@@ -23,6 +23,7 @@ from tenable_reports.domain.web_batches import (
     BatchJobStatus,
     BatchStatus,
     WebBatch,
+    WebBatchEvent,
     WebBatchJob,
 )
 from tenable_reports.webapp.durable_dashboard_queue import (
@@ -913,6 +914,52 @@ def test_staged_retry_with_missing_checkpoint_returns_to_remote_phase(tmp_path) 
 
     assert stored.phase is BatchJobPhase.REMOTE_QUEUED
     assert stored.collection_checkpoint_path is None
+
+
+def test_batch_detail_summarizes_was_retry_events(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    batch = _batch(status=BatchStatus.COMPLETE_WITH_FAILURES)
+    job = replace(_job(1, status=BatchJobStatus.FAILED), phase=BatchJobPhase.TERMINAL)
+    repository.create_batch(batch, (job,))
+    for status in ("STARTED", "STARTED", "TIMED_OUT"):
+        repository.append_event(WebBatchEvent(
+            batch_id=batch.id,
+            job_id=job.id,
+            event_type="JOB_PROGRESS",
+            payload={"event": "TENABLE_EXPORT_PROGRESS", "source": "tenable_was_findings", "status": status},
+        ))
+    legacy = JobQueue(tmp_path, tmp_path / "orchestration" / "clients.json", lambda *args, **kwargs: None, start_worker=False)
+    queue = DurableDashboardJobQueue(repository=repository, executor=legacy, worker_id="worker-detail", start_worker=False)
+    try:
+        detail = queue.batch_snapshot(batch.id)
+    finally:
+        queue.close()
+    assert detail["jobs"][0]["was_attempts"] == 2
+    assert detail["jobs"][0]["was_retry_performed"] is True
+    assert detail["jobs"][0]["was_retry_outcome"] == "TIMED_OUT"
+
+
+def test_executor_preserves_structured_failure_classification(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    legacy = JobQueue(tmp_path, tmp_path / "orchestration" / "clients.json", lambda *args, **kwargs: None, start_worker=False)
+    queue = DurableDashboardJobQueue(repository=repository, executor=legacy, worker_id="worker-failure", start_worker=False)
+    job = _job(1)
+    def fail(job_id: str) -> None:
+        with legacy._lock:
+            legacy._jobs[job_id].update(
+                status="FAILED",
+                exit_code=2,
+                error="Tempo maximo excedido na fila do export VM.",
+                error_code="TENABLE_TEMPORARY",
+                retryable=True,
+            )
+    legacy._run = fail
+    try:
+        result = queue._run_executor_job(job)
+    finally:
+        queue.close()
+    assert result.error_code == "TENABLE_TEMPORARY"
+    assert result.payload["retryable"] is True
 
 
 def test_dashboard_bootstraps_automatic_remote_capacity_and_serial_build(tmp_path) -> None:

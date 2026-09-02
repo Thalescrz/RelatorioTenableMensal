@@ -242,10 +242,20 @@ async function runBatchAction(button, batch, action) {
 
 function renderBatches() {
   const batches = state.data?.batches || [];
-  const batch = batches[0];
+  const stillExists = batches.some(item => item.id === state.selectedBatchId);
+  if (!stillExists) {
+    state.selectedBatchId = batches.find(item => !TERMINAL_BATCH_STATES.has(item.status))?.id || batches[0]?.id || null;
+  }
+  const batch = batches.find(item => item.id === state.selectedBatchId) || batches[0];
   const panel = $("#batch-panel");
   panel.classList.toggle("hidden", !batch);
   if (!batch) return;
+  const select = $("#batch-select");
+  select.innerHTML = batches.slice(0, 10).map(item => {
+    const date = item.created_at ? formatDate(item.created_at) : item.id.slice(0, 8);
+    return `<option value="${escapeHtml(item.id)}">${escapeHtml(date)} · ${escapeHtml(batchStatusLabel(item.status))}</option>`;
+  }).join("");
+  select.value = batch.id;
   const finished = Number(batch.completed_count || 0) + Number(batch.failed_count || 0) + Number(batch.interrupted_count || 0) + Number(batch.cancelled_count || 0);
   const recoveredPaused = batch.kind === "RECOVERED" && batch.status === "PAUSED";
   $("#batch-title").textContent = batch.kind === "GENERATE_ALL" ? "Geração da carteira" : batch.kind === "RECOVERED" ? "Lote recuperado" : batch.kind === "RETRY_INCOMPLETE" ? "Retentativa de incompletos" : batch.kind === "RERUN_ALL" ? "Nova geração integral" : "Geração individual";
@@ -285,6 +295,26 @@ function renderBatches() {
   if (TERMINAL_BATCH_STATES.has(batch.status) && batch.kind === "GENERATE_ALL") actions.push(["rerun-all", "Gerar novamente para todos", "ghost"]);
   $("#batch-actions").innerHTML = actions.map(([action, label, tone]) => `<button class="button ${tone}" data-batch-action="${action}" type="button">${label}</button>`).join("");
   document.querySelectorAll("[data-batch-action]").forEach(button => button.addEventListener("click", () => runBatchAction(button, batch, button.dataset.batchAction)));
+}
+
+async function openBatchClients(batchId) {
+  if (!batchId) return;
+  const dialog = $("#batch-client-dialog");
+  $("#batch-client-list").innerHTML = '<div class="loading">Carregando clientes do lote…</div>';
+  dialog.showModal();
+  try {
+    const detail = await api(`/api/batches/${encodeURIComponent(batchId)}`);
+    const batch = detail.batch || {};
+    $("#batch-client-title").textContent = `Clientes do lote ${String(batch.id || batchId).slice(0, 8)}`;
+    $("#batch-client-subtitle").textContent = `${batchStatusLabel(batch.status)} · ${formatDate(batch.created_at)}`;
+    const jobs = detail.jobs || [];
+    $("#batch-client-list").innerHTML = jobs.length ? jobs.map(job => {
+      const was = job.was_attempts ? `WEB: ${job.was_attempts} tentativa(s) · ${job.was_retry_outcome || "sem resultado"}` : "WEB: sem tentativa registrada";
+      return `<article class="batch-client-row"><div><strong>${escapeHtml(job.client_id)}</strong><span>${escapeHtml(JOB_PHASE_LABELS[job.phase] || job.phase)} · ${escapeHtml(job.status)} · tentativa ${Number(job.attempt_number || 1)}</span></div><div><span>${escapeHtml(was)}</span>${job.error_code ? `<small>${escapeHtml(job.error_code)} · ${escapeHtml(job.error_message || "")}</small>` : ""}</div></article>`;
+    }).join("") : '<div class="loading">Nenhum cliente registrado neste lote.</div>';
+  } catch (error) {
+    $("#batch-client-list").innerHTML = `<div class="loading">${escapeHtml(error.message)}</div>`;
+  }
 }
 
 function analystOptions(records) {
@@ -1052,6 +1082,13 @@ $("#cleanup-button").addEventListener("click", async event => {
 });
 $("#run-all-button").addEventListener("click", () => {
   openRunSelection();
+});
+$("#batch-select").addEventListener("change", event => {
+  state.selectedBatchId = event.target.value;
+  renderBatches();
+});
+document.querySelector("[data-open-batch-clients]").addEventListener("click", () => {
+  void openBatchClients(state.selectedBatchId);
 });
 $("#retry-incomplete-button").addEventListener("click", async event => {
   const batch = (state.data?.batches || []).find(item => item.id === state.selectedBatchId);

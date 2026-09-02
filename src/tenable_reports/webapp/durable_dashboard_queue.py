@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from tenable_reports.application.execution_control import FileExecutionControl
+from tenable_reports.application.failures import classify_failure
 from tenable_reports.application.web_batches import (
     BatchClientConflictError,
     BatchConfirmationError,
@@ -748,6 +749,23 @@ class DurableDashboardJobQueue:
         batch = self.repository.get_batch(normalized_id)
         if batch is None:
             raise KeyError("Lote nao encontrado.")
+        events = self.repository.list_events(normalized_id)
+        was_by_job: dict[UUID, dict[str, Any]] = {}
+        for event in events:
+            if event.job_id is None or event.event_type != "JOB_PROGRESS":
+                continue
+            payload = event.payload
+            if str(payload.get("source") or "") != "tenable_was_findings":
+                continue
+            status = str(payload.get("status") or "").upper()
+            summary = was_by_job.setdefault(
+                event.job_id,
+                {"attempts": 0, "outcome": None},
+            )
+            if status == "STARTED":
+                summary["attempts"] += 1
+            if status:
+                summary["outcome"] = status
         return {
             "batch": {
                 "id": str(batch.id),
@@ -787,6 +805,13 @@ class DurableDashboardJobQueue:
                     "remote_ended_at": job.remote_ended_at,
                     "build_started_at": job.build_started_at,
                     "ended_at": job.ended_at,
+                    "was_attempts": int(
+                        was_by_job.get(job.id, {}).get("attempts") or 0
+                    ),
+                    "was_retry_performed": int(
+                        was_by_job.get(job.id, {}).get("attempts") or 0
+                    ) > 1,
+                    "was_retry_outcome": was_by_job.get(job.id, {}).get("outcome"),
                 }
                 for job in self.repository.list_batch_jobs(normalized_id)
             ],
@@ -797,7 +822,7 @@ class DurableDashboardJobQueue:
                     "payload": _safe_dashboard_value(event.payload),
                     "created_at": event.created_at,
                 }
-                for event in self.repository.list_events(normalized_id)
+                for event in events
             ],
         }
 
@@ -969,6 +994,11 @@ class DurableDashboardJobQueue:
             status = BatchJobStatus.COMPLETE
         else:
             status = BatchJobStatus.FAILED
+        failure = classify_failure(result) if status is BatchJobStatus.FAILED else None
+        if failure is not None:
+            result["error_code"] = failure.code.value
+            result["retryable"] = failure.retryable
+            result["error"] = failure.message
         return BatchJobResult(
             status=status,
             exit_code=(
@@ -984,12 +1014,12 @@ class DurableDashboardJobQueue:
             error_code=(
                 "INTERRUPTED_BY_USER"
                 if status is BatchJobStatus.INTERRUPTED
-                else "UNEXPECTED"
+                else failure.code.value
                 if status is BatchJobStatus.FAILED
                 else None
             ),
             error_message=(
-                str(result.get("error") or "Falha operacional sem detalhe.")[:500]
+                failure.message[:500]
                 if status is BatchJobStatus.FAILED
                 else None
             ),

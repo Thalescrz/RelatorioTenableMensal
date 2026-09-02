@@ -336,6 +336,18 @@ def test_frontend_exposes_contextual_durable_batch_controls() -> None:
     assert ".batch-actions" in css
 
 
+def test_frontend_exposes_recent_batch_selector_and_client_detail() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+    css = (STATIC / "app.css").read_text(encoding="utf-8")
+    assert 'id="batch-select"' in html
+    assert 'id="batch-client-dialog"' in html
+    assert "data-open-batch-clients" in javascript
+    assert "/api/batches/" in javascript
+    assert "was_attempts" in javascript
+    assert ".batch-client-row" in css
+
+
 def test_generate_all_uses_per_client_conflicts_instead_of_global_batch_lock() -> None:
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     javascript = (STATIC / "app.js").read_text(encoding="utf-8")

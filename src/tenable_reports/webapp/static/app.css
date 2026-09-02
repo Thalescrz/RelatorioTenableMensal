@@ -251,6 +251,16 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
 
 .batch-panel { margin-top: 14px; border: 1px solid rgba(109,169,255,.28); border-radius: 16px; padding: 20px; background: linear-gradient(135deg, rgba(109,169,255,.075), rgba(23,28,33,.8)); }
 .batch-panel-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; }
+.batch-panel-picker { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.batch-panel-picker label { color: var(--muted); font-size: 9px; }
+.batch-panel-picker select { min-width: 210px; min-height: 34px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: #11171c; padding: 0 9px; font-size: 10px; }
+.batch-client-dialog { width: min(850px, calc(100vw - 28px)); }
+.batch-client-list { display: grid; gap: 8px; padding-bottom: 26px; }
+.batch-client-row { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(240px, 1.2fr); gap: 16px; padding: 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.batch-client-row strong, .batch-client-row span, .batch-client-row small { display: block; overflow-wrap: anywhere; }
+.batch-client-row strong { font: 600 13px var(--display); }
+.batch-client-row span { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.batch-client-row small { margin-top: 5px; color: var(--red); font-size: 9px; }
 .batch-panel-head h2 { margin: 0; font: 600 21px var(--display); }
 .batch-state { padding: 6px 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font: 700 9px var(--display); letter-spacing: .08em; text-transform: uppercase; }
 .batch-state[data-status="RUNNING"] { color: var(--blue); border-color: rgba(109,169,255,.35); }
@@ -305,6 +315,6 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
   .selection-toolbar { grid-template-columns: 1fr; }.selection-row { grid-template-columns: 1fr; }.selection-conflict { align-items: flex-start; flex-direction: column; }.selection-conflict span { white-space: normal; }.selection-footer { align-items: stretch; flex-direction: column; }.selection-footer .button { width: 100%; }.analyst-row { align-items: stretch; flex-direction: column; }.analyst-actions { justify-content: flex-start; }
   .report-row { grid-template-columns: 1fr; }.report-actions { justify-content: flex-start; }.component-retry-footer { align-items: stretch; flex-direction: column; }.component-retry-footer .button { width: 100%; }
   .storage-strip { align-items: stretch; flex-direction: column; gap: 8px; }.storage-strip button { margin-left: 0; }
-  .batch-panel-head { align-items: stretch; flex-direction: column; }.batch-state { align-self: flex-start; }.batch-panel-body { grid-template-columns: 1fr; }.batch-phase-summary { grid-template-columns: 1fr 1fr; }.batch-counters { grid-template-columns: 1fr 1fr; }.batch-actions { justify-content: stretch; max-width: none; }.batch-actions .button { flex: 1 1 145px; }.batch-choice-options { grid-template-columns: 1fr; }
+  .batch-panel-head { align-items: stretch; flex-direction: column; }.batch-panel-picker { justify-content: flex-start; }.batch-panel-picker select { width: 100%; }.batch-state { align-self: flex-start; }.batch-panel-body { grid-template-columns: 1fr; }.batch-phase-summary { grid-template-columns: 1fr 1fr; }.batch-counters { grid-template-columns: 1fr 1fr; }.batch-actions { justify-content: stretch; max-width: none; }.batch-actions .button { flex: 1 1 145px; }.batch-choice-options { grid-template-columns: 1fr; }.batch-client-row { grid-template-columns: 1fr; }
   .backfill-intro { grid-template-columns: auto 1fr; }.backfill-intro .button { grid-column: 1 / -1; }.backfill-summary { grid-template-columns: 1fr 1fr; }.backfill-actions { align-items: stretch; flex-direction: column; }.backfill-actions .button { width: 100%; }
 }
