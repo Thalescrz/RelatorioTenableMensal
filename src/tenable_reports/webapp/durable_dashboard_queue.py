@@ -69,7 +69,7 @@ class DurableDashboardJobQueue:
         repository: WebBatchRepository,
         executor: Any,
         worker_id: str,
-        poll_interval: float = 0.25,
+        poll_interval: float = 5.0,
         start_worker: bool = True,
         remote_runner: DurableRunner | None = None,
         build_runner: DurableRunner | None = None,
@@ -835,6 +835,7 @@ class DurableDashboardJobQueue:
                 requested_phase=BatchJobPhase.READY_FOR_BUILD,
                 collection_checkpoint_path=checkpoint,
             )
+            self._dispatcher.wake()
             return
         self.repository.complete_job(job.id, replace(result, payload=payload))
 

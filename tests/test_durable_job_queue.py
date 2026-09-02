@@ -859,6 +859,9 @@ def test_dashboard_bootstraps_automatic_remote_capacity_and_serial_build(tmp_pat
     assert by_phase[(BatchJobPhase.LEGACY.value,)] == 1
     assert by_phase[(BatchJobPhase.REMOTE_QUEUED.value,)] == 20
     assert by_phase[(BatchJobPhase.READY_FOR_BUILD.value,)] == 1
+    assert {
+        item["idle_poll_interval_seconds"] for item in capacities
+    } == {5.0}
 
 
 def test_staged_workers_construct_collect_then_build_commands(tmp_path) -> None:

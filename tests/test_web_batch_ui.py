@@ -45,6 +45,25 @@ def _run_selection_script(source: str) -> object:
     return json.loads(completed.stdout)
 
 
+def _run_report_request_guard_script(source: str) -> object:
+    script_path = STATIC / "report_request_guard.js"
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            (
+                f"const helpers = require({json.dumps(str(script_path))});"
+                f"const result = (() => {{ {source} }})();"
+                "process.stdout.write(JSON.stringify(result));"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
+
+
 def test_client_selection_helpers_filter_by_query_analyst_and_unassigned() -> None:
     clients = [
         {
@@ -95,6 +114,50 @@ def test_responsible_analyst_draft_preserves_explicit_empty_value() -> None:
         "helpers.resolveResponsibleAnalystValue('ana-2', 'ana-1')"
         "];"
     ) == ["ana-1", "", "ana-2"]
+
+
+def test_client_update_merges_saved_fields_without_losing_operational_state() -> None:
+    assert _run_selection_script(
+        "return helpers.mergeSavedClient(["
+        "{ client_id: 'a', responsible_analyst_id: null, job: { status: 'RUNNING' } }"
+        "], { client_id: 'a', responsible_analyst_id: 'analyst-1' });"
+    ) == [
+        {
+            "client_id": "a",
+            "responsible_analyst_id": "analyst-1",
+            "job": {"status": "RUNNING"},
+        }
+    ]
+
+
+def test_client_save_confirms_immediately_without_waiting_for_full_state() -> None:
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+    start = javascript.index('clientForm.addEventListener("submit"')
+    end = javascript.index('$("#run-form").addEventListener', start)
+    submit = javascript[start:end]
+
+    assert 'button.textContent = "Salvando' in submit
+    assert "mergeSavedClient" in submit
+    assert "await refresh()" not in submit
+
+
+def test_report_request_guard_rejects_a_late_response_from_previous_client() -> None:
+    assert _run_report_request_guard_script(
+        "const guard = helpers.createLatestRequestGuard();"
+        "const first = guard.begin('client-a');"
+        "const second = guard.begin('client-b');"
+        "return [guard.isCurrent(first), guard.isCurrent(second), "
+        "guard.currentClientId()];"
+    ) == [False, True, "client-b"]
+
+
+def test_frontend_uses_request_guard_when_loading_client_reports() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    assert html.index("report_request_guard.js") < html.index("app.js")
+    assert "reportRequestGuard.begin(clientId)" in javascript
+    assert "reportRequestGuard.isCurrent(reportRequest)" in javascript
 
 
 def test_frontend_exposes_analyst_filters_selection_modal_and_management() -> None:

@@ -107,6 +107,7 @@ class DurableWorkerPool:
             "phases": tuple(phase.value for phase in self.phases),
             "workers": self.worker_count,
             "live_workers": live_workers,
+            "idle_poll_interval_seconds": self.poll_interval,
         }
 
     def wake(self) -> None:

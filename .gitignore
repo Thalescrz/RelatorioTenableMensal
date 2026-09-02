@@ -31,3 +31,4 @@ outputs/
 reports_generated/
 clients/managed/
 orchestration/clients.json
+orchestration/analysts.json

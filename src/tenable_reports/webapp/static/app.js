@@ -1,5 +1,7 @@
-const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue } = window.TenableClientSelection;
+const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue, mergeSavedClient } = window.TenableClientSelection;
 const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "", selectedBatchId: null, componentRetryRunId: null, componentRetryState: null };
+const { createLatestRequestGuard } = window.TenableReportRequestGuard;
+const reportRequestGuard = createLatestRequestGuard();
 const CLOUD_PROGRESS_EVENT = "TENABLE_CLOUD_PROGRESS";
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
@@ -555,6 +557,7 @@ function enhanceComponentActions() {
 
 async function openClient(clientId) {
   const client = state.data.clients.find(c => c.client_id === clientId); if (!client) return;
+  const reportRequest = reportRequestGuard.begin(clientId);
   state.selectedClient = clientId;
   $("#detail-title").textContent = client.display_name; $("#detail-subtitle").textContent = `${client.client_id} · ${client.tenant_id || "sem tenant"}`;
   const status = statusFor(client); const warning = client.job?.error || client.job?.warnings?.[0]?.message || client.alert?.message || client.profile_error || (!client.credentials_ready ? "As credenciais Tenable ainda não foram preenchidas." : client.cloud_enabled && !client.cloud_token_saved ? "Cloud Security está ativo, mas o token Cloud ainda não foi salvo. Os relatórios VM continuam disponíveis." : "");
@@ -564,8 +567,12 @@ async function openClient(clientId) {
   $("#detail-run-button").disabled = !client.enabled || !client.credentials_ready || ["QUEUED","RUNNING"].includes(client.job?.status);
   $("#detail-check-button").disabled = !client.credentials_ready;
   $("#report-list").innerHTML = '<div class="loading">Carregando relatórios…</div>'; $("#client-dialog").showModal();
+  state.currentReports = [];
+  $("#reports-count").textContent = "...";
   try {
-    const payload = await api(`/api/clients/${encodeURIComponent(clientId)}/reports?include_deleted=true`); const reports = payload.reports || [];
+    const payload = await api(`/api/clients/${encodeURIComponent(clientId)}/reports?include_deleted=true`);
+    if (!reportRequestGuard.isCurrent(reportRequest)) return;
+    const reports = payload.reports || [];
     state.currentReports = reports;
     $("#reports-count").textContent = `${reports.length} execução(ões)`;
     $("#report-list").innerHTML = reports.length ? reports.map(report => {
@@ -585,7 +592,11 @@ async function openClient(clientId) {
     }).join("") : '<div class="loading">Nenhum relatório gerado para este cliente.</div>';
     enhanceComponentActions();
     bindReportActions();
-  } catch (error) { $("#report-list").innerHTML = `<div class="loading">${escapeHtml(error.message)}</div>`; }
+  } catch (error) {
+    if (reportRequestGuard.isCurrent(reportRequest)) {
+      $("#report-list").innerHTML = `<div class="loading">${escapeHtml(error.message)}</div>`;
+    }
+  }
 }
 
 function bindReportActions() {
@@ -899,6 +910,7 @@ function toast(message, type = "success") {
 }
 
 document.querySelectorAll(".close-dialog").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
+$("#client-dialog").addEventListener("close", () => reportRequestGuard.invalidate());
 $("#manage-button").addEventListener("click", () => $("#manage-dialog").showModal());
 $("#analyst-form").addEventListener("submit", async event => {
   event.preventDefault();
@@ -1249,7 +1261,12 @@ $("#tag-search-input").addEventListener("input", event => {
 });
 
 clientForm.addEventListener("submit", async event => {
-  event.preventDefault(); const form = new FormData(event.currentTarget); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
+  event.preventDefault();
+  const form = new FormData(event.currentTarget);
+  const button = event.currentTarget.querySelector('button[type="submit"]');
+  const originalButtonText = button.textContent;
+  button.disabled = true;
+  button.textContent = "Salvando...";
   const payload = Object.fromEntries(form.entries()); ["intelligence_enabled","was_enabled","cloud_enabled","include_output","show_source_filters","tag_reports_enabled"].forEach(name => payload[name] = form.has(name));
   payload.responsible_analyst_id = String(payload.responsible_analyst_id || "").trim() || null;
   payload.tag_reports = state.availableTags.filter(tag => tag.generate_report).map(tag => ({
@@ -1263,8 +1280,20 @@ clientForm.addEventListener("submit", async event => {
   const editing = state.editingClientId;
   const path = editing ? `/api/clients/${encodeURIComponent(editing)}` : "/api/clients";
   const method = editing ? "PATCH" : "POST";
-  try { await api(path, { method, body: payload }); resetClientForm(); await refresh(); toast(editing ? "Cliente atualizado." : "Cliente adicionado."); }
-  catch (error) { toast(error.message, "error"); } finally { button.disabled = false; }
+  try {
+    const response = await api(path, { method, body: payload });
+    if (state.data && response.client) {
+      state.data.clients = mergeSavedClient(state.data.clients, response.client);
+    }
+    resetClientForm();
+    render();
+    toast(editing ? "Cliente atualizado." : "Cliente adicionado.");
+  } catch (error) {
+    button.textContent = originalButtonText;
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
 });
 
 $("#run-form").addEventListener("submit", async event => {

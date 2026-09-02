@@ -49,9 +49,22 @@
     return draftValue === undefined ? (persistedValue || "") : draftValue;
   }
 
+  function mergeSavedClient(clients, savedClient) {
+    const current = Array.isArray(clients) ? clients : [];
+    if (!savedClient || !savedClient.client_id) return [...current];
+    const index = current.findIndex(
+      client => client.client_id === savedClient.client_id
+    );
+    if (index < 0) return [...current, { ...savedClient }];
+    return current.map((client, position) => (
+      position === index ? { ...client, ...savedClient } : client
+    ));
+  }
+
   return {
     filterClients,
     selectionForVisibleClients,
     resolveResponsibleAnalystValue,
+    mergeSavedClient,
   };
 }));
