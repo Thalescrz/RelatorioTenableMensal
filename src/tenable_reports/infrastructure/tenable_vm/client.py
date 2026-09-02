@@ -88,8 +88,8 @@ class TenableVmConfig:
     timeout_seconds: float = 30.0
     poll_seconds: float = 10.0
     max_poll_seconds: float = 30.0
-    max_wait_seconds: float = 1800.0
-    max_processing_wait_seconds: float = 7200.0
+    max_wait_seconds: float = 36000.0
+    max_processing_wait_seconds: float = 36000.0
     stall_warning_seconds: float = 1800.0
     no_progress_timeout_seconds: float | None = None
     max_attempts: int = 5
@@ -642,6 +642,11 @@ class TenableVmClient:
         last_finished_chunks = 0
         last_empty_chunks = 0
         idle_polls = 0
+        consecutive_status_errors = 0
+        total_wait_limit = max(
+            self.config.max_wait_seconds,
+            self.config.max_processing_wait_seconds,
+        )
 
         def raise_if_cancelled() -> None:
             if cancellation_probe is not None and cancellation_probe():
@@ -652,7 +657,51 @@ class TenableVmClient:
 
         while True:
             raise_if_cancelled()
-            status = status_loader(export_uuid)
+            try:
+                status = status_loader(export_uuid)
+            except ApiError as exc:
+                if (
+                    exc.status_code is not None
+                    and exc.status_code not in TRANSIENT_STATUS_CODES
+                ):
+                    raise
+                consecutive_status_errors += 1
+                now = self.monotonic()
+                elapsed = max(0.0, now - started)
+                error_progress = {
+                    "export_uuid": export_uuid,
+                    "status": last_state.upper() or "UNKNOWN",
+                    "status_query_ok": False,
+                    "status_query_error": str(exc),
+                    "consecutive_status_errors": consecutive_status_errors,
+                    "completed_chunks": len(seen),
+                    "total_chunks": 0,
+                    "elapsed_seconds": round(elapsed, 3),
+                    "progress_made": progress_made,
+                }
+                if progress_callback is not None:
+                    try:
+                        progress_callback(error_progress)
+                    except Exception:
+                        LOGGER.exception(
+                            "Falha ignorada no callback de progresso do export."
+                        )
+                if elapsed >= total_wait_limit:
+                    raise ExportTimeoutError(
+                        f"Tempo maximo excedido consultando o export {label}.",
+                        export_uuid=export_uuid,
+                        last_status={**error_progress, "timeout_phase": "status_query"},
+                        progress_made=progress_made,
+                        timeout_phase="status_query",
+                    ) from exc
+                idle_polls += 1
+                delay = min(
+                    self.config.max_poll_seconds,
+                    self.config.poll_seconds * max(1, idle_polls),
+                )
+                self.sleep(delay)
+                continue
+            consecutive_status_errors = 0
             state = str(status.get("status") or status.get("state") or "").strip().lower()
             current = self.completed_chunk_ids(status)
             now = self.monotonic()
@@ -725,6 +774,8 @@ class TenableVmClient:
                 **status,
                 "export_uuid": export_uuid,
                 "status": state.upper() or "UNKNOWN",
+                "status_query_ok": True,
+                "consecutive_status_errors": 0,
                 "completed_chunks": max(len(seen), finished_chunks),
                 "total_chunks": self.chunk_count(status, "total_chunks"),
                 "failed_chunks": failed_chunks,
@@ -790,6 +841,14 @@ class TenableVmClient:
                     last_status={**progress, "timeout_phase": "processing"},
                     progress_made=progress_made,
                     timeout_phase="processing",
+                )
+            if processing_started_at is not None and elapsed >= total_wait_limit:
+                raise ExportTimeoutError(
+                    f"Tempo maximo total excedido aguardando o export {label}.",
+                    export_uuid=export_uuid,
+                    last_status={**progress, "timeout_phase": "total"},
+                    progress_made=progress_made,
+                    timeout_phase="total",
                 )
 
             last_state = state

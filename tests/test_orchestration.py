@@ -287,7 +287,7 @@ class OrchestrationTests(unittest.TestCase):
         self.assertTrue(config.cleanup_after_publish)
         self.assertEqual(config.remote_collection_workers, 0)
         self.assertEqual(config.local_build_workers, 1)
-        self.assertEqual(config.remote_processing_timeout_seconds, 7200)
+        self.assertEqual(config.remote_processing_timeout_seconds, 36000)
         self.assertEqual(config.remote_progress_warning_seconds, 900)
         self.assertEqual(config.max_clients_per_batch, 64)
 

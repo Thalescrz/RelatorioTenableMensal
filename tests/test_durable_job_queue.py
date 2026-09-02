@@ -23,6 +23,7 @@ from tenable_reports.domain.web_batches import (
     BatchJobStatus,
     BatchStatus,
     WebBatch,
+    WebBatchEvent,
     WebBatchJob,
 )
 from tenable_reports.webapp.durable_dashboard_queue import (
@@ -583,6 +584,89 @@ def test_dashboard_queue_persists_completed_jobs_across_recreation(tmp_path) -> 
     assert all(row["export_progress"]["status"] == "FINISHED" for row in second_snapshot)
 
 
+def test_dashboard_snapshot_loads_batches_jobs_and_events_once(tmp_path) -> None:
+    class TrackingRepository(InMemoryWebBatchRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = {
+                "list_batches": 0,
+                "list_batch_jobs_for_batches": 0,
+                "list_events_for_batches": 0,
+            }
+
+        def list_batches(self, *, limit: int = 50):
+            self.calls["list_batches"] += 1
+            return super().list_batches(limit=limit)
+
+        def list_batch_jobs_for_batches(self, batch_ids):
+            self.calls["list_batch_jobs_for_batches"] += 1
+            return super().list_batch_jobs_for_batches(batch_ids)
+
+        def list_events_for_batches(self, batch_ids):
+            self.calls["list_events_for_batches"] += 1
+            return super().list_events_for_batches(batch_ids)
+
+    repository = TrackingRepository()
+    for index in range(1, 8):
+        batch_id = UUID(int=1000 + index)
+        status = (
+            BatchJobStatus.QUEUED
+            if index <= 2
+            else BatchJobStatus.COMPLETE
+        )
+        repository.create_batch(
+            WebBatch(
+                id=batch_id,
+                idempotency_key=f"batch:snapshot:{index}",
+                kind="GENERATE_ONE",
+                status=(
+                    BatchStatus.RUNNING
+                    if index <= 2
+                    else BatchStatus.COMPLETE
+                ),
+                created_at=f"2026-09-01T12:{index:02d}:00Z",
+            ),
+            (
+                WebBatchJob(
+                    id=UUID(int=2000 + index),
+                    batch_id=batch_id,
+                    client_id=f"client-{index}",
+                    position=1,
+                    status=status,
+                    attempt_number=1,
+                    created_at=f"2026-09-01T12:{index:02d}:00Z",
+                ),
+            ),
+        )
+    repository.calls = {key: 0 for key in repository.calls}
+    legacy = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=legacy,
+        worker_id="worker-snapshot",
+        start_worker=False,
+    )
+    repository.calls = {key: 0 for key in repository.calls}
+    try:
+        snapshot = queue.dashboard_snapshot()
+    finally:
+        queue.close()
+
+    assert repository.calls == {
+        "list_batches": 1,
+        "list_batch_jobs_for_batches": 1,
+        "list_events_for_batches": 1,
+    }
+    assert snapshot.active_job_count == 2
+    assert snapshot.jobs[0]["created_at"] >= snapshot.jobs[-1]["created_at"]
+    assert len(snapshot.batches) == 7
+
+
 def test_dashboard_application_groups_generate_all_in_one_durable_batch(tmp_path) -> None:
     repository = InMemoryWebBatchRepository()
 
@@ -832,6 +916,111 @@ def test_staged_retry_with_missing_checkpoint_returns_to_remote_phase(tmp_path) 
     assert stored.collection_checkpoint_path is None
 
 
+def test_batch_detail_summarizes_was_retry_events(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    batch = _batch(status=BatchStatus.COMPLETE_WITH_FAILURES)
+    job = replace(_job(1, status=BatchJobStatus.FAILED), phase=BatchJobPhase.TERMINAL)
+    repository.create_batch(batch, (job,))
+    for status in ("STARTED", "STARTED", "TIMED_OUT"):
+        repository.append_event(WebBatchEvent(
+            batch_id=batch.id,
+            job_id=job.id,
+            event_type="JOB_PROGRESS",
+            payload={"event": "TENABLE_EXPORT_PROGRESS", "source": "tenable_was_findings", "status": status},
+        ))
+    legacy = JobQueue(tmp_path, tmp_path / "orchestration" / "clients.json", lambda *args, **kwargs: None, start_worker=False)
+    queue = DurableDashboardJobQueue(repository=repository, executor=legacy, worker_id="worker-detail", start_worker=False)
+    try:
+        detail = queue.batch_snapshot(batch.id)
+    finally:
+        queue.close()
+    assert detail["jobs"][0]["was_attempts"] == 2
+    assert detail["jobs"][0]["was_retry_performed"] is True
+    assert detail["jobs"][0]["was_retry_outcome"] == "TIMED_OUT"
+
+
+def test_executor_preserves_structured_failure_classification(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    legacy = JobQueue(tmp_path, tmp_path / "orchestration" / "clients.json", lambda *args, **kwargs: None, start_worker=False)
+    queue = DurableDashboardJobQueue(repository=repository, executor=legacy, worker_id="worker-failure", start_worker=False)
+    job = _job(1)
+    def fail(job_id: str) -> None:
+        with legacy._lock:
+            legacy._jobs[job_id].update(
+                status="FAILED",
+                exit_code=2,
+                error="Tempo maximo excedido na fila do export VM.",
+                error_code="TENABLE_TEMPORARY",
+                retryable=True,
+            )
+    legacy._run = fail
+    try:
+        result = queue._run_executor_job(job)
+    finally:
+        queue.close()
+    assert result.error_code == "TENABLE_TEMPORARY"
+    assert result.payload["retryable"] is True
+
+
+def test_vm_progress_is_persisted_on_job_before_retry_derivation(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(_job(1, status=BatchJobStatus.RUNNING), phase=BatchJobPhase.REMOTE_RUNNING)
+    repository.create_batch(batch, (job,))
+    legacy = JobQueue(tmp_path, tmp_path / "orchestration" / "clients.json", lambda *args, **kwargs: None, start_worker=False)
+    queue = DurableDashboardJobQueue(repository=repository, executor=legacy, worker_id="worker-vm-state", start_worker=False)
+    with queue._active_lock:
+        queue._active_jobs[job.id.hex] = job
+    try:
+        queue._persist_progress(job.id.hex, {
+            "event": "TENABLE_EXPORT_PROGRESS",
+            "source": "tenable_vm_vulnerabilities",
+            "export_uuid": "00000000-0000-0000-0000-000000000777",
+            "origin": "created",
+            "status": "STARTED",
+            "status_query_ok": False,
+            "completed_chunks": 0,
+            "total_chunks": 0,
+            "persisted_chunks": [],
+            "partial_manifest": str((tmp_path / "manifest.partial.json").resolve()),
+        })
+        started = repository.list_batch_jobs(batch.id)[0]
+        queue._persist_progress(job.id.hex, {
+            "event": "TENABLE_EXPORT_PROGRESS",
+            "source": "tenable_vm_vulnerabilities",
+            "export_uuid": "00000000-0000-0000-0000-000000000777",
+            "origin": "created",
+            "status": "PROCESSING",
+            "status_query_ok": True,
+            "completed_chunks": 1,
+            "total_chunks": 2,
+            "persisted_chunks": [1],
+            "partial_manifest": str((tmp_path / "manifest.partial.json").resolve()),
+        })
+        stored = repository.list_batch_jobs(batch.id)[0]
+        confirmed_at = stored.remote_status_at
+        queue._persist_progress(job.id.hex, {
+            "event": "TENABLE_EXPORT_PROGRESS",
+            "source": "tenable_vm_vulnerabilities",
+            "export_uuid": "00000000-0000-0000-0000-000000000777",
+            "status": "PROCESSING",
+            "status_query_ok": False,
+            "status_query_error": "HTTP 503",
+        })
+        after_transient_error = repository.list_batch_jobs(batch.id)[0]
+    finally:
+        queue.close()
+    assert started.vm_export_uuid == "00000000-0000-0000-0000-000000000777"
+    assert started.remote_export_started_at is not None
+    assert started.remote_status_at is None
+    assert stored.vm_export_uuid == "00000000-0000-0000-0000-000000000777"
+    assert stored.vm_resume_manifest_path.endswith("manifest.partial.json")
+    assert stored.remote_export_started_at is not None
+    assert stored.remote_status_at is not None
+    assert stored.remote_progress_at is not None
+    assert after_transient_error.remote_status_at == confirmed_at
+
+
 def test_dashboard_bootstraps_automatic_remote_capacity_and_serial_build(tmp_path) -> None:
     config_path = tmp_path / "orchestration" / "clients.json"
     store = DashboardConfigStore(project_root=tmp_path, config_path=config_path)
@@ -921,7 +1110,7 @@ def test_staged_workers_construct_collect_then_build_commands(tmp_path) -> None:
     collect_command, build_command = commands
     assert "--confirm-live-api" in collect_command
     assert "--confirm-live-api" not in build_command
-    assert collect_command[collect_command.index("--remote-processing-timeout-seconds") + 1] == "7200"
+    assert collect_command[collect_command.index("--remote-processing-timeout-seconds") + 1] == "36000"
     assert collect_command[collect_command.index("--remote-progress-warning-seconds") + 1] == "900"
     assert "--job-control-file" in collect_command
     assert "--job-control-file" in build_command

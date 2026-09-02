@@ -207,6 +207,20 @@ def test_tampered_artifact_is_rejected_before_local_builder(tmp_path: Path) -> N
     assert builder_calls == []
 
 
+def test_missing_artifact_is_classified_before_local_builder(tmp_path: Path) -> None:
+    request, _ = _persist_valid_checkpoint(tmp_path)
+    (tmp_path / "raw" / "vm.gz").unlink()
+    with pytest.raises(CheckpointValidationError) as raised:
+        build_client_local(
+            LocalBuildRequest(
+                storage_root=request.storage_root,
+                checkpoint_path=request.checkpoint_path,
+            ),
+            dependencies=LocalBuildDependencies(build=lambda checkpoint: checkpoint),
+        )
+    assert raised.value.failure_code == "CHECKPOINT_ARTIFACT_MISSING"
+
+
 def test_local_build_validates_checkpoint_and_has_no_live_api_dependency(
     tmp_path: Path,
 ) -> None:

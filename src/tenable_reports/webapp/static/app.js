@@ -2,6 +2,21 @@ const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValu
 const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "", selectedBatchId: null, componentRetryRunId: null, componentRetryState: null };
 const { createLatestRequestGuard } = window.TenableReportRequestGuard;
 const reportRequestGuard = createLatestRequestGuard();
+const { createRefreshCoordinator } = window.TenableDashboardRefresh;
+let refreshErrorShouldToast = false;
+const refreshCoordinator = createRefreshCoordinator({
+  load: () => api("/api/state"),
+  apply: payload => {
+    state.data = payload;
+    render();
+    refreshErrorShouldToast = false;
+  },
+  onError: error => {
+    if (refreshErrorShouldToast) toast(error.message, "error");
+    $("#connection-label").textContent = "servidor indisponível";
+    refreshErrorShouldToast = false;
+  },
+});
 const CLOUD_PROGRESS_EVENT = "TENABLE_CLOUD_PROGRESS";
 const $ = (selector) => document.querySelector(selector);
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
@@ -227,10 +242,20 @@ async function runBatchAction(button, batch, action) {
 
 function renderBatches() {
   const batches = state.data?.batches || [];
-  const batch = batches[0];
+  const stillExists = batches.some(item => item.id === state.selectedBatchId);
+  if (!stillExists) {
+    state.selectedBatchId = batches.find(item => !TERMINAL_BATCH_STATES.has(item.status))?.id || batches[0]?.id || null;
+  }
+  const batch = batches.find(item => item.id === state.selectedBatchId) || batches[0];
   const panel = $("#batch-panel");
   panel.classList.toggle("hidden", !batch);
   if (!batch) return;
+  const select = $("#batch-select");
+  select.innerHTML = batches.slice(0, 10).map(item => {
+    const date = item.created_at ? formatDate(item.created_at) : item.id.slice(0, 8);
+    return `<option value="${escapeHtml(item.id)}">${escapeHtml(date)} · ${escapeHtml(batchStatusLabel(item.status))}</option>`;
+  }).join("");
+  select.value = batch.id;
   const finished = Number(batch.completed_count || 0) + Number(batch.failed_count || 0) + Number(batch.interrupted_count || 0) + Number(batch.cancelled_count || 0);
   const recoveredPaused = batch.kind === "RECOVERED" && batch.status === "PAUSED";
   $("#batch-title").textContent = batch.kind === "GENERATE_ALL" ? "Geração da carteira" : batch.kind === "RECOVERED" ? "Lote recuperado" : batch.kind === "RETRY_INCOMPLETE" ? "Retentativa de incompletos" : batch.kind === "RERUN_ALL" ? "Nova geração integral" : "Geração individual";
@@ -270,6 +295,65 @@ function renderBatches() {
   if (TERMINAL_BATCH_STATES.has(batch.status) && batch.kind === "GENERATE_ALL") actions.push(["rerun-all", "Gerar novamente para todos", "ghost"]);
   $("#batch-actions").innerHTML = actions.map(([action, label, tone]) => `<button class="button ${tone}" data-batch-action="${action}" type="button">${label}</button>`).join("");
   document.querySelectorAll("[data-batch-action]").forEach(button => button.addEventListener("click", () => runBatchAction(button, batch, button.dataset.batchAction)));
+}
+
+async function openBatchClients(batchId) {
+  if (!batchId) return;
+  const dialog = $("#batch-client-dialog");
+  $("#batch-client-list").innerHTML = '<div class="loading">Carregando clientes do lote…</div>';
+  dialog.showModal();
+  try {
+    const detail = await api(`/api/batches/${encodeURIComponent(batchId)}`);
+    const batch = detail.batch || {};
+    $("#batch-client-title").textContent = `Clientes do lote ${String(batch.id || batchId).slice(0, 8)}`;
+    $("#batch-client-subtitle").textContent = `${batchStatusLabel(batch.status)} · ${formatDate(batch.created_at)}`;
+    const jobs = detail.jobs || [];
+    $("#batch-client-list").innerHTML = jobs.length ? jobs.map(job => {
+      const was = job.was_attempts ? `WEB: ${job.was_attempts} tentativa(s) · ${job.was_retry_outcome || "sem resultado"}` : "WEB: sem tentativa registrada";
+      const vm = job.vm_export || {};
+      const vmUuid = vm.export_uuid || job.vm_export_uuid;
+      const totalChunks = Number(vm.total_chunks || 0);
+      const chunkCopy = totalChunks === 0 && ["QUEUED", "PROCESSING", "STARTED"].includes(String(vm.status || "").toUpperCase())
+        ? "job aceito; a Tenable ainda não anunciou a quantidade de chunks"
+        : `${Number(vm.persisted_chunks || vm.completed_chunks || 0)}/${totalChunks} chunks`;
+      const vmCopy = vmUuid
+        ? `VM: ${String(vmUuid).slice(0, 8)}… · ${vm.status || "desconhecido"} · ${chunkCopy}`
+        : "VM: UUID ainda não registrado";
+      const remoteCopy = job.remote_status_at
+        ? `Tenable confirmou em ${formatDate(job.remote_status_at)} · último progresso ${formatDate(job.remote_progress_at)}`
+        : "";
+      const copyUuid = vmUuid
+        ? `<button class="mini-button" data-copy-vm-uuid="${escapeHtml(vmUuid)}" type="button">Copiar UUID</button>`
+        : "";
+      const retry = job.vm_export_uuid && ["FAILED", "INTERRUPTED", "CANCELLED_BY_USER"].includes(job.status)
+        ? `<button class="mini-button" data-retry-preserved-job="${escapeHtml(job.id)}" type="button">Verificar export preservado</button>`
+        : "";
+      return `<article class="batch-client-row"><div><strong>${escapeHtml(job.client_id)}</strong><span>${escapeHtml(JOB_PHASE_LABELS[job.phase] || job.phase)} · ${escapeHtml(job.status)} · tentativa ${Number(job.attempt_number || 1)}</span>${copyUuid}${retry}</div><div><span>${escapeHtml(vmCopy)}</span><span>${escapeHtml(remoteCopy)}</span><span>${escapeHtml(was)}</span>${job.error_code ? `<small>${escapeHtml(job.error_code)} · ${escapeHtml(job.error_message || "")}</small>` : ""}</div></article>`;
+    }).join("") : '<div class="loading">Nenhum cliente registrado neste lote.</div>';
+    dialog.querySelectorAll("[data-copy-vm-uuid]").forEach(button => button.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(button.dataset.copyVmUuid);
+        toast("UUID copiado.");
+      } catch (_error) {
+        toast("Não foi possível copiar o UUID automaticamente.", "error");
+      }
+    }));
+    dialog.querySelectorAll("[data-retry-preserved-job]").forEach(button => button.addEventListener("click", async () => {
+      if (!window.confirm("Consultar o mesmo UUID preservado e baixar apenas os chunks disponíveis? Esta ação não cria um export novo enquanto o UUID continuar válido.")) return;
+      button.disabled = true;
+      try {
+        await api(`/api/jobs/${encodeURIComponent(button.dataset.retryPreservedJob)}/retry`, { method: "POST", body: {} });
+        dialog.close();
+        await refresh(true, { ensureAfterCurrent: true });
+        toast("Verificação do export preservado adicionada à fila.");
+      } catch (error) {
+        toast(error.message, "error");
+        button.disabled = false;
+      }
+    }));
+  } catch (error) {
+    $("#batch-client-list").innerHTML = `<div class="loading">${escapeHtml(error.message)}</div>`;
+  }
 }
 
 function analystOptions(records) {
@@ -449,9 +533,9 @@ function render() {
   renderManageList(); renderAlerts();
 }
 
-async function refresh(silent = true) {
-  try { state.data = await api("/api/state"); render(); }
-  catch (error) { if (!silent) toast(error.message, "error"); $("#connection-label").textContent = "servidor indisponível"; }
+function refresh(silent = true, options = {}) {
+  if (!silent) refreshErrorShouldToast = true;
+  return refreshCoordinator.refresh(options);
 }
 
 function startBrowserDownload(url) {
@@ -1038,6 +1122,13 @@ $("#cleanup-button").addEventListener("click", async event => {
 $("#run-all-button").addEventListener("click", () => {
   openRunSelection();
 });
+$("#batch-select").addEventListener("change", event => {
+  state.selectedBatchId = event.target.value;
+  renderBatches();
+});
+document.querySelector("[data-open-batch-clients]").addEventListener("click", () => {
+  void openBatchClients(state.selectedBatchId);
+});
 $("#retry-incomplete-button").addEventListener("click", async event => {
   const batch = (state.data?.batches || []).find(item => item.id === state.selectedBatchId);
   if (!batch) return;
@@ -1351,7 +1442,7 @@ $("#run-form").addEventListener("submit", async event => {
   }
 
   const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
-  try { const result = await api("/api/jobs", { method: "POST", body: payload }); $("#run-dialog").close(); await refresh(); toast(`${result.jobs.length} execução(ões) adicionada(s) à fila.`); }
+  try { const result = await api("/api/jobs", { method: "POST", body: payload }); $("#run-dialog").close(); toast(`${result.jobs.length} execução(ões) adicionada(s) à fila.`); button.disabled = false; void refresh(true, { ensureAfterCurrent: true }); }
   catch (error) { toast(error.message, "error"); } finally { button.disabled = false; }
 });
 

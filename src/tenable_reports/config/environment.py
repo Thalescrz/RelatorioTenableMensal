@@ -82,8 +82,8 @@ class CredentialConfig:
     validate_tls: bool = True
     export_poll_seconds: float = 10.0
     export_max_poll_seconds: float = 30.0
-    export_queue_timeout_seconds: float = 1800.0
-    export_processing_timeout_seconds: float = 7200.0
+    export_queue_timeout_seconds: float = 36000.0
+    export_processing_timeout_seconds: float = 36000.0
     export_stall_warning_seconds: float = 1800.0
     manual_no_progress_seconds: float = 900.0
     automatic_no_progress_seconds: float = 1800.0
@@ -134,10 +134,10 @@ class CredentialConfig:
             export_poll_seconds=export_poll_seconds,
             export_max_poll_seconds=export_max_poll_seconds,
             export_queue_timeout_seconds=_positive_float(
-                values, "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS", 1800.0
+                values, "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS", 36000.0
             ),
             export_processing_timeout_seconds=_positive_float(
-                values, "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS", 7200.0
+                values, "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS", 36000.0
             ),
             export_stall_warning_seconds=_positive_float(
                 values, "TENABLE_EXPORT_STALL_WARNING_SECONDS", 1800.0

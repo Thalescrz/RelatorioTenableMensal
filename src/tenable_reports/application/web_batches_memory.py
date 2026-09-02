@@ -117,6 +117,10 @@ class InMemoryWebBatchRepository(WebBatchRepository):
         with self._lock:
             return self._batches.get(batch_id)
 
+    def get_job(self, job_id: UUID) -> WebBatchJob | None:
+        with self._lock:
+            return self._jobs.get(job_id)
+
     def list_batches(self, *, limit: int = 50) -> tuple[WebBatch, ...]:
         with self._lock:
             ordered = sorted(
@@ -127,17 +131,27 @@ class InMemoryWebBatchRepository(WebBatchRepository):
             return tuple(ordered[: max(1, min(int(limit), 500))])
 
     def list_batch_jobs(self, batch_id: UUID) -> tuple[WebBatchJob, ...]:
+        return self.list_batch_jobs_for_batches((batch_id,))[batch_id]
+
+    def list_batch_jobs_for_batches(
+        self,
+        batch_ids: Sequence[UUID],
+    ) -> dict[UUID, tuple[WebBatchJob, ...]]:
+        requested = tuple(dict.fromkeys(batch_ids))
         with self._lock:
-            return tuple(
-                sorted(
-                    (
-                        job
-                        for job in self._jobs.values()
-                        if job.batch_id == batch_id
-                    ),
-                    key=lambda job: (job.position, str(job.id)),
+            return {
+                batch_id: tuple(
+                    sorted(
+                        (
+                            job
+                            for job in self._jobs.values()
+                            if job.batch_id == batch_id
+                        ),
+                        key=lambda job: (job.position, str(job.id)),
+                    )
                 )
-            )
+                for batch_id in requested
+            }
 
     def record_job_process(
         self,
@@ -166,6 +180,59 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                     created_at=_now(),
                 )
             )
+            return updated
+
+    def record_vm_export_progress(
+        self,
+        job_id: UUID,
+        *,
+        export_uuid: str,
+        resume_manifest_path: str | None,
+        origin: str | None,
+        remote_status: str,
+        observed_at: str,
+        progress_at: str | None,
+        completed_chunks: int,
+        total_chunks: int,
+        persisted_chunks: Sequence[int],
+        status_confirmed: bool = True,
+    ) -> WebBatchJob:
+        with self._lock:
+            current = self._jobs[job_id]
+            if current.vm_export_uuid and current.vm_export_uuid != export_uuid:
+                raise ValueError("O UUID VM do trabalho nao pode ser substituido.")
+            payload = {
+                **dict(current.payload),
+                "vm_export_uuid": export_uuid,
+                "vm_resume_manifest": (
+                    resume_manifest_path or current.vm_resume_manifest_path
+                ),
+                "vm_remote": {
+                    "origin": origin,
+                    "status": remote_status,
+                    "completed_chunks": int(completed_chunks),
+                    "total_chunks": int(total_chunks),
+                    "persisted_chunks": [int(item) for item in persisted_chunks],
+                    "observed_at": observed_at,
+                    "progress_at": progress_at or current.remote_progress_at,
+                },
+            }
+            updated = replace(
+                current,
+                payload=payload,
+                vm_export_uuid=export_uuid,
+                vm_resume_manifest_path=(
+                    resume_manifest_path or current.vm_resume_manifest_path
+                ),
+                remote_export_started_at=(
+                    current.remote_export_started_at or observed_at
+                ),
+                remote_status_at=(
+                    observed_at if status_confirmed else current.remote_status_at
+                ),
+                remote_progress_at=progress_at or current.remote_progress_at,
+            )
+            self._jobs[job_id] = updated
             return updated
 
     def request_action(
@@ -649,10 +716,20 @@ class InMemoryWebBatchRepository(WebBatchRepository):
             )
 
     def list_events(self, batch_id: UUID) -> tuple[WebBatchEvent, ...]:
+        return self.list_events_for_batches((batch_id,))[batch_id]
+
+    def list_events_for_batches(
+        self,
+        batch_ids: Sequence[UUID],
+    ) -> dict[UUID, tuple[WebBatchEvent, ...]]:
+        requested = tuple(dict.fromkeys(batch_ids))
         with self._lock:
-            return tuple(
-                event for event in self._events if event.batch_id == batch_id
-            )
+            return {
+                batch_id: tuple(
+                    event for event in self._events if event.batch_id == batch_id
+                )
+                for batch_id in requested
+            }
 
     def reconcile_abandoned_jobs(
         self,

@@ -189,6 +189,43 @@ class TenableVmClientTests(unittest.TestCase):
         self.assertEqual(status["status"], "PROCESSING")
         self.assertEqual(sleeps, [7.0])
 
+    def test_polling_survives_exhausted_transient_status_retries_within_budget(self) -> None:
+        sleeps: list[float] = []
+        progress: list[dict[str, Any]] = []
+        client, transport = client_with(
+            [response(503, {}) for _ in range(5)]
+            + [
+                response(
+                    200,
+                    {
+                        "status": "FINISHED",
+                        "chunks_available": [1],
+                        "total_chunks": 1,
+                    },
+                )
+            ],
+            sleeps,
+        )
+
+        status, chunks = client.wait_for_completion(
+            "job-transient",
+            progress_callback=lambda value: progress.append(dict(value)),
+        )
+
+        self.assertEqual(status["status"], "FINISHED")
+        self.assertEqual(chunks, [1])
+        self.assertEqual(len(transport.calls), 6)
+        self.assertTrue(any(item.get("status_query_ok") is False for item in progress))
+        self.assertTrue(progress[-1]["status_query_ok"])
+
+    def test_polling_does_not_absorb_authentication_failure(self) -> None:
+        client, _ = client_with([response(401, {})])
+
+        with self.assertRaises(ApiError) as caught:
+            client.wait_for_completion("job-auth")
+
+        self.assertEqual(caught.exception.status_code, 401)
+
     def test_finished_without_chunks_is_valid_empty_export(self) -> None:
         client, _ = client_with([response(200, {"status": "FINISHED", "chunks_available": []})])
         status, chunks = client.wait_for_completion("job")
@@ -280,6 +317,39 @@ class TenableVmClientTests(unittest.TestCase):
 
         self.assertEqual(status["status"], "FINISHED")
         self.assertEqual(chunks, [8])
+
+    def test_equal_queue_and_processing_limits_form_one_total_budget(self) -> None:
+        transport = FakeTransport([
+            response(200, {
+                "status": "PROCESSING",
+                "chunks_available": [],
+                "total_chunks": 1,
+            }),
+            response(200, {
+                "status": "PROCESSING",
+                "chunks_available": [],
+                "total_chunks": 1,
+            }),
+        ])
+        times = iter((0.0, 3.0, 11.0))
+        client = TenableVmClient(
+            TenableVmConfig(
+                access_key="access-fixture",
+                secret_key="secret-fixture",
+                poll_seconds=0,
+                max_wait_seconds=10,
+                max_processing_wait_seconds=10,
+            ),
+            transport=transport,
+            sleep=lambda _: None,
+            monotonic=lambda: next(times),
+        )
+
+        with self.assertRaises(ExportTimeoutError) as caught:
+            client.wait_for_completion("job-total-budget")
+
+        self.assertEqual(caught.exception.timeout_phase, "total")
+        self.assertGreaterEqual(caught.exception.last_status["elapsed_seconds"], 10)
 
     def test_processing_timeout_reports_remote_progress_and_stall(self) -> None:
         transport = FakeTransport([

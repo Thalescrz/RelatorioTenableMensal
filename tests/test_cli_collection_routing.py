@@ -621,6 +621,7 @@ class CliCollectionRoutingTests(unittest.TestCase):
             self.assertEqual(collected.artifact.dataset_path, canonical_path)
             self.assertEqual(collected.dataset_path, canonical_path)
             self.assertEqual(collected.normalized_findings_path, normalized_path)
+            self.assertEqual(collected.output_root, root / "manual")
             self.assertEqual(len(collected.tag_artifacts), 1)
             tag_artifact = collected.tag_artifacts[0]
             self.assertEqual(tag_artifact.dataset_path, tag_path)

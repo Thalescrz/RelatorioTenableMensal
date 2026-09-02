@@ -51,9 +51,11 @@ class _Connection:
 class _Database:
     def __init__(self, cursors) -> None:
         self.connection_value = _Connection(cursors)
+        self.connection_calls = 0
 
     @contextmanager
     def connection(self):
+        self.connection_calls += 1
         yield self.connection_value
 
 
@@ -105,6 +107,11 @@ def _job_row(
         "2026-08-31T12:00:01Z" if phase == "REMOTE_RUNNING" else None,
         "2026-08-31T12:10:00Z" if phase == "READY_FOR_BUILD" else None,
         "2026-08-31T12:10:01Z" if phase == "BUILD_RUNNING" else None,
+        None,
+        None,
+        None,
+        None,
+        None,
     )
 
 
@@ -145,6 +152,21 @@ def test_phase_migration_preserves_legacy_rows_and_adds_claim_index() -> None:
     assert "remote_ended_at" in sql
     assert "build_started_at" in sql
     assert "web_batch_jobs_phase_status_created_idx" in sql
+
+
+def test_vm_recovery_migration_adds_durable_remote_fields() -> None:
+    sql = (
+        ROOT
+        / "src/tenable_reports/infrastructure/postgresql_migrations/0012_vm_export_recovery.sql"
+    ).read_text(encoding="utf-8")
+    for field in (
+        "vm_export_uuid",
+        "vm_resume_manifest_path",
+        "remote_export_started_at",
+        "remote_status_at",
+        "remote_progress_at",
+    ):
+        assert f"add column if not exists {field}" in sql.lower()
 
 
 def test_repository_creates_batch_and_jobs_in_one_connection() -> None:
@@ -236,6 +258,44 @@ def test_repository_lists_jobs_in_original_position_order() -> None:
     sql, params = database.connection_value.calls[0]
     assert "order by position" in sql.lower()
     assert params == (UUID(int=1),)
+
+
+def test_repository_lists_jobs_for_batches_in_one_query() -> None:
+    batch_a = UUID(int=1)
+    batch_b = UUID(int=2)
+    unknown = UUID(int=3)
+    second = list(_job_row())
+    second[0] = UUID(int=12)
+    second[2] = "client-b"
+    second[3] = 2
+    other = list(_job_row())
+    other[0] = UUID(int=21)
+    other[1] = batch_b
+    other[2] = "client-c"
+    database = _Database([_Cursor(many=(_job_row(), tuple(second), tuple(other)))])
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    jobs_by_batch = repository.list_batch_jobs_for_batches(
+        (batch_a, batch_b, unknown)
+    )
+
+    assert tuple(job.position for job in jobs_by_batch[batch_a]) == (1, 2)
+    assert tuple(job.client_id for job in jobs_by_batch[batch_b]) == ("client-c",)
+    assert jobs_by_batch[unknown] == ()
+    assert database.connection_calls == 1
+    assert len(database.connection_value.calls) == 1
+    sql, params = database.connection_value.calls[0]
+    assert "where batch_id = any(%s)" in " ".join(sql.lower().split())
+    assert "order by batch_id, position, id" in " ".join(sql.lower().split())
+    assert params == ([batch_a, batch_b, unknown],)
+
+
+def test_repository_bulk_job_list_skips_connection_for_empty_ids() -> None:
+    database = _Database([])
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    assert repository.list_batch_jobs_for_batches(()) == {}
+    assert database.connection_calls == 0
 
 
 def test_repository_claims_one_job_with_skip_locked_and_records_event() -> None:
@@ -394,6 +454,60 @@ def test_repository_appends_and_lists_immutable_events() -> None:
     list_sql, list_params = database.connection_value.calls[1]
     assert "order by id" in list_sql.lower()
     assert list_params == (UUID(int=1),)
+
+
+def test_repository_lists_events_for_batches_in_one_query() -> None:
+    batch_a = UUID(int=1)
+    batch_b = UUID(int=2)
+    unknown = UUID(int=3)
+    rows = (
+        (
+            batch_a,
+            UUID(int=11),
+            "JOB_STARTED",
+            "worker-local",
+            None,
+            {},
+            "2026-08-31T12:00:00Z",
+        ),
+        (
+            batch_b,
+            UUID(int=21),
+            "JOB_PROGRESS",
+            "worker-local",
+            None,
+            {"completed_chunks": 1},
+            "2026-08-31T12:01:00Z",
+        ),
+    )
+    database = _Database([_Cursor(many=rows)])
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    events_by_batch = repository.list_events_for_batches(
+        (batch_a, batch_b, unknown)
+    )
+
+    assert tuple(event.event_type for event in events_by_batch[batch_a]) == (
+        "JOB_STARTED",
+    )
+    assert tuple(event.event_type for event in events_by_batch[batch_b]) == (
+        "JOB_PROGRESS",
+    )
+    assert events_by_batch[unknown] == ()
+    assert database.connection_calls == 1
+    assert len(database.connection_value.calls) == 1
+    sql, params = database.connection_value.calls[0]
+    assert "where batch_id = any(%s)" in " ".join(sql.lower().split())
+    assert "order by batch_id, created_at, id" in " ".join(sql.lower().split())
+    assert params == ([batch_a, batch_b, unknown],)
+
+
+def test_repository_bulk_event_list_skips_connection_for_empty_ids() -> None:
+    database = _Database([])
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    assert repository.list_events_for_batches(()) == {}
+    assert database.connection_calls == 0
 
 
 @pytest.mark.parametrize(

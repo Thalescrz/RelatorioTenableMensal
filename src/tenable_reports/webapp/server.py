@@ -77,7 +77,6 @@ from tenable_reports.application.was_recovery import (
 )
 from tenable_reports.application.tag_scope import parse_tag_values
 from tenable_reports.application.retention import (
-    TRANSIENT_CATEGORIES,
     RetentionCandidate,
     RetentionPolicy,
     apply_cleanup_plan,
@@ -139,6 +138,7 @@ from tenable_reports.infrastructure.tenable_vm.client import (
 from tenable_reports.webapp.durable_dashboard_queue import (
     DurableDashboardJobQueue,
 )
+from tenable_reports.webapp.storage_snapshot import TransientStorageSnapshotCache
 
 
 STATIC_DIRECTORY = Path(__file__).with_name("static")
@@ -462,7 +462,7 @@ class DashboardConfigStore:
                 "max_parallel": 1,
                 "remote_collection_workers": 0,
                 "local_build_workers": 1,
-                "remote_processing_timeout_seconds": 7200,
+                "remote_processing_timeout_seconds": 36000,
                 "remote_progress_warning_seconds": 900,
                 "max_clients_per_batch": 64,
                 "retention_days": 395,
@@ -804,8 +804,8 @@ class DashboardConfigStore:
                 "TENABLE_VALIDATE_TLS": "true",
                 "TENABLE_EXPORT_POLL_SECONDS": "10",
                 "TENABLE_EXPORT_MAX_POLL_SECONDS": "30",
-                "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS": "1800",
-                "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS": "7200",
+                "TENABLE_EXPORT_QUEUE_TIMEOUT_SECONDS": "36000",
+                "TENABLE_EXPORT_PROCESSING_TIMEOUT_SECONDS": "36000",
                 "TENABLE_EXPORT_STALL_WARNING_SECONDS": "1800",
                 "TCS_API_SECRET": cloud_secret,
                 "TCS_HTTP_TIMEOUT_SECONDS": "180",
@@ -1841,7 +1841,7 @@ class JobQueue:
                         else "MANUAL"
                     ),
                     "--remote-processing-timeout-seconds",
-                    str(config.remote_processing_timeout_seconds),
+                    str(job.get("remote_processing_timeout_seconds") or config.remote_processing_timeout_seconds),
                     "--remote-progress-warning-seconds",
                     str(config.remote_progress_warning_seconds),
                     "--template",
@@ -1864,6 +1864,8 @@ class JobQueue:
                     command.extend(("--vm-export-strategy", job["vm_export_strategy"]))
                 if job.get("vm_export_uuid"):
                     command.extend(("--vm-export-uuid", job["vm_export_uuid"]))
+                if job.get("vm_resume_manifest"):
+                    command.extend(("--vm-resume-manifest", job["vm_resume_manifest"]))
                 if job.get("historical_source"):
                     command.extend(("--historical-source", job["historical_source"]))
                 if job.get("was_failure_policy"):
@@ -1976,6 +1978,10 @@ class JobQueue:
                 if job.get("vm_export_uuid"):
                     command.extend((
                         "--vm-export-uuid", job["vm_export_uuid"]
+                    ))
+                if job.get("vm_resume_manifest"):
+                    command.extend((
+                        "--vm-resume-manifest", job["vm_resume_manifest"]
                     ))
                 if job.get("historical_source"):
                     command.extend((
@@ -2249,6 +2255,7 @@ class DashboardApplication:
         self.project_root = project_root.resolve()
         self.config = DashboardConfigStore(project_root=self.project_root, config_path=config_path)
         self._prepared_archive_lock = threading.RLock()
+        self._transient_storage_cache = TransientStorageSnapshotCache()
         self._prepared_archives: dict[
             str, tuple[ReportArchiveResult, float]
         ] = {}
@@ -2774,36 +2781,24 @@ class DashboardApplication:
             archive, _ = prepared
             archive.path.unlink(missing_ok=True)
 
-    def storage_status(self) -> dict[str, Any]:
+    def storage_status(self, *, active_job_count: int | None = None) -> dict[str, Any]:
         payload = self.config.raw()
         raw_root = str((payload.get("defaults") or {}).get("output_root") or "../data")
         output_root = (self.config.config_path.parent / raw_root).resolve()
         output_root.mkdir(parents=True, exist_ok=True)
         usage = shutil.disk_usage(output_root)
-        active = sum(
-            item["status"] in {"QUEUED", "RUNNING"} for item in self.jobs.snapshot()
+        active = (
+            max(0, int(active_job_count))
+            if active_job_count is not None
+            else sum(
+                item["status"] in {"QUEUED", "RUNNING"}
+                for item in self.jobs.snapshot()
+            )
         )
-        by_client: dict[str, int] = {
-            item["client_id"]: 0 for item in self.config.list_clients()
-        }
-        temporary_bytes = 0
-        for scope in ("automatic-monthly", "manual"):
-            for category in TRANSIENT_CATEGORIES:
-                category_root = output_root / scope / category
-                if not category_root.is_dir():
-                    continue
-                for path in category_root.rglob("*"):
-                    if not path.is_file():
-                        continue
-                    try:
-                        size = path.stat().st_size
-                    except OSError:
-                        continue
-                    temporary_bytes += size
-                    relative = path.relative_to(category_root)
-                    if relative.parts:
-                        by_client.setdefault(relative.parts[0], 0)
-                        by_client[relative.parts[0]] += size
+        transient = self._transient_storage_cache.get(
+            output_root,
+            tuple(item["client_id"] for item in self.config.list_clients()),
+        )
         retention_state = (
             dict(self._retention_state_provider())
             if self._retention_state_provider is not None else {}
@@ -2814,7 +2809,7 @@ class DashboardApplication:
             "used_bytes": int(usage.used),
             "available_bytes": int(usage.free),
             "free_bytes": int(usage.free),
-            "temporary_bytes": temporary_bytes,
+            "temporary_bytes": transient.temporary_bytes,
             "pending_cleanup_runs": int(
                 retention_state.get("pending_cleanup_runs") or 0
             ),
@@ -2825,7 +2820,7 @@ class DashboardApplication:
             "queue_reserved_bytes": active * required_free_bytes(last_success_bytes=None),
             "by_client": [
                 {"client_id": client_id, "temporary_bytes": size}
-                for client_id, size in sorted(by_client.items())
+                for client_id, size in sorted(transient.by_client.items())
             ],
         }
 
@@ -2967,6 +2962,8 @@ class DashboardApplication:
                 self._cleanup_status_recorder(
                     run_id, status, cleanup_bytes=run_removed_bytes
                 )
+        if apply:
+            self._transient_storage_cache.invalidate()
         return {
             "applied": apply,
             "candidate_count": len(ordered),
@@ -3432,7 +3429,19 @@ class DashboardApplication:
 
     def state(self) -> dict[str, Any]:
         clients = self.config.list_clients()
-        jobs = self.jobs.snapshot()
+        dashboard_snapshot = getattr(self.jobs, "dashboard_snapshot", None)
+        if callable(dashboard_snapshot):
+            queue_state = dashboard_snapshot()
+            jobs = list(queue_state.jobs)
+            batches = list(queue_state.batches)
+            active_job_count = int(queue_state.active_job_count)
+        else:
+            jobs = self.jobs.snapshot()
+            batches_snapshot = getattr(self.jobs, "batches_snapshot", None)
+            batches = batches_snapshot() if callable(batches_snapshot) else []
+            active_job_count = sum(
+                item["status"] in {"QUEUED", "RUNNING"} for item in jobs
+            )
         summaries: dict[str, dict[str, Any]] = {}
         alerts: list[dict[str, Any]] = []
         database_error = self.database_error
@@ -3474,8 +3483,6 @@ class DashboardApplication:
             client["latest_report"] = summaries.get(client_id)
             client["job"] = latest_job.get(client_id)
             client["alert"] = latest_alert.get(client_id)
-        batches_snapshot = getattr(self.jobs, "batches_snapshot", None)
-        batches = batches_snapshot() if callable(batches_snapshot) else []
         return {
             "clients": clients,
             "analysts": self.config.list_analysts(),
@@ -3488,7 +3495,7 @@ class DashboardApplication:
             "queue_mode": (
                 "staged_v1" if self.batch_repository is not None else "legacy"
             ),
-            "storage": self.storage_status(),
+            "storage": self.storage_status(active_job_count=active_job_count),
         }
 
 
@@ -3514,6 +3521,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "app.js",
                 "client_selection.js",
                 "report_request_guard.js",
+                "dashboard_refresh.js",
             }:
                 self._json_error(HTTPStatus.NOT_FOUND, "Arquivo nao encontrado.")
                 return
@@ -4067,6 +4075,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 ),
                 allow_main_gap=payload.get("allow_main_gap") is True,
             )
+            self.app._transient_storage_cache.invalidate()
             self._json(HTTPStatus.OK, result.to_dict())
         except (
             ActiveReportSetError,

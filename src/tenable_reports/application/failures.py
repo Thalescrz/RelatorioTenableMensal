@@ -16,6 +16,9 @@ class FailureCode(StrEnum):
     DISK_INSUFFICIENT = "DISK_INSUFFICIENT"
     DOCX_INVALID = "DOCX_INVALID"
     PROFILE_INVALID = "PROFILE_INVALID"
+    LOCAL_ARTIFACT_SCOPE_MISMATCH = "LOCAL_ARTIFACT_SCOPE_MISMATCH"
+    CHECKPOINT_ARTIFACT_MISSING = "CHECKPOINT_ARTIFACT_MISSING"
+    LOCAL_FILESYSTEM_TRANSIENT = "LOCAL_FILESYSTEM_TRANSIENT"
     UNEXPECTED = "UNEXPECTED"
 
 
@@ -24,6 +27,7 @@ RETRYABLE_CODES = frozenset({
     FailureCode.TENABLE_TEMPORARY,
     FailureCode.DATABASE_UNAVAILABLE,
     FailureCode.DISK_INSUFFICIENT,
+    FailureCode.LOCAL_FILESYSTEM_TRANSIENT,
 })
 
 
@@ -67,7 +71,25 @@ def _code_from_text(value: str) -> FailureCode:
         return FailureCode.TENABLE_RATE_LIMIT
     if any(token in upper for token in ("401", "403", "CREDENTIAL", "UNAUTHORIZED")):
         return FailureCode.TENABLE_AUTH_INVALID
-    if any(token in upper for token in ("TIMEOUT", "TIMED OUT", "502", "503", "504")):
+    if (
+        "CHECKPOINT_ARTIFACT_MISSING" in upper
+        or ("CHECKPOINT" in upper and ("AUSENTE" in upper or "INVALID" in upper))
+    ):
+        return FailureCode.CHECKPOINT_ARTIFACT_MISSING
+    if (
+        "NAO FOI POSSIVEL LER O ARTEFATO" in upper
+        and "MANIFEST.JSON" in upper
+    ):
+        return FailureCode.LOCAL_ARTIFACT_SCOPE_MISMATCH
+    if (
+        ("WINERROR 5" in upper or "ACCESS IS DENIED" in upper)
+        and "EXPORT-STATE.JSON" in upper
+    ):
+        return FailureCode.LOCAL_FILESYSTEM_TRANSIENT
+    if any(token in upper for token in (
+        "TIMEOUT", "TIMED OUT", "TEMPO MAXIMO EXCEDIDO",
+        "FALHA DE TRANSPORTE", "502", "503", "504",
+    )):
         return FailureCode.TENABLE_TEMPORARY
     if any(token in upper for token in ("POSTGRES", "DATABASE", "CONNECTION REFUSED")):
         return FailureCode.DATABASE_UNAVAILABLE

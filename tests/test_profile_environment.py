@@ -412,8 +412,8 @@ class ProfileTests(unittest.TestCase):
 
         self.assertEqual(credentials.export_poll_seconds, 10)
         self.assertEqual(credentials.export_max_poll_seconds, 30)
-        self.assertEqual(credentials.export_queue_timeout_seconds, 1800)
-        self.assertEqual(credentials.export_processing_timeout_seconds, 7200)
+        self.assertEqual(credentials.export_queue_timeout_seconds, 36000)
+        self.assertEqual(credentials.export_processing_timeout_seconds, 36000)
         self.assertEqual(credentials.export_stall_warning_seconds, 1800)
 
     def test_export_wait_settings_accept_safe_environment_overrides(self) -> None:

@@ -10,6 +10,7 @@ import time
 import unittest
 import os
 import zipfile
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from datetime import datetime, timedelta, timezone
 from dataclasses import replace
@@ -62,6 +63,7 @@ from tenable_reports.webapp.server import (
     _safe_error,
     _default_runner as _web_default_runner,
 )
+from tenable_reports.webapp.storage_snapshot import TransientStorageSnapshot
 
 
 class _RowsCursor:
@@ -215,6 +217,52 @@ class _ArchiveDashboardDatabase:
 
 
 class WebDashboardTests(unittest.TestCase):
+    def test_state_uses_one_dashboard_snapshot_and_forwards_active_count(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+            )
+            app.jobs.close()
+
+            class CountingQueue:
+                def __init__(self) -> None:
+                    self.dashboard_calls = 0
+                    self.legacy_calls = 0
+
+                def dashboard_snapshot(self):
+                    self.dashboard_calls += 1
+                    return SimpleNamespace(
+                        jobs=(),
+                        batches=(),
+                        active_job_count=3,
+                    )
+
+                def snapshot(self):
+                    self.legacy_calls += 1
+                    raise AssertionError("snapshot legado não deve ser usado")
+
+                def batches_snapshot(self):
+                    self.legacy_calls += 1
+                    raise AssertionError("batches_snapshot legado não deve ser usado")
+
+                def close(self):
+                    return None
+
+            queue = CountingQueue()
+            app.jobs = queue
+            app.storage_status = Mock(return_value={"available_bytes": 1})
+
+            payload = app.state()
+
+        self.assertEqual(payload["jobs"], [])
+        self.assertEqual(payload["batches"], [])
+        self.assertEqual(queue.dashboard_calls, 1)
+        self.assertEqual(queue.legacy_calls, 0)
+        app.storage_status.assert_called_once_with(active_job_count=3)
+
     def test_phase_api_exposes_checkpoint_readiness_without_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -342,6 +390,28 @@ class WebDashboardTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("javascript", headers.get("Content-Type", "").lower())
         self.assertIn("TenableReportRequestGuard", source)
+
+    def test_dashboard_refresh_static_asset_is_served_as_javascript(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+            )
+            client = LocalClient(app)
+            try:
+                status, headers, body = client.download(
+                    "/static/dashboard_refresh.js"
+                )
+            finally:
+                client.close()
+                app.jobs.close()
+
+        source = body.decode("utf-8")
+        self.assertEqual(status, 200)
+        self.assertIn("javascript", headers.get("Content-Type", "").lower())
+        self.assertIn("createRefreshCoordinator", source)
 
     def test_state_exposes_sanitized_analysts_and_responsible_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -488,6 +558,63 @@ class WebDashboardTests(unittest.TestCase):
             self.assertEqual(status, 400)
             self.assertIn("EMPTY_CLIENT_SELECTION", payload["error"])
             self.assertEqual(repository.list_batches(), ())
+
+    def test_distinct_clients_can_be_enqueued_while_first_is_active(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = InMemoryWebBatchRepository()
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=repository,
+            )
+            for client_id in ("cliente-a", "cliente-b"):
+                app.config.add_client(
+                    {
+                        "client_id": client_id,
+                        "display_name": client_id,
+                    }
+                )
+            client = LocalClient(app)
+            try:
+                first_status, first = client.request(
+                    "POST",
+                    "/api/jobs",
+                    {
+                        "client_ids": ["cliente-a"],
+                        "run_scope": "single",
+                        "mode": "manual",
+                    },
+                )
+                second_status, second = client.request(
+                    "POST",
+                    "/api/jobs",
+                    {
+                        "client_ids": ["cliente-b"],
+                        "run_scope": "single",
+                        "mode": "manual",
+                    },
+                )
+                duplicate_status, duplicate = client.request(
+                    "POST",
+                    "/api/jobs",
+                    {
+                        "client_ids": ["cliente-a"],
+                        "run_scope": "single",
+                        "mode": "manual",
+                    },
+                )
+            finally:
+                client.close()
+                app.jobs.close()
+
+        self.assertEqual(first_status, 202)
+        self.assertEqual(second_status, 202)
+        self.assertEqual(len(first["jobs"]), 1)
+        self.assertEqual(len(second["jobs"]), 1)
+        self.assertEqual(duplicate_status, 409)
+        self.assertIn("cliente-a", duplicate["error"])
+        self.assertEqual(len(repository.list_batches()), 2)
 
     def test_analyst_crud_and_client_assignment_are_validated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1787,6 +1914,32 @@ class WebDashboardTests(unittest.TestCase):
             finally:
                 client.close()
 
+    def test_storage_status_uses_transient_snapshot_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=InMemoryReportRegistry(),
+            )
+            cache = Mock()
+            cache.get.return_value = TransientStorageSnapshot(
+                temporary_bytes=321,
+                by_client={"client-a": 123},
+                scanned_at=10.0,
+            )
+            app._transient_storage_cache = cache
+
+            payload = app.storage_status(active_job_count=2)
+
+            self.assertEqual(payload["temporary_bytes"], 321)
+            self.assertEqual(
+                payload["by_client"],
+                [{"client_id": "client-a", "temporary_bytes": 123}],
+            )
+            self.assertGreater(payload["queue_reserved_bytes"], 0)
+            cache.get.assert_called_once()
+
     def test_storage_cleanup_preview_does_not_remove_and_apply_removes_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1805,6 +1958,8 @@ class WebDashboardTests(unittest.TestCase):
                     "last_cleanup_status": "NEVER_RUN",
                 },
             )
+            storage_cache = Mock()
+            app._transient_storage_cache = storage_cache
             residue = (
                 root / "data" / "manual" / "raw" / "cliente-a" / "run-failed"
             )
@@ -1822,6 +1977,7 @@ class WebDashboardTests(unittest.TestCase):
                 self.assertEqual(preview["candidate_count"], 1)
                 self.assertEqual(preview["removed_bytes"], 0)
                 self.assertTrue(residue.is_dir())
+                storage_cache.invalidate.assert_not_called()
 
                 status, applied = client.request(
                     "POST", "/api/storage/cleanup/apply", {}
@@ -1831,6 +1987,7 @@ class WebDashboardTests(unittest.TestCase):
                 self.assertEqual(applied["candidate_count"], 1)
                 self.assertGreater(applied["removed_bytes"], 0)
                 self.assertFalse(residue.exists())
+                storage_cache.invalidate.assert_called_once_with()
             finally:
                 client.close()
 

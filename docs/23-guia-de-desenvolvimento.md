@@ -136,11 +136,25 @@ Mudanças na fila precisam preservar estes contratos:
   `FAILED`, `INTERRUPTED` ou `CANCELLED_BY_USER`;
 - parada sinaliza todos os jobs ativos, preserva export/chunks e limita o fallback
   a cada árvore de processo local;
-- 900 segundos sem progresso emitem alerta; 7.200 segundos encerram a tentativa
-  local como retentável, sem cancelamento automático remoto;
+- 900 segundos sem progresso emitem alerta; 36.000 segundos formam o orçamento
+  total por UUID entre fila e processamento, preservado entre reinícios e
+  retentativas, sem cancelamento automático remoto;
 - **Tentar falhas/interrompidos** e **Gerar todos novamente** criam lotes derivados
   idempotentes e não reescrevem a origem;
 - ações registram ator, motivo, chave idempotente, PID e eventos relevantes.
+
+O job persiste `vm_export_uuid`, `vm_resume_manifest_path`,
+`remote_export_started_at`, `remote_status_at` e `remote_progress_at`. Atualize
+`remote_status_at` somente após resposta 200 do status e `remote_progress_at`
+somente quando estado, contador ou chunk avançar. Erros 429/5xx/transporte podem
+ser absorvidos pelo polling dentro do orçamento; 401 e demais falhas permanentes
+devem sair imediatamente. Coalesce eventos idênticos e grave no máximo um
+heartbeat a cada cinco minutos.
+
+A derivação individual de retry deve selecionar exatamente um job e preservar o
+UUID/manifesto. Se o UUID anterior não for reutilizável, registre
+`TENABLE_EXPORT_RECOVERY_UNAVAILABLE` antes de iniciar seu substituto. Não use uma
+falha de consulta transitória como evidência de expiração.
 
 O snapshot HTTP pode expor fase, timestamps e `checkpoint_ready`; nunca serialize
 `collection_checkpoint_path`. Teste estado de domínio, claims por fase,
@@ -221,6 +235,12 @@ explícito e confirmação proporcional ao risco. Para conjuntos de relatórios,
 prévia, frase digitada, substituição obrigatória de `MAIN`, bloqueio por job ativo,
 validação da raiz `data`, rollback do estágio físico e remoção transacional dos
 registros PostgreSQL.
+
+O navegador mantém no máximo uma chamada `/api/state` ativa. Uma mutação libera o
+controle depois da confirmação do POST e agenda, sem aguardar, uma única atualização
+posterior. O estado usa consultas em massa de jobs/eventos e cache curto somente
+para a varredura transitória de disco. O resumo não inclui o histórico detalhado:
+`GET /api/batches/<id>` carrega os clientes do lote sob demanda.
 
 Downloads agregados devem ser montados sob `data/.downloads`, aceitar somente
 documentos registrados dentro da raiz `data`, usar nomes de componentes

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import threading
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from tenable_reports.application.execution_control import FileExecutionControl
+from tenable_reports.application.failures import classify_failure
 from tenable_reports.application.web_batches import (
     BatchClientConflictError,
     BatchConfirmationError,
@@ -60,6 +61,13 @@ def _safe_dashboard_value(value: Any) -> Any:
     return value
 
 
+@dataclass(frozen=True, slots=True)
+class DashboardQueueSnapshot:
+    jobs: tuple[dict[str, Any], ...]
+    batches: tuple[dict[str, Any], ...]
+    active_job_count: int
+
+
 class DurableDashboardJobQueue:
     """Expose the legacy dashboard API while PostgreSQL owns job state."""
 
@@ -86,6 +94,7 @@ class DurableDashboardJobQueue:
         )
         self._active_lock = threading.RLock()
         self._active_jobs: dict[str, WebBatchJob] = {}
+        self._progress_events: dict[str, tuple[tuple[Any, ...], datetime]] = {}
         self.executor.progress_sink = self._persist_progress
         self.executor.process_sink = self._persist_process
         self.executor.fallback_sink = self._persist_fallback
@@ -192,6 +201,14 @@ class DurableDashboardJobQueue:
         ).strip().upper()
         if execution_model not in {"LEGACY", "STAGED_V1"}:
             raise ValueError("execution_model invalido.")
+        batch_id = uuid4()
+        requested_client_ids = tuple(client_id for client_id, _ in requests)
+        conflicts = self.repository.active_client_conflicts(
+            requested_client_ids,
+            excluding_batch_id=batch_id,
+        )
+        if conflicts:
+            raise BatchClientConflictError(conflicts)
         created: list[dict[str, Any]] = []
         normalized_requests: list[dict[str, Any]] = []
         for client_id, request in requests:
@@ -202,7 +219,6 @@ class DurableDashboardJobQueue:
             )
         if not created:
             return []
-        batch_id = uuid4()
         created_at = _now()
         options = {
             "requests": normalized_requests,
@@ -272,6 +288,40 @@ class DurableDashboardJobQueue:
         self,
         request: DerivedBatchRequest,
     ) -> dict[str, Any]:
+        return self._derive_batch(request)
+
+    def retry(
+        self,
+        job_id: str,
+        *,
+        explicit_export_recovery: bool = False,
+    ) -> dict[str, Any]:
+        del explicit_export_recovery
+        try:
+            normalized_id = UUID(str(job_id))
+        except ValueError:
+            normalized_id = UUID(hex=str(job_id))
+        source_job = self.repository.get_job(normalized_id)
+        if source_job is None:
+            raise KeyError("Trabalho nao encontrado.")
+        detail = self._derive_batch(
+            DerivedBatchRequest(
+                source_batch_id=source_job.batch_id,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key=f"retry-job:{source_job.id}:{uuid4()}",
+                actor="interface-local",
+                reason="Retentativa individual do export preservado.",
+            ),
+            selected_job_id=source_job.id,
+        )
+        return detail["jobs"][0]
+
+    def _derive_batch(
+        self,
+        request: DerivedBatchRequest,
+        *,
+        selected_job_id: UUID | None = None,
+    ) -> dict[str, Any]:
         source = self.repository.get_batch(request.source_batch_id)
         if source is None:
             raise KeyError("Lote de origem nao encontrado.")
@@ -304,8 +354,11 @@ class DurableDashboardJobQueue:
             job
             for job in source_jobs
             if (
-                request.kind is BatchAction.RERUN_ALL
-                or job.status in RETRYABLE_BATCH_JOB_STATUSES
+                (selected_job_id is None or job.id == selected_job_id)
+                and (
+                    request.kind is BatchAction.RERUN_ALL
+                    or job.status in RETRYABLE_BATCH_JOB_STATUSES
+                )
             )
         )
         if not selected:
@@ -359,6 +412,11 @@ class DurableDashboardJobQueue:
                 for key, value in dict(source_job.payload).items()
                 if key not in transient_keys
             }
+            is_retry = request.kind is BatchAction.RETRY_INCOMPLETE
+            if is_retry and source_job.vm_export_uuid:
+                payload["vm_export_uuid"] = source_job.vm_export_uuid
+            if is_retry and source_job.vm_resume_manifest_path:
+                payload["vm_resume_manifest"] = source_job.vm_resume_manifest_path
             mode = str(payload.get("mode") or "manual")
             control_file = self._control_file(
                 batch_id=batch_id,
@@ -375,7 +433,6 @@ class DurableDashboardJobQueue:
                     "_job_control_file": control_file,
                 }
             )
-            is_retry = request.kind is BatchAction.RETRY_INCOMPLETE
             staged_model = (
                 str(source.options.get("execution_model") or "").upper()
                 == "STAGED_V1"
@@ -410,6 +467,21 @@ class DurableDashboardJobQueue:
                     logical_job_id=source_job.logical_job_id,
                     collection_checkpoint_path=(
                         reusable_checkpoint
+                    ),
+                    vm_export_uuid=(
+                        source_job.vm_export_uuid if is_retry else None
+                    ),
+                    vm_resume_manifest_path=(
+                        source_job.vm_resume_manifest_path if is_retry else None
+                    ),
+                    remote_export_started_at=(
+                        source_job.remote_export_started_at if is_retry else None
+                    ),
+                    remote_status_at=(
+                        source_job.remote_status_at if is_retry else None
+                    ),
+                    remote_progress_at=(
+                        source_job.remote_progress_at if is_retry else None
                     ),
                     control_file=control_file,
                     created_at=created_at,
@@ -525,7 +597,19 @@ class DurableDashboardJobQueue:
                 ) from exc
         return updated
 
-    def batches_snapshot(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def dashboard_snapshot(
+        self,
+        *,
+        job_batch_limit: int = 500,
+        summary_batch_limit: int = 50,
+    ) -> DashboardQueueSnapshot:
+        normalized_job_limit = max(1, min(int(job_batch_limit), 500))
+        normalized_summary_limit = max(0, min(int(summary_batch_limit), 500))
+        batches = self.repository.list_batches(limit=normalized_job_limit)
+        batch_ids = tuple(batch.id for batch in batches)
+        jobs_by_batch = self.repository.list_batch_jobs_for_batches(batch_ids)
+        events_by_batch = self.repository.list_events_for_batches(batch_ids)
+
         summaries: list[dict[str, Any]] = []
         capacities = self.capacity_snapshot()
         remote_capacity = sum(
@@ -545,8 +629,8 @@ class DurableDashboardJobQueue:
             BatchJobStatus.INTERRUPTED,
             BatchJobStatus.CANCELLED_BY_USER,
         }
-        for batch in self.repository.list_batches(limit=limit):
-            jobs = self.repository.list_batch_jobs(batch.id)
+        for batch in batches[:normalized_summary_limit]:
+            jobs = jobs_by_batch[batch.id]
             counts = {
                 status: sum(job.status is status for job in jobs)
                 for status in BatchJobStatus
@@ -639,7 +723,81 @@ class DurableDashboardJobQueue:
                     "end_at": first_request.get("end_at"),
                 }
             )
-        return summaries
+        rows: list[dict[str, Any]] = []
+        queued_ids: list[str] = []
+        active_statuses = {
+            BatchJobStatus.QUEUED,
+            BatchJobStatus.RUNNING,
+            BatchJobStatus.WAITING_WAS_DECISION,
+            BatchJobStatus.INTERRUPT_REQUESTED,
+        }
+        active_job_count = 0
+        for batch in batches:
+            events_by_job: dict[UUID, list[WebBatchEvent]] = {}
+            for event in events_by_batch[batch.id]:
+                if event.job_id is not None:
+                    events_by_job.setdefault(event.job_id, []).append(event)
+            for job in jobs_by_batch[batch.id]:
+                if job.status in active_statuses:
+                    active_job_count += 1
+                row = _safe_dashboard_value(job.payload)
+                row.update(
+                    {
+                        "job_id": job.id.hex,
+                        "batch_id": str(batch.id),
+                        "batch_status": batch.status.value,
+                        "batch_kind": batch.kind,
+                        "batch_requested_action": (
+                            batch.requested_action.value
+                            if batch.requested_action is not None
+                            else None
+                        ),
+                        "client_id": job.client_id,
+                        "status": job.status.value,
+                        "phase": job.phase.value,
+                        "checkpoint_ready": bool(job.collection_checkpoint_path),
+                        "created_at": job.created_at,
+                        "started_at": job.started_at,
+                        "remote_started_at": job.remote_started_at,
+                        "remote_ended_at": job.remote_ended_at,
+                        "build_started_at": job.build_started_at,
+                        "ended_at": job.ended_at,
+                        "error": job.error_message,
+                        "run_id": job.run_id or row.get("run_id"),
+                        "queue_position": None,
+                    }
+                )
+                for event in events_by_job.get(job.id, ()):
+                    if event.event_type == "JOB_PROGRESS":
+                        _apply_progress(row, event.payload)
+                if job.status is BatchJobStatus.QUEUED:
+                    queued_ids.append(job.id.hex)
+                rows.append(row)
+        positions = {
+            job_id: position for position, job_id in enumerate(queued_ids, start=1)
+        }
+        for row in rows:
+            row["queue_position"] = positions.get(str(row["job_id"]))
+        ordered_rows = tuple(
+            sorted(
+                rows,
+                key=lambda row: str(row.get("created_at") or ""),
+                reverse=True,
+            )
+        )
+        return DashboardQueueSnapshot(
+            jobs=ordered_rows,
+            batches=tuple(summaries),
+            active_job_count=active_job_count,
+        )
+
+    def batches_snapshot(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        return list(
+            self.dashboard_snapshot(
+                job_batch_limit=limit,
+                summary_batch_limit=limit,
+            ).batches
+        )
 
     def batch_snapshot(self, batch_id: UUID | str) -> dict[str, Any]:
         normalized_id = (
@@ -648,6 +806,36 @@ class DurableDashboardJobQueue:
         batch = self.repository.get_batch(normalized_id)
         if batch is None:
             raise KeyError("Lote nao encontrado.")
+        events = self.repository.list_events(normalized_id)
+        was_by_job: dict[UUID, dict[str, Any]] = {}
+        vm_by_job: dict[UUID, dict[str, Any]] = {}
+        for event in events:
+            if event.job_id is None or event.event_type != "JOB_PROGRESS":
+                continue
+            payload = event.payload
+            source = str(payload.get("source") or "")
+            if source == "tenable_vm_vulnerabilities":
+                vm_by_job[event.job_id] = {
+                    "export_uuid": str(payload.get("export_uuid") or "") or None,
+                    "origin": str(payload.get("origin") or "") or None,
+                    "status": str(payload.get("status") or "").upper() or None,
+                    "completed_chunks": int(payload.get("completed_chunks") or 0),
+                    "total_chunks": int(payload.get("total_chunks") or 0),
+                    "persisted_chunks": len(payload.get("persisted_chunks") or ()),
+                    "observed_at": event.created_at,
+                }
+                continue
+            if source != "tenable_was_findings":
+                continue
+            status = str(payload.get("status") or "").upper()
+            summary = was_by_job.setdefault(
+                event.job_id,
+                {"attempts": 0, "outcome": None},
+            )
+            if status == "STARTED":
+                summary["attempts"] += 1
+            if status:
+                summary["outcome"] = status
         return {
             "batch": {
                 "id": str(batch.id),
@@ -687,6 +875,18 @@ class DurableDashboardJobQueue:
                     "remote_ended_at": job.remote_ended_at,
                     "build_started_at": job.build_started_at,
                     "ended_at": job.ended_at,
+                    "vm_export_uuid": job.vm_export_uuid,
+                    "remote_export_started_at": job.remote_export_started_at,
+                    "remote_status_at": job.remote_status_at,
+                    "remote_progress_at": job.remote_progress_at,
+                    "vm_export": vm_by_job.get(job.id),
+                    "was_attempts": int(
+                        was_by_job.get(job.id, {}).get("attempts") or 0
+                    ),
+                    "was_retry_performed": int(
+                        was_by_job.get(job.id, {}).get("attempts") or 0
+                    ) > 1,
+                    "was_retry_outcome": was_by_job.get(job.id, {}).get("outcome"),
                 }
                 for job in self.repository.list_batch_jobs(normalized_id)
             ],
@@ -697,61 +897,12 @@ class DurableDashboardJobQueue:
                     "payload": _safe_dashboard_value(event.payload),
                     "created_at": event.created_at,
                 }
-                for event in self.repository.list_events(normalized_id)
+                for event in events
             ],
         }
 
     def snapshot(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        queued_ids: list[str] = []
-        for batch in self.repository.list_batches(limit=500):
-            events_by_job: dict[UUID, list[WebBatchEvent]] = {}
-            for event in self.repository.list_events(batch.id):
-                if event.job_id is not None:
-                    events_by_job.setdefault(event.job_id, []).append(event)
-            for job in self.repository.list_batch_jobs(batch.id):
-                row = _safe_dashboard_value(job.payload)
-                row.update(
-                    {
-                        "job_id": job.id.hex,
-                        "batch_id": str(batch.id),
-                        "batch_status": batch.status.value,
-                        "batch_kind": batch.kind,
-                        "batch_requested_action": (
-                            batch.requested_action.value
-                            if batch.requested_action is not None
-                            else None
-                        ),
-                        "client_id": job.client_id,
-                        "status": job.status.value,
-                        "phase": job.phase.value,
-                        "checkpoint_ready": bool(job.collection_checkpoint_path),
-                        "started_at": job.started_at,
-                        "remote_started_at": job.remote_started_at,
-                        "remote_ended_at": job.remote_ended_at,
-                        "build_started_at": job.build_started_at,
-                        "ended_at": job.ended_at,
-                        "error": job.error_message,
-                        "run_id": job.run_id or row.get("run_id"),
-                        "queue_position": None,
-                    }
-                )
-                for event in events_by_job.get(job.id, ()):
-                    if event.event_type == "JOB_PROGRESS":
-                        _apply_progress(row, event.payload)
-                if job.status is BatchJobStatus.QUEUED:
-                    queued_ids.append(job.id.hex)
-                rows.append(row)
-        positions = {
-            job_id: position for position, job_id in enumerate(queued_ids, start=1)
-        }
-        for row in rows:
-            row["queue_position"] = positions.get(str(row["job_id"]))
-        return sorted(
-            rows,
-            key=lambda row: str(row.get("created_at") or ""),
-            reverse=True,
-        )
+        return list(self.dashboard_snapshot().jobs)
 
     def wait_until_idle(self, *, timeout: float) -> bool:
         return self._dispatcher.wait_until_idle(timeout=timeout)
@@ -775,6 +926,94 @@ class DurableDashboardJobQueue:
         with self._active_lock:
             active = self._active_jobs.get(str(job_id))
         if active is None:
+            return
+        should_append = True
+        if (
+            str(event.get("event") or "") == "TENABLE_EXPORT_PROGRESS"
+            and str(event.get("source") or "") == "tenable_vm_vulnerabilities"
+            and str(event.get("export_uuid") or "").strip()
+        ):
+            observed = datetime.now(UTC)
+            if event.get("status_query_ok") is False:
+                error_key = f"{job_id}:status-query-error"
+                error_fingerprint = (
+                    "STATUS_QUERY_ERROR",
+                    str(event.get("status_query_error") or ""),
+                )
+                previous_error = self._progress_events.get(error_key)
+                should_append = bool(
+                    previous_error is None
+                    or previous_error[0] != error_fingerprint
+                    or (observed - previous_error[1]).total_seconds() >= 300
+                )
+                if should_append:
+                    self._progress_events[error_key] = (
+                        error_fingerprint,
+                        observed,
+                    )
+                if not active.vm_export_uuid:
+                    observed_at = observed.isoformat().replace("+00:00", "Z")
+                    updated = self.repository.record_vm_export_progress(
+                        active.id,
+                        export_uuid=str(event["export_uuid"]),
+                        resume_manifest_path=(
+                            str(event.get("partial_manifest"))
+                            if event.get("partial_manifest")
+                            else None
+                        ),
+                        origin=str(event.get("origin") or "") or None,
+                        remote_status=str(event.get("status") or "STARTED").upper(),
+                        observed_at=observed_at,
+                        progress_at=None,
+                        completed_chunks=int(event.get("completed_chunks") or 0),
+                        total_chunks=int(event.get("total_chunks") or 0),
+                        persisted_chunks=tuple(
+                            int(item) for item in (event.get("persisted_chunks") or ())
+                        ),
+                        status_confirmed=False,
+                    )
+                    with self._active_lock:
+                        self._active_jobs[str(job_id)] = updated
+            else:
+                persisted = tuple(
+                    sorted(int(item) for item in (event.get("persisted_chunks") or ()))
+                )
+                fingerprint = (
+                    str(event.get("status") or "").upper(),
+                    int(event.get("completed_chunks") or 0),
+                    int(event.get("total_chunks") or 0),
+                    persisted,
+                )
+                previous = self._progress_events.get(str(job_id))
+                progressed = previous is None or previous[0] != fingerprint
+                observed_at = observed.isoformat().replace("+00:00", "Z")
+                updated = self.repository.record_vm_export_progress(
+                    active.id,
+                    export_uuid=str(event["export_uuid"]),
+                    resume_manifest_path=(
+                        str(event.get("partial_manifest"))
+                        if event.get("partial_manifest")
+                        else None
+                    ),
+                    origin=str(event.get("origin") or "") or None,
+                    remote_status=str(event.get("status") or "UNKNOWN").upper(),
+                    observed_at=observed_at,
+                    progress_at=observed_at if progressed else None,
+                    completed_chunks=int(event.get("completed_chunks") or 0),
+                    total_chunks=int(event.get("total_chunks") or 0),
+                    persisted_chunks=persisted,
+                    status_confirmed=True,
+                )
+                with self._active_lock:
+                    self._active_jobs[str(job_id)] = updated
+                should_append = bool(
+                    progressed
+                    or previous is None
+                    or (observed - previous[1]).total_seconds() >= 300
+                )
+                if should_append:
+                    self._progress_events[str(job_id)] = (fingerprint, observed)
+        if not should_append:
             return
         self.repository.append_event(
             WebBatchEvent(
@@ -896,6 +1135,25 @@ class DurableDashboardJobQueue:
             payload["_collection_checkpoint_path"] = checkpoint_path
         payload["attempt_number"] = job.attempt_number
         payload["logical_job_id"] = job.logical_job_id or job.id.hex
+        if job.vm_export_uuid:
+            payload["vm_export_uuid"] = job.vm_export_uuid
+        if job.vm_resume_manifest_path:
+            payload["vm_resume_manifest"] = job.vm_resume_manifest_path
+        if job.vm_export_uuid and job.remote_export_started_at:
+            try:
+                remote_started = datetime.fromisoformat(
+                    job.remote_export_started_at.replace("Z", "+00:00")
+                )
+                elapsed = max(
+                    0,
+                    int((datetime.now(UTC) - remote_started).total_seconds()),
+                )
+                payload["remote_processing_timeout_seconds"] = max(
+                    1,
+                    36_000 - elapsed,
+                )
+            except (TypeError, ValueError):
+                payload["remote_processing_timeout_seconds"] = 36_000
         with self.executor._lock:
             self.executor._jobs[job_id] = payload
         with self._active_lock:
@@ -907,6 +1165,8 @@ class DurableDashboardJobQueue:
         finally:
             with self._active_lock:
                 self._active_jobs.pop(job_id, None)
+            self._progress_events.pop(job_id, None)
+            self._progress_events.pop(f"{job_id}:status-query-error", None)
         raw_status = str(result.get("status") or "FAILED").upper()
         if raw_status == "WAITING_WAS_DECISION":
             status = BatchJobStatus.WAITING_WAS_DECISION
@@ -918,6 +1178,11 @@ class DurableDashboardJobQueue:
             status = BatchJobStatus.COMPLETE
         else:
             status = BatchJobStatus.FAILED
+        failure = classify_failure(result) if status is BatchJobStatus.FAILED else None
+        if failure is not None:
+            result["error_code"] = failure.code.value
+            result["retryable"] = failure.retryable
+            result["error"] = failure.message
         return BatchJobResult(
             status=status,
             exit_code=(
@@ -933,12 +1198,12 @@ class DurableDashboardJobQueue:
             error_code=(
                 "INTERRUPTED_BY_USER"
                 if status is BatchJobStatus.INTERRUPTED
-                else "UNEXPECTED"
+                else failure.code.value
                 if status is BatchJobStatus.FAILED
                 else None
             ),
             error_message=(
-                str(result.get("error") or "Falha operacional sem detalhe.")[:500]
+                failure.message[:500]
                 if status is BatchJobStatus.FAILED
                 else None
             ),

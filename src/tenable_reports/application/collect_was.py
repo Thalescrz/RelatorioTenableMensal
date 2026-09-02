@@ -82,6 +82,26 @@ def collect_optional_was_snapshot(
             progress_callback=progress_callback,
             cancellation_probe=cancellation_probe,
         )
+    except PermissionError:
+        message = (
+            "A coleta WAS encontrou um bloqueio temporario ao gravar o estado "
+            "local. O relatorio VM continuou normalmente."
+        )
+        failure = WasFailureDetails(
+            code="WAS_LOCAL_STATE_TRANSIENT",
+            message=message,
+            retryable=True,
+        )
+        return WasCollectionAttempt(
+            result=None,
+            status="UNAVAILABLE",
+            warnings=({
+                "code": failure.code,
+                "message": message,
+                "retryable": True,
+            },),
+            failure=failure,
+        )
     except (ApiError, ExportTimeoutError) as exc:
         last_status = getattr(exc, "last_status", {})
         if not isinstance(last_status, Mapping):

@@ -220,6 +220,11 @@ class WebBatchJob:
     remote_started_at: str | None = None
     remote_ended_at: str | None = None
     build_started_at: str | None = None
+    vm_export_uuid: str | None = None
+    vm_resume_manifest_path: str | None = None
+    remote_export_started_at: str | None = None
+    remote_status_at: str | None = None
+    remote_progress_at: str | None = None
     created_at: str | None = None
     started_at: str | None = None
     ended_at: str | None = None

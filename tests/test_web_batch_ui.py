@@ -64,6 +64,87 @@ def _run_report_request_guard_script(source: str) -> object:
     return json.loads(completed.stdout)
 
 
+def _run_dashboard_refresh_script(source: str) -> object:
+    script_path = STATIC / "dashboard_refresh.js"
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            (
+                f"const helpers = require({json.dumps(str(script_path))});"
+                "Promise.resolve().then(async () => {"
+                f"return await (async () => {{ {source} }})();"
+                "}).then(result => process.stdout.write(JSON.stringify(result)))"
+                ".catch(error => { console.error(error); process.exit(1); });"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def test_refresh_coordinator_coalesces_periodic_requests() -> None:
+    result = _run_dashboard_refresh_script(
+        "const calls = [];"
+        "let releaseFirst;"
+        "const first = new Promise(resolve => { releaseFirst = resolve; });"
+        "const coordinator = helpers.createRefreshCoordinator({"
+        "load: () => { calls.push('load'); return first; },"
+        "apply: value => calls.push(`apply:${value.revision}`),"
+        "onError: error => calls.push(`error:${error.message}`),"
+        "});"
+        "const a = coordinator.refresh();"
+        "const b = coordinator.refresh();"
+        "releaseFirst({revision: 1});"
+        "await Promise.all([a, b]);"
+        "return {calls, running: coordinator.isRunning()};"
+    )
+
+    assert result == {"calls": ["load", "apply:1"], "running": False}
+
+
+def test_refresh_coordinator_runs_one_requested_follow_up_in_series() -> None:
+    result = _run_dashboard_refresh_script(
+        "const calls = [];"
+        "let releaseFirst;"
+        "const first = new Promise(resolve => { releaseFirst = resolve; });"
+        "const coordinator = helpers.createRefreshCoordinator({"
+        "load: () => { calls.push('load'); return calls.length === 1 "
+        "? first : Promise.resolve({revision: 2}); },"
+        "apply: value => calls.push(`apply:${value.revision}`),"
+        "onError: error => calls.push(`error:${error.message}`),"
+        "});"
+        "const a = coordinator.refresh();"
+        "const b = coordinator.refresh({ensureAfterCurrent: true});"
+        "const c = coordinator.refresh({ensureAfterCurrent: true});"
+        "releaseFirst({revision: 1});"
+        "await Promise.all([a, b, c]);"
+        "return {calls, running: coordinator.isRunning()};"
+    )
+
+    assert result == {
+        "calls": ["load", "apply:1", "load", "apply:2"],
+        "running": False,
+    }
+
+
+def test_refresh_coordinator_reports_error_and_releases_running_state() -> None:
+    result = _run_dashboard_refresh_script(
+        "const calls = [];"
+        "const coordinator = helpers.createRefreshCoordinator({"
+        "load: () => Promise.reject(new Error('indisponivel'))," 
+        "apply: () => calls.push('apply'),"
+        "onError: error => calls.push(`error:${error.message}`),"
+        "});"
+        "await coordinator.refresh();"
+        "return {calls, running: coordinator.isRunning()};"
+    )
+
+    assert result == {"calls": ["error:indisponivel"], "running": False}
+
+
 def test_client_selection_helpers_filter_by_query_analyst_and_unassigned() -> None:
     clients = [
         {
@@ -166,6 +247,18 @@ def test_client_save_confirms_immediately_without_waiting_for_full_state() -> No
     assert "await refresh()" not in submit
 
 
+def test_run_submission_confirms_without_waiting_for_full_state() -> None:
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+    start = javascript.index('$("#run-form").addEventListener')
+    end = javascript.index('$("#confirm-component-retry")', start)
+    submit = javascript[start:end]
+
+    assert '$("#run-dialog").close()' in submit
+    assert "await refresh()" not in submit
+    assert "ensureAfterCurrent: true" in submit
+    assert "void refresh(" in submit
+
+
 def test_report_request_guard_rejects_a_late_response_from_previous_client() -> None:
     assert _run_report_request_guard_script(
         "const guard = helpers.createLatestRequestGuard();"
@@ -241,6 +334,21 @@ def test_frontend_exposes_contextual_durable_batch_controls() -> None:
     assert "button.disabled = true" in javascript
     assert ".batch-panel" in css
     assert ".batch-actions" in css
+
+
+def test_frontend_exposes_recent_batch_selector_and_client_detail() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+    css = (STATIC / "app.css").read_text(encoding="utf-8")
+    assert 'id="batch-select"' in html
+    assert 'id="batch-client-dialog"' in html
+    assert "data-open-batch-clients" in javascript
+    assert "/api/batches/" in javascript
+    assert "was_attempts" in javascript
+    assert "data-copy-vm-uuid" in javascript
+    assert "Verificar export preservado" in javascript
+    assert "job aceito; a Tenable ainda não anunciou" in javascript
+    assert ".batch-client-row" in css
 
 
 def test_generate_all_uses_per_client_conflicts_instead_of_global_batch_lock() -> None:

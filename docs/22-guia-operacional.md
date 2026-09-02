@@ -228,6 +228,13 @@ interface mostra exatamente `0/0 · aguardando a Tenable informar chunks`. O
 indicador `checkpoint validado` é booleano; a interface e a API não mostram o
 caminho do arquivo.
 
+O seletor **Lotes recentes** conserva os dez lotes mais novos no painel. Use
+**Ver clientes do lote** para carregar os jobs e eventos somente quando precisar
+do detalhe. O indicador “Tenable confirmou” é atualizado apenas após uma resposta
+HTTP 200 do endpoint de status; “último progresso real” muda somente quando estado,
+contadores ou chunks avançam. Uma falha transitória de polling não é apresentada
+como confirmação remota.
+
 ### Falha isolada no WAS
 
 Na execução manual individual, a interface mantém VM, assets, TAG e Cloud já
@@ -279,9 +286,22 @@ Para uma execução com coleta nova, confirme também:
 ## Export preso e cancelamento
 
 Em `STAGED_V1`, 900 segundos sem progresso geram alerta, mas não encerram a
-coleta. Aos 7.200 segundos o processo local termina como falha retentável,
-preservando UUID, checkpoint e chunks. A aplicação não cancela automaticamente o
-export remoto.
+coleta. O teto padrão é de 36.000 segundos (10 horas) por UUID, somando fila e
+processamento. Esse prazo começa na primeira observação durável do UUID e não é
+reiniciado ao reiniciar o servidor ou derivar uma retentativa. Ao atingir o teto,
+o processo local termina como falha retentável, preservando UUID, checkpoint e
+chunks. A aplicação não cancela automaticamente o export remoto.
+
+O prazo de 10 horas não é o timeout de uma requisição HTTP nem uma garantia de
+conclusão da Tenable. Cada consulta continua curta. Respostas 429, 5xx e falhas de
+transporte são tratadas com backoff dentro do orçamento; 401 continua sendo erro de
+credencial/permissão e não é absorvido. Resposta 200 em `QUEUED` ou `PROCESSING`
+confirma que a Tenable ainda reconhece o job, mas não prova progresso.
+
+A documentação oficial informa que cada chunk VM fica disponível para download
+por até 24 horas depois de criado; por isso o coletor persiste cada chunk assim que
+ele aparece, inclusive antes de `FINISHED` e fora de ordem. Depois desse prazo, um
+404 pode significar expiração do chunk: [Download vulnerabilities chunk](https://developer.tenable.com/reference/exports-vulns-download-chunk).
 
 Use **Cancelar export e tentar novamente** somente como ação manual, com confirmação
 do UUID e da execução, depois de avaliar o impacto no trabalho remoto preservado.
@@ -298,9 +318,30 @@ explicitamente para a retentativa, antes de aguardar ou baixar chunks:
 - `FINISHED` com chunks restantes indisponíveis: considera o conteúdo expirado e
   cria um novo job.
 
-Falhas de autenticação, rate limit e indisponibilidade da API interrompem a
-tentativa normalmente; elas não autorizam a criação silenciosa de exports
-duplicados.
+No detalhe do lote, **Verificar export preservado** cria uma retentativa somente
+para o cliente selecionado. A aplicação consulta o mesmo UUID e baixa apenas os
+chunks ainda ausentes. Se o UUID estiver comprovadamente terminal, expirado, em
+HTTP 404 ou `FINISHED` sem os chunks restantes, o evento
+`TENABLE_EXPORT_RECOVERY_UNAVAILABLE` registra o motivo e o UUID substituto antes
+de continuar. Não existe fallback silencioso para um POST novo.
+
+Falhas de autenticação não autorizam a criação de export duplicado. Rate limit,
+5xx e indisponibilidade transitória de consulta permanecem visíveis nos eventos,
+mas o polling continua dentro do orçamento total.
+
+### Falhas locais e checkpoint
+
+Antes de entrar em `READY_FOR_BUILD`, o checkpoint lista e valida o manifest
+normalizado, assets, findings, snapshots e datasets TAG/WAS necessários. Execução
+manual lê sempre o escopo `data/manual`; automática mensal lê
+`data/automatic-monthly`. Ausência de uma dependência resulta em
+`CHECKPOINT_ARTIFACT_MISSING`, e divergência de escopo em
+`LOCAL_ARTIFACT_SCOPE_MISMATCH`, sem criar publicação parcial.
+
+No Windows, contenção transitória ao substituir `export-state.json` é retentada
+com arquivo temporário exclusivo. Persistência da contenção resulta em
+`LOCAL_FILESYSTEM_TRANSIENT`. Se isso ocorrer apenas na telemetria WAS opcional,
+VM permanece preservado e o WAS recebe `WAS_LOCAL_STATE_TRANSIENT`.
 
 ### Importar um snapshot de recuperação
 

@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,7 @@ from tenable_reports.application.collect import (
     find_resumable_vm_manifest,
     reusable_chunk,
     store_chunk_atomic,
+    _write_json_replace,
 )
 from tenable_reports.application.collect_was import (
     WasExportRequest,
@@ -53,6 +55,65 @@ class FakeCollectionClient:
     def download_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:
         self.download_calls.append(chunk_id)
         return self.chunks[chunk_id]
+
+
+def _sharing_violation() -> PermissionError:
+    error = PermissionError(13, "Access is denied")
+    error.winerror = 5
+    return error
+
+
+def test_json_replace_retries_windows_sharing_violation(tmp_path: Path) -> None:
+    target = tmp_path / "export-state.json"
+    target.write_text('{"status":"OLD"}', encoding="utf-8")
+    real_replace = __import__("os").replace
+    calls = 0
+
+    def flaky_replace(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise _sharing_violation()
+        return real_replace(source, destination)
+
+    with patch("tenable_reports.application.collect.os.replace", side_effect=flaky_replace), patch(
+        "tenable_reports.application.collect.time.sleep"
+    ) as sleeper:
+        _write_json_replace(target, {"status": "PROCESSING"})
+
+    assert json.loads(target.read_text(encoding="utf-8"))["status"] == "PROCESSING"
+    assert calls == 3
+    assert sleeper.call_count == 2
+    assert not tuple(tmp_path.glob("*.tmp"))
+
+
+def test_optional_was_isolates_persistent_export_state_sharing_error(tmp_path: Path) -> None:
+    profile = load_client_profile(
+        ROOT / "clients/examples/client-profile-intelligence-expanded.json"
+    )
+    from tenable_reports.application.collect import _write_json_replace as real_write
+
+    def fail_state(path: Path, payload: dict[str, Any]) -> None:
+        if path.name == "export-state.json":
+            raise _sharing_violation()
+        real_write(path, payload)
+
+    with patch(
+        "tenable_reports.application.collect_was._write_json_replace",
+        side_effect=fail_state,
+    ):
+        attempt = collect_optional_was_snapshot(
+            client=FakeWasCollectionClient({}),  # type: ignore[arg-type]
+            profile=profile,
+            request=WasExportRequest(filters={"state": ["OPEN"]}),
+            output_root=tmp_path,
+            run_id="run-was-sharing",
+        )
+
+    assert attempt.status == "UNAVAILABLE"
+    assert attempt.failure is not None
+    assert attempt.failure.code == "WAS_LOCAL_STATE_TRANSIENT"
+    assert attempt.failure.retryable is True
 
 
 class FakeAssetCollectionClient:
@@ -796,6 +857,7 @@ class CollectionTests(unittest.TestCase):
                         "chunks": [],
                     }), encoding="utf-8")
                     client = StatusAwareResumeClient(remote_status)
+                    progress: list[dict[str, Any]] = []
 
                     result = collect_vm_snapshot(
                         client=client,  # type: ignore[arg-type]
@@ -805,6 +867,7 @@ class CollectionTests(unittest.TestCase):
                         run_id=f"run-retry-new-{index}",
                         logical_job_id="logical-july",
                         resume_from=resume_manifest,
+                        progress_callback=progress.append,
                     )
 
                     manifest = json.loads(
@@ -814,6 +877,13 @@ class CollectionTests(unittest.TestCase):
                     self.assertNotEqual(client.start_arguments, {})
                     self.assertEqual(manifest["export_uuid"], "fixture-export")
                     self.assertEqual(manifest["origin"], "created")
+                    recovery = next(
+                        item for item in progress
+                        if item.get("event") == "TENABLE_EXPORT_RECOVERY_UNAVAILABLE"
+                    )
+                    self.assertEqual(recovery["previous_export_uuid"], f"old-export-{index}")
+                    self.assertEqual(recovery["replacement_export_uuid"], "fixture-export")
+                    self.assertTrue(recovery["replacement_started"])
 
     def test_cancelled_provided_uuid_starts_new_export_before_waiting(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")

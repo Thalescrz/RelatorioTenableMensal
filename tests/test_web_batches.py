@@ -21,6 +21,7 @@ from tenable_reports.domain.web_batches import (
     InvalidBatchJobTransitionError,
     WebBatchJob,
     WebBatch,
+    WebBatchEvent,
     retryable_batch_job_ids,
     transition_batch,
     transition_batch_job,
@@ -228,6 +229,58 @@ def test_retry_selection_contains_only_failed_interrupted_and_cancelled_jobs() -
         UUID(int=3),
         UUID(int=4),
     )
+
+
+def test_memory_repository_lists_jobs_and_events_for_batches_in_bulk() -> None:
+    repository = InMemoryWebBatchRepository()
+    batch_a = UUID(int=1000)
+    batch_b = UUID(int=2000)
+    unknown = UUID(int=3000)
+    for batch_id, positions in ((batch_a, (2, 1)), (batch_b, (1,))):
+        repository.create_batch(
+            WebBatch(
+                id=batch_id,
+                idempotency_key=f"batch:bulk:{batch_id}",
+                kind="GENERATE_ALL",
+                status=BatchStatus.QUEUED,
+            ),
+            tuple(
+                WebBatchJob(
+                    id=UUID(int=int(batch_id) + position),
+                    batch_id=batch_id,
+                    client_id=f"client-{batch_id}-{position}",
+                    position=position,
+                    status=BatchJobStatus.QUEUED,
+                    attempt_number=1,
+                )
+                for position in positions
+            ),
+        )
+    for event_type in ("JOB_STARTED", "JOB_PROGRESS", "JOB_FINISHED"):
+        repository.append_event(
+            WebBatchEvent(
+                batch_id=batch_b,
+                event_type=event_type,
+                payload={},
+            )
+        )
+
+    jobs_by_batch = repository.list_batch_jobs_for_batches(
+        (batch_a, batch_b, unknown)
+    )
+    events_by_batch = repository.list_events_for_batches(
+        (batch_a, batch_b, unknown)
+    )
+
+    assert tuple(job.position for job in jobs_by_batch[batch_a]) == (1, 2)
+    assert tuple(job.position for job in jobs_by_batch[batch_b]) == (1,)
+    assert jobs_by_batch[unknown] == ()
+    assert tuple(event.event_type for event in events_by_batch[batch_b])[-3:] == (
+        "JOB_STARTED",
+        "JOB_PROGRESS",
+        "JOB_FINISHED",
+    )
+    assert events_by_batch[unknown] == ()
 
 
 def test_legacy_phase_is_default_and_default_claim_remains_compatible() -> None:
