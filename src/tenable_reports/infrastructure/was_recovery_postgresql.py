@@ -145,18 +145,25 @@ class PostgresWasRecoveryRepository:
             ).fetchone()
         return _record_from_row(row) if row is not None else None
 
-    def pending(self, *, client_id: str) -> tuple[WasRecoveryRecord, ...]:
-        normalized_client_id = _required_text(client_id, "client_id")
+    def pending(
+        self,
+        *,
+        client_id: str | None = None,
+    ) -> tuple[WasRecoveryRecord, ...]:
+        clauses = ["status in ('WAITING_WAS_DECISION', 'RETRY_AVAILABLE')"]
+        params: tuple[Any, ...] = ()
+        if client_id is not None:
+            clauses.insert(0, "client_id = %s")
+            params = (_required_text(client_id, "client_id"),)
         with self.database.connection() as connection:
             rows = connection.execute(
                 f"""
                 select {_RECOVERY_COLUMNS}
                 from {SCHEMA_NAME}.was_recoveries
-                where client_id = %s
-                  and status in ('WAITING_WAS_DECISION', 'RETRY_AVAILABLE')
+                where {' and '.join(clauses)}
                 order by updated_at desc, run_id
                 """,
-                (normalized_client_id,),
+                params,
             ).fetchall()
         return tuple(_record_from_row(row) for row in rows)
 

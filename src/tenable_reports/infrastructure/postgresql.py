@@ -54,6 +54,85 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _split_postgresql_statements(sql_text: str) -> tuple[str, ...]:
+    """Split migration SQL without breaking PostgreSQL quoted bodies."""
+    statements: list[str] = []
+    start = 0
+    index = 0
+    quote: str | None = None
+    dollar_quote: str | None = None
+    block_comment_depth = 0
+    length = len(sql_text)
+
+    while index < length:
+        if dollar_quote is not None:
+            if sql_text.startswith(dollar_quote, index):
+                index += len(dollar_quote)
+                dollar_quote = None
+            else:
+                index += 1
+            continue
+
+        if quote is not None:
+            if sql_text[index] == quote:
+                if index + 1 < length and sql_text[index + 1] == quote:
+                    index += 2
+                    continue
+                quote = None
+            index += 1
+            continue
+
+        if block_comment_depth:
+            if sql_text.startswith("/*", index):
+                block_comment_depth += 1
+                index += 2
+            elif sql_text.startswith("*/", index):
+                block_comment_depth -= 1
+                index += 2
+            else:
+                index += 1
+            continue
+
+        if sql_text.startswith("--", index):
+            newline = sql_text.find("\n", index + 2)
+            index = length if newline < 0 else newline + 1
+            continue
+        if sql_text.startswith("/*", index):
+            block_comment_depth = 1
+            index += 2
+            continue
+        if sql_text[index] in {"'", '"'}:
+            quote = sql_text[index]
+            index += 1
+            continue
+        if sql_text[index] == "$":
+            closing = sql_text.find("$", index + 1)
+            if closing >= 0:
+                tag = sql_text[index + 1 : closing]
+                valid_tag = (
+                    not tag
+                    or (
+                        (tag[0].isalpha() or tag[0] == "_")
+                        and all(character.isalnum() or character == "_" for character in tag)
+                    )
+                )
+                if valid_tag:
+                    dollar_quote = sql_text[index : closing + 1]
+                    index = closing + 1
+                    continue
+        if sql_text[index] == ";":
+            statement = sql_text[start:index].strip()
+            if statement:
+                statements.append(statement)
+            start = index + 1
+        index += 1
+
+    remainder = sql_text[start:].strip()
+    if remainder:
+        statements.append(remainder)
+    return tuple(statements)
+
+
 def _history_snapshot_storage(
     snapshot: HistorySnapshot,
 ) -> tuple[dict[str, Any], str, bytes, bytes, bytes]:
@@ -199,9 +278,8 @@ class PostgresDatabase:
                             )
                         continue
                     with connection.transaction():
-                        for statement in sql_text.split(";"):
-                            if statement.strip():
-                                connection.execute(statement)
+                        for statement in _split_postgresql_statements(sql_text):
+                            connection.execute(statement)
                         connection.execute(
                             f"insert into {SCHEMA_NAME}.schema_migrations "
                             "(version, checksum) values (%s, %s)",

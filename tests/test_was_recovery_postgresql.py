@@ -140,6 +140,29 @@ def test_repository_round_trips_pending_recovery(tmp_path: Path) -> None:
     assert get_params == ("run-1", "client-a")
 
 
+def test_repository_lists_all_pending_recoveries_in_one_query(tmp_path: Path) -> None:
+    checkpoint = _checkpoint(tmp_path)
+    record = WasRecoveryRecord(
+        run_id=checkpoint.run_id,
+        client_id=checkpoint.client_id,
+        tenant_id=checkpoint.tenant_id,
+        status=WasRecoveryStatus.WAITING_WAS_DECISION,
+        checkpoint_path=str(tmp_path / "checkpoint.json"),
+        checkpoint=checkpoint,
+        created_at="2026-08-28T12:00:00Z",
+        updated_at="2026-08-28T12:00:00Z",
+    )
+    database = _Database([_Cursor(many=(_row(record),))])
+    repository = PostgresWasRecoveryRepository(database, migrate=False)
+
+    assert repository.pending() == (record,)
+
+    pending_sql, pending_params = database.connection_value.calls[0]
+    assert "client_id = %s" not in pending_sql
+    assert "status in ('WAITING_WAS_DECISION', 'RETRY_AVAILABLE')" in pending_sql
+    assert pending_params == ()
+
+
 def test_record_decision_is_idempotent_for_same_key(tmp_path: Path) -> None:
     checkpoint = _checkpoint(tmp_path)
     decided = WasRecoveryRecord(

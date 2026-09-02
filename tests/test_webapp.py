@@ -363,6 +363,63 @@ class WebDashboardTests(unittest.TestCase):
             for forbidden_key in ("access_key", "secret_key", "password", "token"):
                 self.assertNotIn(f'"{forbidden_key}"', serialized)
 
+    def test_state_loads_pending_was_recoveries_with_one_repository_query(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            checkpoint = WasRecoveryCheckpoint(
+                schema_version=1,
+                run_id="run-was-pending",
+                client_id="client-one",
+                tenant_id="tenant-one",
+                execution_type="MANUAL",
+                period={
+                    "start_at": "2026-07-01T03:00:00Z",
+                    "end_at": "2026-08-01T03:00:00Z",
+                    "timezone": "America/Fortaleza",
+                    "mode": "EXPLICIT_RANGE",
+                },
+                profile_path="clients/managed/client-one.json",
+                output_root=str(root / "data"),
+                include_output=False,
+                was_status="UNAVAILABLE",
+                was_failure=WasFailureDetails(
+                    code="WAS_COLLECTION_UNAVAILABLE",
+                    message="Sanitized WAS failure.",
+                    retryable=True,
+                    export_uuid="was-export-fixture",
+                ),
+            )
+            record = WasRecoveryRecord(
+                run_id=checkpoint.run_id,
+                client_id=checkpoint.client_id,
+                tenant_id=checkpoint.tenant_id,
+                status=WasRecoveryStatus.WAITING_WAS_DECISION,
+                checkpoint_path=str(root / "was-recovery.json"),
+                checkpoint=checkpoint,
+            )
+            repository = Mock()
+            repository.pending.return_value = (record,)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                was_recovery_repository=repository,
+            )
+            app.config.add_client({
+                "client_id": "client-one",
+                "display_name": "Client One",
+            })
+            app.config.add_client({
+                "client_id": "client-two",
+                "display_name": "Client Two",
+            })
+
+            payload = app.state()
+
+            repository.pending.assert_called_once_with()
+            clients = {item["client_id"]: item for item in payload["clients"]}
+            self.assertEqual(len(clients["client-one"]["was_recoveries"]), 1)
+            self.assertEqual(clients["client-two"]["was_recoveries"], [])
+
     def test_generate_all_rejects_explicit_empty_client_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

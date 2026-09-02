@@ -13,6 +13,7 @@ from tenable_reports.application.postgresql_migration import migrate_legacy_stat
 from tenable_reports.config.database import DatabaseConfig
 from tenable_reports.domain.history import HistorySnapshot, SnapshotCompatibility
 from tenable_reports.domain.fingerprints import fingerprint_finding_key
+from tenable_reports.infrastructure import postgresql as postgresql_module
 from tenable_reports.infrastructure.postgresql import (
     PostgresOperationsRepository,
     _compact_legacy_history_payload,
@@ -53,6 +54,30 @@ class _MemoryOperationsTarget:
 
 
 class PostgreSqlTests(unittest.TestCase):
+    def test_migration_statement_splitter_preserves_dollar_quoted_blocks(self) -> None:
+        sql_text = """
+        create table example (id integer);
+        do $$
+        begin
+            perform 1;
+            perform 2;
+        end $$;
+        revoke all on table example from public;
+        """
+
+        statements = postgresql_module._split_postgresql_statements(sql_text)
+
+        self.assertEqual(len(statements), 3)
+        self.assertEqual(statements[0], "create table example (id integer)")
+        self.assertIn("perform 1;", statements[1])
+        self.assertIn("perform 2;", statements[1])
+        self.assertTrue(statements[1].startswith("do $$"))
+        self.assertTrue(statements[1].endswith("end $$"))
+        self.assertEqual(
+            statements[2],
+            "revoke all on table example from public",
+        )
+
     def test_database_config_never_exposes_password_in_location(self) -> None:
         config = DatabaseConfig.from_environment({
             "TENABLE_REPORTS_DB_HOST": "127.0.0.1",

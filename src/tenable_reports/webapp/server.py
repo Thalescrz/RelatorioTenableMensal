@@ -3418,27 +3418,26 @@ class DashboardApplication:
         for alert in alerts:
             latest_alert.setdefault(str(alert.get("client_id") or ""), alert)
         was_recoveries: list[dict[str, Any]] = []
+        recoveries_by_client: dict[str, list[dict[str, Any]]] = {}
+        if self.was_recovery_repository is not None:
+            try:
+                for record in self.was_recovery_repository.pending():
+                    failure = record.checkpoint.was_failure
+                    item = {
+                        "run_id": record.run_id,
+                        "client_id": record.client_id,
+                        "status": record.status.value,
+                        "checkpoint": record.checkpoint_path,
+                        "failure": failure.to_dict() if failure else None,
+                        "updated_at": record.updated_at,
+                    }
+                    recoveries_by_client.setdefault(record.client_id, []).append(item)
+                    was_recoveries.append(item)
+            except Exception as exc:
+                database_error = _safe_error(str(exc), limit=500)
         for client in clients:
             client_id = client["client_id"]
-            client_recoveries: list[dict[str, Any]] = []
-            if self.was_recovery_repository is not None:
-                try:
-                    for record in self.was_recovery_repository.pending(
-                        client_id=client_id
-                    ):
-                        failure = record.checkpoint.was_failure
-                        item = {
-                            "run_id": record.run_id,
-                            "client_id": record.client_id,
-                            "status": record.status.value,
-                            "checkpoint": record.checkpoint_path,
-                            "failure": failure.to_dict() if failure else None,
-                            "updated_at": record.updated_at,
-                        }
-                        client_recoveries.append(item)
-                        was_recoveries.append(item)
-                except Exception as exc:
-                    database_error = _safe_error(str(exc), limit=500)
+            client_recoveries = recoveries_by_client.get(client_id, [])
             client["was_recoveries"] = client_recoveries
             client["latest_report"] = summaries.get(client_id)
             client["job"] = latest_job.get(client_id)
