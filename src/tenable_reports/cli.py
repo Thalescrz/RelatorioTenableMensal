@@ -8,6 +8,7 @@ import shutil
 import sys
 import uuid
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -77,6 +78,10 @@ from tenable_reports.application.failures import (
     FailureCode,
     OperationalFailure,
     classify_failure,
+)
+from tenable_reports.application.component_status_recording import (
+    build_initial_component_attempts,
+    planned_components_from_attempts,
 )
 from tenable_reports.application.normalize import normalize_collections
 from tenable_reports.application.vm_export_policy import (
@@ -191,14 +196,24 @@ from tenable_reports.infrastructure.postgresql import (
 from tenable_reports.infrastructure.report_registry_postgresql import (
     PostgresReportRegistry,
 )
+from tenable_reports.infrastructure.report_components_postgresql import (
+    PostgresReportComponentRepository,
+)
 from tenable_reports.infrastructure.was_recovery_postgresql import (
     PostgresWasRecoveryRepository,
 )
 from tenable_reports.infrastructure.web_batches_postgresql import (
     PostgresWebBatchRepository,
 )
+from tenable_reports.infrastructure.translation import build_default_text_translator
 from tenable_reports.domain.execution_control import ExecutionInterruptedError
-from tenable_reports.domain.report_components import ComponentStage
+from tenable_reports.domain.report_components import (
+    ComponentAttempt,
+    ComponentStage,
+    ComponentStatus,
+    ReportComponent,
+    summarize_component_set,
+)
 from tenable_reports.domain.report_reference import (
     READY_STATUS,
     ReportCandidate,
@@ -592,6 +607,103 @@ def _postgres_operations(
     return PostgresOperationsRepository(PostgresDatabase(config))
 
 
+def _report_component_repository(
+    args: argparse.Namespace,
+) -> PostgresReportComponentRepository | None:
+    config = _load_database_config(
+        getattr(args, "database_env_file", None),
+        required=False,
+    )
+    if config is None:
+        return None
+    return PostgresReportComponentRepository(
+        PostgresDatabase(config),
+        migrate=False,
+    )
+
+
+def _persist_component_retry_attempt(
+    *,
+    args: argparse.Namespace,
+    client_id: str,
+    source_run_id: str,
+    component: ReportComponent,
+    success: bool,
+    retryable: bool = False,
+    failure_code: str | None = None,
+    failure_message: str | None = None,
+    checkpoint_path: str | Path | None = None,
+    artifact_references: Mapping[str, Any] | None = None,
+) -> None:
+    repository = _report_component_repository(args)
+    if repository is None:
+        return
+    latest = repository.latest_attempts(
+        source_run_id=source_run_id,
+        client_id=client_id,
+    )
+    previous = next(
+        (item for item in latest if item.component is component),
+        None,
+    )
+    attempt_number = (previous.attempt_number + 1) if previous else 1
+    created_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    normalized_checkpoint = (
+        str(Path(checkpoint_path).resolve()) if checkpoint_path else None
+    )
+    if success:
+        attempt = ComponentAttempt(
+            id=uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"tenable-report-component:{source_run_id}:{component.value}:{attempt_number}",
+            ),
+            client_id=client_id,
+            source_run_id=source_run_id,
+            component=component,
+            status=ComponentStatus.COMPLETE,
+            stage=ComponentStage.REPORT_PUBLICATION,
+            attempt_number=attempt_number,
+            checkpoint_path=normalized_checkpoint,
+            artifact_references=artifact_references or {},
+            created_at=created_at,
+            ended_at=created_at,
+        )
+    else:
+        code = re.sub(
+            r"[^A-Z0-9_]+",
+            "_",
+            str(failure_code or f"{component.value}_RETRY_FAILED").upper(),
+        ).strip("_")[:100]
+        if not code or not code[0].isalpha():
+            code = f"{component.value}_RETRY_FAILED"
+        message = " ".join(
+            str(
+                failure_message
+                or f"Falha ao retentar o componente {component.value}."
+            ).splitlines()
+        )[:500]
+        attempt = ComponentAttempt(
+            id=uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"tenable-report-component:{source_run_id}:{component.value}:{attempt_number}",
+            ),
+            client_id=client_id,
+            source_run_id=source_run_id,
+            component=component,
+            status=ComponentStatus.FAILED,
+            stage=ComponentStage.REPORT_PUBLICATION,
+            attempt_number=attempt_number,
+            retryable=retryable,
+            failure_code=code,
+            failure_message=message,
+            checkpoint_path=normalized_checkpoint,
+            artifact_references=artifact_references or {},
+            created_at=created_at,
+            ended_at=created_at,
+        )
+    repository.create_attempt(attempt)
+
+
 def _was_recovery_repository(
     args: argparse.Namespace,
 ) -> PostgresWasRecoveryRepository | None:
@@ -662,6 +774,7 @@ def _run_cloud_for_client(
     period: Any,
     execution_type: str,
     report_directory: Path,
+    translator: Any | None = None,
 ) -> CloudComponentResult:
     scope = getattr(profile, "cloud_security_scope", None)
     if scope is None or not bool(getattr(scope, "enabled", False)):
@@ -698,6 +811,7 @@ def _run_cloud_for_client(
                 repository=repository,
                 collect_live=reject_live_collection,
                 history_persistent=persistent,
+                translator=translator,
             ),
             resume=CloudResumeContext(
                 stage=ComponentStage.RENDER,
@@ -759,6 +873,7 @@ def _run_cloud_for_client(
                 cancellation_probe=_execution_cancellation_probe(args),
             ),
             history_persistent=persistent,
+            translator=translator,
         ),
         progress_callback=_emit_progress_event,
     )
@@ -1878,6 +1993,7 @@ def command_generate_base_docx(args: argparse.Namespace) -> int:
 
 def command_generate_full_base_docx(args: argparse.Namespace) -> int:
     profile = load_client_profile(args.profile)
+    translator = build_default_text_translator()
     result = generate_full_base_report(
         template_path=args.template,
         dataset_path=args.dataset,
@@ -1885,6 +2001,7 @@ def command_generate_full_base_docx(args: argparse.Namespace) -> int:
         output_path=args.output,
         assets_dir=args.assets_dir,
         mask_sensitive=args.mask_sensitive,
+        translator=translator,
     )
     print(json.dumps({
         "status": "complete",
@@ -1959,6 +2076,7 @@ def command_generate_customizations_docx(args: argparse.Namespace) -> int:
 
 def command_generate_report_pair(args: argparse.Namespace) -> int:
     profile = load_client_profile(args.profile)
+    translator = build_default_text_translator()
     base_result = generate_full_base_report(
         template_path=args.template,
         dataset_path=args.dataset,
@@ -1966,6 +2084,7 @@ def command_generate_report_pair(args: argparse.Namespace) -> int:
         output_path=args.base_output,
         assets_dir=args.assets_dir,
         mask_sensitive=args.mask_sensitive,
+        translator=translator,
     )
     custom_result = generate_customizations_report(
         template_path=args.template,
@@ -2654,6 +2773,111 @@ def command_run_client(args: argparse.Namespace) -> int:
         return 130
 
 
+def _persist_initial_component_states(
+    *,
+    args: argparse.Namespace,
+    profile: ClientProfile,
+    collected: _CollectedPeriodExecution,
+    publication_manifest: Path,
+    base_document: Path,
+    custom_document: Path,
+    tag_documents: Sequence[Mapping[str, Any]],
+    cloud_result: CloudComponentResult,
+) -> dict[str, Any]:
+    repository = _report_component_repository(args)
+    was_scope = getattr(profile, "was_scope", None)
+    cloud_scope = getattr(profile, "cloud_security_scope", None)
+    was_enabled = bool(getattr(was_scope, "enabled", False))
+    cloud_enabled = bool(getattr(cloud_scope, "enabled", False))
+    was_status = str(
+        getattr(
+            collected,
+            "was_collection_status",
+            "UNAVAILABLE" if was_enabled else "DISABLED",
+        )
+    )
+    was_checkpoint = getattr(collected, "was_recovery_checkpoint", None)
+    was_failure = (
+        was_checkpoint.was_failure.to_dict()
+        if isinstance(was_checkpoint, WasRecoveryCheckpoint)
+        and was_checkpoint.was_failure is not None
+        else None
+    )
+    checkpoint_value = (
+        getattr(collected, "was_recovery_checkpoint_path", None)
+        or getattr(args, "checkpoint", None)
+    )
+    checkpoint_path = (
+        str(Path(checkpoint_value).resolve())
+        if checkpoint_value and Path(checkpoint_value).is_file()
+        else None
+    )
+    vm_documents = [
+        str(base_document.resolve()),
+        str(custom_document.resolve()),
+        *[
+            str(item.get("path") or "")
+            for item in tag_documents
+            if str(item.get("path") or "").strip()
+        ],
+    ]
+    references = {
+        ReportComponent.VM_CORE: {
+            "documents": vm_documents,
+            "publication_manifest": str(publication_manifest.resolve()),
+        },
+        ReportComponent.WAS: {
+            "documents": [
+                str(base_document.resolve()),
+                str(custom_document.resolve()),
+            ],
+            "publication_manifest": str(publication_manifest.resolve()),
+        },
+        ReportComponent.CLOUD: {
+            "documents": [
+                str(document.path.resolve()) for document in cloud_result.documents
+            ],
+            "publication_manifest": str(publication_manifest.resolve()),
+        },
+    }
+    attempts = build_initial_component_attempts(
+        client_id=profile.client_id,
+        source_run_id=collected.run_id,
+        was_enabled=was_enabled,
+        was_status=was_status,
+        was_failure=was_failure,
+        cloud_enabled=cloud_enabled,
+        cloud_status=cloud_result.status.value,
+        cloud_warnings=tuple(
+            item for item in cloud_result.warnings if isinstance(item, Mapping)
+        ),
+        artifact_references_by_component=references,
+        checkpoint_path=checkpoint_path,
+    )
+    if repository is not None:
+        for attempt in attempts:
+            repository.create_attempt(attempt)
+    planned = planned_components_from_attempts(attempts)
+    summary = summarize_component_set(
+        attempts,
+        planned_components=planned,
+    )
+    return {
+        "component_set_status": summary.status.value,
+        "retryable_components": [
+            component.value for component in summary.retryable_components
+        ],
+        "components": [
+            {
+                "component": attempt.component.value,
+                "status": attempt.status.value,
+                "retryable": attempt.retryable,
+            }
+            for attempt in attempts
+        ],
+    }
+
+
 def _publish_collected_period(
     *,
     args: argparse.Namespace,
@@ -2677,6 +2901,7 @@ def _publish_collected_period(
     custom_output = Path(args.custom_output) if args.custom_output else (
         report_directory / report_filename(profile.display_name, period, "custom")
     )
+    translator = build_default_text_translator()
     _raise_if_execution_interrupted(args)
     base_result = generate_full_base_report(
         template_path=args.template,
@@ -2685,6 +2910,7 @@ def _publish_collected_period(
         output_path=base_output,
         assets_dir=args.assets_dir,
         mask_sensitive=args.mask_sensitive,
+        translator=translator,
     )
     _raise_if_execution_interrupted(args)
     custom_result = generate_customizations_report(
@@ -2734,6 +2960,7 @@ def _publish_collected_period(
                 profile=profile,
                 output_path=tag_output,
                 mask_sensitive=args.mask_sensitive,
+                translator=translator,
             )
         except Exception as exc:
             tag_warnings.append({
@@ -2766,6 +2993,7 @@ def _publish_collected_period(
         period=period,
         execution_type=execution_type,
         report_directory=report_directory,
+        translator=translator,
     )
     _raise_if_execution_interrupted(args)
     cloud_documents: list[dict[str, str]] = []
@@ -2872,6 +3100,16 @@ def _publish_collected_period(
         )
     if operations is not None:
         operations.record_publication_manifest(publication_manifest)
+    component_state = _persist_initial_component_states(
+        args=args,
+        profile=profile,
+        collected=collected,
+        publication_manifest=publication_manifest,
+        base_document=base_result.output_path,
+        custom_document=custom_result.output_path,
+        tag_documents=tag_documents,
+        cloud_result=cloud_result,
+    )
     cleanup_payload: dict[str, Any] = {
         "status": "NOT_REQUIRED",
         "removed_bytes": 0,
@@ -2953,6 +3191,7 @@ def _publish_collected_period(
         "external_distribution_performed": False,
         "cleanup": cleanup_payload,
         "compact_snapshot_id": compact_snapshot_id,
+        **component_state,
     })
     print(json.dumps(payload, ensure_ascii=False))
     return 0
@@ -3127,6 +3366,7 @@ def _retry_published_was_documents(
 
     staging = context.publication_manifest.parent / f".was-repair-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=False)
+    translator = build_default_text_translator()
     replacements: list[PublicationDocumentReplacement] = []
     try:
         base_destination = by_kind["base"]
@@ -3138,6 +3378,7 @@ def _retry_published_was_documents(
             output_path=base_staged,
             assets_dir=args.assets_dir,
             mask_sensitive=args.mask_sensitive,
+            translator=translator,
         )
         replacements.append(PublicationDocumentReplacement(
             staged_path=base_staged,
@@ -3179,6 +3420,7 @@ def _retry_published_was_documents(
                 profile=profile,
                 output_path=staged,
                 mask_sensitive=args.mask_sensitive,
+                translator=translator,
             )
             replacements.append(PublicationDocumentReplacement(
                 staged_path=staged,
@@ -3393,6 +3635,17 @@ def command_resume_was(args: argparse.Namespace) -> int:
                 client_id=checkpoint.client_id,
                 failure=attempt.failure,
             )
+            _persist_component_retry_attempt(
+                args=args,
+                client_id=checkpoint.client_id,
+                source_run_id=checkpoint.run_id,
+                component=ReportComponent.WAS,
+                success=False,
+                retryable=attempt.failure.retryable,
+                failure_code=attempt.failure.code,
+                failure_message=attempt.failure.message,
+                checkpoint_path=checkpoint_path,
+            )
             print(json.dumps({
                 "status": (
                     "was_retry_available"
@@ -3433,6 +3686,18 @@ def command_resume_was(args: argparse.Namespace) -> int:
                 checkpoint.run_id,
                 client_id=checkpoint.client_id,
             )
+        _persist_component_retry_attempt(
+            args=args,
+            client_id=checkpoint.client_id,
+            source_run_id=checkpoint.run_id,
+            component=ReportComponent.WAS,
+            success=True,
+            checkpoint_path=checkpoint_path,
+            artifact_references={
+                "documents": list(payload.get("documents") or ()),
+                "publication_manifest": payload.get("publication_manifest"),
+            },
+        )
         print(json.dumps(payload, ensure_ascii=False))
         return 0
 
@@ -3549,6 +3814,7 @@ def command_retry_cloud(args: argparse.Namespace) -> int:
             repository=repository,
             collect_live=collect_live,
             history_persistent=persistent,
+            translator=build_default_text_translator(),
         ),
         resume=resume,
         progress_callback=_emit_progress_event,
@@ -3585,8 +3851,183 @@ def command_retry_cloud(args: argparse.Namespace) -> int:
         "warnings": [dict(item) for item in result.warnings],
         "general_collection_repeated": False,
     }
+    first_warning = next(
+        (item for item in result.warnings if isinstance(item, Mapping)),
+        {},
+    )
+    _persist_component_retry_attempt(
+        args=args,
+        client_id=context.client_id,
+        source_run_id=context.run_id,
+        component=ReportComponent.CLOUD,
+        success=success,
+        retryable=bool(first_warning.get("retryable")),
+        failure_code=str(
+            first_warning.get("code") or "CLOUD_COMPONENT_RETRY_FAILED"
+        ),
+        failure_message=str(
+            first_warning.get("message")
+            or "A retentativa do componente Cloud Security não foi concluída."
+        ),
+        artifact_references={
+            "documents": [
+                str(item.path.resolve()) for item in result.documents
+            ],
+            "publication_manifest": str(manifest.resolve()),
+        },
+    )
     print(json.dumps(payload, ensure_ascii=False))
     return 0 if success else 2
+
+
+def command_retry_components(args: argparse.Namespace) -> int:
+    selected = tuple(
+        component
+        for component in ReportComponent
+        if component.value in set(args.component or ())
+    )
+    if not selected:
+        raise ValueError("Selecione ao menos um componente para retentar.")
+    if ReportComponent.VM_CORE in selected:
+        raise ValueError(
+            "O VM deve ser retomado pelo UUID/checkpoint do export preservado."
+        )
+    profile = load_client_profile(args.profile)
+    completed: list[str] = []
+    failed: list[str] = []
+    component_failures: list[dict[str, Any]] = []
+    if ReportComponent.WAS in selected:
+        repository = _was_recovery_repository(args)
+        if repository is None:
+            raise EnvironmentError("PostgreSQL é obrigatório para retentar WAS.")
+        recovery = repository.get(args.run_id, client_id=profile.client_id)
+        if recovery is None:
+            raise ValueError(
+                "A execução não possui checkpoint WAS disponível para retentativa."
+            )
+        was_args = argparse.Namespace(**vars(args))
+        was_args.checkpoint = recovery.checkpoint_path
+        was_args.decision = WasRecoveryDecision.RETRY_WAS.value
+        was_args.was_num_assets = int(getattr(args, "was_num_assets", 1000))
+        was_args.base_output = None
+        was_args.custom_output = None
+        was_args.history_database = None
+        was_args.history_export_csv = None
+        was_args.skip_history = False
+        was_args.mask_sensitive = bool(getattr(args, "mask_sensitive", False))
+        was_args.force_cloud_refresh = False
+        was_args.logical_job_id = f"component-retry:{args.run_id}:WAS"
+        was_args.attempt_number = 1
+        was_args.origin = "MANUAL"
+        was_args.cleanup_after_publish = True
+        try:
+            result = command_resume_was(was_args)
+        except Exception as exc:
+            failure = classify_failure(exc)
+            result = 2
+            component_failures.append({
+                "component": ReportComponent.WAS.value,
+                "error_code": failure.code.value,
+                "message": failure.message,
+                "retryable": failure.retryable,
+            })
+            try:
+                _persist_component_retry_attempt(
+                    args=args,
+                    client_id=profile.client_id,
+                    source_run_id=args.run_id,
+                    component=ReportComponent.WAS,
+                    success=False,
+                    retryable=failure.retryable,
+                    failure_code=failure.code.value,
+                    failure_message=failure.message,
+                    checkpoint_path=recovery.checkpoint_path,
+                )
+            except Exception:
+                pass
+        if result == 0:
+            completed.append(ReportComponent.WAS.value)
+        else:
+            failed.append(ReportComponent.WAS.value)
+    if ReportComponent.CLOUD in selected:
+        cloud_args = argparse.Namespace(**vars(args))
+        cloud_args.resume_dataset = None
+        cloud_args.resume_dataset_sha256 = None
+        try:
+            result = command_retry_cloud(cloud_args)
+        except Exception as exc:
+            failure = classify_failure(exc)
+            result = 2
+            component_failures.append({
+                "component": ReportComponent.CLOUD.value,
+                "error_code": failure.code.value,
+                "message": failure.message,
+                "retryable": failure.retryable,
+            })
+            try:
+                _persist_component_retry_attempt(
+                    args=args,
+                    client_id=profile.client_id,
+                    source_run_id=args.run_id,
+                    component=ReportComponent.CLOUD,
+                    success=False,
+                    retryable=failure.retryable,
+                    failure_code=failure.code.value,
+                    failure_message=failure.message,
+                )
+            except Exception:
+                pass
+        if result == 0:
+            completed.append(ReportComponent.CLOUD.value)
+        else:
+            failed.append(ReportComponent.CLOUD.value)
+    component_payload: dict[str, Any] = {}
+    try:
+        component_repository = _report_component_repository(args)
+        if component_repository is not None:
+            latest = component_repository.latest_attempts(
+                source_run_id=args.run_id,
+                client_id=profile.client_id,
+            )
+            if latest:
+                summary = summarize_component_set(
+                    latest,
+                    planned_components=planned_components_from_attempts(latest),
+                )
+                component_payload = {
+                    "component_set_status": summary.status.value,
+                    "retryable_components": [
+                        component.value for component in summary.retryable_components
+                    ],
+                    "components": [
+                        {
+                            "component": attempt.component.value,
+                            "status": attempt.status.value,
+                            "retryable": attempt.retryable,
+                        }
+                        for attempt in latest
+                    ],
+                }
+    except Exception:
+        component_payload = {}
+    if not component_payload:
+        component_payload = {
+            "component_set_status": (
+                "PARTIAL_FAILURE" if failed else "COMPLETE"
+            ),
+            "retryable_components": failed,
+        }
+    print(json.dumps({
+        "status": "partial" if failed else "complete",
+        "run_id": args.run_id,
+        "client_id": profile.client_id,
+        "components_retried": completed,
+        "components_failed": failed,
+        "component_failures": component_failures,
+        "general_collection_repeated": False,
+        **component_payload,
+    }, ensure_ascii=False))
+    return 2 if failed else 0
 
 
 def command_validate_orchestration(args: argparse.Namespace) -> int:
@@ -4372,6 +4813,38 @@ def build_parser() -> argparse.ArgumentParser:
     retry_cloud.add_argument("--resume-dataset")
     retry_cloud.add_argument("--resume-dataset-sha256")
     retry_cloud.set_defaults(handler=command_retry_cloud)
+
+    retry_components = subparsers.add_parser(
+        "retry-components",
+        help="Retenta somente WAS e/ou Cloud de uma execução publicada.",
+    )
+    retry_components.add_argument("--run-id", required=True)
+    retry_components.add_argument("--profile", required=True)
+    retry_components.add_argument("--env-file", required=True)
+    retry_components.add_argument(
+        "--database-env-file",
+        default="credentials/database.env",
+    )
+    retry_components.add_argument(
+        "--component",
+        action="append",
+        choices=tuple(item.value for item in ReportComponent),
+        required=True,
+    )
+    retry_components.add_argument(
+        "--template", default="templates/corporate/base-v1.docx"
+    )
+    retry_components.add_argument(
+        "--cloud-template",
+        default="templates/corporate/cloud-base-v1.docx",
+    )
+    retry_components.add_argument(
+        "--assets-dir", default="templates/corporate/assets"
+    )
+    retry_components.add_argument("--was-num-assets", type=int, default=1000)
+    retry_components.add_argument("--mask-sensitive", action="store_true")
+    retry_components.add_argument("--confirm-live-api", action="store_true")
+    retry_components.set_defaults(handler=command_retry_components)
 
     validate_orchestration = subparsers.add_parser(
         "validate-orchestration",

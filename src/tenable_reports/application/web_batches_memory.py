@@ -463,7 +463,13 @@ class InMemoryWebBatchRepository(WebBatchRepository):
             if not any(job.status in active_statuses for job in jobs):
                 if batch.status is BatchStatus.STOP_REQUESTED:
                     next_status = BatchStatus.STOPPED
-                elif any(job.status is BatchJobStatus.FAILED for job in jobs):
+                elif any(
+                    job.status in {
+                        BatchJobStatus.FAILED,
+                        BatchJobStatus.PARTIALLY_COMPLETE,
+                    }
+                    for job in jobs
+                ):
                     next_status = BatchStatus.COMPLETE_WITH_FAILURES
                 elif any(
                     job.status is BatchJobStatus.COMPLETE_WITH_WARNINGS
@@ -668,7 +674,13 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 }
                 for job in batch_jobs
             ):
-                if any(job.status is BatchJobStatus.FAILED for job in batch_jobs):
+                if any(
+                    job.status in {
+                        BatchJobStatus.FAILED,
+                        BatchJobStatus.PARTIALLY_COMPLETE,
+                    }
+                    for job in batch_jobs
+                ):
                     next_status = BatchStatus.COMPLETE_WITH_FAILURES
                 elif any(
                     job.status is BatchJobStatus.COMPLETE_WITH_WARNINGS

@@ -1053,6 +1053,36 @@ def test_dashboard_bootstraps_automatic_remote_capacity_and_serial_build(tmp_pat
     } == {5.0}
 
 
+def test_component_retry_is_queued_for_exact_published_run(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    legacy = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=legacy,
+        worker_id="worker-component-retry",
+        start_worker=False,
+    )
+    try:
+        queued = queue.enqueue_component_retry(
+            run_id="published-run-a",
+            client_id="client-a",
+            selected_components=("WAS", "CLOUD"),
+        )
+        stored = repository.list_batch_jobs(repository.list_batches()[0].id)[0]
+    finally:
+        queue.close()
+
+    assert stored.phase is BatchJobPhase.LEGACY
+    assert stored.payload["operation"] == "component_retry"
+    assert stored.payload["source_run_id"] == "published-run-a"
+    assert stored.payload["selected_components"] == ["WAS", "CLOUD"]
+
+
 def test_staged_workers_construct_collect_then_build_commands(tmp_path) -> None:
     config_path = tmp_path / "orchestration" / "clients.json"
     store = DashboardConfigStore(project_root=tmp_path, config_path=config_path)

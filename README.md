@@ -80,10 +80,11 @@ limitado para diagnóstico.
 O WAS e o Cloud Security são componentes opcionais e independentes. Falha, ausência
 de licença ou ausência de população em um deles não invalida os documentos VM já
 gerados. O Cloud registra uma fotografia atual compacta no PostgreSQL e mantém o
-staging quando uma retentativa isolada ainda pode aproveitá-lo. Quando um tradutor
-é injetado, descrições longas são divididas semanticamente e uma falha preserva
-somente o trecho fonte afetado; provedor externo continua sem integração
-automática.
+staging quando uma retentativa isolada ainda pode aproveitá-lo. Na geração real, as
+descrições e soluções em inglês são traduzidas automaticamente para português do
+Brasil. Textos longos são divididos semanticamente; uma falha preserva somente o
+trecho fonte afetado e adiciona um aviso ao documento. Plugin Output, hosts, IPs e
+demais evidências operacionais não são enviados ao serviço de tradução.
 
 No botão **Gerar todos** e no automático mensal, uma falha WAS inicia uma única
 retentativa apenas do componente WEB. Se ela também falhar, os relatórios são

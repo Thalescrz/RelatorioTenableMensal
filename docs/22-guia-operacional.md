@@ -412,11 +412,28 @@ pré-selecionado. Se existirem referências `MAIN` de contextos diferentes para 
 mesmo cliente e mês, o pacote usa a promoção `MAIN` mais recente e registra a
 decisão no resumo.
 
+O mesmo diálogo permite escolher um analista responsável. Nesse caso, entram
+somente os clientes atualmente vinculados a ele, ainda separados em uma pasta por
+cliente e ainda limitados ao conjunto `MAIN`. Deixe **Todos os responsáveis** para
+baixar a carteira completa. O filtro não altera `MAIN`, documentos ou cadastro.
+
 O botão **Baixar conjunto ZIP**, dentro do histórico do cliente, baixa exatamente
 a geração escolhida, ainda que ela não seja `MAIN`. Conjuntos excluídos não podem
 ser baixados. Os ZIPs são temporários e não passam a ocupar espaço durável depois
 que a resposta termina. A preparação expira em cinco minutos quando o download não
 é iniciado.
+
+## Tradução das descrições
+
+Descrições e soluções técnicas em inglês dos detalhamentos VM, TAG e Cloud são
+traduzidas automaticamente para português do Brasil durante a montagem. Textos
+extensos são enviados em partes ordenadas de até 900 caracteres para evitar que o
+serviço rejeite o conteúdo. Se uma parte falhar, o relatório mantém apenas aquela
+parte no idioma original, continua as demais e mostra um aviso explícito.
+
+A tradução utiliza um serviço externo. Somente os campos editoriais de descrição e
+solução são enviados: Plugin Output, IP, hostname, URI e tabelas de hosts permanecem
+locais. A indisponibilidade do tradutor não bloqueia a publicação do relatório.
 
 Para excluir um conjunto:
 

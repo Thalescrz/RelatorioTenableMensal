@@ -841,6 +841,11 @@ class PostgresWebBatchRepository(WebBatchRepository):
                         when exists (
                             select 1 from {SCHEMA_NAME}.web_batch_jobs child
                             where child.batch_id = batch.id
+                              and child.status = 'PARTIALLY_COMPLETE'
+                        ) then 'COMPLETE_WITH_FAILURES'
+                        when exists (
+                            select 1 from {SCHEMA_NAME}.web_batch_jobs child
+                            where child.batch_id = batch.id
                               and child.status = 'COMPLETE_WITH_WARNINGS'
                         ) then 'COMPLETE_WITH_WARNINGS'
                         else 'COMPLETE'
@@ -1088,6 +1093,11 @@ class PostgresWebBatchRepository(WebBatchRepository):
                         when exists (
                             select 1 from {SCHEMA_NAME}.web_batch_jobs child
                             where child.batch_id = batch.id and child.status = 'FAILED'
+                        ) then 'COMPLETE_WITH_FAILURES'
+                        when exists (
+                            select 1 from {SCHEMA_NAME}.web_batch_jobs child
+                            where child.batch_id = batch.id
+                              and child.status = 'PARTIALLY_COMPLETE'
                         ) then 'COMPLETE_WITH_FAILURES'
                         when exists (
                             select 1 from {SCHEMA_NAME}.web_batch_jobs child

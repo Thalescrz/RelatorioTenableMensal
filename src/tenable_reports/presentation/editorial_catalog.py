@@ -79,6 +79,10 @@ FIXED_REMINDER = (
     "mais encontrada."
 )
 
+TRANSLATION_UNAVAILABLE = (
+    "A tradução automática não pôde ser concluída; o texto original foi preservado."
+)
+
 TOP5_VM_INTRO = (
     "Abaixo seguem informações sobre essas vulnerabilidades encontradas, no período "
     "supracitado, os assets que são afetados e a solução do problema. Aqui foi "

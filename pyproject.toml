@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Fundacao para coleta reproduzivel e geracao de relatorios Tenable."
 requires-python = ">=3.11"
 dependencies = [
+  "deep-translator>=1.11.4,<2",
   "Pillow>=10,<13",
   "psycopg[binary]>=3.2,<4",
   "python-docx>=1.2.0,<2",

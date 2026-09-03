@@ -279,8 +279,11 @@ Os pacotes ZIP são projeções temporárias dos documentos registrados, não no
 artefatos duráveis. O pacote de um conjunto usa exatamente a execução escolhida. O
 pacote mensal seleciona somente o `MAIN` de cada cliente no período, separa os
 arquivos por cliente e registra em `RESUMO.txt` clientes sem `MAIN`, documentos
-ausentes e demais omissões. Caminhos fora da raiz `data` são rejeitados. O ZIP é
-montado em `data/.downloads`, transmitido com `no-store` e removido ao final da
+ausentes e demais omissões. Ele pode abranger a carteira inteira ou somente os
+clientes vinculados a um analista responsável; o vínculo atual é resolvido no
+momento da preparação e o nome do analista identifica o arquivo baixado. Caminhos
+fora da raiz `data` são rejeitados. O ZIP é montado em `data/.downloads`,
+transmitido com `no-store` e removido ao final da
 resposta, inclusive quando o navegador interrompe o download. A interface prepara
 o pacote antes de iniciar o streaming; o token é de uso único e um pacote não
 reivindicado expira depois de cinco minutos.
@@ -326,9 +329,14 @@ amarela e baixa verde. Isso inclui idade, primeira coluna CVSS, eixos da matriz
 CVSS×VPR e cabeçalhos de rating VPR. Texto livre que apenas contém palavras como
 “crítico” mantém o estilo normal.
 
-Quando um `TextTranslator` é injetado, descrições longas são divididas por
-parágrafo, depois sentença e, por fim, limite seguro de palavra. CVE, URL e versão
-permanecem inteiros quando cabem no limite. Chunks repetidos usam cache em memória;
-uma falha preserva somente o chunk fonte e os demais continuam traduzidos. Sem
-tradutor, inclusive para conteúdo já em português, o texto fonte é preservado. O
-projeto não envia descrições a provedor externo automaticamente.
+O fluxo real cria um único `GoogleTextTranslator` por execução e o injeta nos
+relatórios geral, por TAG e Cloud. Descrições e soluções são traduzidas de inglês
+para português do Brasil; textos longos são divididos por parágrafo, depois
+sentença e, por fim, limite seguro de 900 caracteres. CVE, URL e versão permanecem
+inteiros quando cabem no limite. Chunks repetidos usam cache em memória. Uma falha
+preserva somente o chunk fonte, permite que os demais continuem e inclui no DOCX o
+aviso de que o original foi mantido. Plugin Output, hostname, IP, URI e tabelas de
+evidência não passam pelo tradutor. O adaptador é carregado somente quando encontra
+o primeiro texto e depende de acesso ao serviço externo; testes usam tradutor
+determinístico e nunca rede. Chamadas deliberadas com `translator=None` preservam
+o texto fonte.

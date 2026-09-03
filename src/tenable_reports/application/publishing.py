@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -111,12 +114,28 @@ def validate_docx_package(path: str | Path) -> dict[str, Any]:
 def write_json_atomic(path: str | Path, payload: Mapping[str, Any]) -> Path:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        dir=destination.parent,
+        text=True,
     )
-    temporary.replace(destination)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        for attempt in range(6):
+            try:
+                os.replace(temporary, destination)
+                break
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(min(0.8, 0.05 * (2 ** attempt)))
+    finally:
+        temporary.unlink(missing_ok=True)
     return destination
 
 

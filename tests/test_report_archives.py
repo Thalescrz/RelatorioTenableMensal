@@ -100,6 +100,23 @@ class ReportArchiveTests(unittest.TestCase):
             self.assertEqual(result.included_clients, 2)
             self.assertEqual(result.included_documents, 2)
 
+    def test_monthly_archive_can_identify_responsible_scope_in_download_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            result = build_monthly_report_archive(
+                data_root=root / "data",
+                temporary_root=root / "temporary",
+                period_id="2026-08",
+                clients=(),
+                download_scope="Analista Principal",
+            )
+
+            self.assertEqual(
+                result.download_name,
+                "Relatorios-Tenable-Analista-Principal-2026-08.zip",
+            )
+
     def test_report_set_archive_accepts_selected_non_main_set(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

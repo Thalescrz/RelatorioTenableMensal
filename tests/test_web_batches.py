@@ -200,6 +200,7 @@ def test_batch_transition_rejects_leaving_a_terminal_state(
         (BatchJobStatus.INTERRUPT_REQUESTED, BatchJobStatus.INTERRUPTED),
         (BatchJobStatus.RUNNING, BatchJobStatus.COMPLETE),
         (BatchJobStatus.RUNNING, BatchJobStatus.COMPLETE_WITH_WARNINGS),
+        (BatchJobStatus.RUNNING, BatchJobStatus.PARTIALLY_COMPLETE),
         (BatchJobStatus.RUNNING, BatchJobStatus.FAILED),
     ),
 )
@@ -215,19 +216,21 @@ def test_batch_job_transition_rejects_requeueing_an_interrupted_job() -> None:
         transition_batch_job(BatchJobStatus.INTERRUPTED, BatchJobStatus.QUEUED)
 
 
-def test_retry_selection_contains_only_failed_interrupted_and_cancelled_jobs() -> None:
+def test_retry_selection_contains_partial_failed_interrupted_and_cancelled_jobs() -> None:
     jobs = (
         _job(position=1, status=BatchJobStatus.COMPLETE),
         _job(position=2, status=BatchJobStatus.FAILED),
         _job(position=3, status=BatchJobStatus.INTERRUPTED),
         _job(position=4, status=BatchJobStatus.CANCELLED_BY_USER),
         _job(position=5, status=BatchJobStatus.COMPLETE_WITH_WARNINGS),
+        _job(position=6, status=BatchJobStatus.PARTIALLY_COMPLETE),
     )
 
     assert retryable_batch_job_ids(jobs) == (
         UUID(int=2),
         UUID(int=3),
         UUID(int=4),
+        UUID(int=6),
     )
 
 

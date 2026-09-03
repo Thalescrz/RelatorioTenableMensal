@@ -70,3 +70,16 @@ def test_cloud_rate_limit_error_uses_structured_retryability() -> None:
 
     assert failure.code is FailureCode.TENABLE_RATE_LIMIT
     assert failure.retryable is True
+
+
+def test_postgresql_connection_exhaustion_is_clean_and_retryable() -> None:
+    failure = classify_failure(
+        'psycopg.OperationalError: FATAL: muitas conex�es para role "app"'
+    )
+
+    assert failure.code is FailureCode.DATABASE_UNAVAILABLE
+    assert failure.retryable is True
+    assert failure.message == (
+        "PostgreSQL sem conexões disponíveis; a operação será retentada."
+    )
+    assert "�" not in failure.message
