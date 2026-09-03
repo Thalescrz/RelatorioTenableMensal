@@ -284,6 +284,7 @@ def test_frontend_exposes_analyst_filters_selection_modal_and_management() -> No
 
     for element_id in (
         "dashboard-analyst-filter",
+        "dashboard-status-filter",
         "run-selection-dialog",
         "run-selection-search",
         "run-selection-analyst-filter",
@@ -304,6 +305,30 @@ def test_frontend_exposes_analyst_filters_selection_modal_and_management() -> No
     assert "openRunSelection" in javascript
 
 
+def test_frontend_exposes_partial_status_and_status_filters() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    for label in (
+        "Todos os status",
+        "Em andamento",
+        "Concluídos",
+        "Parcialmente concluídos",
+        "Falhos",
+        "Aguardando decisão",
+        "Interrompidos",
+        "Ainda não gerados",
+    ):
+        assert label in html
+    assert 'PARTIALLY_COMPLETE' in javascript
+    assert 'Parcialmente concluído' in javascript
+    assert 'state.statusFilter' in javascript
+    assert 'matchesStatusFilter' in javascript
+    assert 'data-open-alert-run' in javascript
+    assert 'report-set-target' in javascript
+    assert 'scrollIntoView' in javascript
+
+
 def test_frontend_exposes_contextual_durable_batch_controls() -> None:
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     javascript = (STATIC / "app.js").read_text(encoding="utf-8")
@@ -317,7 +342,7 @@ def test_frontend_exposes_contextual_durable_batch_controls() -> None:
         "Pausar após o atual",
         "Parar lote",
         "Retomar lote",
-        "Tentar somente falhas e interrompidos",
+        "Tentar falhas, parciais e interrompidos",
         "Gerar novamente para todos",
     ):
         assert label in html or label in javascript
@@ -416,7 +441,7 @@ def test_frontend_offers_retry_instead_of_resume_for_recovered_paused_batch() ->
     ) in javascript
     assert (
         'if (recoveredPaused && Number(batch.retryable_count || 0) > 0) '
-        'actions.push(["retry-incomplete", "Tentar falhas/interrompidos", "primary"]);'
+        'actions.push(["retry-incomplete", "Tentar falhas, parciais e interrompidos", "primary"]);'
     ) in javascript
 
 
@@ -446,6 +471,7 @@ def test_batch_summary_counts_warnings_as_complete_not_retryable(
                 (
                     BatchJobStatus.COMPLETE,
                     BatchJobStatus.COMPLETE_WITH_WARNINGS,
+                    BatchJobStatus.PARTIALLY_COMPLETE,
                     BatchJobStatus.FAILED,
                     BatchJobStatus.INTERRUPTED,
                     BatchJobStatus.CANCELLED_BY_USER,
@@ -475,12 +501,13 @@ def test_batch_summary_counts_warnings_as_complete_not_retryable(
     finally:
         queue.close()
 
-    assert summary["total_count"] == 5
+    assert summary["total_count"] == 6
     assert summary["completed_count"] == 2
+    assert summary["partial_count"] == 1
     assert summary["failed_count"] == 1
     assert summary["interrupted_count"] == 1
     assert summary["cancelled_count"] == 1
-    assert summary["retryable_count"] == 3
+    assert summary["retryable_count"] == 4
     assert summary["progress_percent"] == 100
 
 

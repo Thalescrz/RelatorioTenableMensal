@@ -38,6 +38,87 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliTests(unittest.TestCase):
+    def test_retry_components_calls_only_selected_component_commands(self) -> None:
+        args = SimpleNamespace(
+            run_id="published-run-a",
+            profile="client.json",
+            env_file="client.env",
+            database_env_file="database.env",
+            component=["WAS", "CLOUD"],
+            was_num_assets=1000,
+            mask_sensitive=False,
+            confirm_live_api=True,
+        )
+        profile = SimpleNamespace(client_id="client-a")
+        recovery_repository = Mock()
+        recovery_repository.get.return_value = SimpleNamespace(
+            checkpoint_path="C:/data/was-recovery.json"
+        )
+        stdout = io.StringIO()
+
+        with (
+            patch.object(cli_module, "load_client_profile", return_value=profile),
+            patch.object(
+                cli_module,
+                "_was_recovery_repository",
+                return_value=recovery_repository,
+            ),
+            patch.object(cli_module, "command_resume_was", return_value=0) as was,
+            patch.object(cli_module, "command_retry_cloud", return_value=0) as cloud,
+            contextlib.redirect_stdout(stdout),
+        ):
+            result = cli_module.command_retry_components(args)
+
+        self.assertEqual(result, 0)
+        was.assert_called_once()
+        cloud.assert_called_once()
+        payload = json.loads(stdout.getvalue().splitlines()[-1])
+        self.assertEqual(payload["components_retried"], ["WAS", "CLOUD"])
+        self.assertFalse(payload["general_collection_repeated"])
+
+    def test_retry_components_attempts_all_selected_and_reports_partial(self) -> None:
+        args = SimpleNamespace(
+            run_id="published-run-b",
+            profile="client.json",
+            env_file="client.env",
+            database_env_file="database.env",
+            component=["WAS", "CLOUD"],
+            was_num_assets=1000,
+            mask_sensitive=False,
+            confirm_live_api=True,
+        )
+        profile = SimpleNamespace(client_id="client-b")
+        recovery_repository = Mock()
+        recovery_repository.get.return_value = SimpleNamespace(
+            checkpoint_path="C:/data/was-recovery.json"
+        )
+        stdout = io.StringIO()
+
+        with (
+            patch.object(cli_module, "load_client_profile", return_value=profile),
+            patch.object(
+                cli_module,
+                "_was_recovery_repository",
+                return_value=recovery_repository,
+            ),
+            patch.object(
+                cli_module,
+                "command_resume_was",
+                side_effect=ValueError("Falha WAS sanitizada."),
+            ) as was,
+            patch.object(cli_module, "command_retry_cloud", return_value=0) as cloud,
+            contextlib.redirect_stdout(stdout),
+        ):
+            result = cli_module.command_retry_components(args)
+
+        self.assertEqual(result, 2)
+        was.assert_called_once()
+        cloud.assert_called_once()
+        payload = json.loads(stdout.getvalue().splitlines()[-1])
+        self.assertEqual(payload["component_set_status"], "PARTIAL_FAILURE")
+        self.assertEqual(payload["components_retried"], ["CLOUD"])
+        self.assertEqual(payload["retryable_components"], ["WAS"])
+
     def test_run_client_parser_accepts_job_control_file(self) -> None:
         args = cli_module.build_parser().parse_args([
             "run-client",
@@ -448,6 +529,7 @@ class CliTests(unittest.TestCase):
                 patch.object(cli_module, "_cloud_snapshot_repository_for_args", return_value=(object(), True)),
                 patch.object(cli_module, "retry_cloud_component", return_value=result) as cloud_call,
                 patch.object(cli_module, "upsert_publication_documents", return_value=manifest),
+                patch.object(cli_module, "_persist_component_retry_attempt"),
                 patch.object(cli_module, "load_dotenv_file") as load_env,
                 patch.object(cli_module.CloudCredentialConfig, "from_environment") as credentials,
                 patch("builtins.print"),
@@ -531,6 +613,8 @@ class CliTests(unittest.TestCase):
         )
         profile = SimpleNamespace(
             client_id="cliente-a", tenant_id="tenant-a", display_name="CLIENTE A",
+            was_scope=SimpleNamespace(enabled=False),
+            cloud_security_scope=SimpleNamespace(enabled=False),
             report=SimpleNamespace(
                 tag_reports=SimpleNamespace(enabled=True, tags=selections),
             ),
@@ -607,6 +691,96 @@ class CliTests(unittest.TestCase):
             self.assertEqual(
                 [item.document_kind for item in documents],
                 ["base", "custom", "tag", "tag"],
+            )
+
+    def test_complete_run_injects_one_translator_into_base_tags_and_cloud(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            period, profile, collected, args = self._tag_run_fixture(directory)
+            manifest = directory / "publication.json"
+            manifest.write_text("{}", encoding="utf-8")
+            translator = object()
+            received: list[tuple[str, object]] = []
+
+            def render_base(**kwargs):
+                received.append(("base", kwargs["translator"]))
+                return SimpleNamespace(output_path=directory / "base.docx")
+
+            def render_tag(**kwargs):
+                received.append(("tag", kwargs["translator"]))
+                return SimpleNamespace(output_path=Path(kwargs["output_path"]))
+
+            def render_cloud(**kwargs):
+                received.append(("cloud", kwargs["translator"]))
+                return CloudComponentResult(
+                    status=CloudExecutionStatus.DISABLED,
+                    cleanup_ready=True,
+                )
+
+            with (
+                patch.object(
+                    cli_module,
+                    "build_default_text_translator",
+                    return_value=translator,
+                ),
+                patch.object(
+                    cli_module,
+                    "generate_full_base_report",
+                    side_effect=render_base,
+                ),
+                patch.object(
+                    cli_module,
+                    "generate_customizations_report",
+                    return_value=SimpleNamespace(
+                        output_path=directory / "custom.docx",
+                        rendered_modules=(),
+                        omitted_modules=(),
+                    ),
+                ),
+                patch.object(
+                    cli_module,
+                    "generate_tag_report",
+                    side_effect=render_tag,
+                ),
+                patch.object(
+                    cli_module,
+                    "_run_cloud_for_client",
+                    side_effect=render_cloud,
+                ),
+                patch.object(
+                    cli_module,
+                    "create_publication_manifest",
+                    return_value=manifest,
+                ),
+                patch.object(
+                    cli_module,
+                    "_persist_initial_component_states",
+                    return_value={
+                        "component_set_status": "COMPLETE",
+                        "retryable_components": [],
+                        "components": [],
+                    },
+                ),
+                patch.object(cli_module, "_postgres_operations", return_value=None),
+                patch("builtins.print"),
+            ):
+                result = cli_module._publish_collected_period(
+                    args=args,
+                    profile=profile,
+                    period=period,
+                    execution_type="AUTOMATIC_MONTHLY",
+                    collected=collected,
+                )
+
+            self.assertEqual(result, 0)
+            self.assertEqual(
+                received,
+                [
+                    ("base", translator),
+                    ("tag", translator),
+                    ("tag", translator),
+                    ("cloud", translator),
+                ],
             )
 
     def test_tag_render_failure_keeps_general_documents_and_emits_warning(self) -> None:

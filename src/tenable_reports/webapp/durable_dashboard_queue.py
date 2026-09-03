@@ -162,6 +162,84 @@ class DurableDashboardJobQueue:
             tuple((client_id, request) for client_id in client_ids)
         )
 
+    def enqueue_component_retry(
+        self,
+        *,
+        run_id: str,
+        client_id: str,
+        selected_components: Sequence[Any],
+        failed_only: bool = True,
+    ) -> Mapping[str, Any]:
+        components = [
+            str(getattr(component, "value", component))
+            for component in selected_components
+        ]
+        if not components or any(
+            component not in {"VM_CORE", "WAS", "CLOUD"}
+            for component in components
+        ):
+            raise ValueError("Retentativa sem componente válido.")
+        if not failed_only:
+            raise ValueError("A interface permite somente retentativas de falhas.")
+        batch_id = uuid4()
+        conflicts = self.repository.active_client_conflicts(
+            (client_id,),
+            excluding_batch_id=batch_id,
+        )
+        if conflicts:
+            raise BatchClientConflictError(conflicts)
+        job_id = uuid4()
+        created_at = _now()
+        control_file = self._control_file(
+            batch_id=batch_id,
+            job_id=job_id,
+            mode="manual",
+        )
+        payload = {
+            "job_id": job_id.hex,
+            "batch_id": str(batch_id),
+            "client_id": client_id,
+            "operation": "component_retry",
+            "source_run_id": run_id,
+            "run_id": run_id,
+            "selected_components": components,
+            "status": BatchJobStatus.QUEUED.value,
+            "mode": "manual",
+            "days": None,
+            "start_at": None,
+            "end_at": None,
+            "created_at": created_at,
+            "_job_control_file": control_file,
+        }
+        batch = WebBatch(
+            id=batch_id,
+            idempotency_key=f"component-retry:{run_id}:{uuid4()}",
+            kind=BatchAction.RETRY_INCOMPLETE.value,
+            status=BatchStatus.QUEUED,
+            options={
+                "execution_model": "LEGACY",
+                "source_run_id": run_id,
+                "selected_components": components,
+            },
+            created_at=created_at,
+        )
+        job = WebBatchJob(
+            id=job_id,
+            batch_id=batch_id,
+            client_id=client_id,
+            position=1,
+            status=BatchJobStatus.QUEUED,
+            attempt_number=1,
+            phase=BatchJobPhase.LEGACY,
+            payload=payload,
+            run_id=run_id,
+            control_file=control_file,
+            created_at=created_at,
+        )
+        self.repository.create_batch(batch, (job,))
+        self._dispatcher.wake()
+        return self.batch_snapshot(batch_id)["jobs"][0]
+
     def _control_file(
         self,
         *,
@@ -361,6 +439,26 @@ class DurableDashboardJobQueue:
                 )
             )
         )
+        if request.kind is BatchAction.RETRY_INCOMPLETE:
+            selected = tuple(
+                job
+                for job in selected
+                if (
+                    job.status is not BatchJobStatus.PARTIALLY_COMPLETE
+                    or (
+                        any(
+                            str(component) in {"VM_CORE", "WAS", "CLOUD"}
+                            for component in job.payload.get(
+                                "retryable_components", ()
+                            )
+                        )
+                        and bool(
+                            job.run_id
+                            or str(job.payload.get("run_id") or "").strip()
+                        )
+                    )
+                )
+            )
         if not selected:
             raise NoEligibleBatchJobsError(source.id)
 
@@ -421,6 +519,28 @@ class DurableDashboardJobQueue:
                 if key not in transient_keys
             }
             is_retry = request.kind is BatchAction.RETRY_INCOMPLETE
+            component_only_retry = (
+                is_retry
+                and source_job.status is BatchJobStatus.PARTIALLY_COMPLETE
+            )
+            if component_only_retry:
+                selected_components = [
+                    str(component)
+                    for component in source_job.payload.get(
+                        "retryable_components", ()
+                    )
+                    if str(component) in {"VM_CORE", "WAS", "CLOUD"}
+                ]
+                if not selected_components:
+                    raise NoEligibleBatchJobsError(source.id)
+                payload.update({
+                    "operation": "component_retry",
+                    "source_run_id": (
+                        source_job.run_id
+                        or str(source_job.payload.get("run_id") or "")
+                    ),
+                    "selected_components": selected_components,
+                })
             if is_retry and source_job.vm_export_uuid:
                 payload["vm_export_uuid"] = source_job.vm_export_uuid
             if is_retry and source_job.vm_resume_manifest_path:
@@ -460,6 +580,9 @@ class DurableDashboardJobQueue:
                         source_job.attempt_number + 1 if is_retry else 1
                     ),
                     phase=(
+                        BatchJobPhase.LEGACY
+                        if component_only_retry
+                        else
                         BatchJobPhase.READY_FOR_BUILD
                         if reusable_checkpoint
                         else BatchJobPhase.REMOTE_QUEUED
@@ -629,6 +752,7 @@ class DurableDashboardJobQueue:
         terminal_jobs = {
             BatchJobStatus.COMPLETE,
             BatchJobStatus.COMPLETE_WITH_WARNINGS,
+            BatchJobStatus.PARTIALLY_COMPLETE,
             BatchJobStatus.FAILED,
             BatchJobStatus.INTERRUPTED,
             BatchJobStatus.CANCELLED_BY_USER,
@@ -689,6 +813,9 @@ class DurableDashboardJobQueue:
                     "warning_count": counts[
                         BatchJobStatus.COMPLETE_WITH_WARNINGS
                     ],
+                    "partial_count": counts[
+                        BatchJobStatus.PARTIALLY_COMPLETE
+                    ],
                     "failed_count": counts[BatchJobStatus.FAILED],
                     "interrupted_count": counts[BatchJobStatus.INTERRUPTED],
                     "cancelled_count": counts[
@@ -697,6 +824,7 @@ class DurableDashboardJobQueue:
                     "queued_count": counts[BatchJobStatus.QUEUED],
                     "retryable_count": (
                         counts[BatchJobStatus.FAILED]
+                        + counts[BatchJobStatus.PARTIALLY_COMPLETE]
                         + counts[BatchJobStatus.INTERRUPTED]
                         + counts[BatchJobStatus.CANCELLED_BY_USER]
                     ),
@@ -1080,6 +1208,7 @@ class DurableDashboardJobQueue:
         if result.status in {
             BatchJobStatus.COMPLETE,
             BatchJobStatus.COMPLETE_WITH_WARNINGS,
+            BatchJobStatus.PARTIALLY_COMPLETE,
         }:
             return replace(
                 result,
@@ -1176,6 +1305,14 @@ class DurableDashboardJobQueue:
             status = BatchJobStatus.WAITING_WAS_DECISION
         elif raw_status == "INTERRUPTED" or int(result.get("exit_code") or 0) == 130:
             status = BatchJobStatus.INTERRUPTED
+        elif (
+            raw_status in {"COMPLETE", "PARTIALLY_COMPLETE"}
+            and str(result.get("component_set_status") or "").upper()
+            == "PARTIAL_FAILURE"
+        ):
+            status = BatchJobStatus.PARTIALLY_COMPLETE
+        elif raw_status == "PARTIALLY_COMPLETE":
+            status = BatchJobStatus.PARTIALLY_COMPLETE
         elif raw_status == "COMPLETE" and result.get("warnings"):
             status = BatchJobStatus.COMPLETE_WITH_WARNINGS
         elif raw_status == "COMPLETE":
@@ -1194,6 +1331,7 @@ class DurableDashboardJobQueue:
                 if status in {
                     BatchJobStatus.COMPLETE,
                     BatchJobStatus.COMPLETE_WITH_WARNINGS,
+                    BatchJobStatus.PARTIALLY_COMPLETE,
                 }
                 else 130
                 if status is BatchJobStatus.INTERRUPTED

@@ -56,6 +56,7 @@ from tenable_reports.infrastructure.tenable_cloud.queries import (
     CLOUD_SOURCE_QUERIES,
 )
 from tenable_reports.presentation.cloud_report_docx import generate_cloud_report
+from tenable_reports.presentation.translation import TextTranslator
 from tenable_reports.presentation.report_filenames import cloud_report_filename
 from tenable_reports.application.publishing import sha256_file, validate_docx_package
 
@@ -185,6 +186,7 @@ class CloudExecutionDependencies:
     build_dataset: Callable[..., Mapping[str, Any]] = build_cloud_dataset
     write_dataset: Callable[..., Any] = write_cloud_report_dataset
     render_report: Callable[..., Any] = generate_cloud_report
+    translator: TextTranslator | None = None
     validate_document: Callable[[str | Path], Mapping[str, Any]] = (
         validate_docx_package
     )
@@ -419,12 +421,17 @@ def _write_and_render(
             request.period,
         )
         with _cloud_stage(ComponentStage.RENDER, "CLOUD_RENDER_FAILED"):
+            render_arguments = {
+                "template_path": request.template_path,
+                "dataset_path": artifact.dataset_path,
+                "profile": request.profile,
+                "output_path": output_path,
+                "variant": variant,
+            }
+            if dependencies.translator is not None:
+                render_arguments["translator"] = dependencies.translator
             rendered = dependencies.render_report(
-                template_path=request.template_path,
-                dataset_path=artifact.dataset_path,
-                profile=request.profile,
-                output_path=output_path,
-                variant=variant,
+                **render_arguments,
             )
         with _cloud_stage(
             ComponentStage.DOCUMENT_VALIDATION,
@@ -707,13 +714,16 @@ def _render_resumed_dataset(
             request.profile.display_name,
             request.period,
         )
-        rendered = dependencies.render_report(
-            template_path=request.template_path,
-            dataset_path=dataset_path,
-            profile=request.profile,
-            output_path=output_path,
-            variant=variant,
-        )
+        render_arguments = {
+            "template_path": request.template_path,
+            "dataset_path": dataset_path,
+            "profile": request.profile,
+            "output_path": output_path,
+            "variant": variant,
+        }
+        if dependencies.translator is not None:
+            render_arguments["translator"] = dependencies.translator
+        rendered = dependencies.render_report(**render_arguments)
         documents.append(
             CloudGeneratedDocument(
                 path=Path(rendered.output_path),

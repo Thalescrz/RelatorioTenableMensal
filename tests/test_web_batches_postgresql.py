@@ -169,6 +169,16 @@ def test_vm_recovery_migration_adds_durable_remote_fields() -> None:
         assert f"add column if not exists {field}" in sql.lower()
 
 
+def test_partial_component_status_migration_extends_job_constraint() -> None:
+    sql = (
+        ROOT
+        / "src/tenable_reports/infrastructure/postgresql_migrations/0013_partial_component_status.sql"
+    ).read_text(encoding="utf-8")
+
+    assert "drop constraint if exists web_batch_jobs_status_check" in sql
+    assert "'PARTIALLY_COMPLETE'" in sql
+
+
 def test_repository_creates_batch_and_jobs_in_one_connection() -> None:
     database = _Database(
         [

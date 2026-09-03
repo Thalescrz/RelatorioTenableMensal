@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
 
@@ -67,6 +68,14 @@ def _source_repository(
                     "days": 30,
                     "status": status.value,
                     "run_id": f"old-run-{position}",
+                    **(
+                        {
+                            "component_set_status": "PARTIAL_FAILURE",
+                            "retryable_components": ["WAS"],
+                        }
+                        if status is BatchJobStatus.PARTIALLY_COMPLETE
+                        else {}
+                    ),
                 },
                 logical_job_id=f"logical-{position}",
             )
@@ -94,7 +103,7 @@ def _queue(tmp_path: Path, repository: InMemoryWebBatchRepository):
     )
 
 
-def test_retry_incomplete_selects_only_failed_interrupted_and_cancelled(
+def test_retry_incomplete_selects_partial_failed_interrupted_and_cancelled(
     tmp_path: Path,
 ) -> None:
     repository = _source_repository(
@@ -104,6 +113,7 @@ def test_retry_incomplete_selects_only_failed_interrupted_and_cancelled(
             BatchJobStatus.INTERRUPTED,
             BatchJobStatus.CANCELLED_BY_USER,
             BatchJobStatus.COMPLETE_WITH_WARNINGS,
+            BatchJobStatus.PARTIALLY_COMPLETE,
         )
     )
     queue = _queue(tmp_path, repository)
@@ -131,12 +141,78 @@ def test_retry_incomplete_selects_only_failed_interrupted_and_cancelled(
         "client-2",
         "client-3",
         "client-4",
+        "client-6",
     )
     assert all(job.status is BatchJobStatus.QUEUED for job in jobs)
     assert all(job.attempt_number == 3 for job in jobs)
     assert all(job.retry_of_batch_job_id is not None for job in jobs)
     assert all(job.run_id is None for job in jobs)
     assert all(job.control_file for job in jobs)
+
+
+def test_retry_incomplete_turns_partial_job_into_component_only_retry(
+    tmp_path: Path,
+) -> None:
+    repository = _source_repository((BatchJobStatus.PARTIALLY_COMPLETE,))
+    source = repository.list_batch_jobs(SOURCE_ID)[0]
+    repository._jobs[source.id] = replace(
+        source,
+        payload={
+            **dict(source.payload),
+            "run_id": "published-run-a",
+            "component_set_status": "PARTIAL_FAILURE",
+            "retryable_components": ["WAS", "CLOUD"],
+        },
+        run_id="published-run-a",
+    )
+    queue = _queue(tmp_path, repository)
+    try:
+        detail = queue.derive_batch(
+            DerivedBatchRequest(
+                source_batch_id=SOURCE_ID,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key="retry-partial-components",
+            )
+        )
+    finally:
+        queue.close()
+
+    retried = repository.list_batch_jobs(UUID(detail["batch"]["id"]))[0]
+    assert retried.phase is BatchJobPhase.LEGACY
+    assert retried.payload["operation"] == "component_retry"
+    assert retried.payload["source_run_id"] == "published-run-a"
+    assert retried.payload["selected_components"] == ["WAS", "CLOUD"]
+
+
+def test_retry_incomplete_skips_non_retryable_partial_without_blocking_failures(
+    tmp_path: Path,
+) -> None:
+    repository = _source_repository((
+        BatchJobStatus.PARTIALLY_COMPLETE,
+        BatchJobStatus.FAILED,
+    ))
+    partial = repository.list_batch_jobs(SOURCE_ID)[0]
+    repository._jobs[partial.id] = replace(
+        partial,
+        payload={
+            **dict(partial.payload),
+            "retryable_components": [],
+        },
+    )
+    queue = _queue(tmp_path, repository)
+    try:
+        detail = queue.derive_batch(
+            DerivedBatchRequest(
+                source_batch_id=SOURCE_ID,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key="retry-skip-non-retryable-partial",
+            )
+        )
+    finally:
+        queue.close()
+
+    jobs = repository.list_batch_jobs(UUID(detail["batch"]["id"]))
+    assert tuple(job.client_id for job in jobs) == ("client-2",)
 
 
 def test_retry_incomplete_accepts_paused_recovery_and_preserves_uuid(

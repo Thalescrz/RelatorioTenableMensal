@@ -83,6 +83,16 @@
             <option value="all">Todos os responsáveis</option>
             <option value="unassigned">Sem responsável</option>
           </select>
+          <select class="compact-select" id="dashboard-status-filter" aria-label="Filtrar por status">
+            <option value="all">Todos os status</option>
+            <option value="running">Em andamento</option>
+            <option value="completed">Concluídos</option>
+            <option value="partial">Parcialmente concluídos</option>
+            <option value="failed">Falhos</option>
+            <option value="decision">Aguardando decisão</option>
+            <option value="interrupted">Interrompidos</option>
+            <option value="not-generated">Ainda não gerados</option>
+          </select>
         </div>
       </div>
       <div class="client-grid" id="client-grid" aria-live="polite"></div>
@@ -140,6 +150,11 @@
     <form id="archive-form" class="archive-form">
       <label>Mês dos relatórios
         <select id="archive-month-select" name="period_id" required></select>
+      </label>
+      <label>Responsável
+        <select id="archive-analyst-select" name="responsible_analyst_id">
+          <option value="">Todos os responsáveis</option>
+        </select>
       </label>
       <p id="archive-month-note">Clientes sem MAIN no período serão registrados no RESUMO.txt.</p>
       <button class="button primary full" id="archive-download-button" type="submit">Gerar e baixar ZIP</button>

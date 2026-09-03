@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from tenable_reports.application.execution_control import FileExecutionControl
+from tenable_reports.application.failures import sanitize_failure_message
 from tenable_reports.application.web_batches import (
     BatchClientConflictError,
     DerivedBatchRequest,
@@ -61,6 +62,9 @@ from tenable_reports.application.report_registry import (
     ReportRegistry,
 )
 from tenable_reports.application.report_components import ReportComponentRepository
+from tenable_reports.application.component_status_recording import (
+    planned_components_from_attempts,
+)
 from tenable_reports.application.report_set_purge import (
     ActiveReportSetError,
     MainReportReplacementRequired,
@@ -178,7 +182,10 @@ def _utc_now() -> str:
 
 
 def _safe_error(value: str, *, limit: int = 3000) -> str:
-    sanitized = SECRET_PATTERN.sub(r"\1=[REMOVIDO]", value.strip())
+    sanitized = SECRET_PATTERN.sub(
+        r"\1=[REMOVIDO]",
+        sanitize_failure_message(value).strip(),
+    )
     if "Traceback (" in sanitized or re.search(r'\bFile "[A-Za-z]:\\', sanitized):
         exception_names = list(re.finditer(
             r"\b[A-Z][A-Za-z0-9_.]*(?:Error|Exception)\b", sanitized
@@ -1245,7 +1252,11 @@ def _default_runner(
     stop_grace_seconds: float = 30.0,
 ) -> subprocess.CompletedProcess[str]:
     child_environment = os.environ.copy()
-    child_environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+    child_environment.update({
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+        "PGCLIENTENCODING": "UTF8",
+    })
     process_options: dict[str, Any] = {}
     if os.name == "nt":
         process_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
@@ -1758,7 +1769,15 @@ class JobQueue:
 
     def _trim(self) -> None:
         completed = [
-            item for item in self._jobs.values() if item["status"] in {"COMPLETE", "FAILED"}
+            item
+            for item in self._jobs.values()
+            if item["status"] in {
+                "COMPLETE",
+                "COMPLETE_WITH_WARNINGS",
+                "PARTIALLY_COMPLETE",
+                "FAILED",
+                "INTERRUPTED",
+            }
         ]
         for item in sorted(completed, key=lambda row: row["created_at"], reverse=True)[100:]:
             self._jobs.pop(item["job_id"], None)
@@ -1797,6 +1816,56 @@ class JobQueue:
                     str(job["_cloud_template_path"]),
                     "--confirm-live-api",
                 ]
+            elif job.get("operation") == "component_retry":
+                config = load_orchestration_config(self.config_path)
+                client = next(
+                    (
+                        item
+                        for item in config.clients
+                        if item.client_id == job["client_id"]
+                    ),
+                    None,
+                )
+                if client is None or not client.enabled:
+                    raise ValueError("Cliente de retentativa não encontrado ou inativo.")
+                source_run_id = str(
+                    job.get("source_run_id") or job.get("run_id") or ""
+                ).strip()
+                components = [
+                    str(item)
+                    for item in job.get("selected_components") or ()
+                    if str(item) in {"VM_CORE", "WAS", "CLOUD"}
+                ]
+                if not source_run_id or not components:
+                    raise ValueError("Retentativa sem execução ou componente válido.")
+                command = [
+                    sys.executable,
+                    "-m",
+                    "tenable_reports",
+                    "retry-components",
+                    "--run-id",
+                    source_run_id,
+                    "--profile",
+                    str(client.profile_path),
+                    "--env-file",
+                    str(client.env_file),
+                    "--database-env-file",
+                    str(config.database_env_file),
+                    "--template",
+                    str(config.template_path),
+                    "--cloud-template",
+                    str(
+                        self.project_root
+                        / "templates"
+                        / "corporate"
+                        / "cloud-base-v1.docx"
+                    ),
+                    "--assets-dir",
+                    str(config.assets_dir),
+                    "--confirm-live-api",
+                ]
+                for component in components:
+                    command.extend(("--component", component))
             elif job.get("operation") == "staged_remote":
                 config = load_orchestration_config(self.config_path)
                 client = next(
@@ -2186,6 +2255,23 @@ class JobQueue:
                     job["collection_sources"] = list(
                         collection_payload.get("collection_sources") or ()
                     )
+                component_payload = next(
+                    (
+                        item for item in result_payloads
+                        if item.get("component_set_status") is not None
+                    ),
+                    None,
+                )
+                if component_payload is not None:
+                    job["component_set_status"] = component_payload.get(
+                        "component_set_status"
+                    )
+                    job["retryable_components"] = list(
+                        component_payload.get("retryable_components") or ()
+                    )
+                    job["components"] = list(
+                        component_payload.get("components") or ()
+                    )
                 validation_payload = next(
                     (
                         client_payload for client_payload in client_payloads
@@ -2206,6 +2292,11 @@ class JobQueue:
                 )
                 if waiting_payload is not None:
                     job["status"] = "WAITING_WAS_DECISION"
+                    job["error"] = None
+                elif str(job.get("component_set_status") or "").upper() == (
+                    "PARTIAL_FAILURE"
+                ):
+                    job["status"] = "PARTIALLY_COMPLETE"
                     job["error"] = None
                 elif completed.returncode == 130:
                     job["status"] = "INTERRUPTED"
@@ -2300,10 +2391,19 @@ class DashboardApplication:
                 configured_remote_workers = 0
                 max_clients_per_batch = 64
                 staged_output_root = self.project_root / "data"
+            database_connection_limit = None
+            if self.database is not None:
+                try:
+                    database_connection_limit = (
+                        self.database.database.role_connection_limit()
+                    )
+                except Exception:
+                    database_connection_limit = None
             remote_workers = resolve_remote_worker_capacity(
                 eligible_client_count=eligible_client_count,
                 configured_workers=configured_remote_workers,
                 max_clients_per_batch=max_clients_per_batch,
+                database_connection_limit=database_connection_limit,
             )
             executor = JobQueue(
                 self.project_root,
@@ -2321,6 +2421,11 @@ class DashboardApplication:
             )
         else:
             self.jobs = JobQueue(self.project_root, self.config.config_path, runner)
+        if (
+            self.component_retry_enqueuer is None
+            and hasattr(self.jobs, "enqueue_component_retry")
+        ):
+            self.component_retry_enqueuer = self.jobs.enqueue_component_retry
         self.cloud_contract_invalidator = cloud_contract_invalidator
         if self.cloud_contract_invalidator is None and self.database is not None:
             cloud_repository = PostgresCloudSnapshotRepository(
@@ -2417,7 +2522,10 @@ class DashboardApplication:
             for component in ReportComponent
             if component in latest
         )
-        summary = summarize_component_set(ordered_attempts)
+        summary = summarize_component_set(
+            ordered_attempts,
+            planned_components=planned_components_from_attempts(ordered_attempts),
+        )
         return {
             "run_id": run_id,
             "status": summary.status.value,
@@ -2431,11 +2539,16 @@ class DashboardApplication:
                         and attempt.status
                         in {ComponentStatus.FAILED, ComponentStatus.INTERRUPTED}
                     ),
+                    "failure_code": attempt.failure_code,
+                    "failure_message": attempt.failure_message,
                 }
                 for attempt in ordered_attempts
             ],
             "retryable_components": [
                 component.value for component in summary.retryable_components
+            ],
+            "missing_components": [
+                component.value for component in summary.missing_components
             ],
         }
 
@@ -2685,11 +2798,36 @@ class DashboardApplication:
             ),
         )
 
-    def create_monthly_report_archive(self, period_id: str) -> ReportArchiveResult:
+    def create_monthly_report_archive(
+        self,
+        period_id: str,
+        *,
+        responsible_analyst_id: str | None = None,
+    ) -> ReportArchiveResult:
         if self.report_registry is None or self.database is None:
             raise RuntimeError("Banco e registro de relatórios precisam estar disponíveis.")
+        normalized_analyst_id = str(responsible_analyst_id or "").strip() or None
+        analyst_name: str | None = None
+        if normalized_analyst_id is not None:
+            analyst = next(
+                (
+                    item
+                    for item in self.config.list_analysts()
+                    if str(item.get("analyst_id") or "") == normalized_analyst_id
+                ),
+                None,
+            )
+            if analyst is None:
+                raise ValueError("Analista responsável não encontrado.")
+            analyst_name = str(analyst.get("display_name") or normalized_analyst_id)
         clients: list[ArchiveClient] = []
         for client in self.config.list_clients():
+            if (
+                normalized_analyst_id is not None
+                and str(client.get("responsible_analyst_id") or "")
+                != normalized_analyst_id
+            ):
+                continue
             client_id = str(client.get("client_id") or "")
             display_name = str(client.get("display_name") or client_id)
             reports = tuple(
@@ -2721,6 +2859,7 @@ class DashboardApplication:
             temporary_root=temporary_root,
             period_id=period_id,
             clients=clients,
+            download_scope=analyst_name,
         )
 
     def prepare_report_archive(
@@ -2728,15 +2867,24 @@ class DashboardApplication:
         *,
         run_id: str | None = None,
         period_id: str | None = None,
+        responsible_analyst_id: str | None = None,
     ) -> dict[str, str]:
         normalized_run = str(run_id or "").strip()
         normalized_period = str(period_id or "").strip()
+        normalized_analyst_id = str(responsible_analyst_id or "").strip() or None
         if bool(normalized_run) == bool(normalized_period):
             raise ValueError("Informe run_id ou period_id, mas não ambos.")
+        if normalized_run and normalized_analyst_id is not None:
+            raise ValueError(
+                "O filtro por responsável só pode ser usado no ZIP mensal."
+            )
         archive = (
             self.create_report_set_archive(normalized_run)
             if normalized_run
-            else self.create_monthly_report_archive(normalized_period)
+            else self.create_monthly_report_archive(
+                normalized_period,
+                responsible_analyst_id=normalized_analyst_id,
+            )
         )
         download_id = uuid.uuid4().hex
         expires_at = time.monotonic() + PREPARED_ARCHIVE_TTL_SECONDS
@@ -3799,6 +3947,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     result = self.app.prepare_report_archive(
                         run_id=str(payload.get("run_id") or "") or None,
                         period_id=str(payload.get("period_id") or "") or None,
+                        responsible_analyst_id=(
+                            str(payload.get("responsible_analyst_id") or "") or None
+                        ),
                     )
                     self._json(HTTPStatus.CREATED, result)
                 except KeyError as exc:

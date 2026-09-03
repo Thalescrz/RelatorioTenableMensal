@@ -25,6 +25,7 @@ class BatchJobStatus(StrEnum):
     WAITING_WAS_DECISION = "WAITING_WAS_DECISION"
     COMPLETE = "COMPLETE"
     COMPLETE_WITH_WARNINGS = "COMPLETE_WITH_WARNINGS"
+    PARTIALLY_COMPLETE = "PARTIALLY_COMPLETE"
     FAILED = "FAILED"
     INTERRUPT_REQUESTED = "INTERRUPT_REQUESTED"
     INTERRUPTED = "INTERRUPTED"
@@ -61,6 +62,7 @@ BATCH_JOB_TERMINAL_STATUSES = frozenset(
     {
         BatchJobStatus.COMPLETE,
         BatchJobStatus.COMPLETE_WITH_WARNINGS,
+        BatchJobStatus.PARTIALLY_COMPLETE,
         BatchJobStatus.FAILED,
         BatchJobStatus.INTERRUPTED,
         BatchJobStatus.CANCELLED_BY_USER,
@@ -69,6 +71,7 @@ BATCH_JOB_TERMINAL_STATUSES = frozenset(
 RETRYABLE_BATCH_JOB_STATUSES = frozenset(
     {
         BatchJobStatus.FAILED,
+        BatchJobStatus.PARTIALLY_COMPLETE,
         BatchJobStatus.INTERRUPTED,
         BatchJobStatus.CANCELLED_BY_USER,
     }
@@ -129,6 +132,7 @@ _ALLOWED_BATCH_JOB_TRANSITIONS: Mapping[
             BatchJobStatus.WAITING_WAS_DECISION,
             BatchJobStatus.COMPLETE,
             BatchJobStatus.COMPLETE_WITH_WARNINGS,
+            BatchJobStatus.PARTIALLY_COMPLETE,
             BatchJobStatus.FAILED,
             BatchJobStatus.INTERRUPT_REQUESTED,
             BatchJobStatus.INTERRUPTED,
@@ -139,6 +143,7 @@ _ALLOWED_BATCH_JOB_TRANSITIONS: Mapping[
             BatchJobStatus.RUNNING,
             BatchJobStatus.COMPLETE,
             BatchJobStatus.COMPLETE_WITH_WARNINGS,
+            BatchJobStatus.PARTIALLY_COMPLETE,
             BatchJobStatus.FAILED,
             BatchJobStatus.INTERRUPT_REQUESTED,
         }
@@ -148,11 +153,13 @@ _ALLOWED_BATCH_JOB_TRANSITIONS: Mapping[
             BatchJobStatus.INTERRUPTED,
             BatchJobStatus.COMPLETE,
             BatchJobStatus.COMPLETE_WITH_WARNINGS,
+            BatchJobStatus.PARTIALLY_COMPLETE,
             BatchJobStatus.FAILED,
         }
     ),
     BatchJobStatus.COMPLETE: frozenset(),
     BatchJobStatus.COMPLETE_WITH_WARNINGS: frozenset(),
+    BatchJobStatus.PARTIALLY_COMPLETE: frozenset(),
     BatchJobStatus.FAILED: frozenset(),
     BatchJobStatus.INTERRUPTED: frozenset(),
     BatchJobStatus.CANCELLED_BY_USER: frozenset(),

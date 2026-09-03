@@ -520,7 +520,7 @@ class WebDashboardTests(unittest.TestCase):
             def runner(command, cwd, progress_callback=None):
                 return subprocess.CompletedProcess(
                     command,
-                    0,
+                    2,
                     stdout=json.dumps(
                         {"status": "COMPLETE", "run_id": "run-fixture"}
                     ),
@@ -852,13 +852,17 @@ class WebDashboardTests(unittest.TestCase):
 
     def test_default_runner_forces_utf8_for_json_protocol(self) -> None:
         script = (
-            "import json; "
-            "print(json.dumps({'text':'\\ufffd'}, ensure_ascii=False))"
+            "import json, os; "
+            "print(json.dumps({'text':'\\ufffd', 'pg':os.getenv('PGCLIENTENCODING')}, ensure_ascii=False))"
         )
 
         with patch.dict(
             os.environ,
-            {"PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"},
+            {
+                "PYTHONIOENCODING": "cp1252",
+                "PYTHONUTF8": "0",
+                "PGCLIENTENCODING": "WIN1252",
+            },
         ):
             completed = _web_default_runner(
                 (sys.executable, "-c", script),
@@ -867,6 +871,7 @@ class WebDashboardTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(json.loads(completed.stdout)["text"], "�")
+        self.assertEqual(json.loads(completed.stdout)["pg"], "UTF8")
 
     def test_tag_report_configuration_persists_across_store_reload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1016,6 +1021,38 @@ class WebDashboardTests(unittest.TestCase):
             self.assertEqual(job["tag_progress"]["current"], 1)
             self.assertEqual(job["tag_progress"]["total"], 2)
             self.assertEqual(job["warnings"][0]["tag_uuid"], "tag-b")
+
+    def test_job_queue_maps_top_level_partial_component_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def runner(command, cwd, progress_callback=None):
+                return subprocess.CompletedProcess(
+                    command,
+                    2,
+                    stdout=json.dumps({
+                        "status": "complete",
+                        "run_id": "run-partial-cloud",
+                        "component_set_status": "PARTIAL_FAILURE",
+                        "retryable_components": ["CLOUD"],
+                        "components": [{
+                            "component": "CLOUD",
+                            "status": "FAILED",
+                            "retryable": True,
+                        }],
+                    }) + "\n",
+                    stderr="",
+                )
+
+            jobs = JobQueue(root, root / "orchestration" / "clients.json", runner)
+            jobs.enqueue(["cliente-a"], {"mode": "manual", "days": 30})
+            jobs._pending.join()
+            job = jobs.snapshot()[0]
+
+        self.assertEqual(job["status"], "PARTIALLY_COMPLETE")
+        self.assertEqual(job["run_id"], "run-partial-cloud")
+        self.assertEqual(job["component_set_status"], "PARTIAL_FAILURE")
+        self.assertEqual(job["retryable_components"], ["CLOUD"])
 
     def test_job_queue_exposes_stuck_vm_export_details(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1303,11 +1340,13 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn('id="archive-all-button"', html)
         self.assertIn('id="archive-dialog"', html)
         self.assertIn('id="archive-month-select"', html)
+        self.assertIn('id="archive-analyst-select"', html)
         self.assertIn('id="archive-download-button"', html)
         self.assertIn("Baixar conjunto ZIP", javascript)
         self.assertIn("/api/report-archives/months", javascript)
         self.assertIn("/api/report-archives/prepare", javascript)
         self.assertIn('data-report-action="archive"', javascript)
+        self.assertIn("responsible_analyst_id", javascript)
 
     def test_backfill_routes_analyze_and_apply_only_safe_promotions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1417,6 +1456,16 @@ class WebDashboardTests(unittest.TestCase):
         )
         safe = _safe_error(raw)
         self.assertEqual(safe, "MemoryError")
+
+    def test_safe_error_normalizes_postgresql_connection_exhaustion(self) -> None:
+        safe = _safe_error(
+            'OperationalError: FATAL: muitas conex�es para role "app"'
+        )
+
+        self.assertEqual(
+            safe,
+            "PostgreSQL sem conexões disponíveis; a operação será retentada.",
+        )
 
     def test_report_endpoints_preview_and_permanently_delete_a_set(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1719,6 +1768,108 @@ class WebDashboardTests(unittest.TestCase):
                 ):
                     time.sleep(0.01)
                 self.assertEqual(list((data_root / ".downloads").glob("*.zip")), [])
+            finally:
+                client.close()
+
+    def test_monthly_archive_can_filter_main_sets_by_responsible_analyst(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_root = root / "data"
+            document_a = data_root / "reports" / "cliente-a.docx"
+            document_b = data_root / "reports" / "cliente-b.docx"
+            document_a.parent.mkdir(parents=True)
+            document_a.write_bytes(b"a")
+            document_b.write_bytes(b"b")
+            registry = InMemoryReportRegistry()
+            report_a = valid_run("run-a", client_id="cliente-a")
+            report_b = valid_run("run-b", client_id="cliente-b")
+            for report in (report_a, report_b):
+                registry.register_report(report)
+                registry.promote_main(
+                    reference_key_for_candidate(report),
+                    report.run_id,
+                    actor="system",
+                    reason="principal",
+                )
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=registry,
+            )
+            analyst = app.config.create_analyst({"display_name": "Analista Principal"})
+            analyst_id = analyst["analyst_id"]
+            app.config.add_client({
+                "client_id": "cliente-a",
+                "display_name": "Cliente A",
+                "responsible_analyst_id": analyst_id,
+            })
+            app.config.add_client({
+                "client_id": "cliente-b",
+                "display_name": "Cliente B",
+            })
+            documents = {
+                "run-a": [{
+                    "document_id": 1,
+                    "name": document_a.name,
+                    "path": str(document_a),
+                    "size_bytes": 1,
+                    "run_id": "run-a",
+                    "document_kind": "base",
+                }],
+                "run-b": [{
+                    "document_id": 2,
+                    "name": document_b.name,
+                    "path": str(document_b),
+                    "size_bytes": 1,
+                    "run_id": "run-b",
+                    "document_kind": "base",
+                }],
+            }
+            app.database = _ArchiveDashboardDatabase(
+                {
+                    "cliente-a": documents["run-a"],
+                    "cliente-b": documents["run-b"],
+                },
+                documents,
+            )
+            client = LocalClient(app)
+            try:
+                status, prepared = client.request(
+                    "POST",
+                    "/api/report-archives/prepare",
+                    {
+                        "period_id": "2026-07",
+                        "responsible_analyst_id": analyst_id,
+                    },
+                )
+                self.assertEqual(status, 201)
+                self.assertEqual(
+                    prepared["download_name"],
+                    "Relatorios-Tenable-Analista-Principal-2026-07.zip",
+                )
+                status, _, content = client.download(prepared["download_url"])
+                self.assertEqual(status, 200)
+                with zipfile.ZipFile(io.BytesIO(content)) as package:
+                    names = package.namelist()
+                    self.assertIn(
+                        "Relatorios-Tenable-2026-07/Cliente A/cliente-a.docx",
+                        names,
+                    )
+                    self.assertNotIn(
+                        "Relatorios-Tenable-2026-07/Cliente B/cliente-b.docx",
+                        names,
+                    )
+
+                status, payload = client.request(
+                    "POST",
+                    "/api/report-archives/prepare",
+                    {
+                        "period_id": "2026-07",
+                        "responsible_analyst_id": "analista-inexistente",
+                    },
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("Analista", payload["error"])
             finally:
                 client.close()
 
@@ -2909,18 +3060,24 @@ class WebDashboardTests(unittest.TestCase):
                     "status": "COMPLETE",
                     "stage": "REPORT_PUBLICATION",
                     "retryable": False,
+                    "failure_code": None,
+                    "failure_message": None,
                 },
                 {
                     "component": "WAS",
                     "status": "COMPLETE",
                     "stage": "REPORT_PUBLICATION",
                     "retryable": False,
+                    "failure_code": None,
+                    "failure_message": None,
                 },
                 {
                     "component": "CLOUD",
                     "status": "FAILED",
                     "stage": "RENDER",
                     "retryable": True,
+                    "failure_code": "CLOUD_RENDER_FAILED",
+                    "failure_message": "Falha sanitizada ao renderizar Cloud.",
                 },
             ])
             self.assertEqual(component_payload["retryable_components"], ["CLOUD"])

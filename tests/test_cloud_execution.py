@@ -242,6 +242,29 @@ def test_enabled_cloud_renders_one_standard_report_from_live_dataset(tmp_path: P
     assert calls["collect"] == 1
     assert calls["write"] == 1
     assert calls["render"] == ["expanded"]
+
+
+def test_cloud_render_receives_configured_text_translator(tmp_path: Path) -> None:
+    dependencies, _ = _dependencies(tmp_path)
+    translator = object()
+    received: list[object] = []
+    original_render = dependencies.render_report
+
+    def render(**kwargs):
+        received.append(kwargs["translator"])
+        return original_render(**kwargs)
+
+    result = execute_cloud_component(
+        _request(tmp_path),
+        dependencies=replace(
+            dependencies,
+            render_report=render,
+            translator=translator,
+        ),
+    )
+
+    assert result.status is CloudExecutionStatus.COMPLETE
+    assert received == [translator]
     assert len(result.documents) == 1
     assert {item.variant for item in result.documents} == {"expanded"}
     assert result.dataset_path is not None

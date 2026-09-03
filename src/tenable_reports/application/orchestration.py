@@ -183,6 +183,7 @@ class OrchestrationResult:
             item.status not in {
                 "COMPLETE",
                 "COMPLETE_WITH_WARNINGS",
+                "PARTIALLY_COMPLETE",
                 "PLANNED",
                 "WAITING_WAS_DECISION",
             }
@@ -202,6 +203,9 @@ class OrchestrationResult:
             "succeeded": sum(
                 item.status in {"COMPLETE", "COMPLETE_WITH_WARNINGS"}
                 for item in self.clients
+            ),
+            "partial": sum(
+                item.status == "PARTIALLY_COMPLETE" for item in self.clients
             ),
             "failed": self.failed_count,
             "planned": sum(item.status == "PLANNED" for item in self.clients),
@@ -516,6 +520,8 @@ def resolve_remote_worker_capacity(
     eligible_client_count: int,
     configured_workers: int,
     max_clients_per_batch: int,
+    database_connection_limit: int | None = None,
+    database_connection_reserve: int = 3,
 ) -> int:
     eligible = max(1, int(eligible_client_count))
     limit = max(1, min(64, int(max_clients_per_batch)))
@@ -523,7 +529,12 @@ def resolve_remote_worker_capacity(
     if configured < 0 or configured > 64:
         raise ValueError("remote_collection_workers deve estar entre 0 e 64.")
     requested = eligible if configured == 0 else configured
-    return max(1, min(requested, eligible, limit))
+    limits = [requested, eligible, limit]
+    if database_connection_limit is not None and database_connection_limit > 0:
+        limits.append(
+            max(1, database_connection_limit - max(1, database_connection_reserve))
+        )
+    return max(1, min(limits))
 
 
 def _validate_request(request: OrchestrationRequest) -> None:
@@ -672,7 +683,11 @@ def _default_runner(
     progress_callback: ProgressCallback | None = None,
 ) -> subprocess.CompletedProcess[str]:
     child_environment = os.environ.copy()
-    child_environment.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
+    child_environment.update({
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
+        "PGCLIENTENCODING": "UTF8",
+    })
     process = subprocess.Popen(
         list(command),
         cwd=working_directory,
@@ -938,15 +953,22 @@ def _execute_client(
         else:
             payload = _payload_from_stdout(completed.stdout)
             payload_status = str(payload.get("status") or "").strip().lower()
+            component_set_status = str(
+                payload.get("component_set_status") or ""
+            ).strip().upper()
             client_status = (
-                "COMPLETE_WITH_WARNINGS"
+                "PARTIALLY_COMPLETE"
+                if component_set_status == "PARTIAL_FAILURE"
+                else "COMPLETE_WITH_WARNINGS"
                 if payload_status == "complete_with_warnings"
                 else "COMPLETE"
             )
             events.append({
                 "timestamp": ended.isoformat(),
                 "event": (
-                    "CLIENT_COMPLETED_WITH_WARNINGS"
+                    "CLIENT_PARTIALLY_COMPLETE"
+                    if client_status == "PARTIALLY_COMPLETE"
+                    else "CLIENT_COMPLETED_WITH_WARNINGS"
                     if client_status == "COMPLETE_WITH_WARNINGS"
                     else "CLIENT_COMPLETED"
                 ),
@@ -1139,6 +1161,7 @@ def _execute_client_with_retry(
         if result.status in {
             "COMPLETE",
             "COMPLETE_WITH_WARNINGS",
+            "PARTIALLY_COMPLETE",
             "WAITING_WAS_DECISION",
             "INTERRUPTED",
         }:
@@ -1299,12 +1322,13 @@ def run_orchestration(
     interrupted = sum(item.status == "INTERRUPTED" for item in results)
     waiting_was = sum(item.status == "WAITING_WAS_DECISION" for item in results)
     warned = sum(item.status == "COMPLETE_WITH_WARNINGS" for item in results)
+    partial = sum(item.status == "PARTIALLY_COMPLETE" for item in results)
     status = (
         "DRY_RUN"
         if request.dry_run
         else (
             "PARTIAL_FAILURE"
-            if failed
+            if failed or partial
             else "INTERRUPTED" if interrupted
             else "WAITING_WAS_DECISION" if waiting_was
             else "COMPLETE_WITH_WARNINGS" if warned else "COMPLETE"
@@ -1346,6 +1370,7 @@ def run_orchestration(
         "run_id": run_id,
         "clients": len(results),
         "failed": failed,
+        "partial": partial,
         "warnings": warned,
     })
     notification_path.write_text(

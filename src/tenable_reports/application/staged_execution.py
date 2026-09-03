@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
 import re
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
-from tenable_reports.application.publishing import sha256_file
+from tenable_reports.application.publishing import sha256_file, write_json_atomic
 from tenable_reports.application.web_batches import assert_sanitized_payload
 from tenable_reports.domain.report_components import ReportComponent
 from tenable_reports.domain.reporting import parse_utc
@@ -482,34 +480,7 @@ def _write_collection_checkpoint(
     path: Path,
     checkpoint: CollectionCheckpoint,
 ) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temp_name = tempfile.mkstemp(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-    )
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(
-                checkpoint.to_dict(),
-                stream,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temp_path, path)
-    except Exception:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
-        raise
-    finally:
-        temp_path.unlink(missing_ok=True)
+    write_json_atomic(path, checkpoint.to_dict())
 
 
 def load_collection_checkpoint(

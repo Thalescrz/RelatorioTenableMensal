@@ -15,6 +15,7 @@ from tenable_reports.domain.history import HistorySnapshot, SnapshotCompatibilit
 from tenable_reports.domain.fingerprints import fingerprint_finding_key
 from tenable_reports.infrastructure import postgresql as postgresql_module
 from tenable_reports.infrastructure.postgresql import (
+    PostgresDatabase,
     PostgresOperationsRepository,
     _compact_legacy_history_payload,
     _history_snapshot_from_storage,
@@ -54,6 +55,42 @@ class _MemoryOperationsTarget:
 
 
 class PostgreSqlTests(unittest.TestCase):
+    def test_database_connection_retries_role_connection_exhaustion(self) -> None:
+        config = DatabaseConfig.from_environment({
+            "TENABLE_REPORTS_DB_NAME": "tenable_reports",
+            "TENABLE_REPORTS_DB_USER": "tenable_reports_app",
+        })
+
+        class Connection:
+            autocommit = False
+
+            def commit(self):
+                return None
+
+            def rollback(self):
+                return None
+
+            def close(self):
+                return None
+
+        connection = Connection()
+        driver = unittest.mock.Mock()
+        driver.connect.side_effect = [
+            RuntimeError('FATAL: muitas conexões para role "tenable_reports_app"'),
+            connection,
+        ]
+        database = PostgresDatabase(config)
+
+        with (
+            patch.object(postgresql_module, "_driver", return_value=driver),
+            patch.object(postgresql_module.time, "sleep") as sleeper,
+        ):
+            with database.connection() as acquired:
+                self.assertIs(acquired, connection)
+
+        self.assertEqual(driver.connect.call_count, 2)
+        sleeper.assert_called_once()
+
     def test_migration_statement_splitter_preserves_dollar_quoted_blocks(self) -> None:
         sql_text = """
         create table example (id integer);

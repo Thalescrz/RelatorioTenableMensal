@@ -197,10 +197,13 @@ texto livre que apenas contém “crítico” não recebe cor. Cubra idade, faix
 eixos CVSS×VPR e rating VPR, além de builders compartilhados.
 
 Tradução de descrição usa `translate_semantic_text`: parágrafo, sentença e limite
-de palavra, com CVE/URL/versão inteiros quando couberem. Use tradutor injetado e
-cache, nunca rede em teste. Falha de um chunk preserva somente a fonte daquele
-chunk e não bloqueia os demais nem o DOCX. `translator=None` preserva texto,
-inclusive conteúdo já em português.
+de palavra, com CVE/URL/versão inteiros quando couberem. A CLI deve criar um único
+`GoogleTextTranslator` lazy por execução e reutilizá-lo no geral, nas TAGs e no
+Cloud, garantindo cache comum e destino `pt-BR` (`pt` no provedor). Use tradutor
+falso injetado e cache nos testes, nunca rede. Falha de um chunk preserva somente a
+fonte daquele chunk, inclui aviso editorial e não bloqueia os demais nem o DOCX.
+`translator=None` continua sendo o modo explícito de preservação do texto. Não
+encaminhe Plugin Output nem identificadores/evidências de ativos ao tradutor.
 
 Depois de alterar apresentação:
 
@@ -246,7 +249,9 @@ Downloads agregados devem ser montados sob `data/.downloads`, aceitar somente
 documentos registrados dentro da raiz `data`, usar nomes de componentes
 sanitizados e remover o ZIP temporário em bloco `finally` após a transmissão. O
 download mensal consulta a referência `MAIN` por cliente e período; o download de
-um conjunto preserva a identidade do `run_id` selecionado. Cubra seleção,
+um conjunto preserva a identidade do `run_id` selecionado. Quando houver filtro por
+analista responsável, resolva no servidor os clientes atualmente vinculados,
+rejeite identificador inexistente e mantenha a mesma regra `MAIN`. Cubra seleção,
 estrutura interna, omissões, caminhos inseguros e limpeza temporária com testes.
 Erros de montagem precisam voltar à interface antes do início do streaming. Use
 token curto, de uso único e com expiração; não materialize o ZIP inteiro na memória

@@ -484,13 +484,15 @@ def _labeled_blocks(
     translator: TextTranslator | None = None,
 ) -> None:
     _heading(document, label, 4)
-    chunks = translate_semantic_text(
+    translated = translate_semantic_text(
         str(text or ""),
         translator,
         max_chars=900,
-    ).chunks
-    for chunk in chunks:
+    )
+    for chunk in translated.chunks:
         _paragraph(document, chunk)
+    if translated.had_failures:
+        _paragraph(document, copy.TRANSLATION_UNAVAILABLE)
 
 
 def _host_rows(item: Mapping[str, Any], mask_sensitive: bool, include_output: bool) -> list[tuple[Any, ...]]:

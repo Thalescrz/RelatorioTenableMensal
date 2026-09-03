@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -224,7 +225,27 @@ class PostgresDatabase:
     @contextmanager
     def connection(self, *, autocommit: bool = False) -> Iterable[Any]:
         psycopg = _driver()
-        connection = psycopg.connect(**self.config.connection_kwargs())
+        connection = None
+        for attempt in range(5):
+            try:
+                connection = psycopg.connect(**self.config.connection_kwargs())
+                break
+            except Exception as exc:
+                message = str(exc).upper().replace("�", "")
+                transient = any(token in message for token in (
+                    "TOO MANY CONNECTIONS",
+                    "MUITAS CONEX",
+                    "CONNECTION REFUSED",
+                    "CONEXAO RECUSADA",
+                    "CONEXÃO RECUSADA",
+                    "DATABASE SYSTEM IS STARTING UP",
+                    "SERVER CLOSED THE CONNECTION UNEXPECTEDLY",
+                ))
+                if not transient or attempt == 4:
+                    raise
+                time.sleep(min(2.0, 0.2 * (2 ** attempt)))
+        if connection is None:  # pragma: no cover - defesa adicional
+            raise RuntimeError("Não foi possível abrir a conexão PostgreSQL.")
         connection.autocommit = autocommit
         try:
             yield connection
@@ -236,6 +257,18 @@ class PostgresDatabase:
             raise
         finally:
             connection.close()
+
+    def role_connection_limit(self) -> int | None:
+        """Return the current role connection limit, or None when unlimited."""
+
+        with self.connection() as connection:
+            row = connection.execute(
+                "select rolconnlimit from pg_roles where rolname = current_user"
+            ).fetchone()
+        if not row:
+            return None
+        limit = int(row[0])
+        return limit if limit > 0 else None
 
     @property
     def migration_directory(self) -> Path:

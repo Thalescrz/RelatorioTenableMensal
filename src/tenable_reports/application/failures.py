@@ -39,6 +39,9 @@ _SECRET_PATTERN = re.compile(
 
 def sanitize_failure_message(value: Any) -> str:
     text = _SECRET_PATTERN.sub(r"\1[REDACTED]", str(value or "")).strip()
+    normalized = text.upper().replace("�", "")
+    if "TOO MANY CONNECTIONS" in normalized or "MUITAS CONEX" in normalized:
+        return "PostgreSQL sem conexões disponíveis; a operação será retentada."
     return text[-4000:] or "Falha operacional sem mensagem detalhada."
 
 

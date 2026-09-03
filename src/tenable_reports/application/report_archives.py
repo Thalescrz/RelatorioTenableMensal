@@ -287,6 +287,7 @@ def build_monthly_report_archive(
     temporary_root: str | Path,
     period_id: str,
     clients: Sequence[ArchiveClient],
+    download_scope: str | None = None,
 ) -> ReportArchiveResult:
     _validate_month(period_id)
     selected: list[ArchiveReportSet] = []
@@ -309,12 +310,17 @@ def build_monthly_report_archive(
                 f"{client.display_name}: mais de um MAIN encontrado; "
                 f"usado {candidates[0].run_id} por ser a promoção MAIN mais recente"
             )
+    scope = (
+        f"-{_download_component(download_scope, fallback='Responsavel')}"
+        if str(download_scope or "").strip()
+        else ""
+    )
     return _build_archive(
         data_root=Path(data_root),
         temporary_root=Path(temporary_root),
         period_id=period_id,
         reports=selected,
         initial_omissions=omissions,
-        download_name=f"Relatorios-Tenable-{period_id}.zip",
+        download_name=f"Relatorios-Tenable{scope}-{period_id}.zip",
         allow_empty=True,
     )

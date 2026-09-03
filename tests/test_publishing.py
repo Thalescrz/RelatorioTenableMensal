@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from docx import Document
 
@@ -13,6 +14,7 @@ from tenable_reports.application.publishing import (
     create_publication_manifest,
     replace_publication_documents_atomically,
     sha256_file,
+    write_json_atomic,
 )
 
 
@@ -25,6 +27,35 @@ def _document(path: Path, text: str) -> Path:
 
 
 class AtomicPublicationTests(unittest.TestCase):
+    def test_json_write_retries_windows_sharing_violation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            target = Path(directory_name) / "state.json"
+            real_replace = __import__("os").replace
+            calls = 0
+
+            def flaky_replace(source, destination):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    error = PermissionError(13, "Access is denied")
+                    error.winerror = 5
+                    raise error
+                return real_replace(source, destination)
+
+            with (
+                patch(
+                    "tenable_reports.application.publishing.os.replace",
+                    side_effect=flaky_replace,
+                ),
+                patch("tenable_reports.application.publishing.time.sleep") as sleeper,
+            ):
+                write_json_atomic(target, {"status": "PROCESSING"})
+
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {
+                "status": "PROCESSING"
+            })
+            sleeper.assert_called_once()
+
     def _manifest(self, directory: Path) -> tuple[Path, Path, Path, Path]:
         dataset = directory / "dataset.json"
         dataset.write_text("{}", encoding="utf-8")
