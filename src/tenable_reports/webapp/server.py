@@ -24,6 +24,7 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from tenable_reports.application.execution_control import FileExecutionControl
+from tenable_reports.application.monthly_schedule import MonthlyScheduleService
 from tenable_reports.application.failures import sanitize_failure_message
 from tenable_reports.application.web_batches import (
     BatchClientConflictError,
@@ -102,6 +103,7 @@ from tenable_reports.config.environment import (
     load_dotenv_file,
 )
 from tenable_reports.config.profile import ClientProfile
+from tenable_reports.config.monthly_schedule import MonthlyScheduleConfig
 from tenable_reports.infrastructure.cloud_snapshots_postgresql import (
     PostgresCloudSnapshotRepository,
 )
@@ -126,6 +128,7 @@ from tenable_reports.infrastructure.web_batches_postgresql import (
 from tenable_reports.infrastructure.web_batch_components_postgresql import (
     PostgresRemoteComponentRepository,
 )
+from tenable_reports.infrastructure.windows_task_scheduler import WindowsTaskScheduler
 from tenable_reports.domain.report_reference import reference_key_for_candidate
 from tenable_reports.domain.report_components import (
     ComponentAttempt,
@@ -495,6 +498,21 @@ class DashboardConfigStore:
     def raw(self) -> dict[str, Any]:
         with self._lock:
             return _read_json(self.config_path)
+
+    def monthly_schedule(self) -> MonthlyScheduleConfig:
+        return MonthlyScheduleConfig.from_mapping(
+            self.raw().get("monthly_schedule") or {}
+        )
+
+    def save_monthly_schedule(
+        self,
+        config: MonthlyScheduleConfig,
+    ) -> MonthlyScheduleConfig:
+        with self._lock:
+            payload = _read_json(self.config_path)
+            payload["monthly_schedule"] = config.to_mapping()
+            write_json_atomic(self.config_path, payload)
+        return config
 
     @staticmethod
     def _analyst_payload(record: AnalystRecord) -> dict[str, Any]:
@@ -2475,9 +2493,17 @@ class DashboardApplication:
         component_repository: ReportComponentRepository | None = None,
         component_retry_enqueuer: Callable[..., Mapping[str, Any]] | None = None,
         require_durable_batches: bool = False,
+        monthly_schedule_service: MonthlyScheduleService | None = None,
     ) -> None:
         self.project_root = project_root.resolve()
         self.config = DashboardConfigStore(project_root=self.project_root, config_path=config_path)
+        self.monthly_schedule = monthly_schedule_service or MonthlyScheduleService(
+            store=self.config,
+            scheduler=WindowsTaskScheduler(
+                project_root=self.project_root,
+                config_path=self.config.config_path,
+            ),
+        )
         self._prepared_archive_lock = threading.RLock()
         self._transient_storage_cache = TransientStorageSnapshotCache()
         self._prepared_archives: dict[
@@ -3970,6 +3996,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 self._json_error(HTTPStatus.INTERNAL_SERVER_ERROR, _safe_error(str(exc), limit=500))
             return
+        if parsed.path == "/api/admin/monthly-schedule":
+            try:
+                self._json(HTTPStatus.OK, self.app.monthly_schedule.status())
+            except Exception as exc:
+                self._json_error(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    _safe_error(str(exc), limit=500),
+                )
+            return
         match = re.fullmatch(r"/api/clients/([^/]+)/reports", parsed.path)
         if match:
             try:
@@ -4241,6 +4276,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result = self.app.apply_backfill(str(payload.get("confirmation") or ""))
                 self._json(HTTPStatus.OK, result)
                 return
+            if parsed.path == "/api/admin/monthly-schedule/validate":
+                self._json(HTTPStatus.OK, self.app.monthly_schedule.validate())
+                return
+            if parsed.path == "/api/admin/monthly-schedule/apply":
+                self._json(
+                    HTTPStatus.OK,
+                    self.app.monthly_schedule.apply(
+                        str(payload.get("confirmation") or "")
+                    ),
+                )
+                return
+            if parsed.path in {
+                "/api/admin/monthly-schedule/enable",
+                "/api/admin/monthly-schedule/disable",
+            }:
+                self._json(
+                    HTTPStatus.OK,
+                    self.app.monthly_schedule.set_enabled(
+                        parsed.path.endswith("/enable"),
+                        str(payload.get("confirmation") or ""),
+                    ),
+                )
+                return
             match = re.fullmatch(r"/api/reports/([^/]+)/retry-cloud", parsed.path)
             if match:
                 job = self.app.retry_cloud_report(
@@ -4430,11 +4488,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         client_match = re.fullmatch(r"/api/clients/([^/]+)", parsed.path)
         analyst_match = re.fullmatch(r"/api/analysts/([^/]+)", parsed.path)
-        if not client_match and not analyst_match:
+        monthly_schedule = parsed.path == "/api/admin/monthly-schedule"
+        if not client_match and not analyst_match and not monthly_schedule:
             self._json_error(HTTPStatus.NOT_FOUND, "Rota nao encontrada.")
             return
         try:
             payload = self._request_json()
+            if monthly_schedule:
+                self._json(
+                    HTTPStatus.OK,
+                    self.app.monthly_schedule.save(payload),
+                )
+                return
             if analyst_match:
                 analyst = self.app.config.update_analyst(
                     unquote(analyst_match.group(1)),
