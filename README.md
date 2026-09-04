@@ -86,11 +86,13 @@ Brasil. Textos longos são divididos semanticamente; uma falha preserva somente 
 trecho fonte afetado e adiciona um aviso ao documento. Plugin Output, hosts, IPs e
 demais evidências operacionais não são enviados ao serviço de tradução.
 
-No botão **Gerar todos** e no automático mensal, uma falha WAS inicia uma única
-retentativa apenas do componente WEB. Se ela também falhar, os relatórios são
-publicados sem WAS e recebem o alerta `WAS_RETRY_EXHAUSTED`; VM, assets, TAG e
-Cloud não são repetidos. A geração manual individual continua oferecendo ao
-analista a decisão entre tentar novamente ou continuar sem WEB.
+No botão **Gerar todos** e no automático mensal, VM, WAS e Cloud habilitados são
+componentes remotos independentes. Cada componente usa uma Janela 1 de 10 horas e,
+em falha retentável, uma Janela 2 de 10 horas que consulta primeiro o UUID/cursor
+preservado. Se esse identificador estiver comprovadamente inválido, a Janela 2
+cria uma única operação substituta sem reiniciar seu relógio; somente nesse caso
+existe uma Janela 3 de 10 horas. Depois disso o componente aguarda retentativa
+manual. Componentes concluídos nunca são repetidos.
 
 ## Controle durável da carteira
 
@@ -133,15 +135,12 @@ Em **Ver clientes do lote**, cada pendência mostra `Retentável` ou
 registrado para auditoria.
 O seletor de lotes mostra horário, tipo da operação e os oito primeiros caracteres
 do ID; confira esses dados antes de retentar um conjunto antigo.
-O teto padrão é de 36.000 segundos (10 horas) por UUID, somando fila e
-processamento e sobrevivendo a reinícios/retentativas; ao expirar, UUID e chunks
-continuam preservados e o export não é cancelado na Tenable. A API expõe apenas
-que existe checkpoint validado, nunca seu caminho.
-Esse saldo limita somente a espera do UUID VM retomado. A coleta de ativos mantém
-seu prazo integral. Se a Tenable confirmar que o UUID anterior expirou ou ficou
-terminal sem chunks recuperáveis, a aplicação cria e registra um UUID substituto
-com um novo orçamento de 10 horas; as próximas retentativas passam a usar esse
-substituto, sem voltar ao UUID expirado.
+O teto padrão é de 36.000 segundos (10 horas) por janela de componente, somando
+fila e processamento e sobrevivendo a reinícios. Ao expirar, identificadores,
+chunks e checkpoints continuam preservados e o job remoto não é cancelado. Um
+substituto criado dentro da Janela 2 usa somente o saldo dessa mesma janela; ele
+não ganha 10 horas extras. A API expõe apenas que existe checkpoint validado,
+nunca seu caminho.
 
 O estado geral usa uma única atualização por navegador e carrega os clientes de
 um lote somente quando **Ver clientes do lote** é aberto. Um POST confirmado
@@ -151,9 +150,13 @@ retentativa somente daquele cliente e consulta primeiro o mesmo UUID.
 
 VM, WAS e Cloud possuem resultados independentes. Um conjunto parcial preserva os
 documentos válidos e mostra somente componentes falhos/interrompidos e retentáveis.
-O retry integrado padrão continua disponível para Cloud; VM/WAS seletivos exigem o
-executor faseado configurado e falham de forma explícita quando ele não estiver
-disponível.
+O executor faseado aceita retentativa seletiva de qualquer um dos três componentes;
+uma retentativa manual abre uma única janela explícita de 10 horas.
+
+No painel Admin, **Automação mensal** salva e valida a política sem iniciar coleta.
+**Sincronizar tarefa**, **Ativar** e **Desativar** alteram o Agendador de Tarefas do
+Windows somente após confirmação. O comando headless é `run-monthly-batch`; sua
+chave `automatic-monthly:<carteira>:<competência>` impede lote mensal duplicado.
 
 ## Cloud Security
 

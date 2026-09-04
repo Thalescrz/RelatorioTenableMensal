@@ -194,21 +194,31 @@ export só é aberto quando o anterior está terminal (`CANCELLED`, `FAILED` ou
 continuem disponíveis. Erros de autenticação, limite ou servidor não são
 convertidos silenciosamente em um novo job.
 
-O manifesto parcial WAS também nasce antes do primeiro chunk, preservando o UUID
-para a retomada já controlada pelo checkpoint. Uma falha manual individual cria
-checkpoint e interrompe o fluxo antes dos DOCX para a decisão do analista. No botão
-**Gerar todos** e no mensal automático, a aplicação repete apenas o WAS uma vez; se
-a segunda tentativa falhar, publica sem WEB e registra `WAS_RETRY_EXHAUSTED`.
-VM, assets, TAG e Cloud nunca são repetidos por essa política. Uma recuperação
-posterior materializa VM/assets/TAG localmente do snapshot compacto, coleta apenas
-WAS e troca os documentos VM/TAG e o manifesto em uma transação com rollback.
-Cloud é preservado e não é executado novamente.
+Manifestos parciais VM/WAS e checkpoints Cloud nascem assim que há identidade
+remota recuperável. No `STAGED_V1`, 900 segundos sem progresso geram apenas
+`TENABLE_EXPORT_NO_PROGRESS_WARNING`. Cada componente pode usar:
 
-No `STAGED_V1`, 900 segundos sem progresso geram apenas
-`TENABLE_EXPORT_NO_PROGRESS_WARNING`. Aos 7.200 segundos, o processo remoto local
-termina como falha retentável e preserva UUID, manifesto, checkpoint e chunks já
-baixados. Nenhum export remoto é cancelado automaticamente por esse timeout; a
-ação de cancelamento continua manual, explícita e vinculada ao UUID.
+1. Janela 1 de 36.000 segundos;
+2. Janela 2 de 36.000 segundos, retomando primeiro o identificador preservado;
+3. Janela 3 de 36.000 segundos somente se a Janela 2 comprovou o identificador
+   inválido e criou uma operação substituta.
+
+Uma substituição dentro da mesma janela preserva `deadline_at`. Não existe quarta
+janela. Ao esgotar a política, o componente fica em `WAITING_MANUAL_RETRY`; a ação
+manual usa uma única janela e não reabre automaticamente as anteriores. Nenhum
+timeout cancela o job remoto. Componentes concluídos e seus documentos não são
+recoletados durante reparos.
+
+### Família e idempotência mensal
+
+Lote inicial e retentativas derivadas compartilham `root_batch_id`. A API agrega a
+família por cliente e escolhe seu estado efetivo, evitando contar falha antiga e
+retry ativo duas vezes. Os indicadores clicáveis filtram pendentes, execução,
+retry automático, espera manual, semiconcluídos, falha definitiva e concluídos.
+
+O comando `run-monthly-batch` usa o mesmo coordenador do painel. A identidade
+`automatic-monthly:<orchestration_id>:<AAAA-MM>` faz uma segunda invocação assumir
+ou retornar a família existente em vez de criar outra.
 
 Propriedades seletivas reduzem o payload quando previamente validadas no tenant. A
 configuração é por cliente e possui fallback único para payload completo se houver

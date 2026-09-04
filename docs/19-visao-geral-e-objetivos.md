@@ -22,6 +22,7 @@ enquanto módulos adicionais são ativados pelo perfil de cada cliente.
 - manter histórico compacto suficiente para comparações futuras;
 - permitir validação dos números na Tenable por meio de filtros curtos;
 - operar múltiplos clientes com progresso, alertas e retentativas controladas;
+- executar o mensal pelo mesmo coordenador durável e impedir duplicidade por competência;
 - proteger credenciais e dados sensíveis durante desenvolvimento e publicação.
 
 ## Entregáveis
@@ -88,14 +89,16 @@ convertida em zero.
 7. Um DOCX só é registrado como publicado após passar pelas validações da execução.
 8. A referência automática `MAIN` pode ser substituída pelo analista.
 9. Falha Cloud preserva os demais documentos e permite retentativa somente do componente Cloud.
+10. VM, WAS e Cloud concluídos não são recolhidos durante a recuperação de outro componente.
+11. Um conjunto parcial permanece fora de `MAIN` até que os componentes obrigatórios estejam resolvidos.
 
 ## Limites atuais
 
 - O Cloud representa uma fotografia do instante da coleta. Um período histórico só
   é reproduzido exatamente quando existe fotografia Cloud compatível preservada.
-- A tradução está preparada como fronteira de apresentação, porém não existe
-  provedor automático integrado; textos longos não devem ser enviados a serviços
-  externos sem autorização e política de privacidade.
+- A tradução automática usa um tradutor lazy por execução, cache compartilhado e
+  divisão semântica de textos longos. Evidências operacionais e identificadores de
+  ativos não são enviados ao provedor.
 - O WAS depende da disponibilidade e das permissões do tenant. Sua ausência não
   bloqueia a entrega VM.
 - A interface é local e simples; autenticação multiusuário e publicação remota não

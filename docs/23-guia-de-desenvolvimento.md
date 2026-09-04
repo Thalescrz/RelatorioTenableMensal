@@ -61,8 +61,8 @@ frontmatter e links locais. Ele valida estrutura, não redação exata.
 - coleta geral independente de TAG;
 - comparativo da mesma TAG no tempo;
 - WAS opcional sem bloquear VM;
-- decisão manual WAS separada da retentativa única com fallback do lote e do
-  automático mensal;
+- recuperação independente de VM/WAS/Cloud em duas janelas automáticas e terceira
+  condicional, sem Janela 4 e sem reiniciar prazo na substituição;
 - retentativa WAS publicada sem repetir VM/assets/TAG/Cloud, com hash VM invariável
   e rollback de documentos/manifesto;
 - `NOT_COLLECTED` WEB distinto de `NO_DATA` no dataset e no texto do DOCX;
@@ -73,6 +73,7 @@ frontmatter e links locais. Ele valida estrutura, não redação exata.
 - VPR Cloud zero distinto de ausência e fotografia atual distinta de histórico exato;
 - `STAGED_V1` com coleta remota concorrente, montagem local única e compatibilidade
   `LEGACY`;
+- família de lotes contada uma vez por cliente e mensal idempotente por competência;
 - checkpoint íntegro antes de `READY_FOR_BUILD` e build sem transporte HTTP;
 - `MAIN` explícito e histórico compatível;
 - descarte seguro apenas depois da publicação validada.
@@ -88,6 +89,18 @@ completo no tenant antes de virar padrão. O fallback seletivo é restrito às f
 de contrato já previstas; não mascare autenticação, limite de taxa ou timeout.
 
 Não inicie export real, servidor ou cancelamento sem necessidade e autorização.
+
+## Mensal e Agendador do Windows
+
+O serviço mensal deve permanecer testável com aplicação/repositório injetados. A
+CLI headless e a interface chamam o mesmo `STAGED_V1`; não crie um segundo
+orquestrador. Teste competência no fuso, chave idempotente, família existente e
+clientes ativos com credenciais prontas.
+
+O adaptador do Agendador usa lista de argumentos, `shell=False`, timeout curto e
+compara launcher/configuração antes de declarar sincronização. Salvar ou validar a
+política nunca invoca `schtasks.exe` nem cria lote. Aplicar, ativar e desativar
+exigem confirmação e devem ser testados com runner falso.
 Comandos reais devem exigir confirmação explícita.
 
 No Cloud, consultas GraphQL obrigatórias e opcionais são separadas por contrato. O

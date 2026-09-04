@@ -21,6 +21,12 @@
     "include_software_vulns": false,
     "mask_sensitive": false
   },
+  "monthly_schedule": {
+    "enabled": false,
+    "day_of_month": 1,
+    "local_start_time": "00:05",
+    "task_name": "Relatorios Tenable - Mensal"
+  },
   "clients": [
     {
       "client_id": "cliente-a-exemplo",
