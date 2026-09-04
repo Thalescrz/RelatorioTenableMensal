@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import threading
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Sequence
-from uuid import UUID
+from typing import Any, Mapping, Sequence
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from tenable_reports.application.web_batches import (
     BatchJobResult,
@@ -27,6 +27,13 @@ from tenable_reports.domain.web_batches import (
     WebBatchEvent,
     WebBatchJob,
 )
+from tenable_reports.domain.remote_components import (
+    RemoteComponentState,
+    RemoteComponentWindow,
+    RemoteObservation,
+    RemoteObservationKind,
+)
+from tenable_reports.domain.report_components import ReportComponent
 
 
 def _now() -> str:
@@ -79,6 +86,12 @@ class InMemoryWebBatchRepository(WebBatchRepository):
             conflict = active_clients.intersection(client_ids)
             if conflict:
                 raise ValueError("Cliente ja possui trabalho ativo em outro lote.")
+            if batch.parent_batch_id is not None:
+                parent = self._batches.get(batch.parent_batch_id)
+                if parent is None:
+                    raise ValueError("Lote pai não encontrado.")
+                if batch.root_batch_id != parent.root_batch_id:
+                    raise ValueError("root_batch_id diverge da família do lote pai.")
             stored_batch = replace(batch, created_at=batch.created_at or _now())
             self._batches[batch.id] = stored_batch
             self._idempotency[batch.idempotency_key] = batch.id
@@ -904,6 +917,231 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                         created_at=paused_at,
                     )
                 )
+            return reconciled
+
+
+def _component_state_for_window(window_number: int) -> RemoteComponentState:
+    return {
+        1: RemoteComponentState.RUNNING_WINDOW_1,
+        2: RemoteComponentState.RUNNING_WINDOW_2,
+        3: RemoteComponentState.RUNNING_WINDOW_3,
+    }[window_number]
+
+
+class InMemoryRemoteComponentRepository:
+    """Thread-safe component repository used by coordinator tests."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._components: dict[UUID, RemoteComponentWindow] = {}
+        self._attempt_keys: dict[tuple[UUID, ReportComponent, int], UUID] = {}
+
+    def create_for_job(
+        self,
+        *,
+        batch_job_id: UUID,
+        components: Sequence[ReportComponent],
+        window_number: int,
+        deadline_at: datetime,
+        origin: str,
+        query_fingerprints: Mapping[ReportComponent, str] | None = None,
+        attempt_number: int | None = None,
+        parent_component_id: UUID | None = None,
+        replacement_created_in_window_2: bool = False,
+        replacement_created_in_window_3: bool = False,
+    ) -> tuple[RemoteComponentWindow, ...]:
+        normalized_components = tuple(dict.fromkeys(ReportComponent(c) for c in components))
+        if not normalized_components:
+            return ()
+        normalized_attempt = int(attempt_number or window_number)
+        fingerprints = dict(query_fingerprints or {})
+        created: list[RemoteComponentWindow] = []
+        with self._lock:
+            for component in normalized_components:
+                key = (batch_job_id, component, normalized_attempt)
+                existing_id = self._attempt_keys.get(key)
+                if existing_id is not None:
+                    created.append(self._components[existing_id])
+                    continue
+                component_id = uuid5(
+                    NAMESPACE_URL,
+                    f"{batch_job_id}:{component.value}:window:{window_number}:attempt:{normalized_attempt}",
+                )
+                value = RemoteComponentWindow(
+                    id=component_id,
+                    batch_job_id=batch_job_id,
+                    component=component,
+                    state=RemoteComponentState.PENDING,
+                    window_number=window_number,
+                    attempt_number=normalized_attempt,
+                    parent_component_id=parent_component_id,
+                    origin=origin,
+                    deadline_at=deadline_at,
+                    replacement_created_in_window_2=replacement_created_in_window_2,
+                    replacement_created_in_window_3=replacement_created_in_window_3,
+                    query_fingerprint=fingerprints.get(component),
+                    created_at=datetime.now(UTC),
+                )
+                self._components[value.id] = value
+                self._attempt_keys[key] = value.id
+                created.append(value)
+        return tuple(created)
+
+    def get(self, component_id: UUID) -> RemoteComponentWindow | None:
+        with self._lock:
+            return self._components.get(component_id)
+
+    def claim_next(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int = 60,
+    ) -> RemoteComponentWindow | None:
+        normalized_worker = str(worker_id or "").strip()
+        if not normalized_worker:
+            raise ValueError("worker_id não pode ser vazio.")
+        if int(lease_seconds) < 1:
+            raise ValueError("lease_seconds deve ser positivo.")
+        now = datetime.now(UTC)
+        claimable_states = {
+            RemoteComponentState.PENDING,
+            RemoteComponentState.RUNNING_WINDOW_1,
+            RemoteComponentState.RUNNING_WINDOW_2,
+            RemoteComponentState.RUNNING_WINDOW_3,
+        }
+        with self._lock:
+            candidates = sorted(
+                (
+                    item
+                    for item in self._components.values()
+                    if item.state in claimable_states
+                    and (
+                        item.worker_id is None
+                        or item.lease_expires_at is None
+                        or item.lease_expires_at <= now
+                    )
+                ),
+                key=lambda item: (
+                    item.created_at or datetime.min.replace(tzinfo=UTC),
+                    item.attempt_number,
+                    list(ReportComponent).index(item.component),
+                ),
+            )
+            if not candidates:
+                return None
+            current = candidates[0]
+            updated = replace(
+                current,
+                state=(
+                    _component_state_for_window(current.window_number)
+                    if current.state is RemoteComponentState.PENDING
+                    else current.state
+                ),
+                worker_id=normalized_worker,
+                lease_expires_at=now + timedelta(seconds=int(lease_seconds)),
+                started_at=current.started_at or now,
+            )
+            self._components[current.id] = updated
+            return updated
+
+    def record_observation(
+        self,
+        component_id: UUID,
+        observation: RemoteObservation,
+    ) -> RemoteComponentWindow:
+        now = datetime.now(UTC)
+        with self._lock:
+            current = self._components[component_id]
+            progress = (
+                observation.completed_units != current.completed_units
+                or observation.total_units != current.total_units
+            )
+            updated = replace(
+                current,
+                completed_units=observation.completed_units,
+                total_units=observation.total_units,
+                last_remote_status=(
+                    observation.remote_status or observation.kind.value
+                ),
+                last_contact_at=now,
+                last_progress_at=now if progress else current.last_progress_at,
+                failure_code=observation.failure_code,
+            )
+            self._components[component_id] = updated
+            return updated
+
+    def transition(
+        self,
+        component_id: UUID,
+        *,
+        expected_state: RemoteComponentState,
+        requested_state: RemoteComponentState,
+        **changes: Any,
+    ) -> RemoteComponentWindow:
+        with self._lock:
+            current = self._components[component_id]
+            if current.state is not expected_state:
+                raise RuntimeError("Transição concorrente do componente remoto.")
+            allowed = set(RemoteComponentWindow.__dataclass_fields__) - {
+                "id",
+                "batch_job_id",
+                "component",
+                "state",
+            }
+            unknown = set(changes) - allowed
+            if unknown:
+                raise ValueError(f"Campos de transição inválidos: {sorted(unknown)}")
+            updated = replace(current, state=requested_state, **changes)
+            self._components[component_id] = updated
+            return updated
+
+    def list_for_jobs(
+        self,
+        job_ids: Sequence[UUID],
+    ) -> dict[UUID, tuple[RemoteComponentWindow, ...]]:
+        requested = tuple(dict.fromkeys(job_ids))
+        with self._lock:
+            return {
+                job_id: tuple(
+                    sorted(
+                        (
+                            item
+                            for item in self._components.values()
+                            if item.batch_job_id == job_id
+                        ),
+                        key=lambda item: (
+                            item.attempt_number,
+                            list(ReportComponent).index(item.component),
+                            str(item.id),
+                        ),
+                    )
+                )
+                for job_id in requested
+            }
+
+    def reconcile_abandoned(
+        self,
+        *,
+        now: datetime,
+        active_worker_ids: set[str],
+    ) -> int:
+        if now.tzinfo is None or now.utcoffset() != UTC.utcoffset(now):
+            raise ValueError("now deve usar timezone UTC.")
+        reconciled = 0
+        with self._lock:
+            for component_id, current in tuple(self._components.items()):
+                if (
+                    current.worker_id is not None
+                    and current.worker_id not in active_worker_ids
+                    and current.lease_expires_at is not None
+                    and current.lease_expires_at <= now
+                ):
+                    self._components[component_id] = replace(
+                        current,
+                        worker_id=None,
+                        lease_expires_at=None,
+                    )
+                    reconciled += 1
         return reconciled
 
 

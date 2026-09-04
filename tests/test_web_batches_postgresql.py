@@ -179,6 +179,26 @@ def test_partial_component_status_migration_extends_job_constraint() -> None:
     assert "'PARTIALLY_COMPLETE'" in sql
 
 
+def test_batch_mapper_reads_family_origin_and_competence() -> None:
+    root_id = UUID(int=101)
+    parent_id = UUID(int=102)
+    row = _batch_row() + (
+        root_id,
+        parent_id,
+        "AUTOMATIC_RECOVERY",
+        "2026-08",
+    )
+    database = _Database([_Cursor(many=(row,))])
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    batch = repository.list_batches(limit=1)[0]
+
+    assert batch.root_batch_id == root_id
+    assert batch.parent_batch_id == parent_id
+    assert batch.origin == "AUTOMATIC_RECOVERY"
+    assert batch.competence == "2026-08"
+
+
 def test_repository_creates_batch_and_jobs_in_one_connection() -> None:
     database = _Database(
         [

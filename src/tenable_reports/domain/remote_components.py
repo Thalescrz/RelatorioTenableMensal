@@ -42,6 +42,10 @@ class RemoteObservationKind(StrEnum):
 
 
 _FAILURE_CODE_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{2,99}$")
+_SENSITIVE_FAILURE_PATTERN = re.compile(
+    r"(?i)\b(?:access_key|secret_key|api_key|api_secret|api_token|"
+    r"cloud_token|token|password|authorization|bearer_token)\s*[:=]"
+)
 _UTC_FIELDS = (
     "deadline_at",
     "last_contact_at",
@@ -146,9 +150,26 @@ class RemoteComponentWindow:
                 raise ValueError("checkpoint_path deve ser absoluto e seguro.")
 
         failure_code = _validate_failure_code(self.failure_code)
+        failure_states = {
+            RemoteComponentState.WAITING_MANUAL_RETRY,
+            RemoteComponentState.NON_RETRYABLE_FAILURE,
+            RemoteComponentState.INTERRUPTED,
+        }
+        if self.state in failure_states and failure_code is None:
+            raise ValueError("failure_code é obrigatório para estado de falha.")
+        if self.retryable and self.state not in {
+            RemoteComponentState.WAITING_MANUAL_RETRY,
+            RemoteComponentState.INTERRUPTED,
+        }:
+            raise ValueError("retryable é incompatível com o estado do componente.")
         if self.failure_message is not None:
             message = str(self.failure_message).strip()
-            if "\n" in message or "\r" in message or len(message) > 500:
+            if (
+                "\n" in message
+                or "\r" in message
+                or len(message) > 500
+                or _SENSITIVE_FAILURE_PATTERN.search(message)
+            ):
                 raise ValueError("failure_message deve ser sanitizada e ter uma linha.")
             object.__setattr__(self, "failure_message", message)
 

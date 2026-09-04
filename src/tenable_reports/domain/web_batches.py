@@ -5,6 +5,7 @@ from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 from uuid import UUID
+import re
 
 
 class BatchStatus(StrEnum):
@@ -193,6 +194,10 @@ class WebBatch:
     status: BatchStatus
     options: Mapping[str, Any] = field(default_factory=dict)
     source_batch_id: UUID | None = None
+    root_batch_id: UUID | None = None
+    parent_batch_id: UUID | None = None
+    origin: str | None = None
+    competence: str | None = None
     requested_action: BatchAction | None = None
     version: int = 0
     created_at: str | None = None
@@ -200,7 +205,25 @@ class WebBatch:
     ended_at: str | None = None
 
     def __post_init__(self) -> None:
+        parent_batch_id = self.parent_batch_id or self.source_batch_id
+        root_batch_id = self.root_batch_id or parent_batch_id or self.id
+        if parent_batch_id == self.id:
+            raise ValueError("parent_batch_id não pode apontar para o próprio lote.")
+        origin = str(self.origin or "LEGACY").strip().upper()
+        if not origin:
+            raise ValueError("origin não pode ser vazio.")
+        competence = (
+            str(self.competence).strip() if self.competence is not None else None
+        )
+        if competence == "":
+            competence = None
+        if competence is not None and not re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", competence):
+            raise ValueError("competence deve usar o formato AAAA-MM.")
         object.__setattr__(self, "options", MappingProxyType(dict(self.options)))
+        object.__setattr__(self, "root_batch_id", root_batch_id)
+        object.__setattr__(self, "parent_batch_id", parent_batch_id)
+        object.__setattr__(self, "origin", origin)
+        object.__setattr__(self, "competence", competence)
 
 
 @dataclass(frozen=True, slots=True)
