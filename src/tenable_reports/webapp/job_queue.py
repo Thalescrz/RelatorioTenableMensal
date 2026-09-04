@@ -5,13 +5,19 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from tenable_reports.application.web_batches import (
     BatchJobResult,
+    RemoteComponentRepository,
     WebBatchRepository,
     normalize_claim_phases,
+)
+from tenable_reports.domain.remote_components import (
+    RemoteComponentState,
+    RemoteComponentWindow,
 )
 from tenable_reports.domain.web_batches import (
     BatchJobPhase,
@@ -22,6 +28,143 @@ from tenable_reports.domain.web_batches import (
 
 DurableRunner = Callable[[WebBatchJob], BatchJobResult]
 DurableResultHandler = Callable[[WebBatchJob, BatchJobResult], None]
+RemoteComponentRunner = Callable[[RemoteComponentWindow], None]
+
+
+class RemoteComponentWorkerPool:
+    """Bounded workers for durable VM, WAS and Cloud component windows."""
+
+    def __init__(
+        self,
+        *,
+        repository: RemoteComponentRepository,
+        runner: RemoteComponentRunner,
+        worker_prefix: str,
+        workers: int,
+        poll_interval: float = 0.25,
+        lease_seconds: int = 36_300,
+        start_workers: bool = True,
+    ) -> None:
+        self.repository = repository
+        self.runner = runner
+        self.worker_prefix = str(worker_prefix or "").strip()
+        if not self.worker_prefix:
+            raise ValueError("worker_prefix nao pode ser vazio.")
+        self.worker_count = int(workers)
+        if self.worker_count < 1:
+            raise ValueError("workers deve ser positivo.")
+        self.poll_interval = max(0.01, float(poll_interval))
+        self.lease_seconds = max(1, int(lease_seconds))
+        self.worker_ids = tuple(
+            f"{self.worker_prefix}-{index}"
+            for index in range(1, self.worker_count + 1)
+        )
+        self._stopping = threading.Event()
+        self._wake_event = threading.Event()
+        self._idle_event = threading.Event()
+        self._lock = threading.RLock()
+        self._workers: dict[str, threading.Thread] = {}
+        self._active_count = 0
+        self._started = False
+        self.repository.reconcile_abandoned(
+            now=datetime.now(UTC),
+            active_worker_ids=set(self.worker_ids),
+        )
+        if start_workers:
+            self.start()
+
+    def start(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            if self._stopping.is_set():
+                raise RuntimeError("O pool encerrado nao pode ser reiniciado.")
+            self._started = True
+            self._idle_event.clear()
+            for worker_id in self.worker_ids:
+                worker = threading.Thread(
+                    target=self._work,
+                    args=(worker_id,),
+                    name=worker_id,
+                    daemon=True,
+                )
+                self._workers[worker_id] = worker
+                worker.start()
+        self.wake()
+
+    def wake(self) -> None:
+        self._idle_event.clear()
+        self._wake_event.set()
+
+    def capacity_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            live_workers = sum(worker.is_alive() for worker in self._workers.values())
+        return {
+            "worker_prefix": self.worker_prefix,
+            "phases": ("REMOTE_COMPONENT",),
+            "workers": self.worker_count,
+            "live_workers": live_workers,
+            "idle_poll_interval_seconds": self.poll_interval,
+        }
+
+    def wait_until_idle(self, *, timeout: float) -> bool:
+        return self._idle_event.wait(max(0.0, float(timeout)))
+
+    def close(self) -> None:
+        self._stopping.set()
+        self._wake_event.set()
+        deadline = time.monotonic() + 5.0
+        with self._lock:
+            workers = tuple(self._workers.values())
+        for worker in workers:
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        alive = tuple(worker.name for worker in workers if worker.is_alive())
+        if alive:
+            raise RuntimeError(
+                "Workers de componente nao encerraram: " + ", ".join(alive)
+            )
+
+    def _mark_unexpected_failure(self, component: RemoteComponentWindow) -> None:
+        try:
+            self.repository.transition(
+                component.id,
+                expected_state=component.state,
+                requested_state=RemoteComponentState.WAITING_MANUAL_RETRY,
+                worker_id=None,
+                lease_expires_at=None,
+                failure_code="COMPONENT_WORKER_UNEXPECTED",
+                failure_message="Falha operacional no worker do componente.",
+                retryable=True,
+                ended_at=datetime.now(UTC),
+            )
+        except Exception:
+            return
+
+    def _work(self, worker_id: str) -> None:
+        while not self._stopping.is_set():
+            component = self.repository.claim_next(
+                worker_id=worker_id,
+                lease_seconds=self.lease_seconds,
+            )
+            if component is None:
+                with self._lock:
+                    if self._active_count == 0:
+                        self._idle_event.set()
+                self._wake_event.wait(self.poll_interval)
+                if not self._stopping.is_set():
+                    self._wake_event.clear()
+                continue
+            with self._lock:
+                self._active_count += 1
+                self._idle_event.clear()
+            try:
+                self.runner(component)
+            except Exception:
+                self._mark_unexpected_failure(component)
+            finally:
+                with self._lock:
+                    self._active_count -= 1
+
 
 
 class DurableWorkerPool:
@@ -286,4 +429,5 @@ __all__ = [
     "DurableRunner",
     "DurableWorkerPool",
     "DurableWorkerPoolGroup",
+    "RemoteComponentWorkerPool",
 ]

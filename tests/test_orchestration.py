@@ -329,6 +329,24 @@ class OrchestrationTests(unittest.TestCase):
         self.assertEqual(config.remote_processing_timeout_seconds, 36000)
         self.assertEqual(config.remote_progress_warning_seconds, 900)
         self.assertEqual(config.max_clients_per_batch, 64)
+        self.assertEqual(config.automatic_window_seconds, 36000)
+        self.assertEqual(config.automatic_base_windows, 2)
+        self.assertTrue(config.automatic_replacement_window)
+        self.assertEqual(config.manual_retry_window_seconds, 36000)
+
+    def test_automatic_recovery_contract_rejects_incompatible_override(self) -> None:
+        payload = json.loads(EXAMPLE_CONFIG.read_text(encoding="utf-8"))
+        payload["defaults"]["automatic_window_seconds"] = 7200
+        config_path = ROOT / "orchestration" / "clients.test-recovery-policy.json"
+        try:
+            config_path.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(
+                ValueError,
+                "automatic_window_seconds deve ser 36000",
+            ):
+                load_orchestration_config(config_path)
+        finally:
+            config_path.unlink(missing_ok=True)
 
     def test_remote_worker_capacity_is_automatic_bounded_and_never_zero(self) -> None:
         self.assertEqual(

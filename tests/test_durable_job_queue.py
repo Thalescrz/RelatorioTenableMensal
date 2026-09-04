@@ -4,7 +4,9 @@ import json
 import subprocess
 
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,9 +16,16 @@ from uuid import UUID
 import tenable_reports.webapp.server as server_module
 
 from tenable_reports.application.web_batches import BatchJobResult
+from tenable_reports.application.component_collection import (
+    ComponentCollectionCheckpoint,
+    persist_component_checkpoint,
+)
 from tenable_reports.application.web_batches_memory import (
+    InMemoryRemoteComponentRepository,
     InMemoryWebBatchRepository,
 )
+from tenable_reports.domain.remote_components import RemoteComponentState
+from tenable_reports.domain.report_components import ReportComponent
 from tenable_reports.domain.web_batches import (
     BatchAction,
     BatchJobPhase,
@@ -30,6 +39,7 @@ from tenable_reports.webapp.durable_dashboard_queue import (
     DurableDashboardJobQueue,
 )
 from tenable_reports.webapp.job_queue import (
+    RemoteComponentWorkerPool,
     DurableJobQueue,
     DurableWorkerPool,
     DurableWorkerPoolGroup,
@@ -98,6 +108,286 @@ def test_queue_snapshot_survives_queue_recreation() -> None:
         "client-1",
         "client-2",
     )
+
+
+def test_remote_component_pool_claims_each_component_once_with_bounded_parallelism() -> None:
+    repository = InMemoryRemoteComponentRepository()
+    job_ids = (UUID(int=301), UUID(int=302))
+    deadline = datetime.now(UTC) + timedelta(hours=10)
+    for job_id in job_ids:
+        repository.create_for_job(
+            batch_job_id=job_id,
+            components=tuple(ReportComponent),
+            window_number=1,
+            deadline_at=deadline,
+            origin="SCHEDULED",
+        )
+    observed: list[UUID] = []
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def runner(component) -> None:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            observed.append(component.id)
+        time.sleep(0.02)
+        repository.transition(
+            component.id,
+            expected_state=component.state,
+            requested_state=RemoteComponentState.COMPLETE,
+            worker_id=None,
+            lease_expires_at=None,
+            ended_at=datetime.now(UTC),
+        )
+        with lock:
+            active -= 1
+
+    pool = RemoteComponentWorkerPool(
+        repository=repository,
+        runner=runner,
+        worker_prefix="remote-component-test",
+        workers=3,
+        poll_interval=0.01,
+    )
+    try:
+        assert pool.wait_until_idle(timeout=3)
+    finally:
+        pool.close()
+
+    assert len(observed) == 6
+    assert len(set(observed)) == 6
+    assert 1 < peak <= 3
+
+
+def test_job_queue_builds_collect_component_command_and_keeps_terminal_payload(
+    tmp_path,
+) -> None:
+    config_path = tmp_path / "orchestration" / "clients.json"
+    store = DashboardConfigStore(project_root=tmp_path, config_path=config_path)
+    store.add_client(
+        {
+            "client_id": "client-01",
+            "display_name": "Client 01",
+            "access_key": "fixture-access",
+            "secret_key": "fixture-secret",
+        }
+    )
+    commands: list[list[str]] = []
+
+    def runner(command, cwd, progress_callback=None):
+        commands.append(list(command))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "event": "TENABLE_COMPONENT_CHECKPOINT",
+                    "status": "COMPLETE",
+                    "component": "VM_CORE",
+                    "checkpoint": str(tmp_path / "component.json"),
+                }
+            ),
+            stderr="",
+        )
+
+    jobs = JobQueue(tmp_path, config_path, runner, start_worker=False)
+    job_id = "component-executor-01"
+    jobs._jobs[job_id] = {
+        "job_id": job_id,
+        "client_id": "client-01",
+        "operation": "staged_component",
+        "component": "VM_CORE",
+        "component_checkpoint": str(
+            tmp_path / "checkpoints" / "run-01" / "vm_core" / "checkpoint.json"
+        ),
+        "window_number": 1,
+        "deadline_at": "2026-09-05T08:00:00Z",
+        "mode": "automatic",
+        "days": None,
+        "start_at": None,
+        "end_at": None,
+        "run_id": "run-01",
+        "logical_job_id": "logical-01",
+        "attempt_number": 1,
+        "status": "QUEUED",
+        "warnings": [],
+    }
+
+    jobs._run(job_id)
+
+    command = commands[0]
+    assert command[3] == "collect-component"
+    assert command[command.index("--component") + 1] == "VM_CORE"
+    assert command[command.index("--window-number") + 1] == "1"
+    assert command[command.index("--deadline-at") + 1] == "2026-09-05T08:00:00Z"
+    assert jobs._jobs[job_id]["_component_result"]["status"] == "COMPLETE"
+
+
+def test_staged_component_workers_merge_once_then_release_serial_build(tmp_path) -> None:
+    config_path = tmp_path / "orchestration" / "clients.json"
+    store = DashboardConfigStore(project_root=tmp_path, config_path=config_path)
+    store.add_client(
+        {
+            "client_id": "client-01",
+            "display_name": "Client 01",
+            "access_key": "fixture-access",
+            "secret_key": "fixture-secret",
+        }
+    )
+    raw = store.raw()
+    output_root = (tmp_path / "data").resolve()
+    raw["defaults"]["output_root"] = str(output_root)
+    config_path.write_text(json.dumps(raw), encoding="utf-8")
+    command_components: list[str] = []
+    build_saw: list[str] = []
+
+    def executor_runner(command, cwd, progress_callback=None):
+        assert command[3] == "collect-component"
+        component = ReportComponent(command[command.index("--component") + 1])
+        checkpoint_path = Path(
+            command[command.index("--component-checkpoint") + 1]
+        ).resolve()
+        run_id = command[command.index("--run-id") + 1]
+        logical_job_id = command[command.index("--logical-job-id") + 1]
+        command_components.append(component.value)
+        if component is ReportComponent.CLOUD:
+            progress_callback(
+                {
+                    "event": "TENABLE_CLOUD_PROGRESS",
+                    "source": "tenable_cloud_security",
+                    "status": "COMPLETE",
+                    "current": 1,
+                    "total": 1,
+                    "snapshot_id": "cloud-dataset-01",
+                    "origin": "created",
+                }
+            )
+        else:
+            progress_callback(
+                {
+                    "event": "TENABLE_EXPORT_PROGRESS",
+                    "source": (
+                        "tenable_vm_vulnerabilities"
+                        if component is ReportComponent.VM_CORE
+                        else "tenable_was_findings"
+                    ),
+                    "status": "FINISHED",
+                    "completed_chunks": 2,
+                    "total_chunks": 2,
+                    "export_uuid": (
+                        "00000000-0000-0000-0000-000000000401"
+                        if component is ReportComponent.VM_CORE
+                        else "00000000-0000-0000-0000-000000000402"
+                    ),
+                    "origin": "created",
+                }
+            )
+        checkpoint = ComponentCollectionCheckpoint(
+            schema_version=1,
+            checkpoint_path=checkpoint_path,
+            component=component,
+            client_id="client-01",
+            tenant_id="tenant-01",
+            run_id=run_id,
+            logical_job_id=logical_job_id,
+            execution_type="MANUAL",
+            mode="manual",
+            origin="MANUAL",
+            attempt_number=1,
+            period={
+                "start_at": "2026-08-01T00:00:00Z",
+                "end_at": "2026-09-01T00:00:00Z",
+            },
+            status=RemoteComponentState.COMPLETE,
+            artifacts=(),
+            metadata={"status": "COMPLETE"},
+            query_fingerprint=(
+                {
+                    ReportComponent.VM_CORE: "a",
+                    ReportComponent.WAS: "b",
+                    ReportComponent.CLOUD: "c",
+                }[component]
+                * 64
+            ),
+        )
+        persist_component_checkpoint(checkpoint, storage_root=output_root)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "event": "TENABLE_COMPONENT_CHECKPOINT",
+                    "status": "COMPLETE",
+                    "component": component.value,
+                    "checkpoint": str(checkpoint_path),
+                }
+            ),
+            stderr="",
+        )
+
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    executor = JobQueue(tmp_path, config_path, executor_runner, start_worker=False)
+
+    def build_runner(job: WebBatchJob) -> BatchJobResult:
+        build_saw.append(str(job.collection_checkpoint_path))
+        return BatchJobResult(status=BatchJobStatus.COMPLETE)
+
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=executor,
+        worker_id="worker-components",
+        poll_interval=0.01,
+        build_runner=build_runner,
+        remote_workers=3,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=output_root,
+    )
+    try:
+        created = queue.enqueue_requests(
+            (
+                (
+                    "client-01",
+                    {
+                        "mode": "manual",
+                        "start_at": "2026-08-01T00:00:00Z",
+                        "end_at": "2026-09-01T00:00:00Z",
+                    },
+                ),
+            ),
+            batch_options={"execution_model": "STAGED_V1"},
+        )
+        assert queue.wait_until_idle(timeout=5)
+        detail = queue.batch_snapshot(created[0]["batch_id"])
+        durable_job = repository.list_batch_jobs(UUID(created[0]["batch_id"]))[0]
+        component_rows = component_repository.list_for_jobs((durable_job.id,))[
+            durable_job.id
+        ]
+    finally:
+        queue.close()
+
+    assert sorted(command_components) == sorted(item.value for item in ReportComponent)
+    assert len(build_saw) == 1
+    assert Path(build_saw[0]).is_file()
+    assert detail["jobs"][0]["status"] == "COMPLETE"
+    assert [event["event_type"] for event in detail["events"]].count(
+        "COLLECTION_READY"
+    ) == 1
+    assert {row.window_number for row in component_rows} == {1}
+    assert {row.state for row in component_rows} == {RemoteComponentState.COMPLETE}
+    assert all(row.last_contact_at is not None for row in component_rows)
+    assert all(row.query_fingerprint is not None for row in component_rows)
+    assert {
+        row.remote_identifier for row in component_rows
+    } == {
+        "00000000-0000-0000-0000-000000000401",
+        "00000000-0000-0000-0000-000000000402",
+        "cloud-dataset-01",
+    }
 
 
 def test_queue_runs_at_most_one_client_at_a_time_in_position_order() -> None:
@@ -1184,6 +1474,7 @@ def test_dashboard_bootstraps_automatic_remote_capacity_and_serial_build(tmp_pat
         config_path=config_path,
         runner=lambda *args, **kwargs: None,
         batch_repository=InMemoryWebBatchRepository(),
+        remote_component_repository=InMemoryRemoteComponentRepository(),
     )
     try:
         capacities = app.jobs.capacity_snapshot()
@@ -1192,7 +1483,7 @@ def test_dashboard_bootstraps_automatic_remote_capacity_and_serial_build(tmp_pat
 
     by_phase = {tuple(item["phases"]): item["workers"] for item in capacities}
     assert by_phase[(BatchJobPhase.LEGACY.value,)] == 1
-    assert by_phase[(BatchJobPhase.REMOTE_QUEUED.value,)] == 20
+    assert by_phase[("REMOTE_COMPONENT",)] == 20
     assert by_phase[(BatchJobPhase.READY_FOR_BUILD.value,)] == 1
     assert {
         item["idle_poll_interval_seconds"] for item in capacities

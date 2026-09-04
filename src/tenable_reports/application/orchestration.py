@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from tenable_reports.application.automatic_recovery import AutomaticRecoveryPolicy
 from tenable_reports.application.publishing import write_json_atomic
 from tenable_reports.application.retention import (
     RetentionPolicy,
@@ -78,6 +79,10 @@ class OrchestrationConfig:
     remote_processing_timeout_seconds: int
     remote_progress_warning_seconds: int
     max_clients_per_batch: int
+    automatic_window_seconds: int
+    automatic_base_windows: int
+    automatic_replacement_window: bool
+    manual_retry_window_seconds: int
     clients: tuple[OrchestrationClient, ...]
 
 
@@ -424,6 +429,34 @@ def load_orchestration_config(path: str | Path) -> OrchestrationConfig:
         minimum=1,
         maximum=64,
     )
+    recovery_policy = AutomaticRecoveryPolicy(
+        automatic_window_seconds=_bounded_integer(
+            defaults.get("automatic_window_seconds"),
+            field="defaults.automatic_window_seconds",
+            default=36000,
+            minimum=60,
+            maximum=86400,
+        ),
+        automatic_base_windows=_bounded_integer(
+            defaults.get("automatic_base_windows"),
+            field="defaults.automatic_base_windows",
+            default=2,
+            minimum=1,
+            maximum=3,
+        ),
+        automatic_replacement_window=_boolean(
+            defaults.get("automatic_replacement_window"),
+            field="defaults.automatic_replacement_window",
+            default=True,
+        ),
+        manual_retry_window_seconds=_bounded_integer(
+            defaults.get("manual_retry_window_seconds"),
+            field="defaults.manual_retry_window_seconds",
+            default=36000,
+            minimum=60,
+            maximum=86400,
+        ),
+    )
     default_include_output = _boolean(
         defaults.get("include_output"), field="defaults.include_output", default=False
     )
@@ -511,6 +544,10 @@ def load_orchestration_config(path: str | Path) -> OrchestrationConfig:
         remote_processing_timeout_seconds=remote_processing_timeout_seconds,
         remote_progress_warning_seconds=remote_progress_warning_seconds,
         max_clients_per_batch=max_clients_per_batch,
+        automatic_window_seconds=recovery_policy.automatic_window_seconds,
+        automatic_base_windows=recovery_policy.automatic_base_windows,
+        automatic_replacement_window=recovery_policy.automatic_replacement_window,
+        manual_retry_window_seconds=recovery_policy.manual_retry_window_seconds,
         clients=tuple(clients),
     )
 

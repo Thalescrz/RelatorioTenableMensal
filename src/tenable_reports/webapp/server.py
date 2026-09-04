@@ -28,6 +28,7 @@ from tenable_reports.application.failures import sanitize_failure_message
 from tenable_reports.application.web_batches import (
     BatchClientConflictError,
     DerivedBatchRequest,
+    RemoteComponentRepository,
     WebBatchRepository,
     build_manual_batch_options,
 )
@@ -121,6 +122,9 @@ from tenable_reports.infrastructure.was_recovery_postgresql import (
 )
 from tenable_reports.infrastructure.web_batches_postgresql import (
     PostgresWebBatchRepository,
+)
+from tenable_reports.infrastructure.web_batch_components_postgresql import (
+    PostgresRemoteComponentRepository,
 )
 from tenable_reports.domain.report_reference import reference_key_for_candidate
 from tenable_reports.domain.report_components import (
@@ -472,6 +476,10 @@ class DashboardConfigStore:
                 "remote_processing_timeout_seconds": 36000,
                 "remote_progress_warning_seconds": 900,
                 "max_clients_per_batch": 64,
+                "automatic_window_seconds": 36000,
+                "automatic_base_windows": 2,
+                "automatic_replacement_window": True,
+                "manual_retry_window_seconds": 36000,
                 "retention_days": 395,
                 "failed_staging_days": 7,
                 "logs_days": 90,
@@ -1867,6 +1875,122 @@ class JobQueue:
                 ]
                 for component in components:
                     command.extend(("--component", component))
+            elif job.get("operation") == "staged_component":
+                config = load_orchestration_config(self.config_path)
+                client = next(
+                    (
+                        item
+                        for item in config.clients
+                        if item.client_id == job["client_id"]
+                    ),
+                    None,
+                )
+                if client is None or not client.enabled:
+                    raise ValueError("Cliente staged não encontrado ou inativo.")
+                command = [
+                    sys.executable,
+                    "-m",
+                    "tenable_reports",
+                    "collect-component",
+                    "--component",
+                    str(job["component"]),
+                    "--component-checkpoint",
+                    str(job["component_checkpoint"]),
+                    "--window-number",
+                    str(job["window_number"]),
+                    "--deadline-at",
+                    str(job["deadline_at"]),
+                    "--mode",
+                    str(job["mode"]),
+                    "--profile",
+                    str(client.profile_path),
+                    "--env-file",
+                    str(client.env_file),
+                    "--database-env-file",
+                    str(config.database_env_file),
+                    "--output-root",
+                    str(config.output_root),
+                    "--run-id",
+                    str(job["run_id"]),
+                    "--logical-job-id",
+                    str(job["logical_job_id"]),
+                    "--attempt-number",
+                    str(job.get("attempt_number") or 1),
+                    "--origin",
+                    str(job.get("origin") or "SCHEDULED"),
+                    "--remote-processing-timeout-seconds",
+                    str(
+                        job.get("remote_processing_timeout_seconds")
+                        or config.remote_processing_timeout_seconds
+                    ),
+                    "--remote-progress-warning-seconds",
+                    str(config.remote_progress_warning_seconds),
+                    "--template",
+                    str(config.template_path),
+                    "--cloud-template",
+                    str(
+                        self.project_root
+                        / "templates"
+                        / "corporate"
+                        / "cloud-base-v1.docx"
+                    ),
+                    "--assets-dir",
+                    str(config.assets_dir),
+                    "--minimum-free-gb",
+                    str(config.minimum_free_gb),
+                    "--confirm-live-api",
+                ]
+                if job.get("_job_control_file"):
+                    command.extend(
+                        ("--job-control-file", str(job["_job_control_file"]))
+                    )
+                if job.get("remote_identifier"):
+                    command.extend(
+                        ("--remote-identifier", str(job["remote_identifier"]))
+                    )
+                if job.get("identifier_kind"):
+                    command.extend(
+                        ("--identifier-kind", str(job["identifier_kind"]))
+                    )
+                if job.get("identifier_origin"):
+                    command.extend(
+                        ("--identifier-origin", str(job["identifier_origin"]))
+                    )
+                if job.get("previous_component_checkpoint"):
+                    command.extend(
+                        (
+                            "--previous-component-checkpoint",
+                            str(job["previous_component_checkpoint"]),
+                        )
+                    )
+                if job.get("force_live_collection"):
+                    command.append("--force-live-collection")
+                if job.get("vm_selective_mode"):
+                    command.extend(
+                        ("--vm-selective-mode", str(job["vm_selective_mode"]))
+                    )
+                if job.get("vm_export_strategy"):
+                    command.extend(
+                        ("--vm-export-strategy", str(job["vm_export_strategy"]))
+                    )
+                if job.get("historical_source"):
+                    command.extend(
+                        ("--historical-source", str(job["historical_source"]))
+                    )
+                if job["days"] is not None:
+                    command.extend(("--days", str(job["days"])))
+                if job["start_at"]:
+                    command.extend(
+                        ("--start-at", job["start_at"], "--end-at", job["end_at"])
+                    )
+                for tag in client.tags:
+                    command.extend(("--tag", tag))
+                if client.include_output:
+                    command.append("--include-output")
+                if client.include_software_vulns:
+                    command.append("--include-software-vulns")
+                if client.mask_sensitive:
+                    command.append("--mask-sensitive")
             elif job.get("operation") == "staged_remote":
                 config = load_orchestration_config(self.config_path)
                 client = next(
@@ -2208,6 +2332,8 @@ class JobQueue:
                 job["progress"] = 100
                 job["exit_code"] = completed.returncode
                 job["run_id"] = payload.get("run_id") or job.get("run_id")
+                if job.get("operation") == "staged_component":
+                    job["_component_result"] = dict(payload)
                 client_payloads = [
                     item.get("payload")
                     for item in payload.get("clients") or ()
@@ -2345,6 +2471,7 @@ class DashboardApplication:
         cloud_contract_invalidator: Callable[..., int] | None = None,
         was_recovery_repository: Any | None = None,
         batch_repository: WebBatchRepository | None = None,
+        remote_component_repository: RemoteComponentRepository | None = None,
         component_repository: ReportComponentRepository | None = None,
         component_retry_enqueuer: Callable[..., Mapping[str, Any]] | None = None,
         require_durable_batches: bool = False,
@@ -2381,6 +2508,11 @@ class DashboardApplication:
         if self.batch_repository is None and self.database is not None:
             self.batch_repository = PostgresWebBatchRepository(
                 self.database.database,
+            )
+        self.remote_component_repository = remote_component_repository
+        if self.remote_component_repository is None and self.database is not None:
+            self.remote_component_repository = PostgresRemoteComponentRepository(
+                self.database.database
             )
         self.require_durable_batches = bool(require_durable_batches)
         if self.batch_repository is not None:
@@ -2426,6 +2558,7 @@ class DashboardApplication:
                 executor=executor,
                 worker_id=f"web-{os.getpid()}-{uuid.uuid4().hex[:8]}",
                 remote_workers=remote_workers,
+                remote_component_repository=self.remote_component_repository,
                 enable_staged_executor=True,
                 staged_output_root=staged_output_root,
                 remote_processing_timeout_seconds=(
