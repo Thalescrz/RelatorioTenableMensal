@@ -999,6 +999,46 @@ def test_preserved_uuid_budget_does_not_shorten_the_whole_collection(tmp_path) -
     assert observed["vm_resume_budget_seconds"] == 1
 
 
+def test_legacy_remaining_budget_does_not_become_the_global_timeout(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    legacy = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=legacy,
+        worker_id="worker-legacy-vm-budget",
+        start_worker=False,
+    )
+    observed: dict[str, object] = {}
+    job = replace(
+        _job(1),
+        payload={
+            "remote_processing_timeout_seconds": 1,
+            "vm_resume_budget_seconds": 1,
+        },
+        vm_export_uuid="00000000-0000-0000-0000-000000000704",
+        remote_export_started_at="2000-01-01T00:00:00Z",
+    )
+
+    def complete(job_id: str) -> None:
+        with legacy._lock:
+            observed.update(legacy._jobs[job_id])
+            legacy._jobs[job_id].update(status="COMPLETE", exit_code=0)
+
+    legacy._run = complete
+    try:
+        queue._run_executor_job(job)
+    finally:
+        queue.close()
+
+    assert observed["remote_processing_timeout_seconds"] == 36_000
+    assert observed["vm_resume_budget_seconds"] == 1
+
+
 def test_recovery_replacement_promotes_new_uuid_and_resets_its_budget(tmp_path) -> None:
     repository = InMemoryWebBatchRepository()
     batch = _batch(status=BatchStatus.RUNNING)

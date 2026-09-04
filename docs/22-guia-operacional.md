@@ -198,6 +198,12 @@ recuperáveis, um UUID substituto é iniciado com 10 horas novas e promovido no 
 junto com seu manifesto. Uma nova retentativa usa o substituto persistido; ela não
 volta silenciosamente ao UUID antigo.
 
+O saldo calculado para um UUID preservado é exclusivo daquele UUID. Ele não é
+reutilizado como configuração global da execução nem limita a coleta de ativos. Se
+for necessário criar um UUID substituto, o coletor volta a usar o teto vigente de
+10 horas. Valores transitórios gravados por versões anteriores são ignorados como
+configuração global.
+
 Lotes anteriores permanecem em `LEGACY`. Eles conservam o worker monolítico e não
 são migrados automaticamente para o pipeline em fases. Uma retentativa derivada de
 um lote importado `RECOVERED` é a exceção: período, UUID e manifesto continuam
@@ -346,7 +352,9 @@ para o cliente selecionado. A aplicação consulta o mesmo UUID e baixa apenas o
 chunks ainda ausentes. Se o UUID estiver comprovadamente terminal, expirado, em
 HTTP 404 ou `FINISHED` sem os chunks restantes, o evento
 `TENABLE_EXPORT_RECOVERY_UNAVAILABLE` registra o motivo e o UUID substituto antes
-de continuar. Não existe fallback silencioso para um POST novo.
+de continuar. Esse evento é persistido antes da espera do novo export, promovendo o
+UUID substituto e reiniciando seu orçamento. Não existe fallback silencioso para um
+POST novo.
 
 Falhas de autenticação não autorizam a criação de export duplicado. Rate limit,
 5xx e indisponibilidade transitória de consulta permanecem visíveis nos eventos,

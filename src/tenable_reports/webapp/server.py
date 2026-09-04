@@ -1328,6 +1328,7 @@ def _default_runner(
                     and event.get("event") in {
                         "TAG_REPORT_PROGRESS",
                         "TENABLE_EXPORT_PROGRESS",
+                        "TENABLE_EXPORT_RECOVERY_UNAVAILABLE",
                         "TENABLE_CLOUD_PROGRESS",
                         "TENABLE_EXPORT_NO_PROGRESS_WARNING",
                     }
@@ -2392,10 +2393,14 @@ class DashboardApplication:
                 configured_remote_workers = staged_config.remote_collection_workers
                 max_clients_per_batch = staged_config.max_clients_per_batch
                 staged_output_root = staged_config.output_root
+                remote_processing_timeout_seconds = (
+                    staged_config.remote_processing_timeout_seconds
+                )
             else:
                 configured_remote_workers = 0
                 max_clients_per_batch = 64
                 staged_output_root = self.project_root / "data"
+                remote_processing_timeout_seconds = 36_000
             database_connection_limit = None
             if self.database is not None:
                 try:
@@ -2423,6 +2428,9 @@ class DashboardApplication:
                 remote_workers=remote_workers,
                 enable_staged_executor=True,
                 staged_output_root=staged_output_root,
+                remote_processing_timeout_seconds=(
+                    remote_processing_timeout_seconds
+                ),
             )
         else:
             self.jobs = JobQueue(self.project_root, self.config.config_path, runner)

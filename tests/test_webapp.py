@@ -895,6 +895,26 @@ class WebDashboardTests(unittest.TestCase):
         self.assertEqual(json.loads(completed.stdout)["text"], "�")
         self.assertEqual(json.loads(completed.stdout)["pg"], "UTF8")
 
+    def test_default_runner_forwards_vm_export_recovery_replacement(self) -> None:
+        events: list[dict[str, object]] = []
+        expected = {
+            "event": "TENABLE_EXPORT_RECOVERY_UNAVAILABLE",
+            "source": "tenable_vm_vulnerabilities",
+            "previous_export_uuid": "00000000-0000-0000-0000-000000000801",
+            "replacement_export_uuid": "00000000-0000-0000-0000-000000000802",
+            "replacement_started": True,
+        }
+        script = "import json; print(json.dumps(" + repr(expected) + "))"
+
+        completed = _web_default_runner(
+            (sys.executable, "-c", script),
+            Path(__file__).resolve().parents[1],
+            events.append,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(events, [expected])
+
     def test_tag_report_configuration_persists_across_store_reload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

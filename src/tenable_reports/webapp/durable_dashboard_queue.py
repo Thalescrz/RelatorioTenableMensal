@@ -45,6 +45,7 @@ def _now() -> str:
 _PRIVATE_DASHBOARD_KEYS = frozenset(
     {"checkpoint", "checkpoint_path", "collection_checkpoint_path"}
 )
+_DEFAULT_REMOTE_PROCESSING_TIMEOUT_SECONDS = 36_000
 
 
 def _safe_dashboard_value(value: Any) -> Any:
@@ -179,6 +180,9 @@ class DurableDashboardJobQueue:
         remote_workers: int = 0,
         enable_staged_executor: bool = False,
         staged_output_root: str | Path | None = None,
+        remote_processing_timeout_seconds: int = (
+            _DEFAULT_REMOTE_PROCESSING_TIMEOUT_SECONDS
+        ),
     ) -> None:
         self.repository = repository
         self.executor = executor
@@ -190,6 +194,10 @@ class DurableDashboardJobQueue:
         self._active_lock = threading.RLock()
         self._active_jobs: dict[str, WebBatchJob] = {}
         self._progress_events: dict[str, tuple[tuple[Any, ...], datetime]] = {}
+        self._remote_processing_timeout_seconds = max(
+            1,
+            int(remote_processing_timeout_seconds),
+        )
         self.executor.progress_sink = self._persist_progress
         self.executor.process_sink = self._persist_process
         self.executor.fallback_sink = self._persist_fallback
@@ -1450,6 +1458,10 @@ class DurableDashboardJobQueue:
     ) -> BatchJobResult:
         job_id = job.id.hex
         payload = dict(job.payload)
+        payload.pop("vm_resume_budget_seconds", None)
+        payload["remote_processing_timeout_seconds"] = (
+            self._remote_processing_timeout_seconds
+        )
         payload["job_id"] = job_id
         payload["status"] = "QUEUED"
         if operation is not None:
@@ -1471,17 +1483,14 @@ class DurableDashboardJobQueue:
                     0,
                     int((datetime.now(UTC) - remote_started).total_seconds()),
                 )
-                remote_budget_seconds = max(
-                    1,
-                    int(payload.get("remote_processing_timeout_seconds") or 36_000),
-                )
-                payload["remote_processing_timeout_seconds"] = remote_budget_seconds
                 payload["vm_resume_budget_seconds"] = max(
                     1,
-                    remote_budget_seconds - elapsed,
+                    self._remote_processing_timeout_seconds - elapsed,
                 )
             except (TypeError, ValueError):
-                payload["vm_resume_budget_seconds"] = 36_000
+                payload["vm_resume_budget_seconds"] = (
+                    self._remote_processing_timeout_seconds
+                )
         with self.executor._lock:
             self.executor._jobs[job_id] = payload
         with self._active_lock:
