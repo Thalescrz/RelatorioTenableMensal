@@ -1057,6 +1057,32 @@ class CliTests(unittest.TestCase):
         self.assertEqual(defaults, ("combined", 1000, "disabled"))
         self.assertEqual(overridden, ("split", 500, "validation"))
 
+    def test_staged_collection_keeps_no_progress_as_warning_only(self) -> None:
+        profile = SimpleNamespace(
+            reporting=SimpleNamespace(
+                vm_export=SimpleNamespace(
+                    manual_no_progress_seconds=900,
+                    automatic_no_progress_seconds=1800,
+                )
+            )
+        )
+
+        self.assertIsNone(
+            cli_module._effective_no_progress_timeout_seconds(
+                SimpleNamespace(no_progress_warning_only=True),
+                profile,
+                execution_type="MANUAL",
+            )
+        )
+        self.assertEqual(
+            cli_module._effective_no_progress_timeout_seconds(
+                SimpleNamespace(no_progress_warning_only=False),
+                profile,
+                execution_type="MANUAL",
+            ),
+            900,
+        )
+
     def test_execute_period_initializes_empty_tag_datasets_when_tags_are_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)

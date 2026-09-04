@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -46,6 +47,38 @@ _PRIVATE_DASHBOARD_KEYS = frozenset(
     {"checkpoint", "checkpoint_path", "collection_checkpoint_path"}
 )
 _DEFAULT_REMOTE_PROCESSING_TIMEOUT_SECONDS = 36_000
+
+
+def _checkpoint_ready_for_build(value: str | Path | None) -> bool:
+    if not value:
+        return False
+    path = Path(value).resolve()
+    if not path.is_file():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        metadata = payload.get("component_metadata")
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(metadata, Mapping):
+        return False
+    vm = metadata.get("VM_CORE")
+    if not isinstance(vm, Mapping) or str(vm.get("status") or "").upper() not in {
+        "COMPLETE",
+        "COMPLETE_WITH_WARNINGS",
+    }:
+        return False
+    for name in ("WAS", "CLOUD"):
+        component = metadata.get(name)
+        if not isinstance(component, Mapping):
+            return False
+        if str(component.get("status") or "").upper() not in {
+            "COMPLETE",
+            "FAILED",
+            "SKIPPED",
+        }:
+            return False
+    return True
 
 
 def _safe_dashboard_value(value: Any) -> Any:
@@ -711,7 +744,9 @@ class DurableDashboardJobQueue:
                 if is_retry
                 and staged_model
                 and source_job.collection_checkpoint_path
-                and Path(source_job.collection_checkpoint_path).resolve().is_file()
+                and _checkpoint_ready_for_build(
+                    source_job.collection_checkpoint_path
+                )
                 else None
             )
             jobs.append(

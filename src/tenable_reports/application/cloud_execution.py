@@ -160,6 +160,7 @@ class CloudExecutionRequest:
     force_refresh: bool = False
     bypass_recent_guard: bool = False
     recent_collection_hours: int = 24
+    render_documents: bool = True
 
     def compatibility(self) -> CloudSnapshotCompatibility:
         return CloudSnapshotCompatibility(
@@ -414,6 +415,8 @@ def _write_and_render(
             client_id=request.profile.client_id,
             run_id=request.run_id,
         )
+    if not request.render_documents:
+        return Path(artifact.dataset_path), ()
     documents: list[CloudGeneratedDocument] = []
     for variant in _variants(request.profile):
         output_path = request.report_directory / cloud_report_filename(
@@ -458,9 +461,9 @@ def execute_cloud_component(
     if not request.profile.cloud_security_scope.enabled:
         return CloudComponentResult(status=CloudExecutionStatus.DISABLED)
 
-    compatibility = request.compatibility()
-    period = request.period.to_dict()
     try:
+        compatibility = request.compatibility()
+        period = request.period.to_dict()
         if not request.force_refresh:
             exact = dependencies.repository.find_exact(
                 compatibility=compatibility,
@@ -527,6 +530,8 @@ def execute_cloud_component(
                     snapshot_id=recent.snapshot_id,
                     warnings=(warning,),
                     cleanup_ready=False,
+                    failure_code="CLOUD_RECENT_COLLECTION_GUARD",
+                    retryable=True,
                 )
 
         _emit(
@@ -666,6 +671,10 @@ def execute_cloud_component(
             status=CloudExecutionStatus.FAILED,
             warnings=(warning,),
             cleanup_ready=False,
+            failure_code=str(
+                getattr(exc, "failure_code", "TENABLE_CLOUD_UNEXPECTED")
+            ),
+            retryable=retryable,
         )
 
 

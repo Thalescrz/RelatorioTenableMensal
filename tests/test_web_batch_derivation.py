@@ -351,6 +351,58 @@ def test_retry_preserves_uuid_manifest_and_original_remote_budget(tmp_path: Path
     assert retried.remote_export_started_at == "2026-09-02T00:00:00Z"
 
 
+def test_retry_does_not_send_pending_cloud_checkpoint_directly_to_build(
+    tmp_path: Path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    source = WebBatch(
+        id=UUID(int=1255),
+        idempotency_key="batch:pending:cloud",
+        kind="GENERATE_ALL",
+        status=BatchStatus.COMPLETE_WITH_FAILURES,
+        options={"execution_model": "STAGED_V1"},
+    )
+    checkpoint = (tmp_path / "checkpoint.json").resolve()
+    checkpoint.write_text(
+        '{"component_metadata":{"VM_CORE":{"status":"COMPLETE"},'
+        '"WAS":{"status":"COMPLETE"},"CLOUD":{"status":"PENDING"}}}',
+        encoding="utf-8",
+    )
+    source_job = WebBatchJob(
+        id=UUID(int=1256),
+        batch_id=source.id,
+        client_id="client-cloud",
+        position=1,
+        status=BatchJobStatus.FAILED,
+        phase=BatchJobPhase.TERMINAL,
+        attempt_number=1,
+        payload={"mode": "manual", "days": 30},
+        error_code="UNEXPECTED",
+        error_message=(
+            "Checkpoint Cloud ainda não está completo; build local bloqueado."
+        ),
+        logical_job_id="logical-cloud",
+        collection_checkpoint_path=str(checkpoint),
+        vm_export_uuid="00000000-0000-0000-0000-000000001255",
+    )
+    repository.create_batch(source, (source_job,))
+    queue = _queue(tmp_path, repository)
+    try:
+        detail = queue.derive_batch(DerivedBatchRequest(
+            source_batch_id=source.id,
+            kind=BatchAction.RETRY_INCOMPLETE,
+            idempotency_key="retry:pending:cloud",
+        ))
+    finally:
+        queue.close()
+
+    retried = repository.list_batch_jobs(UUID(detail["batch"]["id"]))[0]
+    assert retried.phase is BatchJobPhase.REMOTE_QUEUED
+    assert retried.collection_checkpoint_path is None
+    assert retried.vm_export_uuid == source_job.vm_export_uuid
+    assert retried.payload["vm_export_uuid"] == source_job.vm_export_uuid
+
+
 def test_retry_recovers_latest_replacement_uuid_from_immutable_progress_event(
     tmp_path: Path,
 ) -> None:

@@ -303,6 +303,26 @@ def test_exact_snapshot_is_replayed_without_live_collection(tmp_path: Path) -> N
     assert result.snapshot_id == snapshot.snapshot_id
 
 
+def test_remote_cloud_preparation_writes_dataset_without_rendering_docx(
+    tmp_path: Path,
+) -> None:
+    dependencies, calls = _dependencies(tmp_path)
+
+    result = execute_cloud_component(
+        replace(_request(tmp_path), render_documents=False),
+        dependencies=dependencies,
+    )
+
+    assert result.status is CloudExecutionStatus.COMPLETE
+    assert result.dataset_path is not None
+    assert result.snapshot_id
+    assert result.documents == ()
+    assert calls["collect"] == 1
+    assert calls["write"] == 1
+    assert calls["render"] == []
+    assert calls["validate"] == []
+
+
 def test_recent_compatible_non_exact_snapshot_blocks_duplicate_collection(
     tmp_path: Path,
 ) -> None:
@@ -334,6 +354,7 @@ def test_recent_compatible_non_exact_snapshot_blocks_duplicate_collection(
     assert result.cleanup_ready is False
     assert calls["collect"] == 0
     assert result.warnings[0]["code"] == "CLOUD_RECENT_COLLECTION_GUARD"
+    assert result.retryable is True
 
     forced = execute_cloud_component(
         replace(request, force_refresh=True, run_id="forced-run"),
@@ -609,3 +630,28 @@ def test_cloud_failure_is_isolated_as_a_retryable_component_warning(
             "retryable": True,
         },
     )
+
+
+def test_unexpected_cloud_failure_keeps_structured_retryability(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    dependencies, _calls = _dependencies(tmp_path)
+
+    def fail_compatibility(_request):
+        raise RuntimeError("internal fixture marker")
+
+    monkeypatch.setattr(
+        CloudExecutionRequest,
+        "compatibility",
+        fail_compatibility,
+    )
+
+    result = execute_cloud_component(
+        _request(tmp_path),
+        dependencies=dependencies,
+    )
+
+    assert result.status is CloudExecutionStatus.FAILED
+    assert result.failure_code == "TENABLE_CLOUD_UNEXPECTED"
+    assert result.retryable is True

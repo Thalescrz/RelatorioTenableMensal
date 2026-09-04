@@ -18,6 +18,7 @@ class FailureCode(StrEnum):
     PROFILE_INVALID = "PROFILE_INVALID"
     LOCAL_ARTIFACT_SCOPE_MISMATCH = "LOCAL_ARTIFACT_SCOPE_MISMATCH"
     CHECKPOINT_ARTIFACT_MISSING = "CHECKPOINT_ARTIFACT_MISSING"
+    CHECKPOINT_COMPONENT_INCOMPLETE = "CHECKPOINT_COMPONENT_INCOMPLETE"
     LOCAL_FILESYSTEM_TRANSIENT = "LOCAL_FILESYSTEM_TRANSIENT"
     UNEXPECTED = "UNEXPECTED"
 
@@ -27,6 +28,7 @@ RETRYABLE_CODES = frozenset({
     FailureCode.TENABLE_TEMPORARY,
     FailureCode.DATABASE_UNAVAILABLE,
     FailureCode.DISK_INSUFFICIENT,
+    FailureCode.CHECKPOINT_COMPONENT_INCOMPLETE,
     FailureCode.LOCAL_FILESYSTEM_TRANSIENT,
 })
 
@@ -69,6 +71,12 @@ def _code_from_text(value: str) -> FailureCode:
         return FailureCode.TENABLE_TEMPORARY
     if "EXPORT" in upper and "SEM PROGRESSO" in upper:
         return FailureCode.TENABLE_TEMPORARY
+    if (
+        "CHECKPOINT" in upper
+        and "CLOUD" in upper
+        and ("NAO ESTA COMPLETO" in upper or "NÃO ESTÁ COMPLETO" in upper)
+    ):
+        return FailureCode.CHECKPOINT_COMPONENT_INCOMPLETE
     for code in FailureCode:
         if code.value in upper:
             return code
