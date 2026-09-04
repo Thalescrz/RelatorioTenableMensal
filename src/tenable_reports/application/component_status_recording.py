@@ -61,6 +61,8 @@ def build_initial_component_attempts(
     *,
     client_id: str,
     source_run_id: str,
+    vm_status: str = "COMPLETE",
+    vm_failure: Mapping[str, Any] | None = None,
     was_enabled: bool,
     was_status: str,
     cloud_enabled: bool,
@@ -75,8 +77,9 @@ def build_initial_component_attempts(
     """Return one deterministic attempt for every report component."""
 
     created_at = _now()
-    attempts: list[ComponentAttempt] = [
-        ComponentAttempt(
+    normalized_vm = str(vm_status or "").strip().upper()
+    if normalized_vm in _SUCCESS_STATUSES:
+        vm_attempt = ComponentAttempt(
             id=_attempt_id(source_run_id, ReportComponent.VM_CORE, 1),
             client_id=client_id,
             source_run_id=source_run_id,
@@ -91,7 +94,28 @@ def build_initial_component_attempts(
             created_at=created_at,
             ended_at=created_at,
         )
-    ]
+    else:
+        code, message, retryable = _failure_values(
+            vm_failure,
+            fallback_code="VM_COMPONENT_FAILED",
+            fallback_message="A coleta VM não foi concluída nesta execução.",
+        )
+        vm_attempt = ComponentAttempt(
+            id=_attempt_id(source_run_id, ReportComponent.VM_CORE, 1),
+            client_id=client_id,
+            source_run_id=source_run_id,
+            component=ReportComponent.VM_CORE,
+            status=ComponentStatus.FAILED,
+            stage=ComponentStage.COLLECTION,
+            attempt_number=1,
+            retryable=retryable,
+            failure_code=code,
+            failure_message=message,
+            checkpoint_path=checkpoint_path,
+            created_at=created_at,
+            ended_at=created_at,
+        )
+    attempts: list[ComponentAttempt] = [vm_attempt]
 
     normalized_was = str(was_status or "").strip().upper()
     if not was_enabled:

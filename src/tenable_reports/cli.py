@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
 
 from tenable_reports.application.execution_control import FileExecutionControl
@@ -3600,6 +3601,21 @@ def _build_from_collection_checkpoint(
     args.attempt_number = checkpoint.attempt_number
     args.origin = checkpoint.origin
     args.mode = checkpoint.mode
+    vm_metadata = checkpoint.component_metadata.get(ReportComponent.VM_CORE.value)
+    cloud_metadata = checkpoint.component_metadata.get(ReportComponent.CLOUD.value)
+    vm_available = isinstance(vm_metadata, Mapping) and str(
+        vm_metadata.get("status") or ""
+    ).upper() in {"COMPLETE", "COMPLETE_WITH_WARNINGS"}
+    cloud_available = isinstance(cloud_metadata, Mapping) and str(
+        cloud_metadata.get("status") or ""
+    ).upper() in {"COMPLETE", "COMPLETE_WITH_WARNINGS"}
+    if not vm_available and cloud_available:
+        return _build_cloud_only_from_collection_checkpoint(
+            args,
+            profile=profile,
+            checkpoint=checkpoint,
+            period=period,
+        )
     collected = _materialize_period_from_checkpoint(
         args,
         profile,
@@ -3613,6 +3629,147 @@ def _build_from_collection_checkpoint(
         execution_type=checkpoint.execution_type,
         collected=collected,
     )
+
+
+def _build_cloud_only_from_collection_checkpoint(
+    args: argparse.Namespace,
+    *,
+    profile: ClientProfile,
+    checkpoint: CollectionCheckpoint,
+    period: ReportingPeriod,
+) -> int:
+    cloud_resume = _cloud_resume_from_checkpoint(checkpoint, profile=profile)
+    if cloud_resume is None:
+        raise ValueError("Nenhum componente publicável foi encontrado no checkpoint.")
+    output_root = _scoped_output_root(
+        args.output_root,
+        checkpoint.execution_type,
+    ).resolve()
+    report_directory = (
+        output_root
+        / "reports"
+        / profile.client_id
+        / checkpoint.run_id
+        / _safe_filename_component(str(period.period_id))
+    )
+    collected = SimpleNamespace(
+        run_id=checkpoint.run_id,
+        cloud_dataset_path=cloud_resume[0],
+        cloud_dataset_sha256=cloud_resume[1],
+        cloud_capabilities=cloud_resume[2],
+        cloud_connector_version=cloud_resume[3],
+        cloud_collection_status="COMPLETE",
+        cloud_failure_code=None,
+        cloud_retryable=False,
+        cloud_warnings=(),
+    )
+    cloud_result = _run_cloud_for_client(
+        args=args,
+        profile=profile,
+        collected=collected,
+        period=period,
+        execution_type=checkpoint.execution_type,
+        report_directory=report_directory,
+        translator=build_default_text_translator(),
+    )
+    if cloud_result.status not in {
+        CloudExecutionStatus.COMPLETE,
+        CloudExecutionStatus.REPLAYED,
+    } or not cloud_result.documents:
+        raise ValueError("O dataset Cloud existe, mas o documento não foi publicado.")
+    cloud_documents = tuple(
+        PublicationDocument(
+            path=document.path,
+            document_kind="cloud",
+            document_variant=document.variant,
+        )
+        for document in cloud_result.documents
+    )
+    publication_manifest = create_publication_manifest(
+        output_path=report_directory / "publication-manifest.json",
+        client_id=profile.client_id,
+        tenant_id=profile.tenant_id,
+        run_id=checkpoint.run_id,
+        execution_type=checkpoint.execution_type,
+        period=period.to_dict(),
+        dataset_path=cloud_resume[0],
+        primary_dataset_component="cloud",
+        documents=cloud_documents,
+        history_database=None,
+        origin=checkpoint.origin,
+        logical_job_id=checkpoint.logical_job_id,
+        attempt_number=checkpoint.attempt_number,
+    )
+    operations = _postgres_operations(args.database_env_file, required=False)
+    if operations is not None:
+        operations.record_publication_manifest(publication_manifest)
+
+    vm_metadata = checkpoint.component_metadata.get(ReportComponent.VM_CORE.value)
+    was_metadata = checkpoint.component_metadata.get(ReportComponent.WAS.value)
+    was_scope = getattr(profile, "was_scope", None)
+    attempts = build_initial_component_attempts(
+        client_id=profile.client_id,
+        source_run_id=checkpoint.run_id,
+        vm_status=str(
+            vm_metadata.get("status") if isinstance(vm_metadata, Mapping) else "FAILED"
+        ),
+        vm_failure=(dict(vm_metadata) if isinstance(vm_metadata, Mapping) else None),
+        was_enabled=bool(getattr(was_scope, "enabled", False)),
+        was_status=str(
+            was_metadata.get("status")
+            if isinstance(was_metadata, Mapping)
+            else "NOT_APPLICABLE"
+        ),
+        was_failure=(dict(was_metadata) if isinstance(was_metadata, Mapping) else None),
+        cloud_enabled=True,
+        cloud_status=cloud_result.status.value,
+        cloud_warnings=tuple(
+            dict(item) for item in cloud_result.warnings if isinstance(item, Mapping)
+        ),
+        artifact_references_by_component={
+            ReportComponent.CLOUD: {
+                "documents": [str(Path(item.path).resolve()) for item in cloud_result.documents],
+                "publication_manifest": str(publication_manifest.resolve()),
+            }
+        },
+        checkpoint_path=str(Path(args.checkpoint).resolve())
+        if getattr(args, "checkpoint", None)
+        else None,
+    )
+    component_repository = _report_component_repository(args)
+    if component_repository is not None:
+        for attempt in attempts:
+            component_repository.create_attempt(attempt)
+    summary = summarize_component_set(
+        attempts,
+        planned_components=planned_components_from_attempts(attempts),
+    )
+    payload = {
+        "status": "partial",
+        "run_id": checkpoint.run_id,
+        "client_id": profile.client_id,
+        "publication_manifest": str(publication_manifest.resolve()),
+        "cloud_status": cloud_result.status.value,
+        "cloud_documents": [
+            {"variant": item.variant, "path": str(Path(item.path).resolve())}
+            for item in cloud_result.documents
+        ],
+        "component_set_status": summary.status.value,
+        "retryable_components": [
+            component.value for component in summary.retryable_components
+        ],
+        "components": [
+            {
+                "component": attempt.component.value,
+                "status": attempt.status.value,
+                "retryable": attempt.retryable,
+            }
+            for attempt in attempts
+        ],
+        "external_distribution_performed": False,
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
 
 
 def command_build_client(args: argparse.Namespace) -> int:
@@ -3957,16 +4114,30 @@ def _publish_collected_period(
         logical_job_id=getattr(args, "logical_job_id", None),
         attempt_number=getattr(args, "attempt_number", 1),
     )
+    component_state = _persist_initial_component_states(
+        args=args,
+        profile=profile,
+        collected=collected,
+        publication_manifest=publication_manifest,
+        base_document=base_result.output_path,
+        custom_document=custom_result.output_path,
+        tag_documents=tag_documents,
+        cloud_result=cloud_result,
+    )
+    component_set_complete = (
+        str(component_state.get("component_set_status") or "").upper()
+        == "COMPLETE"
+    )
     operations = _postgres_operations(args.database_env_file, required=False)
     if collected.history_publication is not None:
         if collected.snapshot_repository is None or collected.report_registry is None:
             raise RuntimeError("Componentes do histórico não foram preservados na execução.")
         finalize_history_publication(
             collected.history_publication,
-            snapshot_repository=collected.snapshot_repository,
-            registry=collected.report_registry,
-            publication_validated=True,
-            auto_promote=True,
+                snapshot_repository=collected.snapshot_repository,
+                registry=collected.report_registry,
+                publication_validated=True,
+                auto_promote=component_set_complete,
         )
     compact_repository = _compact_snapshot_repository(args)
     compact_snapshot_confirmed = False
@@ -4018,16 +4189,6 @@ def _publish_collected_period(
         )
     if operations is not None:
         operations.record_publication_manifest(publication_manifest)
-    component_state = _persist_initial_component_states(
-        args=args,
-        profile=profile,
-        collected=collected,
-        publication_manifest=publication_manifest,
-        base_document=base_result.output_path,
-        custom_document=custom_result.output_path,
-        tag_documents=tag_documents,
-        cloud_result=cloud_result,
-    )
     cleanup_payload: dict[str, Any] = {
         "status": "NOT_REQUIRED",
         "removed_bytes": 0,

@@ -5,6 +5,7 @@ import subprocess
 
 import threading
 import time
+import pytest
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from dataclasses import replace
@@ -20,6 +21,7 @@ from tenable_reports.application.component_collection import (
     ComponentCollectionCheckpoint,
     persist_component_checkpoint,
 )
+from tenable_reports.application.staged_execution import load_collection_checkpoint
 from tenable_reports.application.web_batches_memory import (
     InMemoryRemoteComponentRepository,
     InMemoryWebBatchRepository,
@@ -635,6 +637,128 @@ def test_restarted_component_uses_only_remaining_original_window(tmp_path) -> No
 
     assert 1 <= int(captured["remote_processing_timeout_seconds"]) <= 5
     assert stored.deadline_at == deadline
+
+
+@pytest.mark.parametrize(
+    ("available_component", "waiting_component", "not_applicable_component"),
+    (
+        (ReportComponent.VM_CORE, ReportComponent.WAS, ReportComponent.CLOUD),
+        (ReportComponent.CLOUD, ReportComponent.VM_CORE, ReportComponent.WAS),
+    ),
+)
+def test_available_checkpoint_releases_partial_build_after_retries_exhausted(
+    tmp_path,
+    available_component,
+    waiting_component,
+    not_applicable_component,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(
+        _job(
+            1,
+            status=BatchJobStatus.RUNNING,
+            phase=BatchJobPhase.REMOTE_RUNNING,
+        ),
+        payload={
+            "mode": "manual",
+            "run_id": "run-partial-build",
+            "start_at": "2026-08-01T00:00:00Z",
+            "end_at": "2026-09-01T00:00:00Z",
+        },
+    )
+    executor = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=executor,
+        worker_id="worker-partial-build",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    repository.create_batch(batch, (job,))
+    request = queue._component_request(job, component=ReportComponent.VM_CORE)
+    deadline = datetime.now(UTC) + timedelta(hours=10)
+    try:
+        created = component_repository.create_for_job(
+            batch_job_id=job.id,
+            components=tuple(ReportComponent),
+            window_number=1,
+            deadline_at=deadline,
+            origin="MANUAL",
+        )
+        by_component = {row.component: row for row in created}
+        for component, state in (
+            (available_component, RemoteComponentState.COMPLETE),
+            (not_applicable_component, RemoteComponentState.NOT_APPLICABLE),
+        ):
+            checkpoint = ComponentCollectionCheckpoint(
+                schema_version=1,
+                checkpoint_path=(
+                    request.checkpoint_path.parent
+                    / request.run_id
+                    / component.value.lower()
+                    / "checkpoint.json"
+                ),
+                component=component,
+                client_id=request.client_id,
+                tenant_id=request.tenant_id,
+                run_id=request.run_id,
+                logical_job_id=request.logical_job_id,
+                execution_type=request.execution_type,
+                mode=request.mode,
+                origin=request.origin,
+                attempt_number=request.attempt_number,
+                period=dict(request.period),
+                status=state,
+                artifacts=(),
+                metadata={"status": state.value},
+                query_fingerprint=("a" if component is ReportComponent.VM_CORE else "c")
+                * 64,
+            )
+            persist_component_checkpoint(checkpoint, storage_root=tmp_path)
+            component_repository.transition(
+                by_component[component].id,
+                expected_state=RemoteComponentState.PENDING,
+                requested_state=state,
+                checkpoint_path=str(checkpoint.checkpoint_path),
+                query_fingerprint=checkpoint.query_fingerprint,
+                ended_at=datetime.now(UTC),
+            )
+        component_repository.transition(
+            by_component[waiting_component].id,
+            expected_state=RemoteComponentState.PENDING,
+            requested_state=RemoteComponentState.WAITING_MANUAL_RETRY,
+            failure_code="AUTOMATIC_RETRY_EXHAUSTED",
+            failure_message="As janelas automáticas do WAS foram esgotadas.",
+            retryable=True,
+            ended_at=datetime.now(UTC),
+        )
+
+        queue._finalize_remote_components(job)
+        stored_job = repository.get_job(job.id)
+        merged = load_collection_checkpoint(
+            stored_job.collection_checkpoint_path,
+            storage_root=tmp_path,
+        )
+    finally:
+        queue.close()
+
+    assert stored_job.phase is BatchJobPhase.READY_FOR_BUILD
+    assert merged.component_metadata[available_component.value]["status"] == "COMPLETE"
+    assert merged.component_metadata[waiting_component.value]["status"] == "FAILED"
+    assert (
+        merged.component_metadata[not_applicable_component.value]["status"]
+        == "NOT_APPLICABLE"
+    )
 
 
 def test_queue_runs_at_most_one_client_at_a_time_in_position_order() -> None:
@@ -1765,6 +1889,108 @@ def test_component_retry_is_queued_for_exact_published_run(tmp_path) -> None:
     assert stored.payload["operation"] == "component_retry"
     assert stored.payload["source_run_id"] == "published-run-a"
     assert stored.payload["selected_components"] == ["WAS", "CLOUD"]
+
+
+def test_staged_component_retry_selects_vm_and_preserves_complete_cloud(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    legacy = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=legacy,
+        worker_id="worker-staged-component-retry",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    source_batch = _batch(status=BatchStatus.COMPLETE_WITH_WARNINGS)
+    source_job = replace(
+        _job(
+            1,
+            status=BatchJobStatus.PARTIALLY_COMPLETE,
+            phase=BatchJobPhase.TERMINAL,
+        ),
+        run_id="published-run-staged",
+        payload={
+            "run_id": "published-run-staged",
+            "mode": "automatic",
+            "start_at": "2026-08-01T00:00:00Z",
+            "end_at": "2026-09-01T00:00:00Z",
+            "retryable_components": ["VM_CORE"],
+        },
+    )
+    repository.create_batch(source_batch, (source_job,))
+    deadline = datetime.now(UTC) + timedelta(hours=10)
+    source_components = component_repository.create_for_job(
+        batch_job_id=source_job.id,
+        components=tuple(ReportComponent),
+        window_number=1,
+        deadline_at=deadline,
+        origin="SCHEDULED",
+    )
+    by_component = {item.component: item for item in source_components}
+    component_repository.transition(
+        by_component[ReportComponent.VM_CORE].id,
+        expected_state=RemoteComponentState.PENDING,
+        requested_state=RemoteComponentState.WAITING_MANUAL_RETRY,
+        identifier_kind=RemoteIdentifierKind.UUID,
+        remote_identifier="00000000-0000-0000-0000-000000000901",
+        identifier_origin="created",
+        failure_code="AUTOMATIC_RETRY_EXHAUSTED",
+        failure_message="As janelas automáticas foram esgotadas.",
+        retryable=True,
+        ended_at=datetime.now(UTC),
+    )
+    component_repository.transition(
+        by_component[ReportComponent.WAS].id,
+        expected_state=RemoteComponentState.PENDING,
+        requested_state=RemoteComponentState.NOT_APPLICABLE,
+        checkpoint_path=str((tmp_path / "was-checkpoint.json").resolve()),
+        ended_at=datetime.now(UTC),
+    )
+    component_repository.transition(
+        by_component[ReportComponent.CLOUD].id,
+        expected_state=RemoteComponentState.PENDING,
+        requested_state=RemoteComponentState.COMPLETE,
+        checkpoint_path=str((tmp_path / "cloud-checkpoint.json").resolve()),
+        ended_at=datetime.now(UTC),
+    )
+
+    try:
+        queued = queue.enqueue_component_retry(
+            run_id="published-run-staged",
+            client_id="client-1",
+            selected_components=("VM_CORE",),
+        )
+        retry_batch = next(
+            batch for batch in repository.list_batches() if batch.id != source_batch.id
+        )
+        retry_job = repository.list_batch_jobs(retry_batch.id)[0]
+        retry_components = component_repository.list_for_jobs((retry_job.id,))[
+            retry_job.id
+        ]
+    finally:
+        queue.close()
+
+    retry_by_component = {item.component: item for item in retry_components}
+    assert retry_job.phase is BatchJobPhase.REMOTE_RUNNING
+    assert retry_job.payload["selected_components"] == ["VM_CORE"]
+    assert retry_by_component[ReportComponent.VM_CORE].state is RemoteComponentState.PENDING
+    assert (
+        retry_by_component[ReportComponent.VM_CORE].remote_identifier
+        == "00000000-0000-0000-0000-000000000901"
+    )
+    assert retry_by_component[ReportComponent.CLOUD].state is RemoteComponentState.COMPLETE
+    assert retry_by_component[ReportComponent.CLOUD].checkpoint_path.endswith(
+        "cloud-checkpoint.json"
+    )
 
 
 def test_staged_workers_construct_collect_then_build_commands(tmp_path) -> None:

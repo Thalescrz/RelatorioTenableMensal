@@ -38,6 +38,95 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliTests(unittest.TestCase):
+    def test_build_client_publishes_complete_cloud_while_vm_waits_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            cloud_dataset = directory / "cloud-dataset.json"
+            cloud_dataset.write_text("{}", encoding="utf-8")
+            cloud_document = directory / "cloud-expanded.docx"
+            cloud_document.write_bytes(b"fixture")
+            manifest = directory / "publication-manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+            period = SimpleNamespace(
+                timezone="America/Fortaleza",
+                period_id="2026-08",
+                to_dict=lambda: {
+                    "period_id": "2026-08",
+                    "timezone": "America/Fortaleza",
+                },
+            )
+            profile = SimpleNamespace(
+                client_id="client-a",
+                tenant_id="tenant-a",
+                display_name="CLIENT A",
+                reporting=SimpleNamespace(timezone="America/Fortaleza"),
+                was_scope=SimpleNamespace(enabled=False),
+                cloud_security_scope=SimpleNamespace(enabled=True),
+            )
+            checkpoint = SimpleNamespace(
+                client_id="client-a",
+                tenant_id="tenant-a",
+                run_id="run-cloud-first",
+                logical_job_id="job-a",
+                attempt_number=1,
+                origin="SCHEDULED",
+                mode="automatic",
+                execution_type="AUTOMATIC_MONTHLY",
+                period=period.to_dict(),
+                component_metadata={
+                    "VM_CORE": {
+                        "status": "FAILED",
+                        "failure_code": "AUTOMATIC_RETRY_EXHAUSTED",
+                        "failure_message": "As janelas automáticas foram esgotadas.",
+                        "retryable": True,
+                    },
+                    "WAS": {"status": "NOT_APPLICABLE"},
+                    "CLOUD": {"status": "COMPLETE"},
+                },
+            )
+            args = SimpleNamespace(
+                output_root=directory,
+                cloud_template=directory / "cloud-template.docx",
+                database_env_file=None,
+            )
+            cloud_result = CloudComponentResult(
+                status=CloudExecutionStatus.COMPLETE,
+                documents=(CloudGeneratedDocument(cloud_document, "expanded"),),
+                dataset_path=cloud_dataset,
+                cleanup_ready=False,
+            )
+            captured_manifest: dict[str, object] = {}
+            stdout = io.StringIO()
+
+            def capture_manifest(**kwargs):
+                captured_manifest.update(kwargs)
+                return manifest
+
+            with (
+                patch.object(cli_module, "_period_from_collection_checkpoint", return_value=period),
+                patch.object(cli_module, "_cloud_resume_from_checkpoint", return_value=(cloud_dataset, "a" * 64, {}, "fixture")),
+                patch.object(cli_module, "_run_cloud_for_client", return_value=cloud_result),
+                patch.object(cli_module, "create_publication_manifest", side_effect=capture_manifest),
+                patch.object(cli_module, "_postgres_operations", return_value=None),
+                patch.object(cli_module, "_report_component_repository", return_value=None),
+                contextlib.redirect_stdout(stdout),
+            ):
+                result = cli_module._build_from_collection_checkpoint(
+                    args,
+                    profile=profile,
+                    checkpoint=checkpoint,
+                )
+
+        payload = json.loads(stdout.getvalue().splitlines()[-1])
+        self.assertEqual(result, 0)
+        self.assertEqual(payload["component_set_status"], "PARTIAL_FAILURE")
+        self.assertEqual(payload["retryable_components"], ["VM_CORE"])
+        self.assertEqual(captured_manifest["primary_dataset_component"], "cloud")
+        self.assertEqual(
+            [document.document_kind for document in captured_manifest["documents"]],
+            ["cloud"],
+        )
+
     def test_retry_components_calls_only_selected_component_commands(self) -> None:
         args = SimpleNamespace(
             run_id="published-run-a",
@@ -322,6 +411,45 @@ class CliTests(unittest.TestCase):
             result = json.loads(stdout.getvalue().splitlines()[-1])
             self.assertEqual(result["status"], "complete_with_warnings")
             self.assertEqual(result["warnings"][0]["code"], "WAS_COLLECTION_UNAVAILABLE")
+
+    def test_partial_component_set_is_not_auto_promoted_main(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            period, profile, collected, args = self._tag_run_fixture(directory)
+            collected.history_publication = object()
+            collected.snapshot_repository = object()
+            collected.report_registry = object()
+            collected.history_store = {"backend": "postgresql", "location": "fixture"}
+            manifest = directory / "publication.json"
+            manifest.write_text("{}", encoding="utf-8")
+            finalize = Mock()
+
+            with (
+                patch.object(cli_module, "generate_full_base_report", return_value=SimpleNamespace(output_path=directory / "base.docx")),
+                patch.object(cli_module, "generate_customizations_report", return_value=SimpleNamespace(output_path=directory / "custom.docx", rendered_modules=(), omitted_modules=())),
+                patch.object(cli_module, "generate_tag_report", side_effect=lambda **kwargs: SimpleNamespace(output_path=Path(kwargs["output_path"]))),
+                patch.object(cli_module, "_run_cloud_for_client", return_value=CloudComponentResult(status=CloudExecutionStatus.DISABLED, cleanup_ready=True)),
+                patch.object(cli_module, "create_publication_manifest", return_value=manifest),
+                patch.object(cli_module, "_persist_initial_component_states", return_value={
+                    "component_set_status": "PARTIAL_FAILURE",
+                    "retryable_components": ["WAS"],
+                    "components": [],
+                }),
+                patch.object(cli_module, "finalize_history_publication", finalize),
+                patch.object(cli_module, "_postgres_operations", return_value=None),
+                patch.object(cli_module, "_compact_snapshot_repository", return_value=None),
+                patch("builtins.print"),
+            ):
+                result = cli_module._publish_collected_period(
+                    args=args,
+                    profile=profile,
+                    period=period,
+                    execution_type="AUTOMATIC_MONTHLY",
+                    collected=collected,
+                )
+
+        self.assertEqual(result, 0)
+        self.assertFalse(finalize.call_args.kwargs["auto_promote"])
 
     def test_automatic_was_failure_becomes_retryable_only_after_compact_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
