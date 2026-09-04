@@ -278,9 +278,23 @@ class CliCollectionRoutingTests(unittest.TestCase):
 
             def execute_period(received_args, *, execution_type, period):
                 events.append(
-                    ("execute", execution_type, period.period_id, received_args.skip_history)
+                    (
+                        "execute",
+                        execution_type,
+                        period.period_id,
+                        received_args.skip_history,
+                        received_args.no_progress_warning_only,
+                    )
                 )
                 return collected
+
+            cloud_collected = SimpleNamespace(run_id="run-a-cloud", output_root=root)
+
+            def prepare_cloud(received_args, received, *, period, execution_type):
+                events.append(("cloud", received.run_id, execution_type))
+                self.assertIs(received_args, args)
+                self.assertEqual(period.period_id, "2026-08")
+                return cloud_collected
 
             def checkpoint_adapter(received, *, request):
                 events.append(("adapt", received.run_id, request.run_id))
@@ -315,6 +329,12 @@ class CliCollectionRoutingTests(unittest.TestCase):
                 patch.object(cli_module, "_execute_period", side_effect=execute_period),
                 patch.object(
                     cli_module,
+                    "_prepare_cloud_for_checkpoint",
+                    side_effect=prepare_cloud,
+                    create=True,
+                ),
+                patch.object(
+                    cli_module,
                     "_checkpoint_from_collected_period",
                     side_effect=checkpoint_adapter,
                     create=True,
@@ -340,8 +360,9 @@ class CliCollectionRoutingTests(unittest.TestCase):
                 events,
                 [
                     ("remote", checkpoint_path.resolve(), root),
-                    ("execute", "MANUAL", "2026-08", True),
-                    ("adapt", "run-a", "run-a"),
+                    ("execute", "MANUAL", "2026-08", True, True),
+                    ("cloud", "run-a", "MANUAL"),
+                    ("adapt", "run-a-cloud", "run-a"),
                 ],
             )
             self.assertEqual(
@@ -356,6 +377,131 @@ class CliCollectionRoutingTests(unittest.TestCase):
             publish.assert_not_called()
             render_base.assert_not_called()
             render_custom.assert_not_called()
+
+    def test_prepare_cloud_checkpoint_collects_dataset_without_rendering(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name).resolve()
+            period = _routing_period()
+            profile = SimpleNamespace(
+                client_id="client-cloud",
+                tenant_id="tenant-cloud",
+                cloud_security_scope=SimpleNamespace(enabled=True),
+            )
+            collected = cli_module._CollectedPeriodExecution(
+                profile=profile,
+                output_root=root / "manual",
+                run_id="run-cloud",
+                period=period,
+                execution_type="MANUAL",
+                artifact=object(),
+                history_publication=None,
+                selected_tag_count=0,
+                was_collection_status="COMPLETE",
+            )
+            dataset_path = root / "cloud-report-dataset.json"
+            dataset_path.write_text(
+                json.dumps({
+                    "connector_version": "cloud-graphql-v1",
+                    "capabilities": {"required_ready": True},
+                }),
+                encoding="utf-8",
+            )
+            cloud_result = cli_module.CloudComponentResult(
+                status=cli_module.CloudExecutionStatus.COMPLETE,
+                dataset_path=dataset_path,
+                snapshot_id="snapshot-cloud",
+            )
+            args = SimpleNamespace(
+                env_file=root / "client.env",
+                database_env_file=root / "database.env",
+                output_root=root,
+                attempt_number=1,
+                cloud_template=root / "cloud-template.docx",
+                force_cloud_refresh=False,
+                execution_control=None,
+            )
+
+            with (
+                patch.object(cli_module, "load_dotenv_file"),
+                patch.object(
+                    cli_module.CloudCredentialConfig,
+                    "from_environment",
+                    return_value=object(),
+                ),
+                patch.object(
+                    cli_module,
+                    "_cloud_snapshot_repository_for_args",
+                    return_value=(object(), True),
+                ),
+                patch.object(
+                    cli_module,
+                    "TenableCloudLiveCollector",
+                    return_value=object(),
+                ),
+                patch.object(
+                    cli_module,
+                    "execute_cloud_component",
+                    return_value=cloud_result,
+                ) as execute_cloud,
+                patch.object(
+                    cli_module,
+                    "load_cloud_report_dataset",
+                    return_value={
+                        "connector_version": "cloud-graphql-v1",
+                        "capabilities": {"required_ready": True},
+                    },
+                ),
+            ):
+                prepared = cli_module._prepare_cloud_for_checkpoint(
+                    args,
+                    collected,
+                    period=period,
+                    execution_type="MANUAL",
+                )
+
+            request = execute_cloud.call_args.args[0]
+            self.assertFalse(request.render_documents)
+            self.assertEqual(prepared.cloud_collection_status, "COMPLETE")
+            self.assertEqual(prepared.cloud_dataset_path, dataset_path)
+            self.assertEqual(
+                prepared.cloud_capabilities,
+                {"required_ready": True},
+            )
+            self.assertEqual(
+                prepared.cloud_dataset_sha256,
+                sha256_file(dataset_path),
+            )
+
+    def test_failed_staged_cloud_checkpoint_never_calls_live_api_in_build(self) -> None:
+        profile = SimpleNamespace(
+            cloud_security_scope=SimpleNamespace(enabled=True),
+        )
+        collected = SimpleNamespace(
+            cloud_dataset_path=None,
+            cloud_collection_status="FAILED",
+            cloud_failure_code="CLOUD_COLLECTION_FAILED",
+            cloud_retryable=True,
+            cloud_warnings=({
+                "code": "CLOUD_COMPONENT_FAILED",
+                "message": "Cloud indisponível nesta tentativa.",
+                "retryable": True,
+            },),
+        )
+
+        with patch.object(cli_module, "execute_cloud_component") as live_cloud:
+            result = cli_module._run_cloud_for_client(
+                args=SimpleNamespace(),
+                profile=profile,
+                collected=collected,
+                period=_routing_period(),
+                execution_type="MANUAL",
+                report_directory=Path("reports"),
+            )
+
+        self.assertEqual(result.status, cli_module.CloudExecutionStatus.FAILED)
+        self.assertTrue(result.retryable)
+        self.assertEqual(result.failure_code, "CLOUD_COLLECTION_FAILED")
+        live_cloud.assert_not_called()
 
     def test_build_client_uses_validated_checkpoint_without_live_boundaries(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:

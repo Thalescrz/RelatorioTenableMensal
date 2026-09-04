@@ -836,7 +836,11 @@ def test_staged_remote_success_advances_to_build_before_terminal(tmp_path) -> No
 def test_staged_retry_with_checkpoint_resumes_at_build_phase(tmp_path) -> None:
     repository = InMemoryWebBatchRepository()
     checkpoint = (tmp_path / "collection-checkpoint.json").resolve()
-    checkpoint.write_text("{}", encoding="utf-8")
+    checkpoint.write_text(
+        '{"component_metadata":{"VM_CORE":{"status":"COMPLETE"},'
+        '"WAS":{"status":"SKIPPED"},"CLOUD":{"status":"SKIPPED"}}}',
+        encoding="utf-8",
+    )
     source = replace(
         _batch(status=BatchStatus.COMPLETE_WITH_FAILURES),
         options={"execution_model": "STAGED_V1"},

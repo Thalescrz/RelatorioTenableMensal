@@ -71,6 +71,9 @@ from tenable_reports.application.cloud_execution import (
     execute_cloud_component,
     retry_cloud_component,
 )
+from tenable_reports.application.cloud_report_dataset import (
+    load_cloud_report_dataset,
+)
 from tenable_reports.application.cloud_snapshots import (
     MemoryCloudSnapshotRepository,
 )
@@ -306,6 +309,10 @@ class _CollectedPeriodExecution:
     cloud_dataset_sha256: str | None = None
     cloud_capabilities: Mapping[str, Any] | None = None
     cloud_connector_version: str | None = None
+    cloud_collection_status: str | None = None
+    cloud_failure_code: str | None = None
+    cloud_retryable: bool = False
+    cloud_warnings: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def dataset_path(self) -> Path:
@@ -842,6 +849,23 @@ def _run_cloud_for_client(
                 cleanup_ready=False,
             )
         return result
+
+    if str(collected.cloud_collection_status or "").upper() == "FAILED":
+        warnings = collected.cloud_warnings or ({
+            "code": "CLOUD_COMPONENT_FAILED",
+            "message": (
+                "Falha no componente Cloud Security; os demais relatórios "
+                "foram preservados."
+            ),
+            "retryable": bool(collected.cloud_retryable),
+        },)
+        return CloudComponentResult(
+            status=CloudExecutionStatus.FAILED,
+            warnings=tuple(dict(item) for item in warnings),
+            cleanup_ready=False,
+            failure_code=collected.cloud_failure_code,
+            retryable=bool(collected.cloud_retryable),
+        )
 
     load_dotenv_file(args.env_file, override=True)
     credentials = CloudCredentialConfig.from_environment()
@@ -1523,6 +1547,25 @@ def _effective_vm_export_settings(
     return strategy, num_assets, selective_mode
 
 
+def _effective_no_progress_timeout_seconds(
+    args: argparse.Namespace,
+    profile: ClientProfile,
+    *,
+    execution_type: str,
+) -> float | None:
+    if bool(getattr(args, "no_progress_warning_only", False)):
+        return None
+    return float(getattr(
+        profile.reporting.vm_export,
+        (
+            "automatic_no_progress_seconds"
+            if execution_type == "AUTOMATIC_MONTHLY"
+            else "manual_no_progress_seconds"
+        ),
+        1800 if execution_type == "AUTOMATIC_MONTHLY" else 900,
+    ))
+
+
 def _retry_was_once_before_publication(
     args: argparse.Namespace,
     *,
@@ -1634,15 +1677,11 @@ def _execute_period(
         )
     else:
         credentials = _load_credentials(args.env_file)
-        no_progress_timeout_seconds = float(getattr(
-            profile.reporting.vm_export,
-            (
-                "automatic_no_progress_seconds"
-                if execution_type == "AUTOMATIC_MONTHLY"
-                else "manual_no_progress_seconds"
-            ),
-            1800 if execution_type == "AUTOMATIC_MONTHLY" else 900,
-        ))
+        no_progress_timeout_seconds = _effective_no_progress_timeout_seconds(
+            args,
+            profile,
+            execution_type=execution_type,
+        )
         client = _client_from_environment(
             credentials,
             no_progress_timeout_seconds=no_progress_timeout_seconds,
@@ -2237,6 +2276,41 @@ def _checkpoint_from_collected_period(
 
     cloud_scope = getattr(collected.profile, "cloud_security_scope", None)
     cloud_enabled = bool(getattr(cloud_scope, "enabled", False))
+    cloud_metadata: dict[str, Any]
+    if not cloud_enabled:
+        cloud_metadata = {"status": "SKIPPED"}
+    elif str(collected.cloud_collection_status or "").upper() == "COMPLETE":
+        if collected.cloud_dataset_path is None:
+            raise ValueError("Coleta Cloud completa sem dataset para o checkpoint.")
+        cloud_artifact = _checkpoint_artifact(
+            "CLOUD",
+            "cloud_dataset",
+            collected.cloud_dataset_path,
+        )
+        artifacts.append(cloud_artifact)
+        cloud_metadata = {
+            "status": "COMPLETE",
+            "dataset_kind": "cloud_dataset",
+            "dataset_sha256": cloud_artifact.sha256,
+            "capabilities": dict(collected.cloud_capabilities or {}),
+            "connector_version": str(
+                collected.cloud_connector_version or "staged-checkpoint-v1"
+            ),
+            "warnings": [dict(item) for item in collected.cloud_warnings],
+        }
+    elif str(collected.cloud_collection_status or "").upper() == "FAILED":
+        cloud_metadata = {
+            "status": "FAILED",
+            "failure_code": str(
+                collected.cloud_failure_code or "CLOUD_COMPONENT_FAILED"
+            ),
+            "retryable": bool(collected.cloud_retryable),
+            "warnings": [dict(item) for item in collected.cloud_warnings],
+        }
+    else:
+        raise ValueError(
+            "Componente Cloud habilitado sem estado terminal para o checkpoint."
+        )
     component_metadata = {
         "VM_CORE": {
             "status": "COMPLETE",
@@ -2254,9 +2328,7 @@ def _checkpoint_from_collected_period(
             "status": _was_checkpoint_status(collected.was_collection_status),
             "collection_status": str(collected.was_collection_status),
         },
-        "CLOUD": {
-            "status": "PENDING" if cloud_enabled else "SKIPPED",
-        },
+        "CLOUD": cloud_metadata,
     }
     return CollectionCheckpoint(
         schema_version=1,
@@ -2327,7 +2399,12 @@ def _cloud_resume_from_checkpoint(
     if scope is None or not bool(getattr(scope, "enabled", False)):
         return None
     metadata = checkpoint.component_metadata.get("CLOUD")
-    if not isinstance(metadata, Mapping) or metadata.get("status") != "COMPLETE":
+    if not isinstance(metadata, Mapping):
+        raise ValueError("Estado Cloud ausente no checkpoint.")
+    status = str(metadata.get("status") or "").upper()
+    if status in {"FAILED", "SKIPPED"}:
+        return None
+    if status != "COMPLETE":
         raise ValueError(
             "Checkpoint Cloud ainda não está completo; build local bloqueado."
         )
@@ -2548,6 +2625,24 @@ def _materialize_period_from_checkpoint(
     cloud_dataset_sha256 = None
     cloud_capabilities = None
     cloud_connector_version = None
+    cloud_metadata = checkpoint.component_metadata.get("CLOUD")
+    cloud_collection_status = None
+    cloud_failure_code = None
+    cloud_retryable = False
+    cloud_warnings: tuple[Mapping[str, Any], ...] = ()
+    if isinstance(cloud_metadata, Mapping):
+        cloud_collection_status = (
+            str(cloud_metadata.get("status") or "").upper() or None
+        )
+        cloud_failure_code = (
+            str(cloud_metadata.get("failure_code") or "") or None
+        )
+        cloud_retryable = bool(cloud_metadata.get("retryable", False))
+        cloud_warnings = tuple(
+            dict(item)
+            for item in (cloud_metadata.get("warnings") or ())
+            if isinstance(item, Mapping)
+        )
     if cloud_resume is not None:
         (
             cloud_dataset_path,
@@ -2591,6 +2686,83 @@ def _materialize_period_from_checkpoint(
         cloud_dataset_sha256=cloud_dataset_sha256,
         cloud_capabilities=cloud_capabilities,
         cloud_connector_version=cloud_connector_version,
+        cloud_collection_status=cloud_collection_status,
+        cloud_failure_code=cloud_failure_code,
+        cloud_retryable=cloud_retryable,
+        cloud_warnings=cloud_warnings,
+    )
+
+
+def _prepare_cloud_for_checkpoint(
+    args: argparse.Namespace,
+    collected: _CollectedPeriodExecution,
+    *,
+    period: ReportingPeriod,
+    execution_type: str,
+) -> _CollectedPeriodExecution:
+    scope = getattr(collected.profile, "cloud_security_scope", None)
+    if scope is None or not bool(getattr(scope, "enabled", False)):
+        return replace(collected, cloud_collection_status="SKIPPED")
+
+    load_dotenv_file(args.env_file, override=True)
+    credentials = CloudCredentialConfig.from_environment()
+    repository, persistent = _cloud_snapshot_repository_for_args(args)
+    result = execute_cloud_component(
+        CloudExecutionRequest(
+            profile=collected.profile,
+            period=period,
+            execution_type=execution_type,
+            run_id=collected.run_id,
+            attempt_number=int(getattr(args, "attempt_number", 1) or 1),
+            output_root=Path(args.output_root),
+            report_directory=(
+                Path(args.output_root) / ".staging" / collected.profile.client_id
+            ),
+            template_path=Path(
+                getattr(
+                    args,
+                    "cloud_template",
+                    "templates/corporate/cloud-base-v1.docx",
+                )
+            ),
+            force_refresh=bool(getattr(args, "force_cloud_refresh", False)),
+            render_documents=False,
+        ),
+        dependencies=CloudExecutionDependencies(
+            repository=repository,
+            collect_live=TenableCloudLiveCollector(
+                credentials,
+                cancellation_probe=_execution_cancellation_probe(args),
+            ),
+            history_persistent=persistent,
+        ),
+        progress_callback=_emit_progress_event,
+    )
+    if result.status in {
+        CloudExecutionStatus.COMPLETE,
+        CloudExecutionStatus.REPLAYED,
+    } and result.dataset_path is not None:
+        dataset = load_cloud_report_dataset(result.dataset_path)
+        return replace(
+            collected,
+            cloud_dataset_path=Path(result.dataset_path),
+            cloud_dataset_sha256=sha256_file(result.dataset_path),
+            cloud_capabilities=dict(dataset.get("capabilities") or {}),
+            cloud_connector_version=str(
+                dataset.get("connector_version") or "staged-checkpoint-v1"
+            ),
+            cloud_collection_status="COMPLETE",
+            cloud_failure_code=None,
+            cloud_retryable=False,
+            cloud_warnings=tuple(dict(item) for item in result.warnings),
+        )
+
+    return replace(
+        collected,
+        cloud_collection_status="FAILED",
+        cloud_failure_code=(result.failure_code or "CLOUD_COMPONENT_FAILED"),
+        cloud_retryable=bool(result.retryable),
+        cloud_warnings=tuple(dict(item) for item in result.warnings),
     )
 
 
@@ -2606,6 +2778,7 @@ def command_collect_client(args: argparse.Namespace) -> int:
     )
     setattr(args, "execution_control", control)
     setattr(args, "auto_cancel_on_timeout", False)
+    setattr(args, "no_progress_warning_only", True)
     if control is not None:
         control.raise_if_stop_requested()
     profile = load_client_profile(args.profile)
@@ -2642,6 +2815,12 @@ def command_collect_client(args: argparse.Namespace) -> int:
             args,
             execution_type=execution_type,
             period=period,
+        )
+        collected = _prepare_cloud_for_checkpoint(
+            args,
+            collected,
+            period=period,
+            execution_type=execution_type,
         )
         return _checkpoint_from_collected_period(
             collected,

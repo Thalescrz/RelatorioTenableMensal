@@ -327,6 +327,12 @@ transporte são tratadas com backoff dentro do orçamento; 401 continua sendo er
 credencial/permissão e não é absorvido. Resposta 200 em `QUEUED` ou `PROCESSING`
 confirma que a Tenable ainda reconhece o job, mas não prova progresso.
 
+No mesmo pipeline faseado, a consulta GraphQL e a gravação do dataset Cloud
+acontecem na fase remota. O worker local serial apenas valida o checkpoint e
+renderiza o DOCX. Se o Cloud falhar, o checkpoint registra `FAILED`, os relatórios
+VM continuam sendo publicados e o componente permanece disponível para
+retentativa; um estado `PENDING` nunca é enviado diretamente ao build.
+
 A documentação oficial informa que cada chunk VM fica disponível para download
 por até 24 horas depois de criado; por isso o coletor persiste cada chunk assim que
 ele aparece, inclusive antes de `FINISHED` e fora de ordem. Depois desse prazo, um

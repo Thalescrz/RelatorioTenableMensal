@@ -119,3 +119,13 @@ def test_legacy_unexpected_failure_stays_non_retryable_without_transient_evidenc
 
     assert failure.code is FailureCode.UNEXPECTED
     assert failure.retryable is False
+
+
+def test_incomplete_cloud_checkpoint_is_retryable_from_remote_phase() -> None:
+    failure = classify_failure({
+        "error_code": "UNEXPECTED",
+        "message": "Checkpoint Cloud ainda não está completo; build local bloqueado.",
+    })
+
+    assert failure.code is FailureCode.CHECKPOINT_COMPONENT_INCOMPLETE
+    assert failure.retryable is True
