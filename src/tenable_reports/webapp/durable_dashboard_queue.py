@@ -17,6 +17,7 @@ from tenable_reports.application.failures import FailureCode, classify_failure
 from tenable_reports.application.automatic_recovery import (
     AutomaticRecoveryPolicy,
     RecoveryAction,
+    RecoveryDecision,
     decide_recovery,
 )
 from tenable_reports.application.component_collection import (
@@ -2177,6 +2178,7 @@ class DurableDashboardJobQueue:
         reuse_identifier: bool,
         replacement_created_in_window_2: bool,
         replacement_created_in_window_3: bool,
+        deadline_at: datetime | None = None,
     ) -> RemoteComponentWindow:
         repository = self._remote_component_repository
         if repository is None:
@@ -2194,8 +2196,12 @@ class DurableDashboardJobQueue:
             batch_job_id=job.id,
             components=(current.component,),
             window_number=window_number,
-            deadline_at=datetime.now(UTC)
-            + timedelta(seconds=self._remote_processing_timeout_seconds),
+            deadline_at=(
+                deadline_at
+                if deadline_at is not None
+                else datetime.now(UTC)
+                + timedelta(seconds=self._remote_processing_timeout_seconds)
+            ),
             origin="AUTOMATIC_RETRY",
             query_fingerprints=(
                 {current.component: current.query_fingerprint}
@@ -2270,18 +2276,28 @@ class DurableDashboardJobQueue:
                 failure_code=failure_code,
             ),
         )
-        decision = decide_recovery(
-            observed,
-            RemoteObservation(
-                kind=observation_kind,
-                completed_units=observed.completed_units,
-                total_units=observed.total_units,
-                remote_status=observed.last_remote_status,
+        if (
+            component.origin == "MANUAL_RETRY"
+            and observation_kind is not RemoteObservationKind.NON_RETRYABLE_FAILURE
+        ):
+            decision = RecoveryDecision(
+                action=RecoveryAction.WAIT_MANUAL_RETRY,
+                deadline_at=observed.deadline_at,
                 failure_code=failure_code,
-            ),
-            now=datetime.now(UTC),
-            policy=AutomaticRecoveryPolicy(),
-        )
+            )
+        else:
+            decision = decide_recovery(
+                observed,
+                RemoteObservation(
+                    kind=observation_kind,
+                    completed_units=observed.completed_units,
+                    total_units=observed.total_units,
+                    remote_status=observed.last_remote_status,
+                    failure_code=failure_code,
+                ),
+                now=datetime.now(UTC),
+                policy=AutomaticRecoveryPolicy(),
+            )
         if decision.action is RecoveryAction.FAIL_NON_RETRYABLE:
             terminal_state = RemoteComponentState.NON_RETRYABLE_FAILURE
             terminal_code = failure_code
@@ -2342,6 +2358,7 @@ class DurableDashboardJobQueue:
                     component.replacement_created_in_window_3
                     or decision.mark_replacement_in_window_three
                 ),
+                deadline_at=component.deadline_at,
             )
             return
         self._finalize_remote_components(job)

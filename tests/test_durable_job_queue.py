@@ -574,6 +574,103 @@ def test_component_auth_failure_stops_without_opening_automatic_retry(tmp_path) 
     assert rows[0].retryable is False
 
 
+def test_explicit_manual_retry_never_opens_another_automatic_window(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(
+        _job(1, status=BatchJobStatus.RUNNING, phase=BatchJobPhase.REMOTE_RUNNING),
+        payload={"mode": "manual", "run_id": "run-manual-retry"},
+    )
+    repository.create_batch(batch, (job,))
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-manual-retry",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    try:
+        component_repository.create_for_job(
+            batch_job_id=job.id,
+            components=(ReportComponent.VM_CORE,),
+            window_number=1,
+            deadline_at=datetime.now(UTC) + timedelta(hours=10),
+            origin="MANUAL_RETRY",
+        )
+        running = component_repository.claim_next(worker_id="manual-retry")
+        queue._handle_failed_remote_component(
+            job,
+            running,
+            BatchJobResult(
+                status=BatchJobStatus.FAILED,
+                error_code="TENABLE_TEMPORARY",
+                error_message="Falha temporária.",
+                payload={"retryable": True},
+            ),
+        )
+        rows = component_repository.list_for_jobs((job.id,))[job.id]
+    finally:
+        queue.close()
+    assert len(rows) == 1
+    assert rows[0].state is RemoteComponentState.WAITING_MANUAL_RETRY
+
+
+def test_replacement_inside_same_window_preserves_original_deadline(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(
+        _job(1, status=BatchJobStatus.RUNNING, phase=BatchJobPhase.REMOTE_RUNNING),
+        payload={"mode": "automatic", "run_id": "run-deadline"},
+    )
+    repository.create_batch(batch, (job,))
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(tmp_path, tmp_path / "orchestration" / "clients.json", lambda *args, **kwargs: None, start_worker=False),
+        worker_id="worker-deadline",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    deadline = datetime.now(UTC) + timedelta(hours=4)
+    try:
+        component_repository.create_for_job(
+            batch_job_id=job.id,
+            components=(ReportComponent.VM_CORE,),
+            window_number=2,
+            deadline_at=deadline,
+            origin="AUTOMATIC_RETRY",
+            replacement_created_in_window_2=False,
+        )
+        running = component_repository.claim_next(worker_id="invalid-uuid")
+        queue._handle_failed_remote_component(
+            job,
+            running,
+            BatchJobResult(
+                status=BatchJobStatus.FAILED,
+                error_code="TENABLE_EXPORT_RECOVERY_UNAVAILABLE",
+                error_message="Identificador expirado.",
+                payload={"retryable": True},
+            ),
+        )
+        replacement = component_repository.list_for_jobs((job.id,))[job.id][-1]
+    finally:
+        queue.close()
+    assert replacement.window_number == 2
+    assert replacement.deadline_at == deadline
+
+
 def test_restarted_component_uses_only_remaining_original_window(tmp_path) -> None:
     repository = InMemoryWebBatchRepository()
     component_repository = InMemoryRemoteComponentRepository()
