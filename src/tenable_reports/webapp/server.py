@@ -3870,6 +3870,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "app.js",
                 "client_selection.js",
                 "batch_family_filters.js",
+                "monthly_schedule.js",
                 "report_request_guard.js",
                 "dashboard_refresh.js",
                 "batch_retryability.js",

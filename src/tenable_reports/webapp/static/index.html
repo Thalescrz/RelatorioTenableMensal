@@ -349,25 +349,55 @@
 
   <dialog id="admin-dialog" class="dialog admin-dialog">
     <div class="dialog-head">
-      <div><p class="eyebrow">ADMINISTRAÇÃO</p><h2>Referências históricas</h2><p>Identifique relatórios antigos que podem ser definidos como MAIN com segurança.</p></div>
+      <div><p class="eyebrow">ADMINISTRAÇÃO</p><h2>Configuração operacional</h2><p>Gerencie a automação mensal e as referências históricas.</p></div>
       <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
     </div>
-    <div class="backfill-intro">
-      <span class="backfill-icon">↺</span>
-      <div><strong>Backfill de relatórios</strong><p>A análise não altera dados. Casos com mais de uma opção ficam para decisão manual no histórico do cliente.</p></div>
-      <button class="button ghost" id="analyze-backfill-button" type="button">Analisar</button>
+    <div class="admin-tabs" role="tablist">
+      <button id="admin-monthly-tab" class="admin-tab active" data-admin-tab="monthly" role="tab" aria-selected="true" type="button">Automação mensal</button>
+      <button id="admin-backfill-tab" class="admin-tab" data-admin-tab="backfill" role="tab" aria-selected="false" type="button">Referências históricas</button>
     </div>
-    <div id="backfill-results" class="backfill-results">
-      <div class="loading">Clique em “Analisar” para verificar os registros existentes.</div>
-    </div>
-    <div class="backfill-actions">
-      <p id="backfill-action-note">Nenhuma alteração foi realizada.</p>
-      <button class="button primary" id="apply-backfill-button" type="button" disabled>Aplicar promoções seguras</button>
-    </div>
+    <section id="admin-monthly-panel" class="admin-tab-panel" role="tabpanel">
+      <div id="monthly-loading" class="loading">Carregando configuração mensal…</div>
+      <form id="monthly-schedule-form" class="monthly-schedule-form hidden">
+        <div class="monthly-status-grid">
+          <div><span>Política salva</span><strong id="monthly-policy-status">—</strong></div>
+          <div><span>Tarefa Windows</span><strong id="monthly-task-status">—</strong></div>
+          <div><span>Próxima execução</span><strong id="monthly-next-run">—</strong></div>
+          <div><span>Competência</span><strong id="monthly-competence">—</strong></div>
+        </div>
+        <div class="field-row">
+          <label class="check-option"><input id="monthly-enabled" type="checkbox"><span>Política mensal ativa</span></label>
+          <label>Horário local no dia 1<input id="monthly-start-time" type="time" value="00:05" required></label>
+        </div>
+        <p id="monthly-eligible-copy" class="monthly-note">Nenhum cliente elegível.</p>
+        <p class="monthly-note">Fluxo: Janela 1 de 10h; Janela 2 de 10h reutilizando UUID/cursor; Janela 3 de 10h somente quando a Janela 2 precisou criar uma nova operação. A montagem DOCX permanece serial.</p>
+        <div class="monthly-actions">
+          <button class="button ghost" id="monthly-save-button" type="submit">Salvar política</button>
+          <button class="button ghost" id="monthly-validate-button" type="button">Validar sem executar</button>
+          <button class="button ghost" id="monthly-apply-button" type="button">Sincronizar tarefa</button>
+          <button class="button primary" id="monthly-toggle-button" type="button">Ativar tarefa</button>
+        </div>
+      </form>
+    </section>
+    <section id="admin-backfill-panel" class="admin-tab-panel hidden" role="tabpanel">
+      <div class="backfill-intro">
+        <span class="backfill-icon">↺</span>
+        <div><strong>Backfill de relatórios</strong><p>A análise não altera dados. Casos com mais de uma opção ficam para decisão manual no histórico do cliente.</p></div>
+        <button class="button ghost" id="analyze-backfill-button" type="button">Analisar</button>
+      </div>
+      <div id="backfill-results" class="backfill-results">
+        <div class="loading">Clique em “Analisar” para verificar os registros existentes.</div>
+      </div>
+      <div class="backfill-actions">
+        <p id="backfill-action-note">Nenhuma alteração foi realizada.</p>
+        <button class="button primary" id="apply-backfill-button" type="button" disabled>Aplicar promoções seguras</button>
+      </div>
+    </section>
   </dialog>
 
   <script src="/static/client_selection.js" defer></script>
   <script src="/static/batch_family_filters.js" defer></script>
+  <script src="/static/monthly_schedule.js" defer></script>
   <script src="/static/report_request_guard.js" defer></script>
   <script src="/static/dashboard_refresh.js" defer></script>
   <script src="/static/batch_retryability.js" defer></script>

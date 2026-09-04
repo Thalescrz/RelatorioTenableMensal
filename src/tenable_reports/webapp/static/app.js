@@ -1,6 +1,7 @@
 const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue, mergeSavedClient, conflictingJobsByClient } = window.TenableClientSelection;
 const { filterFamilyClients } = window.TenableBatchFamilyFilters;
-const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: "all", batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
+const { scheduleView } = window.TenableMonthlySchedule;
+const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, monthlySchedule: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: "all", batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
 const { createLatestRequestGuard } = window.TenableReportRequestGuard;
 const reportRequestGuard = createLatestRequestGuard();
 const { createRefreshCoordinator } = window.TenableDashboardRefresh;
@@ -1130,6 +1131,64 @@ async function analyzeBackfill() {
   }
 }
 
+function renderMonthlySchedule(payload) {
+  state.monthlySchedule = {
+    ...(state.monthlySchedule || {}),
+    ...payload,
+    config: { ...(state.monthlySchedule?.config || {}), ...(payload.config || {}) },
+    windows_task: payload.windows_task || state.monthlySchedule?.windows_task,
+  };
+  const view = scheduleView(state.monthlySchedule);
+  $("#monthly-loading").classList.add("hidden");
+  $("#monthly-schedule-form").classList.remove("hidden");
+  $("#monthly-policy-status").textContent = view.policyLabel;
+  $("#monthly-task-status").textContent = view.taskLabel;
+  $("#monthly-next-run").textContent = view.nextRunAt ? formatDate(view.nextRunAt) : "—";
+  $("#monthly-competence").textContent = view.competence;
+  $("#monthly-eligible-copy").textContent = view.eligibleClientCopy;
+  $("#monthly-enabled").checked = Boolean(state.monthlySchedule.config?.enabled);
+  $("#monthly-start-time").value = state.monthlySchedule.config?.local_start_time || "00:05";
+  $("#monthly-toggle-button").textContent = state.monthlySchedule.config?.enabled ? "Desativar tarefa" : "Ativar tarefa";
+}
+
+async function loadMonthlySchedule() {
+  $("#monthly-loading").classList.remove("hidden");
+  try {
+    renderMonthlySchedule(await api("/api/admin/monthly-schedule"));
+  } catch (error) {
+    $("#monthly-loading").textContent = `Não foi possível consultar a automação: ${error.message}`;
+  }
+}
+
+function selectAdminTab(name) {
+  document.querySelectorAll("[data-admin-tab]").forEach(button => {
+    const selected = button.dataset.adminTab === name;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-selected", String(selected));
+  });
+  $("#admin-monthly-panel").classList.toggle("hidden", name !== "monthly");
+  $("#admin-backfill-panel").classList.toggle("hidden", name !== "backfill");
+  if (name === "monthly") void loadMonthlySchedule();
+  else void analyzeBackfill();
+}
+
+async function runMonthlyScheduleAction(button, action) {
+  const confirmation = state.monthlySchedule?.confirmation || "SINCRONIZAR AUTOMACAO MENSAL";
+  if (!window.confirm("Esta ação altera a tarefa mensal do Windows. Deseja continuar?")) return;
+  button.disabled = true;
+  try {
+    renderMonthlySchedule(await api(`/api/admin/monthly-schedule/${action}`, {
+      method: "POST",
+      body: { confirmation },
+    }));
+    toast("Configuração da tarefa mensal atualizada.");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function openRunSelection() {
   state.runSelection = eligibleRunClients().map(client => client.client_id);
   state.runSelectionQuery = "";
@@ -1201,7 +1260,36 @@ $("#analyst-list").addEventListener("click", async event => {
   } catch (error) { toast(error.message, "error"); }
   finally { button.disabled = false; }
 });
-$("#admin-button").addEventListener("click", () => { $("#admin-dialog").showModal(); analyzeBackfill(); });
+$("#admin-button").addEventListener("click", () => { $("#admin-dialog").showModal(); selectAdminTab("monthly"); });
+document.querySelectorAll("[data-admin-tab]").forEach(button => button.addEventListener("click", () => selectAdminTab(button.dataset.adminTab)));
+$("#monthly-schedule-form").addEventListener("submit", async event => {
+  event.preventDefault();
+  const button = $("#monthly-save-button");
+  button.disabled = true;
+  try {
+    renderMonthlySchedule(await api("/api/admin/monthly-schedule", {
+      method: "PATCH",
+      body: {
+        enabled: $("#monthly-enabled").checked,
+        day_of_month: 1,
+        local_start_time: $("#monthly-start-time").value,
+        task_name: state.monthlySchedule?.config?.task_name || "Relatorios Tenable - Mensal",
+      },
+    }));
+    toast("Política mensal salva; nenhuma execução foi iniciada.");
+  } catch (error) { toast(error.message, "error"); }
+  finally { button.disabled = false; }
+});
+$("#monthly-validate-button").addEventListener("click", async event => {
+  event.currentTarget.disabled = true;
+  try {
+    renderMonthlySchedule(await api("/api/admin/monthly-schedule/validate", { method: "POST", body: {} }));
+    toast("Configuração validada sem iniciar coleta.");
+  } catch (error) { toast(error.message, "error"); }
+  finally { event.currentTarget.disabled = false; }
+});
+$("#monthly-apply-button").addEventListener("click", event => runMonthlyScheduleAction(event.currentTarget, "apply"));
+$("#monthly-toggle-button").addEventListener("click", event => runMonthlyScheduleAction(event.currentTarget, state.monthlySchedule?.config?.enabled ? "disable" : "enable"));
 $("#analyze-backfill-button").addEventListener("click", analyzeBackfill);
 $("#apply-backfill-button").addEventListener("click", async event => {
   const count = state.backfillPlan?.promotions?.length || 0;
