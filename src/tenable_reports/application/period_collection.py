@@ -107,6 +107,22 @@ def collect_vm_core_period(
             run_id=run_id,
         )
     check_interruption()
+    asset_resume_manifest = getattr(args, "asset_resume_manifest", None)
+    if not asset_resume_manifest:
+        asset_root = (
+            Path(output_root)
+            / "raw"
+            / profile.client_id
+            / run_id
+            / "tenable_vm_assets_v2"
+        )
+        existing_asset_manifests = sorted(
+            asset_root.glob("*/manifest.json"),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+        if existing_asset_manifests:
+            asset_resume_manifest = existing_asset_manifests[0]
     assets = collect_asset_snapshot(
         client=client,
         profile=profile,
@@ -117,6 +133,7 @@ def collect_vm_core_period(
         output_root=output_root,
         run_id=run_id,
         export_uuid=getattr(args, "asset_export_uuid", None),
+        resume_from=asset_resume_manifest,
         cancellation_probe=cancellation_probe,
     )
     check_interruption()

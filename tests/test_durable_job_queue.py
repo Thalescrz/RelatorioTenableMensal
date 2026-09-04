@@ -25,6 +25,7 @@ from tenable_reports.application.web_batches_memory import (
     InMemoryWebBatchRepository,
 )
 from tenable_reports.domain.remote_components import RemoteComponentState
+from tenable_reports.domain.remote_components import RemoteIdentifierKind
 from tenable_reports.domain.report_components import ReportComponent
 from tenable_reports.domain.web_batches import (
     BatchAction,
@@ -388,6 +389,252 @@ def test_staged_component_workers_merge_once_then_release_serial_build(tmp_path)
         "00000000-0000-0000-0000-000000000402",
         "cloud-dataset-01",
     }
+
+
+def test_component_recovery_reuses_uuid_then_allows_only_one_replacement_window(
+    tmp_path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(
+        _job(
+            1,
+            status=BatchJobStatus.RUNNING,
+            phase=BatchJobPhase.REMOTE_RUNNING,
+        ),
+        payload={"mode": "automatic", "run_id": "run-recovery"},
+    )
+    repository.create_batch(batch, (job,))
+    executor = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=executor,
+        worker_id="worker-recovery",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    uuid_a = "00000000-0000-0000-0000-000000000501"
+    uuid_b = "00000000-0000-0000-0000-000000000502"
+    try:
+        first = component_repository.create_for_job(
+            batch_job_id=job.id,
+            components=(ReportComponent.VM_CORE,),
+            window_number=1,
+            deadline_at=datetime.now(UTC) + timedelta(hours=10),
+            origin="SCHEDULED",
+        )[0]
+        first = component_repository.claim_next(worker_id="first")
+        first = component_repository.transition(
+            first.id,
+            expected_state=first.state,
+            requested_state=first.state,
+            identifier_kind=RemoteIdentifierKind.UUID,
+            remote_identifier=uuid_a,
+            identifier_origin="created",
+        )
+        queue._handle_failed_remote_component(
+            job,
+            first,
+            BatchJobResult(
+                status=BatchJobStatus.FAILED,
+                error_code="TENABLE_TEMPORARY",
+                error_message="Tempo limite aguardando export VM.",
+                payload={"retryable": True},
+            ),
+        )
+        second = component_repository.list_for_jobs((job.id,))[job.id][-1]
+        assert second.window_number == 2
+        assert second.remote_identifier == uuid_a
+        assert second.replacement_created_in_window_2 is False
+
+        second = component_repository.claim_next(worker_id="second")
+        queue._handle_failed_remote_component(
+            job,
+            second,
+            BatchJobResult(
+                status=BatchJobStatus.FAILED,
+                error_code="TENABLE_EXPORT_RECOVERY_UNAVAILABLE",
+                error_message="Identificador remoto expirou.",
+                payload={"retryable": True},
+            ),
+        )
+        replacement = component_repository.list_for_jobs((job.id,))[job.id][-1]
+        assert replacement.window_number == 2
+        assert replacement.remote_identifier is None
+        assert replacement.replacement_created_in_window_2 is True
+
+        replacement = component_repository.claim_next(worker_id="replacement")
+        replacement = component_repository.transition(
+            replacement.id,
+            expected_state=replacement.state,
+            requested_state=replacement.state,
+            identifier_kind=RemoteIdentifierKind.UUID,
+            remote_identifier=uuid_b,
+            identifier_origin="created",
+        )
+        queue._handle_failed_remote_component(
+            job,
+            replacement,
+            BatchJobResult(
+                status=BatchJobStatus.FAILED,
+                error_code="TENABLE_TEMPORARY",
+                error_message="Tempo limite aguardando export VM.",
+                payload={"retryable": True},
+            ),
+        )
+        third = component_repository.list_for_jobs((job.id,))[job.id][-1]
+        assert third.window_number == 3
+        assert third.remote_identifier == uuid_b
+
+        third = component_repository.claim_next(worker_id="third")
+        queue._handle_failed_remote_component(
+            job,
+            third,
+            BatchJobResult(
+                status=BatchJobStatus.FAILED,
+                error_code="TENABLE_TEMPORARY",
+                error_message="Tempo limite aguardando export VM.",
+                payload={"retryable": True},
+            ),
+        )
+        rows = component_repository.list_for_jobs((job.id,))[job.id]
+    finally:
+        queue.close()
+
+    assert len(rows) == 4
+    assert rows[-1].state is RemoteComponentState.WAITING_MANUAL_RETRY
+    assert max(row.window_number for row in rows) == 3
+
+
+def test_component_auth_failure_stops_without_opening_automatic_retry(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(
+        _job(
+            1,
+            status=BatchJobStatus.RUNNING,
+            phase=BatchJobPhase.REMOTE_RUNNING,
+        ),
+        payload={"mode": "automatic", "run_id": "run-auth-failure"},
+    )
+    repository.create_batch(batch, (job,))
+    executor = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=executor,
+        worker_id="worker-auth-failure",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    try:
+        component_repository.create_for_job(
+            batch_job_id=job.id,
+            components=(ReportComponent.CLOUD,),
+            window_number=1,
+            deadline_at=datetime.now(UTC) + timedelta(hours=10),
+            origin="SCHEDULED",
+        )
+        running = component_repository.claim_next(worker_id="cloud-auth")
+        queue._handle_failed_remote_component(
+            job,
+            running,
+            BatchJobResult(
+                status=BatchJobStatus.FAILED,
+                error_code="TENABLE_AUTH_INVALID",
+                error_message="Autenticação Cloud recusada.",
+                payload={"retryable": False},
+            ),
+        )
+        rows = component_repository.list_for_jobs((job.id,))[job.id]
+    finally:
+        queue.close()
+
+    assert len(rows) == 1
+    assert rows[0].state is RemoteComponentState.NON_RETRYABLE_FAILURE
+    assert rows[0].retryable is False
+
+
+def test_restarted_component_uses_only_remaining_original_window(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(
+        _job(
+            1,
+            status=BatchJobStatus.RUNNING,
+            phase=BatchJobPhase.REMOTE_RUNNING,
+        ),
+        payload={
+            "mode": "manual",
+            "run_id": "run-restarted-window",
+            "start_at": "2026-08-01T00:00:00Z",
+            "end_at": "2026-09-01T00:00:00Z",
+        },
+    )
+    repository.create_batch(batch, (job,))
+    executor = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=executor,
+        worker_id="worker-restarted-window",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    deadline = datetime.now(UTC) + timedelta(seconds=5)
+    component_repository.create_for_job(
+        batch_job_id=job.id,
+        components=(ReportComponent.VM_CORE,),
+        window_number=1,
+        deadline_at=deadline,
+        origin="MANUAL",
+    )
+    running = component_repository.claim_next(worker_id="old-process")
+    captured: dict[str, object] = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs["payload_overrides"])
+        return BatchJobResult(
+            status=BatchJobStatus.FAILED,
+            error_code="TENABLE_AUTH_INVALID",
+            error_message="Autenticação recusada.",
+            payload={"retryable": False},
+        )
+
+    queue._run_executor_job = fake_run
+    try:
+        queue._run_remote_component(running)
+        stored = component_repository.list_for_jobs((job.id,))[job.id][0]
+    finally:
+        queue.close()
+
+    assert 1 <= int(captured["remote_processing_timeout_seconds"]) <= 5
+    assert stored.deadline_at == deadline
 
 
 def test_queue_runs_at_most_one_client_at_a_time_in_position_order() -> None:

@@ -164,14 +164,28 @@ class PostgresRemoteComponentRepository:
             row = connection.execute(
                 f"""
                 with candidate as (
-                    select id
-                    from {SCHEMA_NAME}.web_batch_remote_components
-                    where state in (
+                    select component.id
+                    from {SCHEMA_NAME}.web_batch_remote_components component
+                    join {SCHEMA_NAME}.web_batch_jobs job
+                      on job.id = component.batch_job_id
+                    where component.state in (
                         'PENDING', 'RUNNING_WINDOW_1',
                         'RUNNING_WINDOW_2', 'RUNNING_WINDOW_3'
                     )
-                      and (worker_id is null or lease_expires_at <= now())
-                    order by created_at, attempt_number, component, id
+                      and (
+                          component.worker_id is null
+                          or component.lease_expires_at <= now()
+                      )
+                    order by
+                        case component.component
+                            when 'VM_CORE' then 1
+                            when 'WAS' then 2
+                            when 'CLOUD' then 3
+                        end,
+                        job.position,
+                        component.created_at,
+                        component.attempt_number,
+                        component.id
                     for update skip locked
                     limit 1
                 )
@@ -329,12 +343,11 @@ class PostgresRemoteComponentRepository:
                 set worker_id = null, lease_expires_at = null
                 where worker_id is not null
                   and not (worker_id = any(%s))
-                  and lease_expires_at <= %s
                   and state in (
                       'RUNNING_WINDOW_1', 'RUNNING_WINDOW_2', 'RUNNING_WINDOW_3'
                   )
                 """,
-                (sorted(active_worker_ids), now),
+                (sorted(active_worker_ids),),
             )
         return max(0, int(cursor.rowcount))
 

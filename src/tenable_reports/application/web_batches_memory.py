@@ -1022,9 +1022,9 @@ class InMemoryRemoteComponentRepository:
                     )
                 ),
                 key=lambda item: (
+                    list(ReportComponent).index(item.component),
                     item.created_at or datetime.min.replace(tzinfo=UTC),
                     item.attempt_number,
-                    list(ReportComponent).index(item.component),
                 ),
             )
             if not candidates:
@@ -1133,8 +1133,6 @@ class InMemoryRemoteComponentRepository:
                 if (
                     current.worker_id is not None
                     and current.worker_id not in active_worker_ids
-                    and current.lease_expires_at is not None
-                    and current.lease_expires_at <= now
                 ):
                     self._components[component_id] = replace(
                         current,

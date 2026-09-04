@@ -13,6 +13,11 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from tenable_reports.application.execution_control import FileExecutionControl
 from tenable_reports.application.failures import FailureCode, classify_failure
+from tenable_reports.application.automatic_recovery import (
+    AutomaticRecoveryPolicy,
+    RecoveryAction,
+    decide_recovery,
+)
 from tenable_reports.application.component_collection import (
     component_checkpoint_path,
     load_component_checkpoint,
@@ -82,6 +87,18 @@ _REMOTE_COMPONENT_PUBLISHABLE_STATES = frozenset(
         RemoteComponentState.COMPLETE,
         RemoteComponentState.COMPLETE_WITH_WARNINGS,
         RemoteComponentState.NOT_APPLICABLE,
+    }
+)
+_INVALID_REMOTE_IDENTIFIER_CODES = frozenset(
+    {
+        "TENABLE_EXPORT_RECOVERY_UNAVAILABLE",
+        "REMOTE_IDENTIFIER_INVALID",
+        "REMOTE_IDENTIFIER_EXPIRED",
+        "REMOTE_EXPORT_CANCELLED",
+        "REMOTE_EXPORT_FAILED",
+        "REMOTE_EXPORT_ABORTED",
+        "CLOUD_CURSOR_INVALID",
+        "CHECKPOINT_IDENTITY_MISMATCH",
     }
 )
 
@@ -1510,6 +1527,29 @@ class DurableDashboardJobQueue:
             return
         event_type = str(event.get("event") or "")
         source = str(event.get("source") or "")
+        if event_type in {
+            "TENABLE_EXPORT_RECOVERY_UNAVAILABLE",
+            "TENABLE_CLOUD_RECOVERY_UNAVAILABLE",
+        }:
+            current = repository.get(component.id)
+            if current is None:
+                return
+            changes: dict[str, Any] = {
+                "identifier_kind": None,
+                "remote_identifier": None,
+                "identifier_origin": "replacement_required",
+            }
+            if current.window_number == 2:
+                changes["replacement_created_in_window_2"] = True
+            elif current.window_number == 3:
+                changes["replacement_created_in_window_3"] = True
+            repository.transition(
+                current.id,
+                expected_state=current.state,
+                requested_state=current.state,
+                **changes,
+            )
+            return
         expected_source = {
             ReportComponent.VM_CORE: "tenable_vm_vulnerabilities",
             ReportComponent.WAS: "tenable_was_findings",
@@ -1690,6 +1730,213 @@ class DurableDashboardJobQueue:
             return
         self.repository.complete_job(job.id, result)
 
+    def _append_component_event(
+        self,
+        job: WebBatchJob,
+        component: RemoteComponentWindow,
+        *,
+        event_type: str,
+        decision: str,
+    ) -> None:
+        self.repository.append_event(
+            WebBatchEvent(
+                batch_id=job.batch_id,
+                job_id=job.id,
+                event_type=event_type,
+                payload={
+                    "component": component.component.value,
+                    "window_number": component.window_number,
+                    "attempt_number": component.attempt_number,
+                    "origin": component.origin,
+                    "deadline_at": component.deadline_at.isoformat().replace(
+                        "+00:00", "Z"
+                    ),
+                    "remote_identifier": component.remote_identifier,
+                    "completed_units": component.completed_units,
+                    "total_units": component.total_units,
+                    "decision": decision,
+                },
+            )
+        )
+
+    def _create_recovery_component(
+        self,
+        job: WebBatchJob,
+        current: RemoteComponentWindow,
+        *,
+        window_number: int,
+        reuse_identifier: bool,
+        replacement_created_in_window_2: bool,
+        replacement_created_in_window_3: bool,
+    ) -> RemoteComponentWindow:
+        repository = self._remote_component_repository
+        if repository is None:
+            raise RuntimeError("Repositório de componentes remotos ausente.")
+        rows = repository.list_for_jobs((job.id,)).get(job.id, ())
+        attempt_number = 1 + max(
+            (
+                row.attempt_number
+                for row in rows
+                if row.component is current.component
+            ),
+            default=0,
+        )
+        created = repository.create_for_job(
+            batch_job_id=job.id,
+            components=(current.component,),
+            window_number=window_number,
+            deadline_at=datetime.now(UTC)
+            + timedelta(seconds=self._remote_processing_timeout_seconds),
+            origin="AUTOMATIC_RETRY",
+            query_fingerprints=(
+                {current.component: current.query_fingerprint}
+                if current.query_fingerprint
+                else None
+            ),
+            attempt_number=attempt_number,
+            parent_component_id=current.id,
+            replacement_created_in_window_2=replacement_created_in_window_2,
+            replacement_created_in_window_3=replacement_created_in_window_3,
+        )[0]
+        changes: dict[str, Any] = {}
+        if reuse_identifier and current.remote_identifier is not None:
+            changes.update(
+                identifier_kind=current.identifier_kind,
+                remote_identifier=current.remote_identifier,
+                identifier_origin="provided",
+                checkpoint_path=current.checkpoint_path,
+            )
+        if changes:
+            created = repository.transition(
+                created.id,
+                expected_state=RemoteComponentState.PENDING,
+                requested_state=RemoteComponentState.PENDING,
+                **changes,
+            )
+        self._append_component_event(
+            job,
+            created,
+            event_type="REMOTE_COMPONENT_WINDOW_CREATED",
+            decision=("REUSE_IDENTIFIER" if reuse_identifier else "CREATE_REPLACEMENT"),
+        )
+        if self._component_pool is not None:
+            self._component_pool.wake()
+        return created
+
+    def _handle_failed_remote_component(
+        self,
+        job: WebBatchJob,
+        component: RemoteComponentWindow,
+        result: BatchJobResult,
+    ) -> None:
+        repository = self._remote_component_repository
+        if repository is None:
+            raise RuntimeError("Repositório de componentes remotos ausente.")
+        failure = classify_failure(
+            {
+                **dict(result.payload),
+                "error_code": result.error_code,
+                "message": result.error_message,
+            }
+        )
+        failure_code = str(result.error_code or failure.code.value).upper()
+        error_text = str(result.error_message or "").casefold()
+        if (
+            failure_code in _INVALID_REMOTE_IDENTIFIER_CODES
+            or "estado cancelled" in error_text
+            or "status 404" in error_text
+        ):
+            observation_kind = RemoteObservationKind.INVALID_IDENTIFIER
+        elif not failure.retryable and not bool(result.payload.get("retryable")):
+            observation_kind = RemoteObservationKind.NON_RETRYABLE_FAILURE
+        else:
+            observation_kind = RemoteObservationKind.TERMINAL_RETRYABLE_FAILURE
+        observed = repository.record_observation(
+            component.id,
+            RemoteObservation(
+                kind=observation_kind,
+                completed_units=component.completed_units,
+                total_units=component.total_units,
+                remote_status="FAILED",
+                failure_code=failure_code,
+            ),
+        )
+        decision = decide_recovery(
+            observed,
+            RemoteObservation(
+                kind=observation_kind,
+                completed_units=observed.completed_units,
+                total_units=observed.total_units,
+                remote_status=observed.last_remote_status,
+                failure_code=failure_code,
+            ),
+            now=datetime.now(UTC),
+            policy=AutomaticRecoveryPolicy(),
+        )
+        if decision.action is RecoveryAction.FAIL_NON_RETRYABLE:
+            terminal_state = RemoteComponentState.NON_RETRYABLE_FAILURE
+            terminal_code = failure_code
+            terminal_retryable = False
+        elif decision.action is RecoveryAction.WAIT_MANUAL_RETRY:
+            terminal_state = RemoteComponentState.WAITING_MANUAL_RETRY
+            terminal_code = decision.failure_code or failure_code
+            terminal_retryable = True
+        else:
+            terminal_state = RemoteComponentState.WAITING_MANUAL_RETRY
+            terminal_code = "AUTOMATIC_WINDOW_ADVANCED"
+            terminal_retryable = True
+        terminal = repository.transition(
+            observed.id,
+            expected_state=observed.state,
+            requested_state=terminal_state,
+            worker_id=None,
+            lease_expires_at=None,
+            failure_code=terminal_code,
+            failure_message=failure.message[:500],
+            retryable=terminal_retryable,
+            ended_at=datetime.now(UTC),
+        )
+        self._append_component_event(
+            job,
+            terminal,
+            event_type="REMOTE_COMPONENT_RECOVERY_DECIDED",
+            decision=decision.action.value,
+        )
+        if decision.action is RecoveryAction.START_NEXT_WINDOW:
+            next_window = int(decision.next_window or component.window_number + 1)
+            missing_identifier = component.remote_identifier is None
+            self._create_recovery_component(
+                job,
+                terminal,
+                window_number=next_window,
+                reuse_identifier=not missing_identifier,
+                replacement_created_in_window_2=(
+                    component.replacement_created_in_window_2
+                    or (next_window == 2 and missing_identifier)
+                ),
+                replacement_created_in_window_3=(
+                    component.replacement_created_in_window_3
+                ),
+            )
+            return
+        if decision.action is RecoveryAction.CREATE_REPLACEMENT:
+            self._create_recovery_component(
+                job,
+                terminal,
+                window_number=component.window_number,
+                reuse_identifier=False,
+                replacement_created_in_window_2=(
+                    component.replacement_created_in_window_2
+                    or decision.mark_replacement_in_window_two
+                ),
+                replacement_created_in_window_3=(
+                    component.replacement_created_in_window_3
+                    or decision.mark_replacement_in_window_three
+                ),
+            )
+            return
+        self._finalize_remote_components(job)
+
     def _run_remote_component(self, component: RemoteComponentWindow) -> None:
         if self._remote_component_repository is None:
             raise RuntimeError("Repositório de componentes remotos ausente.")
@@ -1699,6 +1946,13 @@ class DurableDashboardJobQueue:
         request = self._component_request(job, component=component.component)
         checkpoint = component_checkpoint_path(request, component.component)
         executor_id = component.id.hex
+        remaining_window_seconds = max(
+            1,
+            min(
+                self._remote_processing_timeout_seconds,
+                int((component.deadline_at - datetime.now(UTC)).total_seconds()),
+            ),
+        )
         with self._active_lock:
             self._active_components[executor_id] = component
         try:
@@ -1725,28 +1979,20 @@ class DurableDashboardJobQueue:
                     ),
                     "identifier_origin": component.identifier_origin,
                     "previous_component_checkpoint": component.checkpoint_path,
+                    "remote_processing_timeout_seconds": remaining_window_seconds,
                 },
             )
         finally:
             with self._active_lock:
                 self._active_components.pop(executor_id, None)
+        component = (
+            self._remote_component_repository.get(component.id) or component
+        )
         if result.status not in {
             BatchJobStatus.COMPLETE,
             BatchJobStatus.COMPLETE_WITH_WARNINGS,
         }:
-            self._remote_component_repository.transition(
-                component.id,
-                expected_state=component.state,
-                requested_state=RemoteComponentState.WAITING_MANUAL_RETRY,
-                worker_id=None,
-                lease_expires_at=None,
-                failure_code=result.error_code or "COMPONENT_COLLECTION_FAILED",
-                failure_message=(
-                    result.error_message or "Falha na coleta remota do componente."
-                )[:500],
-                retryable=True,
-                ended_at=datetime.now(UTC),
-            )
+            self._handle_failed_remote_component(job, component, result)
             return
         raw = result.payload.get("_component_result")
         if not isinstance(raw, Mapping) or not raw.get("checkpoint"):
@@ -1757,6 +2003,26 @@ class DurableDashboardJobQueue:
         )
         if persisted.component is not component.component:
             raise RuntimeError("Checkpoint retornou componente incompatível.")
+        if persisted.status not in _REMOTE_COMPONENT_PUBLISHABLE_STATES:
+            self._handle_failed_remote_component(
+                job,
+                component,
+                BatchJobResult(
+                    status=BatchJobStatus.FAILED,
+                    error_code=str(
+                        persisted.metadata.get("failure_code")
+                        or "COMPONENT_COLLECTION_FAILED"
+                    ),
+                    error_message=str(
+                        persisted.metadata.get("failure_message")
+                        or "Falha na coleta remota do componente."
+                    ),
+                    payload={
+                        "retryable": bool(persisted.metadata.get("retryable")),
+                    },
+                ),
+            )
+            return
         self._remote_component_repository.transition(
             component.id,
             expected_state=component.state,

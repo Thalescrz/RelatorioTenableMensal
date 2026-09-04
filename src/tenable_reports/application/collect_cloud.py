@@ -303,6 +303,18 @@ def _collect_source(
                 directory=directory,
             )
         except CloudCheckpointError:
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "event": "TENABLE_CLOUD_RECOVERY_UNAVAILABLE",
+                        "stage": "COLLECTION",
+                        "source": definition.name,
+                        "status": "CHECKPOINT_INVALID",
+                        "run_id": request.run_id,
+                        "client_id": request.client_id,
+                        "replacement_started": True,
+                    }
+                )
             _cleanup_optional_partial(directory, definition.name)
             checkpoint = _initial_checkpoint(
                 request=request,

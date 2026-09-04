@@ -71,6 +71,7 @@ def collect_optional_was_snapshot(
     cancellation_probe: Callable[[], bool] | None = None,
 ) -> WasCollectionAttempt:
     """Tenta o WAS sem permitir que uma capacidade opcional derrube o VM."""
+    requested_export_uuid = str(export_uuid or "").strip() or None
     try:
         result = collect_was_snapshot(
             client=client,
@@ -107,7 +108,14 @@ def collect_optional_was_snapshot(
         if not isinstance(last_status, Mapping):
             last_status = {}
         status_code = getattr(exc, "status_code", None)
-        if status_code in {401, 403, 404}:
+        if status_code == 404 and requested_export_uuid is not None:
+            code = "REMOTE_IDENTIFIER_INVALID"
+            retryable = True
+            message = (
+                "O identificador do export WAS anterior nao esta mais "
+                "disponivel; uma nova operacao pode ser iniciada."
+            )
+        elif status_code in {401, 403, 404}:
             code = "WAS_NOT_AVAILABLE"
             retryable = False
             message = (
@@ -123,7 +131,10 @@ def collect_optional_was_snapshot(
                 "A coleta WAS ficou indisponivel nesta execucao. "
                 "O relatorio VM continuou normalmente."
             )
-        export_uuid = str(getattr(exc, "export_uuid", None) or "").strip() or None
+        export_uuid = (
+            str(getattr(exc, "export_uuid", None) or "").strip()
+            or requested_export_uuid
+        )
         origin = str(getattr(exc, "origin", None) or "").strip() or None
         remote_status = str(last_status.get("status") or "").strip().upper() or None
         progress_made = bool(

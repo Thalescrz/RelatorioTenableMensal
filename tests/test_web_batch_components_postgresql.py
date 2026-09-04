@@ -269,6 +269,69 @@ def test_remote_failure_message_rejects_secret_like_content() -> None:
         )
 
 
+def test_postgresql_releases_component_owned_by_worker_from_previous_process() -> None:
+    database = _Database([_Cursor(rowcount=1)])
+    repository = PostgresRemoteComponentRepository(database)
+
+    reconciled = repository.reconcile_abandoned(
+        now=datetime(2026, 9, 4, 9, 59, tzinfo=UTC),
+        active_worker_ids={"new-process-worker"},
+    )
+
+    assert reconciled == 1
+    sql, params = database.connection_value.calls[0]
+    normalized_sql = " ".join(sql.lower().split())
+    assert "not (worker_id = any(%s))" in normalized_sql
+    assert "lease_expires_at <=" not in normalized_sql
+    assert params == (["new-process-worker"],)
+
+
+def test_in_memory_releases_previous_worker_without_extending_deadline() -> None:
+    repository = InMemoryRemoteComponentRepository()
+    (pending,) = repository.create_for_job(
+        batch_job_id=JOB_ID,
+        components=(ReportComponent.VM_CORE,),
+        window_number=1,
+        deadline_at=DEADLINE,
+        origin="SCHEDULED",
+    )
+    claimed = repository.claim_next(
+        worker_id="old-process-worker",
+        lease_seconds=36_300,
+    )
+
+    assert repository.reconcile_abandoned(
+        now=datetime.now(UTC),
+        active_worker_ids={"new-process-worker"},
+    ) == 1
+    reclaimed = repository.claim_next(
+        worker_id="new-process-worker",
+        lease_seconds=36_300,
+    )
+
+    assert reclaimed.id == pending.id
+    assert reclaimed.deadline_at == claimed.deadline_at == DEADLINE
+
+
+def test_in_memory_claims_one_vm_per_client_before_secondary_components() -> None:
+    repository = InMemoryRemoteComponentRepository()
+    for job_id in (UUID(int=601), UUID(int=602)):
+        repository.create_for_job(
+            batch_job_id=job_id,
+            components=tuple(ReportComponent),
+            window_number=1,
+            deadline_at=DEADLINE,
+            origin="SCHEDULED",
+        )
+
+    first = repository.claim_next(worker_id="worker-1")
+    second = repository.claim_next(worker_id="worker-2")
+
+    assert first.component is ReportComponent.VM_CORE
+    assert second.component is ReportComponent.VM_CORE
+    assert first.batch_job_id != second.batch_job_id
+
+
 def test_terminal_remote_failure_requires_a_failure_code() -> None:
     with pytest.raises(ValueError, match="failure_code"):
         RemoteComponentWindow(

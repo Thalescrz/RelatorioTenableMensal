@@ -353,11 +353,13 @@ def test_retry_recollects_only_source_with_invalid_consolidated_artifact(
     )
     first.source_paths["findings"].write_text("corrompido", encoding="utf-8")
     retry_clients = _clients()
+    progress: list[dict[str, Any]] = []
 
     artifact = collection.collect_cloud_snapshot(
         request=_request(tmp_path),
         clients=retry_clients,
         capabilities=_capabilities_all(),
+        progress_callback=progress.append,
     )
 
     assert retry_clients["findings"].after_values == [None]
@@ -366,6 +368,13 @@ def test_retry_recollects_only_source_with_invalid_consolidated_artifact(
         for name, client in retry_clients.items()
         if name != "findings"
     )
+    recovery = next(
+        event
+        for event in progress
+        if event.get("event") == "TENABLE_CLOUD_RECOVERY_UNAVAILABLE"
+    )
+    assert recovery["source"] == "findings"
+    assert recovery["replacement_started"] is True
     assert artifact.source_status["findings"].status == "COMPLETE"
 
 def test_manifest_is_sanitized_and_progress_reports_page_counts(

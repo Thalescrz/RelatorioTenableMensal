@@ -396,6 +396,8 @@ class WebBatchRepository(Protocol):
 
 
 class RemoteComponentRepository(Protocol):
+    def get(self, component_id: UUID) -> RemoteComponentWindow | None: ...
+
     def create_for_job(
         self,
         *,
