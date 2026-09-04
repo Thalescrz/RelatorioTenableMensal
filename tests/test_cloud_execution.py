@@ -13,6 +13,7 @@ from tenable_reports.application.cloud_execution import (
     CloudExecutionStatus,
     CloudLiveCollection,
     CloudResumeContext,
+    collect_cloud_period,
     execute_cloud_component,
     retry_cloud_component,
 )
@@ -228,6 +229,23 @@ def test_disabled_cloud_does_not_call_collection_or_rendering(tmp_path: Path) ->
     assert result.status is CloudExecutionStatus.DISABLED
     assert result.documents == ()
     assert calls == {"collect": 0, "write": 0, "render": [], "validate": []}
+
+
+def test_remote_cloud_period_never_renders_a_document(tmp_path: Path) -> None:
+    dependencies, calls = _dependencies(tmp_path)
+
+    result = collect_cloud_period(
+        _request(tmp_path),
+        dependencies=dependencies,
+    )
+
+    assert result.status is CloudExecutionStatus.COMPLETE
+    assert result.dataset_path is not None
+    assert result.documents == ()
+    assert calls["collect"] == 1
+    assert calls["write"] == 1
+    assert calls["render"] == []
+    assert calls["validate"] == []
 
 
 def test_enabled_cloud_renders_one_standard_report_from_live_dataset(tmp_path: Path) -> None:
