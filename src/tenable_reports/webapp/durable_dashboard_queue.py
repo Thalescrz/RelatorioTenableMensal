@@ -1529,6 +1529,197 @@ class DurableDashboardJobQueue:
             ],
         }
 
+    def batch_family_snapshot(self, batch_id: UUID | str) -> dict[str, Any]:
+        requested_id = (
+            batch_id if isinstance(batch_id, UUID) else UUID(str(batch_id))
+        )
+        requested = self.repository.get_batch(requested_id)
+        if requested is None:
+            raise KeyError("Lote não encontrado.")
+        root_id = requested.root_batch_id or requested.id
+        batches = tuple(
+            batch
+            for batch in self.repository.list_batches(limit=500)
+            if (batch.root_batch_id or batch.id) == root_id
+        )
+        jobs = tuple(
+            job
+            for batch in batches
+            for job in self.repository.list_batch_jobs(batch.id)
+        )
+        components_by_job = (
+            self._remote_component_repository.list_for_jobs(
+                tuple(job.id for job in jobs)
+            )
+            if self._remote_component_repository is not None
+            else {}
+        )
+        latest_job_by_client: dict[str, WebBatchJob] = {}
+        for job in jobs:
+            current = latest_job_by_client.get(job.client_id)
+            if current is None or (
+                str(job.created_at or ""), job.attempt_number, str(job.id)
+            ) > (
+                str(current.created_at or ""),
+                current.attempt_number,
+                str(current.id),
+            ):
+                latest_job_by_client[job.client_id] = job
+
+        active_component_states = {
+            RemoteComponentState.PENDING,
+            RemoteComponentState.RUNNING_WINDOW_1,
+            RemoteComponentState.RUNNING_WINDOW_2,
+            RemoteComponentState.RUNNING_WINDOW_3,
+        }
+
+        def latest_components(job: WebBatchJob) -> tuple[RemoteComponentWindow, ...]:
+            latest: dict[ReportComponent, RemoteComponentWindow] = {}
+            for component in components_by_job.get(job.id, ()):
+                current = latest.get(component.component)
+                if current is None or component.attempt_number > current.attempt_number:
+                    latest[component.component] = component
+            return tuple(
+                latest[component]
+                for component in ReportComponent
+                if component in latest
+            )
+
+        def effective_status(
+            job: WebBatchJob,
+            components: Sequence[RemoteComponentWindow],
+        ) -> str:
+            retryability = _batch_job_retryability(job)
+            if any(
+                item.state is RemoteComponentState.NON_RETRYABLE_FAILURE
+                for item in components
+            ) or (
+                retryability.candidate
+                and not retryability.retryable
+                and job.status is BatchJobStatus.FAILED
+            ):
+                return "DEFINITIVE_FAILURE"
+            if any(
+                item.state in active_component_states
+                and item.origin == "AUTOMATIC_RETRY"
+                for item in components
+            ):
+                return "AUTOMATIC_RETRY"
+            if job.status in {
+                BatchJobStatus.RUNNING,
+                BatchJobStatus.INTERRUPT_REQUESTED,
+            } or any(item.state in active_component_states for item in components):
+                return "RUNNING"
+            if any(
+                item.state is RemoteComponentState.WAITING_MANUAL_RETRY
+                for item in components
+            ):
+                return "WAITING_MANUAL_RETRY"
+            if job.status is BatchJobStatus.PARTIALLY_COMPLETE:
+                return "PARTIALLY_COMPLETE"
+            if job.status in {
+                BatchJobStatus.COMPLETE,
+                BatchJobStatus.COMPLETE_WITH_WARNINGS,
+            }:
+                return "COMPLETE"
+            if job.status is BatchJobStatus.FAILED:
+                return (
+                    "WAITING_MANUAL_RETRY"
+                    if retryability.retryable
+                    else "DEFINITIVE_FAILURE"
+                )
+            return "PENDING"
+
+        clients: list[dict[str, Any]] = []
+        for client_id in sorted(latest_job_by_client):
+            job = latest_job_by_client[client_id]
+            components = latest_components(job)
+            clients.append(
+                {
+                    "client_id": client_id,
+                    "effective_status": effective_status(job, components),
+                    "job_id": str(job.id),
+                    "batch_id": str(job.batch_id),
+                    "job_status": job.status.value,
+                    "phase": job.phase.value,
+                    "attempt_number": job.attempt_number,
+                    "run_id": job.run_id or job.payload.get("run_id"),
+                    "error_code": job.error_code,
+                    "error_message": job.error_message,
+                    "components": [
+                        {
+                            "component": item.component.value,
+                            "state": item.state.value,
+                            "window_number": item.window_number,
+                            "attempt_number": item.attempt_number,
+                            "origin": item.origin,
+                            "completed_units": item.completed_units,
+                            "total_units": item.total_units,
+                            "remote_identifier": item.remote_identifier,
+                            "failure_code": item.failure_code,
+                            "failure_message": item.failure_message,
+                            "retryable": item.retryable,
+                            "created_at": (
+                                item.created_at.isoformat()
+                                if item.created_at is not None
+                                else None
+                            ),
+                            "ended_at": (
+                                item.ended_at.isoformat()
+                                if item.ended_at is not None
+                                else None
+                            ),
+                        }
+                        for item in components
+                    ],
+                }
+            )
+        count_keys = {
+            "PENDING": "pending",
+            "RUNNING": "running",
+            "AUTOMATIC_RETRY": "automatic_retry",
+            "WAITING_MANUAL_RETRY": "waiting_manual",
+            "PARTIALLY_COMPLETE": "partial",
+            "DEFINITIVE_FAILURE": "failed",
+            "COMPLETE": "complete",
+        }
+        counts = {value: 0 for value in count_keys.values()}
+        for client in clients:
+            counts[count_keys[client["effective_status"]]] += 1
+        root = self.repository.get_batch(root_id)
+        if root is None:
+            raise KeyError("Lote raiz não encontrado.")
+        return {
+            "root_batch_id": str(root_id),
+            "requested_batch_id": str(requested.id),
+            "batch": {
+                "id": str(root.id),
+                "kind": root.kind,
+                "status": root.status.value,
+                "created_at": root.created_at,
+                "started_at": root.started_at,
+                "ended_at": root.ended_at,
+            },
+            "batches": [
+                {
+                    "id": str(batch.id),
+                    "kind": batch.kind,
+                    "status": batch.status.value,
+                    "parent_batch_id": (
+                        str(batch.parent_batch_id)
+                        if batch.parent_batch_id is not None
+                        else None
+                    ),
+                    "created_at": batch.created_at,
+                    "ended_at": batch.ended_at,
+                }
+                for batch in sorted(batches, key=lambda item: str(item.created_at or ""))
+            ],
+            "total_count": len(clients),
+            "counts": counts,
+            "clients": clients,
+        }
+
     def snapshot(self) -> list[dict[str, Any]]:
         return list(self.dashboard_snapshot().jobs)
 

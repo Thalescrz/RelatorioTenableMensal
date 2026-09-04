@@ -285,7 +285,8 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
 .batch-phase-summary strong { display: block; margin-bottom: 2px; color: var(--ink); font: 650 13px var(--display); }
 .client-phase-detail { color: var(--blue) !important; font-size: 11px !important; }
 .batch-counters { display: grid; grid-template-columns: repeat(6, minmax(64px, 1fr)); gap: 7px; }
-.batch-counters div { min-width: 68px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: rgba(10,14,17,.35); }
+.batch-counter-button { min-width: 68px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); text-align: left; background: rgba(10,14,17,.35); cursor: pointer; }
+.batch-counter-button:hover, .batch-counter-button[aria-pressed="true"] { border-color: var(--blue); background: rgba(109,169,255,.10); }
 .batch-counters strong, .batch-counters span { display: block; }
 .batch-counters strong { font: 650 17px var(--display); }
 .batch-counters span { margin-top: 3px; color: var(--muted); font-size: 8px; }

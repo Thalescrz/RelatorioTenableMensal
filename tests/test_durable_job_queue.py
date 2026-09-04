@@ -1993,6 +1993,90 @@ def test_staged_component_retry_selects_vm_and_preserves_complete_cloud(tmp_path
     )
 
 
+def test_family_counts_latest_effective_client_state_once(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    root_id = UUID(int=2100)
+    root_job_id = UUID(int=2101)
+    retry_id = UUID(int=2110)
+    retry_job_id = UUID(int=2111)
+    root = WebBatch(
+        id=root_id,
+        idempotency_key="family-root",
+        kind="GENERATE_ALL",
+        status=BatchStatus.COMPLETE_WITH_FAILURES,
+        options={},
+    )
+    root_job = WebBatchJob(
+        id=root_job_id,
+        batch_id=root_id,
+        client_id="client-a",
+        position=1,
+        status=BatchJobStatus.FAILED,
+        attempt_number=1,
+        phase=BatchJobPhase.TERMINAL,
+        error_code="TENABLE_TEMPORARY",
+        error_message="Falha temporária sanitizada.",
+        created_at="2026-09-01T00:00:00Z",
+    )
+    repository.create_batch(root, (root_job,))
+    retry = WebBatch(
+        id=retry_id,
+        idempotency_key="family-retry",
+        kind="RETRY_INCOMPLETE",
+        status=BatchStatus.RUNNING,
+        options={},
+        source_batch_id=root_id,
+        root_batch_id=root_id,
+        parent_batch_id=root_id,
+    )
+    retry_job = WebBatchJob(
+        id=retry_job_id,
+        batch_id=retry_id,
+        client_id="client-a",
+        position=1,
+        status=BatchJobStatus.RUNNING,
+        attempt_number=2,
+        phase=BatchJobPhase.REMOTE_RUNNING,
+        retry_of_batch_job_id=root_job_id,
+        created_at="2026-09-01T10:00:00Z",
+    )
+    repository.create_batch(retry, (retry_job,))
+    component_repository.create_for_job(
+        batch_job_id=retry_job_id,
+        components=(ReportComponent.VM_CORE,),
+        window_number=2,
+        deadline_at=datetime.now(UTC) + timedelta(hours=10),
+        origin="AUTOMATIC_RETRY",
+    )
+    executor = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=executor,
+        worker_id="worker-family",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    try:
+        snapshot = queue.batch_family_snapshot(retry_id)
+    finally:
+        queue.close()
+
+    assert snapshot["root_batch_id"] == str(root_id)
+    assert snapshot["total_count"] == 1
+    assert snapshot["counts"]["automatic_retry"] == 1
+    assert snapshot["counts"]["failed"] == 0
+    assert snapshot["clients"][0]["effective_status"] == "AUTOMATIC_RETRY"
+
+
 def test_staged_workers_construct_collect_then_build_commands(tmp_path) -> None:
     config_path = tmp_path / "orchestration" / "clients.json"
     store = DashboardConfigStore(project_root=tmp_path, config_path=config_path)

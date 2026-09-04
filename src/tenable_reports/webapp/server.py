@@ -3352,10 +3352,26 @@ class DashboardApplication:
         return {"batches": snapshot()}
 
     def batch_state(self, batch_id: str) -> dict[str, Any]:
-        snapshot = getattr(self.jobs, "batch_snapshot", None)
+        snapshot = getattr(self.jobs, "batch_family_snapshot", None)
         if not callable(snapshot):
             raise RuntimeError("Controle duravel de lotes indisponivel.")
-        return snapshot(batch_id)
+        family = snapshot(batch_id)
+        legacy_snapshot = getattr(self.jobs, "batch_snapshot", None)
+        if callable(legacy_snapshot):
+            legacy = legacy_snapshot(batch_id)
+            family["jobs"] = legacy.get("jobs", [])
+            family["events"] = legacy.get("events", [])
+        clients_by_id = {
+            str(client.get("client_id") or ""): client
+            for client in self.config.list_clients()
+        }
+        for client in family.get("clients", []):
+            profile = clients_by_id.get(str(client.get("client_id") or ""), {})
+            client["display_name"] = profile.get("display_name") or client["client_id"]
+            client["tenant_id"] = profile.get("tenant_id")
+            client["responsible_analyst_id"] = profile.get("responsible_analyst_id")
+            client["responsible_analyst_name"] = profile.get("responsible_analyst_name")
+        return family
 
     def request_batch_action(
         self,
@@ -3814,6 +3830,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "app.css",
                 "app.js",
                 "client_selection.js",
+                "batch_family_filters.js",
                 "report_request_guard.js",
                 "dashboard_refresh.js",
                 "batch_retryability.js",
