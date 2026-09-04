@@ -50,6 +50,8 @@ modelos DOCX, TAGs, histórico compacto e regras editoriais permanecem inalterad
    efetiva de seus clientes.
 10. Contabilizar cada cliente uma única vez, agregando lote original,
     retentativas automáticas e retentativas manuais.
+11. Permitir configurar e verificar o agendamento mensal no painel **Admin**, sem
+    depender de edição manual de scripts para a rotina normal.
 
 ## 3. Fora de escopo
 
@@ -65,6 +67,9 @@ modelos DOCX, TAGs, histórico compacto e regras editoriais permanecem inalterad
   inválida.
 - Permitir uma quarta janela automática.
 - Manter indefinidamente uma cadeia automática de UUIDs substitutos.
+- Permitir recorrências arbitrárias: nesta versão, o dia de execução permanece
+  fixo no primeiro dia do mês.
+- Iniciar uma coleta ao apenas salvar ou sincronizar o agendamento.
 - Executar coleta real durante testes automatizados ou durante a implantação.
 
 ## 4. Decisão arquitetural
@@ -288,7 +293,16 @@ Executar a tarefa duas vezes não cria outra família. Se a família já estiver
 o processo apenas assume ou acompanha seus workers. Se estiver terminal, retorna o
 resultado persistido sem iniciar nova coleta.
 
-## 12. Agendamento mensal
+## 12. Agendamento mensal e configuração administrativa
+
+Hoje o automático mensal não é configurável no painel: o modal **Admin** trata
+somente o backfill de referências históricas. A instalação é externa, por
+`scripts/install_monthly_task.ps1`, com horário padrão `06:00`, e a execução chama
+`scripts/run_monthly_orchestration.ps1`. A entrega deve incorporar essa operação ao
+painel sem ocultar que configuração da aplicação e tarefa do Windows são estados
+distintos.
+
+### 12.1. Execução headless
 
 `scripts/run_monthly_orchestration.ps1` passa a chamar um comando headless que:
 
@@ -312,7 +326,78 @@ As configurações passam a declarar:
 - `manual_retry_window_seconds = 36000`;
 - `remote_collection_workers = 0` para capacidade automática;
 - `local_build_workers = 1` obrigatório;
-- `monthly_start_time = 00:05` no instalador da tarefa.
+- `monthly_schedule.local_start_time = 00:05` na política e no instalador da
+  tarefa.
+
+### 12.2. Tela **Automação mensal** no painel Admin
+
+O modal **Admin** passa a ter duas áreas navegáveis: **Automação mensal** e
+**Referências históricas**. A nova área apresenta:
+
+- situação da política salva: ativa ou inativa;
+- situação real da tarefa do Windows: `NÃO INSTALADA`, `SINCRONIZADA`,
+  `DIVERGENTE`, `DESABILITADA` ou `ERRO`;
+- dia fixo **1º de cada mês**;
+- horário local do computador, com padrão `00:05`;
+- nome técnico fixo da tarefa, somente para conferência;
+- fuso horário local detectado no host, somente para conferência;
+- próxima execução calculada e última execução conhecida;
+- competência que seria processada e quantidade de clientes elegíveis;
+- resumo somente leitura da política de recuperação: duas janelas comuns de até
+  10 horas e terceira janela condicional;
+- montagem local serial e capacidade remota automática.
+
+Os clientes elegíveis são os clientes ativos da carteira. A seleção de módulos
+continua no perfil individual: WAS e Cloud só participam quando habilitados para o
+cliente. Esta versão não cria uma segunda lista de inclusão mensal que possa
+divergir silenciosamente da carteira.
+
+As ações disponíveis são:
+
+1. **Salvar configuração**: valida e grava somente a política declarativa;
+2. **Validar sem executar**: calcula competência, clientes, chave idempotente,
+   próxima execução e divergências, sem API Tenable e sem criar lote;
+3. **Aplicar no Agendador do Windows**: após confirmação explícita, cria ou atualiza
+   a tarefa com o script oficial;
+4. **Ativar/Desativar automação**: após confirmação, sincroniza o estado da tarefa
+   sem apagar histórico nem lotes.
+
+Salvar a configuração nunca instala a tarefa, nunca altera uma tarefa sem
+confirmação e nunca inicia **Gerar todos**. Se o processo não tiver privilégio para
+alterar o Agendador, a interface preserva a configuração, mostra erro acionável e
+fornece o comando equivalente para execução administrativa. A aplicação não pede,
+armazena nem registra senha administrativa.
+
+### 12.3. Fonte de configuração e sincronização
+
+A política não secreta fica no mesmo arquivo da carteira, em um bloco versionado e
+escrito atomicamente pelo `DashboardConfigStore`:
+
+```json
+{
+  "monthly_schedule": {
+    "enabled": false,
+    "day_of_month": 1,
+    "local_start_time": "00:05",
+    "task_name": "Relatorios Tenable - Mensal"
+  }
+}
+```
+
+`day_of_month` aceita somente `1` nesta versão. O horário da tarefa segue o fuso
+local do Windows; o intervalo de cada relatório continua calculado no fuso do
+perfil do cliente. O nome técnico da tarefa também é fixo nesta versão; o comando
+aplicado usa apenas caminhos resolvidos dentro do projeto e argumentos permitidos.
+
+A consulta do estado é somente leitura e compara configuração declarada, comando,
+horário e estado retornados pelo Agendador. Uma tarefa existente com o mesmo nome,
+mas comando diferente, é marcada `DIVERGENTE` e não é sobrescrita sem confirmação.
+Falha ao consultar o Agendador não impede o painel nem a geração manual.
+
+O PostgreSQL permanece fonte do histórico operacional. A tela cruza a tarefa do
+Windows com a família `AUTOMATIC_MONTHLY` mais recente para exibir última execução,
+resultado e próxima ação; não considera o código de saída do Agendador suficiente
+para afirmar que todos os relatórios foram concluídos.
 
 ## 13. Publicação e MAIN
 
@@ -418,6 +503,11 @@ O modelo durável precisa representar, no mínimo:
 - último estado, comunicação e progresso;
 - falha sanitizada e decisão automática.
 
+A configuração mensal declarativa precisa conter versão, estado ativo, dia fixo,
+horário local e nome da tarefa. O banco registra eventos administrativos de
+validação, sincronização, ativação e desativação com ator, resultado e mensagem
+sanitizada; não duplica a configuração como uma segunda fonte editável.
+
 Uma migration versionada amplia as tabelas de lotes/componentes existentes em vez
 de criar uma segunda fila paralela. Lotes antigos permanecem `LEGACY`, sem receber
 janelas automáticas retroativamente.
@@ -484,7 +574,21 @@ janelas automáticas retroativamente.
 - concluído exige todos os componentes habilitados ou não aplicáveis;
 - detalhe exibe a linha do tempo e a ação manual correta.
 
-### 18.6. Publicação e segurança
+### 18.6. Agendamento e painel Admin
+
+- ausência da tarefa aparece como `NÃO INSTALADA`, sem quebrar o painel;
+- tarefa igual à política aparece como `SINCRONIZADA`;
+- horário, comando ou estado divergente aparece como `DIVERGENTE` ou
+  `DESABILITADA`;
+- salvar configuração não chama Agendador, API Tenable nem cria lote;
+- validação calcula competência, clientes e chave idempotente sem efeitos externos;
+- aplicar/ativar/desativar exige confirmação e usa runner simulado nos testes;
+- falta de privilégio produz erro acionável sem corromper a configuração;
+- cálculo da próxima execução respeita o relógio local e a virada do mês;
+- o período de cada cliente continua usando o fuso de seu perfil;
+- duas chamadas simultâneas de sincronização não criam tarefas conflitantes.
+
+### 18.7. Publicação e segurança
 
 - parcial não vira `MAIN`;
 - reparo substitui somente documentos afetados;
@@ -520,6 +624,12 @@ janelas automáticas retroativamente.
 14. Conjunto parcial não é promovido automaticamente a `MAIN`.
 15. A implantação não inicia lote, retry ou coleta real sem ação posterior do
     analista.
+16. O painel Admin permite salvar e validar a automação mensal e distingue
+    claramente configuração salva de tarefa do Windows instalada.
+17. O painel mostra próxima execução, última família mensal e clientes elegíveis,
+    sem expor secrets nem executar coleta durante a validação.
+18. Sincronizar, ativar ou desativar a tarefa exige confirmação explícita e falha de
+    privilégio não impede a operação manual da aplicação.
 
 ## 20. Estratégia de implantação
 
@@ -530,12 +640,47 @@ janelas automáticas retroativamente.
 4. Testar um lote manual pequeno autorizado e acompanhar UUID/cursor/chunks.
 5. Habilitar o comando mensal headless em modo dry-run para validar competência,
    clientes e idempotência.
-6. Executar um mensal controlado de poucos clientes com autorização explícita.
-7. Trocar a tarefa do Windows para `00:05` somente depois da validação.
-8. Remover o caminho mensal legado da rotina operacional, preservando comandos de
+6. Entregar a área **Automação mensal** no Admin primeiro com consulta, salvamento e
+   validação sem efeitos externos.
+7. Validar a sincronização com o Agendador usando runner simulado e depois uma
+   tarefa de homologação, com autorização explícita.
+8. Executar um mensal controlado de poucos clientes com autorização explícita.
+9. Trocar a tarefa oficial do Windows para `00:05` somente depois da validação.
+10. Remover o caminho mensal legado da rotina operacional, preservando comandos de
    diagnóstico compatíveis.
 
-## 21. Referências oficiais
+## 21. Atualização obrigatória da documentação
+
+A implementação só pode ser considerada concluída depois de atualizar a
+documentação vigente para refletir o comportamento realmente testado. A etapa
+final inclui:
+
+1. atualizar `README.md` com o fluxo mensal, o painel Admin e o caminho rápido de
+   operação;
+2. atualizar `DESIGN.md` com coordenador único, janelas, componentes, família de
+   lotes, configuração declarativa e integração com o Agendador;
+3. atualizar `docs/19-visao-geral-e-objetivos.md` e
+   `docs/20-arquitetura-e-fluxo-de-dados.md` com objetivo e arquitetura vigentes;
+4. atualizar `docs/22-guia-operacional.md` com configuração, validação, instalação,
+   ativação/desativação, acompanhamento e recuperação manual;
+5. atualizar `docs/23-guia-de-desenvolvimento.md` com estados, migrations,
+   idempotência, testes e limites de concorrência;
+6. atualizar `orchestration/clients.example.json` com o bloco
+   `monthly_schedule`, sem dados reais;
+7. atualizar o runbook da skill `operating-tenable-reports` e o `SKILL.md` somente
+   se o roteamento operacional mudar;
+8. preservar documentos históricos e acrescentar notas de substituição quando
+   houver contrato antigo incompatível, em vez de apagar decisões anteriores;
+9. conferir exemplos de comandos, textos da interface, links internos e ajuda da
+   CLI contra a implementação final;
+10. executar `tools/validate_project_guidance.py`, auditoria de secrets, suíte
+    completa e `git diff --check` após as mudanças documentais.
+
+Os documentos devem descrever apenas recursos entregues e validados. A tela Admin
+não pode ser anunciada como capaz de sincronizar o Agendador antes da validação
+real dessa integração.
+
+## 22. Referências oficiais
 
 - Tenable VM e WAS integrations:
   https://developer.tenable.com/docs/vm-and-was-integrations
