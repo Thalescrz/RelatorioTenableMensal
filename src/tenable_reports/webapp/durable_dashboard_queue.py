@@ -11,7 +11,7 @@ from typing import Any, Mapping, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from tenable_reports.application.execution_control import FileExecutionControl
-from tenable_reports.application.failures import classify_failure
+from tenable_reports.application.failures import FailureCode, classify_failure
 from tenable_reports.application.web_batches import (
     BatchClientConflictError,
     BatchConfirmationError,
@@ -23,7 +23,6 @@ from tenable_reports.application.web_batches import (
 )
 from tenable_reports.domain.web_batches import (
     BATCH_TERMINAL_STATUSES,
-    RETRYABLE_BATCH_JOB_STATUSES,
     BatchAction,
     BatchJobPhase,
     BatchJobStatus,
@@ -66,6 +65,102 @@ class DashboardQueueSnapshot:
     jobs: tuple[dict[str, Any], ...]
     batches: tuple[dict[str, Any], ...]
     active_job_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class BatchJobRetryability:
+    candidate: bool
+    retryable: bool
+    recorded_error_code: str | None
+    effective_error_code: str | None
+    reason: str
+
+
+def _batch_job_retryability(job: WebBatchJob) -> BatchJobRetryability:
+    recorded_code = str(job.error_code or "").strip() or None
+    if job.status is BatchJobStatus.FAILED:
+        if recorded_code == "RECOVERY_SNAPSHOT_FAILED":
+            return BatchJobRetryability(
+                candidate=True,
+                retryable=True,
+                recorded_error_code=recorded_code,
+                effective_error_code=recorded_code,
+                reason="Falha importada com estado remoto preservado.",
+            )
+        failure = classify_failure({
+            "error_code": recorded_code,
+            "message": job.error_message,
+        })
+        preserved_vm_state = bool(
+            job.vm_export_uuid
+            or job.vm_resume_manifest_path
+            or job.collection_checkpoint_path
+            or str(job.payload.get("vm_export_uuid") or "").strip()
+            or str(job.payload.get("vm_resume_manifest") or "").strip()
+        )
+        if (
+            recorded_code is None
+            and failure.code is FailureCode.UNEXPECTED
+            and preserved_vm_state
+        ):
+            return BatchJobRetryability(
+                candidate=True,
+                retryable=True,
+                recorded_error_code=None,
+                effective_error_code=FailureCode.TENABLE_TEMPORARY.value,
+                reason="Export VM preservado pode ser consultado novamente.",
+            )
+        return BatchJobRetryability(
+            candidate=True,
+            retryable=failure.retryable,
+            recorded_error_code=recorded_code,
+            effective_error_code=failure.code.value,
+            reason=(
+                "Falha transitória com nova tentativa permitida."
+                if failure.retryable
+                else "Falha requer correção antes de uma nova tentativa."
+            ),
+        )
+    if job.status is BatchJobStatus.PARTIALLY_COMPLETE:
+        components = tuple(
+            str(component)
+            for component in job.payload.get("retryable_components", ())
+            if str(component) in {"VM_CORE", "WAS", "CLOUD"}
+        )
+        has_run = bool(
+            job.run_id or str(job.payload.get("run_id") or "").strip()
+        )
+        retryable = bool(components and has_run)
+        return BatchJobRetryability(
+            candidate=True,
+            retryable=retryable,
+            recorded_error_code=recorded_code,
+            effective_error_code=recorded_code,
+            reason=(
+                "Conjunto parcial com componentes retentáveis: "
+                + ", ".join(components)
+                if retryable
+                else "Conjunto parcial sem componente retentável identificado."
+            ),
+        )
+    if job.status in {
+        BatchJobStatus.INTERRUPTED,
+        BatchJobStatus.CANCELLED_BY_USER,
+    }:
+        return BatchJobRetryability(
+            candidate=True,
+            retryable=True,
+            recorded_error_code=recorded_code,
+            effective_error_code=recorded_code,
+            reason="Execução interrompida pode ser retomada com o estado preservado.",
+        )
+    return BatchJobRetryability(
+        candidate=False,
+        retryable=False,
+        recorded_error_code=recorded_code,
+        effective_error_code=recorded_code,
+        reason="Execução não está pendente de retentativa.",
+    )
 
 
 class DurableDashboardJobQueue:
@@ -435,7 +530,7 @@ class DurableDashboardJobQueue:
                 (selected_job_id is None or job.id == selected_job_id)
                 and (
                     request.kind is BatchAction.RERUN_ALL
-                    or job.status in RETRYABLE_BATCH_JOB_STATUSES
+                    or _batch_job_retryability(job).retryable
                 )
             )
         )
@@ -759,6 +854,7 @@ class DurableDashboardJobQueue:
         }
         for batch in batches[:normalized_summary_limit]:
             jobs = jobs_by_batch[batch.id]
+            retryability = tuple(_batch_job_retryability(job) for job in jobs)
             counts = {
                 status: sum(job.status is status for job in jobs)
                 for status in BatchJobStatus
@@ -822,11 +918,12 @@ class DurableDashboardJobQueue:
                         BatchJobStatus.CANCELLED_BY_USER
                     ],
                     "queued_count": counts[BatchJobStatus.QUEUED],
-                    "retryable_count": (
-                        counts[BatchJobStatus.FAILED]
-                        + counts[BatchJobStatus.PARTIALLY_COMPLETE]
-                        + counts[BatchJobStatus.INTERRUPTED]
-                        + counts[BatchJobStatus.CANCELLED_BY_USER]
+                    "retryable_count": sum(
+                        decision.retryable for decision in retryability
+                    ),
+                    "non_retryable_count": sum(
+                        decision.candidate and not decision.retryable
+                        for decision in retryability
                     ),
                     "progress_percent": (
                         round(100 * finished / len(jobs)) if jobs else 100
@@ -870,6 +967,7 @@ class DurableDashboardJobQueue:
                 if event.job_id is not None:
                     events_by_job.setdefault(event.job_id, []).append(event)
             for job in jobs_by_batch[batch.id]:
+                retryability = _batch_job_retryability(job)
                 if job.status in active_statuses:
                     active_job_count += 1
                 row = _safe_dashboard_value(job.payload)
@@ -895,6 +993,18 @@ class DurableDashboardJobQueue:
                         "build_started_at": job.build_started_at,
                         "ended_at": job.ended_at,
                         "error": job.error_message,
+                        "retryable": (
+                            retryability.retryable
+                            if retryability.candidate
+                            else None
+                        ),
+                        "recorded_error_code": (
+                            retryability.recorded_error_code
+                        ),
+                        "effective_error_code": (
+                            retryability.effective_error_code
+                        ),
+                        "retryability_reason": retryability.reason,
                         "run_id": job.run_id or row.get("run_id"),
                         "queue_position": None,
                     }
@@ -999,8 +1109,16 @@ class DurableDashboardJobQueue:
                     "attempt_number": job.attempt_number,
                     "run_id": job.run_id,
                     "exit_code": job.exit_code,
-                    "error_code": job.error_code,
+                    "error_code": retryability.effective_error_code,
+                    "recorded_error_code": retryability.recorded_error_code,
+                    "effective_error_code": retryability.effective_error_code,
                     "error_message": job.error_message,
+                    "retryable": (
+                        retryability.retryable
+                        if retryability.candidate
+                        else None
+                    ),
+                    "retryability_reason": retryability.reason,
                     "created_at": job.created_at,
                     "started_at": job.started_at,
                     "remote_started_at": job.remote_started_at,
@@ -1021,6 +1139,7 @@ class DurableDashboardJobQueue:
                     "was_retry_outcome": was_by_job.get(job.id, {}).get("outcome"),
                 }
                 for job in self.repository.list_batch_jobs(normalized_id)
+                for retryability in (_batch_job_retryability(job),)
             ],
             "events": [
                 {

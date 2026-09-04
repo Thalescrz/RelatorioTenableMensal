@@ -270,6 +270,14 @@ falha** seleciona somente componentes cuja tentativa mais recente está falha ou
 interrompida e marcada como retentável; **Selecionar componentes** permite reduzir
 essa seleção. Componente concluído fica desabilitado.
 
+No lote, **Falhas** contabiliza todos os jobs falhos, enquanto
+**Não retentáveis** destaca aqueles que exigem correção prévia. O botão
+**Tentar falhas, parciais e interrompidos** usa a mesma decisão exibida em
+**Ver clientes do lote**. Registros antigos `UNEXPECTED` são reinterpretados
+somente quando a mensagem comprova timeout, export sem progresso ou
+indisponibilidade do PostgreSQL; o código original continua visível para auditoria.
+Falha realmente não retentável não entra silenciosamente no lote derivado.
+
 Cloud é independente e o retry integrado reaproveita dataset/checkpoint quando
 válido, sem repetir VM ou WAS. WAS precisa de base VM reutilizável para reparar
 somente documentos com seção WEB. VM pode retomar UUID/chunks ou normalizar raw

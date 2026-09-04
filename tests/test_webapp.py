@@ -413,6 +413,28 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("javascript", headers.get("Content-Type", "").lower())
         self.assertIn("createRefreshCoordinator", source)
 
+    def test_batch_retryability_static_asset_is_served_as_javascript(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+            )
+            client = LocalClient(app)
+            try:
+                status, headers, body = client.download(
+                    "/static/batch_retryability.js"
+                )
+            finally:
+                client.close()
+                app.jobs.close()
+
+        source = body.decode("utf-8")
+        self.assertEqual(status, 200)
+        self.assertIn("javascript", headers.get("Content-Type", "").lower())
+        self.assertIn("TenableBatchRetryability", source)
+
     def test_state_exposes_sanitized_analysts_and_responsible_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

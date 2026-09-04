@@ -78,6 +78,16 @@ def _source_repository(
                     ),
                 },
                 logical_job_id=f"logical-{position}",
+                error_code=(
+                    "TENABLE_TEMPORARY"
+                    if status is BatchJobStatus.FAILED
+                    else None
+                ),
+                error_message=(
+                    "Tempo maximo excedido aguardando o export VM."
+                    if status is BatchJobStatus.FAILED
+                    else None
+                ),
             )
             for position, status in enumerate(statuses, start=1)
         ),
@@ -206,6 +216,40 @@ def test_retry_incomplete_skips_non_retryable_partial_without_blocking_failures(
                 source_batch_id=SOURCE_ID,
                 kind=BatchAction.RETRY_INCOMPLETE,
                 idempotency_key="retry-skip-non-retryable-partial",
+            )
+        )
+    finally:
+        queue.close()
+
+    jobs = repository.list_batch_jobs(UUID(detail["batch"]["id"]))
+    assert tuple(job.client_id for job in jobs) == ("client-2",)
+
+
+def test_retry_incomplete_excludes_genuinely_non_retryable_failed_job(
+    tmp_path: Path,
+) -> None:
+    repository = _source_repository((
+        BatchJobStatus.FAILED,
+        BatchJobStatus.FAILED,
+    ))
+    definitive, transient = repository.list_batch_jobs(SOURCE_ID)
+    repository._jobs[definitive.id] = replace(
+        definitive,
+        error_code="PROFILE_INVALID",
+        error_message="Perfil do cliente invalido.",
+    )
+    repository._jobs[transient.id] = replace(
+        transient,
+        error_code="UNEXPECTED",
+        error_message="Export VM ficou sem progresso por 2598 segundos.",
+    )
+    queue = _queue(tmp_path, repository)
+    try:
+        detail = queue.derive_batch(
+            DerivedBatchRequest(
+                source_batch_id=SOURCE_ID,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key="retry-only-effective-retryable-failures",
             )
         )
     finally:

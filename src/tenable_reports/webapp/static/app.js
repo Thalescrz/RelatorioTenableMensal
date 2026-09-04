@@ -3,6 +3,7 @@ const state = { data: null, selectedClient: null, runClientIds: [], runScope: "s
 const { createLatestRequestGuard } = window.TenableReportRequestGuard;
 const reportRequestGuard = createLatestRequestGuard();
 const { createRefreshCoordinator } = window.TenableDashboardRefresh;
+const { retryabilityView } = window.TenableBatchRetryability;
 let refreshErrorShouldToast = false;
 const refreshCoordinator = createRefreshCoordinator({
   load: () => api("/api/state"),
@@ -318,6 +319,7 @@ function renderBatches() {
     ["Concluídos", batch.completed_count],
     ["Parciais", batch.partial_count],
     ["Falhas", batch.failed_count],
+    ["Não retentáveis", batch.non_retryable_count],
     ["Interrompidos", batch.interrupted_count],
     ["Pendentes", Number(batch.queued_count || 0) + Number(batch.cancelled_count || 0)],
   ].map(([label, value]) => `<div><strong>${Number(value || 0)}</strong><span>${label}</span></div>`).join("");
@@ -361,10 +363,17 @@ async function openBatchClients(batchId) {
       const copyUuid = vmUuid
         ? `<button class="mini-button" data-copy-vm-uuid="${escapeHtml(vmUuid)}" type="button">Copiar UUID</button>`
         : "";
-      const retry = job.vm_export_uuid && ["FAILED", "INTERRUPTED", "CANCELLED_BY_USER"].includes(job.status)
+      const retryability = retryabilityView(job);
+      const retryabilityBadge = retryability.visible
+        ? `<span class="retryability-pill ${escapeHtml(retryability.tone)}">${escapeHtml(retryability.label)}</span>`
+        : "";
+      const classificationCopy = retryability.visible
+        ? `<small class="retryability-detail">Classificação efetiva: ${escapeHtml(retryability.effectiveCode || "não informada")}. ${escapeHtml(retryability.reason)}${retryability.recordedCopy ? ` ${escapeHtml(retryability.recordedCopy)}` : ""}</small>`
+        : "";
+      const retry = job.retryable === true && job.vm_export_uuid && ["FAILED", "INTERRUPTED", "CANCELLED_BY_USER"].includes(job.status)
         ? `<button class="mini-button" data-retry-preserved-job="${escapeHtml(job.id)}" type="button">Verificar export preservado</button>`
         : "";
-      return `<article class="batch-client-row"><div><strong>${escapeHtml(job.client_id)}</strong><span>${escapeHtml(JOB_PHASE_LABELS[job.phase] || job.phase)} · ${escapeHtml(job.status)} · tentativa ${Number(job.attempt_number || 1)}</span>${copyUuid}${retry}</div><div><span>${escapeHtml(vmCopy)}</span><span>${escapeHtml(remoteCopy)}</span><span>${escapeHtml(was)}</span>${job.error_code ? `<small>${escapeHtml(job.error_code)} · ${escapeHtml(job.error_message || "")}</small>` : ""}</div></article>`;
+      return `<article class="batch-client-row"><div><strong>${escapeHtml(job.client_id)}</strong>${retryabilityBadge}<span>${escapeHtml(JOB_PHASE_LABELS[job.phase] || job.phase)} · ${escapeHtml(job.status)} · tentativa ${Number(job.attempt_number || 1)}</span>${copyUuid}${retry}</div><div><span>${escapeHtml(vmCopy)}</span><span>${escapeHtml(remoteCopy)}</span><span>${escapeHtml(was)}</span>${job.error_code ? `<small>${escapeHtml(job.error_code)} · ${escapeHtml(job.error_message || "")}</small>` : ""}${classificationCopy}</div></article>`;
     }).join("") : '<div class="loading">Nenhum cliente registrado neste lote.</div>';
     dialog.querySelectorAll("[data-copy-vm-uuid]").forEach(button => button.addEventListener("click", async () => {
       try {

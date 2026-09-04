@@ -40,7 +40,7 @@ def _run_selection_script(source: str) -> object:
         ],
         check=True,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
     )
     return json.loads(completed.stdout)
 
@@ -83,6 +83,68 @@ def _run_dashboard_refresh_script(source: str) -> object:
         text=True,
     )
     return json.loads(completed.stdout)
+
+
+def _run_batch_retryability_script(source: str) -> object:
+    script_path = STATIC / "batch_retryability.js"
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            (
+                f"const helpers = require({json.dumps(str(script_path))});"
+                f"const result = (() => {{ {source} }})();"
+                "process.stdout.write(JSON.stringify(result));"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    return json.loads(completed.stdout)
+
+
+def test_retryability_view_distinguishes_effective_and_recorded_classification() -> None:
+    result = _run_batch_retryability_script(
+        "return ["
+        "helpers.retryabilityView({"
+        "retryable: true, effective_error_code: 'TENABLE_TEMPORARY', "
+        "recorded_error_code: 'UNEXPECTED', retryability_reason: 'Falha transitória.'"
+        "}),"
+        "helpers.retryabilityView({"
+        "retryable: false, effective_error_code: 'PROFILE_INVALID', "
+        "recorded_error_code: 'PROFILE_INVALID', retryability_reason: 'Corrija o perfil.'"
+        "}),"
+        "helpers.retryabilityView({retryable: null})"
+        "];"
+    )
+
+    assert result == [
+        {
+            "visible": True,
+            "label": "Retentável",
+            "tone": "retryable",
+            "effectiveCode": "TENABLE_TEMPORARY",
+            "recordedCopy": "Registrado originalmente como UNEXPECTED.",
+            "reason": "Falha transitória.",
+        },
+        {
+            "visible": True,
+            "label": "Não retentável",
+            "tone": "non-retryable",
+            "effectiveCode": "PROFILE_INVALID",
+            "recordedCopy": "",
+            "reason": "Corrija o perfil.",
+        },
+        {
+            "visible": False,
+            "label": "",
+            "tone": "",
+            "effectiveCode": "",
+            "recordedCopy": "",
+            "reason": "",
+        },
+    ]
 
 
 def test_refresh_coordinator_coalesces_periodic_requests() -> None:
@@ -466,6 +528,29 @@ def test_batch_summary_counts_warnings_as_complete_not_retryable(
                 position=position,
                 status=status,
                 attempt_number=1,
+                error_code=(
+                    "TENABLE_TEMPORARY"
+                    if status is BatchJobStatus.FAILED
+                    else None
+                ),
+                error_message=(
+                    "Tempo maximo excedido aguardando o export VM."
+                    if status is BatchJobStatus.FAILED
+                    else None
+                ),
+                payload=(
+                    {
+                        "run_id": "published-partial-run",
+                        "retryable_components": ["WAS"],
+                    }
+                    if status is BatchJobStatus.PARTIALLY_COMPLETE
+                    else {}
+                ),
+                run_id=(
+                    "published-partial-run"
+                    if status is BatchJobStatus.PARTIALLY_COMPLETE
+                    else None
+                ),
             )
             for position, status in enumerate(
                 (
@@ -508,7 +593,77 @@ def test_batch_summary_counts_warnings_as_complete_not_retryable(
     assert summary["interrupted_count"] == 1
     assert summary["cancelled_count"] == 1
     assert summary["retryable_count"] == 4
+    assert summary["non_retryable_count"] == 0
     assert summary["progress_percent"] == 100
+
+
+def test_batch_snapshot_exposes_effective_and_recorded_retryability(
+    tmp_path: Path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    batch_id = UUID(int=1250)
+    repository.create_batch(
+        WebBatch(
+            id=batch_id,
+            idempotency_key="batch:ui:effective-retryability",
+            kind="GENERATE_ALL",
+            status=BatchStatus.COMPLETE_WITH_FAILURES,
+            options={"requests": []},
+        ),
+        (
+            WebBatchJob(
+                id=UUID(int=1251),
+                batch_id=batch_id,
+                client_id="transient-client",
+                position=1,
+                status=BatchJobStatus.FAILED,
+                attempt_number=1,
+                error_code="UNEXPECTED",
+                error_message="Export VM ficou sem progresso por 2598 segundos.",
+            ),
+            WebBatchJob(
+                id=UUID(int=1252),
+                batch_id=batch_id,
+                client_id="definitive-client",
+                position=2,
+                status=BatchJobStatus.FAILED,
+                attempt_number=1,
+                error_code="PROFILE_INVALID",
+                error_message="Perfil do cliente invalido.",
+            ),
+        ),
+    )
+
+    def runner(command, cwd, progress_callback=None):
+        return subprocess.CompletedProcess(command, 0, stdout="{}", stderr="")
+
+    executor = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        runner,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=executor,
+        worker_id="worker-ui-effective-retryability",
+        start_worker=False,
+    )
+    try:
+        summary = queue.batches_snapshot()[0]
+        detail = queue.batch_snapshot(batch_id)
+    finally:
+        queue.close()
+
+    assert summary["retryable_count"] == 1
+    assert summary["non_retryable_count"] == 1
+    jobs = {job["client_id"]: job for job in detail["jobs"]}
+    assert jobs["transient-client"]["recorded_error_code"] == "UNEXPECTED"
+    assert jobs["transient-client"]["effective_error_code"] == "TENABLE_TEMPORARY"
+    assert jobs["transient-client"]["retryable"] is True
+    assert jobs["definitive-client"]["recorded_error_code"] == "PROFILE_INVALID"
+    assert jobs["definitive-client"]["effective_error_code"] == "PROFILE_INVALID"
+    assert jobs["definitive-client"]["retryable"] is False
 
 
 def test_batch_snapshots_expose_safe_phase_counts_and_worker_capacity(

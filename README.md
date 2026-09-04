@@ -120,13 +120,17 @@ No painel do lote:
   e concluida imediatamente; pedidos abandonados sao reconciliados no reinicio;
 - **Retomar lote** libera somente trabalhos que permanecem retomáveis na própria
   fase;
-- **Tentar falhas/interrompidos** cria outro lote apenas com falhas, interrupções e
-  cancelamentos; a interface seleciona o lote derivado assim que ele é criado;
+- **Tentar falhas, parciais e interrompidos** cria outro lote apenas com itens cuja
+  classificação efetiva permite retentativa; a interface separa os não retentáveis
+  e seleciona o lote derivado assim que ele é criado;
 - **Gerar todos novamente** abre a seleção explícita e cria outro lote somente com
   os clientes confirmados.
 
 O painel distingue coleta remota, espera por decisão WEB, pronto para montagem,
 montando documento e terminal. Após 900 segundos sem progresso remoto há alerta.
+Em **Ver clientes do lote**, cada pendência mostra `Retentável` ou
+`Não retentável`, o código efetivo e, quando aplicável, o código originalmente
+registrado para auditoria.
 O seletor de lotes mostra horário, tipo da operação e os oito primeiros caracteres
 do ID; confira esses dados antes de retentar um conjunto antigo.
 O teto padrão é de 36.000 segundos (10 horas) por UUID, somando fila e

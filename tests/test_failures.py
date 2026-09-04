@@ -83,3 +83,39 @@ def test_postgresql_connection_exhaustion_is_clean_and_retryable() -> None:
         "PostgreSQL sem conexões disponíveis; a operação será retentada."
     )
     assert "�" not in failure.message
+
+
+def test_legacy_unexpected_failure_is_reclassified_when_message_proves_transient() -> None:
+    cases = (
+        (
+            "Export VM ficou sem progresso por 2598 segundos.",
+            FailureCode.TENABLE_TEMPORARY,
+        ),
+        (
+            "Tempo maximo total excedido aguardando o export VM.",
+            FailureCode.TENABLE_TEMPORARY,
+        ),
+        (
+            'OperationalError: connection failed: FATAL: muitas conex�es para role "app"',
+            FailureCode.DATABASE_UNAVAILABLE,
+        ),
+    )
+
+    for message, expected_code in cases:
+        failure = classify_failure({
+            "error_code": "UNEXPECTED",
+            "message": message,
+        })
+
+        assert failure.code is expected_code
+        assert failure.retryable is True
+
+
+def test_legacy_unexpected_failure_stays_non_retryable_without_transient_evidence() -> None:
+    failure = classify_failure({
+        "error_code": "UNEXPECTED",
+        "message": "Falha operacional sem mensagem detalhada.",
+    })
+
+    assert failure.code is FailureCode.UNEXPECTED
+    assert failure.retryable is False

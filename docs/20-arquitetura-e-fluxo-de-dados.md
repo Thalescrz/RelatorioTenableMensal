@@ -249,10 +249,15 @@ mesmo cliente. O analista pode desmarcá-lo ou solicitar a parada individual. Jo
 pendentes são finalizados localmente; jobs em execução recebem sinal cooperativo.
 Nenhuma dessas ações cancela o export remoto, e os demais clientes continuam.
 
-**Tentar falhas/interrompidos** cria um lote derivado somente de `FAILED`,
-`INTERRUPTED` e `CANCELLED_BY_USER`. **Gerar todos novamente** inclui a seleção
-confirmada e exige a frase de confirmação. Nenhum dos dois altera o lote de origem;
-conflitos com outro trabalho ativo do mesmo cliente retornam HTTP 409.
+**Tentar falhas, parciais e interrompidos** cria um lote derivado somente das
+pendências efetivamente retentáveis entre `FAILED`, `PARTIALLY_COMPLETE`,
+`INTERRUPTED` e `CANCELLED_BY_USER`. Uma decisão única combina estado, código de
+falha, evidência transitória da mensagem e checkpoint preservado; a mesma decisão
+alimenta a derivação, os contadores e o detalhe exibido pela API. O código gravado
+é mantido como `recorded_error_code` e a interpretação atual é publicada como
+`effective_error_code`. **Gerar todos novamente** inclui a seleção confirmada e
+exige a frase de confirmação. Nenhum dos dois altera o lote de origem; conflitos
+com outro trabalho ativo do mesmo cliente retornam HTTP 409.
 
 Um snapshot anterior à fila durável pode ser validado por
 `import-web-batch-recovery --dry-run`. A aplicação mapeia `running` para

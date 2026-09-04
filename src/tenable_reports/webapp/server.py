@@ -3670,6 +3670,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "client_selection.js",
                 "report_request_guard.js",
                 "dashboard_refresh.js",
+                "batch_retryability.js",
             }:
                 self._json_error(HTTPStatus.NOT_FOUND, "Arquivo nao encontrado.")
                 return

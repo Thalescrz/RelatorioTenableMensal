@@ -67,6 +67,8 @@ def _code_from_text(value: str) -> FailureCode:
     upper = value.upper()
     if "EXPORT" in upper and "TERMINOU COM ESTADO CANCEL" in upper:
         return FailureCode.TENABLE_TEMPORARY
+    if "EXPORT" in upper and "SEM PROGRESSO" in upper:
+        return FailureCode.TENABLE_TEMPORARY
     for code in FailureCode:
         if code.value in upper:
             return code
@@ -89,10 +91,13 @@ def _code_from_text(value: str) -> FailureCode:
         and "EXPORT-STATE.JSON" in upper
     ):
         return FailureCode.LOCAL_FILESYSTEM_TRANSIENT
-    if any(token in upper for token in (
-        "TIMEOUT", "TIMED OUT", "TEMPO MAXIMO EXCEDIDO",
-        "FALHA DE TRANSPORTE", "502", "503", "504",
-    )):
+    if (
+        re.search(r"TEMPO MAXIMO(?: TOTAL)? EXCEDIDO", upper)
+        or any(token in upper for token in (
+            "TIMEOUT", "TIMED OUT", "FALHA DE TRANSPORTE",
+            "502", "503", "504",
+        ))
+    ):
         return FailureCode.TENABLE_TEMPORARY
     if any(token in upper for token in ("POSTGRES", "DATABASE", "CONNECTION REFUSED")):
         return FailureCode.DATABASE_UNAVAILABLE
@@ -125,15 +130,17 @@ def classify_failure(value: Any) -> OperationalFailure:
         return value
     if isinstance(value, Mapping):
         raw_code = str(value.get("error_code") or "")
-        try:
-            code = FailureCode(raw_code)
-        except ValueError:
-            code = _code_from_text(
-                f"{raw_code} {value.get('message') or value.get('error') or ''}"
-            )
         message = sanitize_failure_message(
             value.get("message") or value.get("error") or raw_code
         )
+        try:
+            code = FailureCode(raw_code)
+        except ValueError:
+            code = _code_from_text(f"{raw_code} {message}")
+        if code is FailureCode.UNEXPECTED:
+            inferred_code = _code_from_text(message)
+            if inferred_code is not FailureCode.UNEXPECTED:
+                code = inferred_code
     else:
         message = sanitize_failure_message(value)
         code = _code_from_text(message)
