@@ -198,6 +198,9 @@ def collect_external_period(
             auto_cancel_on_timeout=bool(
                 getattr(args, "auto_cancel_on_timeout", True)
             ),
+            resume_budget_seconds=getattr(
+                args, "vm_resume_budget_seconds", None
+            ),
         )
         check_interruption()
         if vm_policy.outcome == "FALLBACK_FULL":

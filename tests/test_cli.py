@@ -1097,6 +1097,8 @@ class CliTests(unittest.TestCase):
                 include_output=False,
                 vm_export_uuid=None,
                 vm_resume_manifest=None,
+                remote_processing_timeout_seconds=36_000,
+                remote_progress_warning_seconds=900,
                 logical_job_id=None,
                 skip_history=True,
             )
@@ -1129,7 +1131,11 @@ class CliTests(unittest.TestCase):
                 patch.object(cli_module, "_compact_snapshot_repository", return_value=None),
                 patch.object(cli_module, "_inventory_client_from_environment", return_value=object()),
                 patch.object(cli_module, "_plugin_catalog_repository", return_value=None),
-                patch.object(cli_module, "_client_from_environment", return_value=object()),
+                patch.object(
+                    cli_module,
+                    "_client_from_environment",
+                    return_value=object(),
+                ) as vm_client_factory,
                 patch.object(cli_module, "_was_client_from_environment", return_value=object()),
                 patch.object(cli_module, "_selected_tags", return_value=()),
                 patch.object(cli_module, "_period_filters", return_value=({}, {})),
@@ -1157,6 +1163,14 @@ class CliTests(unittest.TestCase):
                 output_root=directory / "manual",
                 include_output=False,
                 execution_type="MANUAL",
+            )
+            self.assertEqual(
+                vm_client_factory.call_args.kwargs["no_progress_timeout_seconds"],
+                900,
+            )
+            self.assertEqual(
+                vm_client_factory.call_args.kwargs["max_wait_seconds"],
+                36_000,
             )
             self.assertEqual(result.tag_artifacts, ())
             self.assertEqual(result.tag_enriched_dataset_paths, {})

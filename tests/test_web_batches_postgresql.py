@@ -308,6 +308,43 @@ def test_repository_bulk_job_list_skips_connection_for_empty_ids() -> None:
     assert database.connection_calls == 0
 
 
+def test_repository_replaces_expired_vm_uuid_and_resets_remote_budget() -> None:
+    replacement_uuid = "00000000-0000-0000-0000-000000000703"
+    returned_row = list(_job_row(status="RUNNING", phase="REMOTE_RUNNING"))
+    returned_row[25] = replacement_uuid
+    returned_row[26] = "C:/fixture/replacement.partial.json"
+    returned_row[27] = "2026-09-03T23:00:00Z"
+    returned_row[28] = None
+    returned_row[29] = None
+    database = _Database([_Cursor(one=tuple(returned_row))])
+    repository = PostgresWebBatchRepository(database, migrate=False)
+
+    replaced = repository.record_vm_export_replacement(
+        UUID(int=11),
+        previous_export_uuid="00000000-0000-0000-0000-000000000702",
+        replacement_export_uuid=replacement_uuid,
+        resume_manifest_path="C:/fixture/replacement.partial.json",
+        origin="created",
+        observed_at="2026-09-03T23:00:00Z",
+    )
+
+    sql, params = database.connection_value.calls[0]
+    normalized_sql = " ".join(sql.lower().split())
+    assert "set vm_export_uuid = %s" in normalized_sql
+    assert "remote_export_started_at = %s" in normalized_sql
+    assert "remote_status_at = null" in normalized_sql
+    assert "remote_progress_at = null" in normalized_sql
+    assert "and vm_export_uuid = %s" in normalized_sql
+    assert params[-2:] == (
+        UUID(int=11),
+        "00000000-0000-0000-0000-000000000702",
+    )
+    assert replaced.vm_export_uuid == replacement_uuid
+    assert replaced.remote_export_started_at == "2026-09-03T23:00:00Z"
+    assert replaced.remote_status_at is None
+    assert replaced.remote_progress_at is None
+
+
 def test_repository_claims_one_job_with_skip_locked_and_records_event() -> None:
     database = _Database(
         [

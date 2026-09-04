@@ -316,6 +316,17 @@ class WebBatchRepository(Protocol):
         status_confirmed: bool = True,
     ) -> WebBatchJob: ...
 
+    def record_vm_export_replacement(
+        self,
+        job_id: UUID,
+        *,
+        previous_export_uuid: str,
+        replacement_export_uuid: str,
+        resume_manifest_path: str | None,
+        origin: str | None,
+        observed_at: str,
+    ) -> WebBatchJob: ...
+
     def request_action(
         self,
         batch_id: UUID,

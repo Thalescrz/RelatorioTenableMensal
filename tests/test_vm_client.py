@@ -351,6 +351,38 @@ class TenableVmClientTests(unittest.TestCase):
         self.assertEqual(caught.exception.timeout_phase, "total")
         self.assertGreaterEqual(caught.exception.last_status["elapsed_seconds"], 10)
 
+    def test_explicit_resume_budget_limits_only_that_wait_call(self) -> None:
+        transport = FakeTransport([
+            response(200, {
+                "status": "QUEUED",
+                "chunks_available": [],
+                "total_chunks": 0,
+            })
+        ])
+        times = iter((0.0, 11.0))
+        client = TenableVmClient(
+            TenableVmConfig(
+                access_key="access-fixture",
+                secret_key="secret-fixture",
+                poll_seconds=0,
+                max_wait_seconds=36_000,
+                max_processing_wait_seconds=36_000,
+            ),
+            transport=transport,
+            sleep=lambda _: None,
+            monotonic=lambda: next(times),
+        )
+
+        with self.assertRaises(ExportTimeoutError) as caught:
+            client.wait_for_completion(
+                "job-resumed-budget",
+                max_total_wait_seconds=10,
+            )
+
+        self.assertEqual(caught.exception.timeout_phase, "queue")
+        self.assertGreaterEqual(caught.exception.last_status["elapsed_seconds"], 10)
+        self.assertEqual(client.config.max_wait_seconds, 36_000)
+
     def test_processing_timeout_reports_remote_progress_and_stall(self) -> None:
         transport = FakeTransport([
             response(200, {

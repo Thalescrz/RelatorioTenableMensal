@@ -962,6 +962,108 @@ def test_executor_preserves_structured_failure_classification(tmp_path) -> None:
     assert result.payload["retryable"] is True
 
 
+def test_preserved_uuid_budget_does_not_shorten_the_whole_collection(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    legacy = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=legacy,
+        worker_id="worker-vm-budget",
+        start_worker=False,
+    )
+    observed: dict[str, object] = {}
+    job = replace(
+        _job(1),
+        payload={"remote_processing_timeout_seconds": 36_000},
+        vm_export_uuid="00000000-0000-0000-0000-000000000701",
+        remote_export_started_at="2000-01-01T00:00:00Z",
+    )
+
+    def complete(job_id: str) -> None:
+        with legacy._lock:
+            observed.update(legacy._jobs[job_id])
+            legacy._jobs[job_id].update(status="COMPLETE", exit_code=0)
+
+    legacy._run = complete
+    try:
+        queue._run_executor_job(job)
+    finally:
+        queue.close()
+
+    assert observed["remote_processing_timeout_seconds"] == 36_000
+    assert observed["vm_resume_budget_seconds"] == 1
+
+
+def test_recovery_replacement_promotes_new_uuid_and_resets_its_budget(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    old_started_at = "2026-09-02T00:00:00Z"
+    job = replace(
+        _job(1, status=BatchJobStatus.RUNNING),
+        phase=BatchJobPhase.REMOTE_RUNNING,
+        vm_export_uuid="00000000-0000-0000-0000-000000000702",
+        remote_export_started_at=old_started_at,
+        remote_status_at=old_started_at,
+        remote_progress_at=old_started_at,
+    )
+    repository.create_batch(batch, (job,))
+    legacy = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        lambda *args, **kwargs: None,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=legacy,
+        worker_id="worker-vm-replacement",
+        start_worker=False,
+    )
+    with queue._active_lock:
+        queue._active_jobs[job.id.hex] = job
+    replacement_uuid = "00000000-0000-0000-0000-000000000703"
+    try:
+        queue._persist_progress(job.id.hex, {
+            "event": "TENABLE_EXPORT_RECOVERY_UNAVAILABLE",
+            "source": "tenable_vm_vulnerabilities",
+            "previous_export_uuid": job.vm_export_uuid,
+            "replacement_export_uuid": replacement_uuid,
+            "replacement_origin": "created",
+            "replacement_started": True,
+            "reason": "UUID anterior expirou.",
+        })
+        replaced = repository.get_job(job.id)
+        assert replaced is not None
+        queue._persist_progress(job.id.hex, {
+            "event": "TENABLE_EXPORT_PROGRESS",
+            "source": "tenable_vm_vulnerabilities",
+            "export_uuid": replacement_uuid,
+            "origin": "created",
+            "status": "STARTED",
+            "status_query_ok": False,
+            "completed_chunks": 0,
+            "total_chunks": 0,
+            "persisted_chunks": [],
+            "partial_manifest": str((tmp_path / "replacement.partial.json").resolve()),
+        })
+        started = repository.get_job(job.id)
+    finally:
+        queue.close()
+
+    assert replaced.vm_export_uuid == replacement_uuid
+    assert replaced.remote_export_started_at != old_started_at
+    assert replaced.remote_status_at is None
+    assert replaced.remote_progress_at is None
+    assert started is not None
+    assert started.vm_export_uuid == replacement_uuid
+    assert started.vm_resume_manifest_path.endswith("replacement.partial.json")
+
+
 def test_vm_progress_is_persisted_on_job_before_retry_derivation(tmp_path) -> None:
     repository = InMemoryWebBatchRepository()
     batch = _batch(status=BatchStatus.RUNNING)

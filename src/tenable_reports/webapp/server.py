@@ -1935,6 +1935,11 @@ class JobQueue:
                     command.extend(("--vm-export-uuid", job["vm_export_uuid"]))
                 if job.get("vm_resume_manifest"):
                     command.extend(("--vm-resume-manifest", job["vm_resume_manifest"]))
+                if job.get("vm_resume_budget_seconds") is not None:
+                    command.extend((
+                        "--vm-resume-budget-seconds",
+                        str(job["vm_resume_budget_seconds"]),
+                    ))
                 if job.get("historical_source"):
                     command.extend(("--historical-source", job["historical_source"]))
                 if job.get("was_failure_policy"):

@@ -263,6 +263,21 @@ class StatusAwareResumeClient(FakeCollectionClient):
         return dict(self.status)
 
 
+class BudgetAwareStatusClient(StatusAwareResumeClient):
+    def __init__(self, status: dict[str, Any] | ApiError) -> None:
+        super().__init__(status)
+        self.wait_budget: float | None = None
+
+    def wait_for_completion(
+        self,
+        export_uuid: str,
+        *,
+        max_total_wait_seconds: float | None = None,
+    ) -> tuple[dict[str, Any], list[int]]:
+        self.wait_budget = max_total_wait_seconds
+        return super().wait_for_completion(export_uuid)
+
+
 class FakeWasCollectionClient:
     def __init__(self, chunks: dict[int, bytes]) -> None:
         self.chunks = chunks
@@ -803,6 +818,39 @@ class CollectionTests(unittest.TestCase):
             self.assertEqual(manifest["export_uuid"], "active-export")
             self.assertEqual(manifest["origin"], "resumed")
 
+    def test_active_resumed_uuid_uses_only_its_remaining_budget(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        with tempfile.TemporaryDirectory() as directory:
+            resume_manifest = Path(directory) / "resume.json"
+            resume_manifest.write_text(json.dumps({
+                "schema_version": 3,
+                "run_id": "old-run",
+                "logical_job_id": "logical-july",
+                "client_id": profile.client_id,
+                "tenant_id": profile.tenant_id,
+                "source": "tenable_vm_vulnerabilities",
+                "export_uuid": "active-budget-export",
+                "chunks": [],
+            }), encoding="utf-8")
+            client = BudgetAwareStatusClient({
+                "status": "PROCESSING",
+                "chunks_available": [],
+                "total_chunks": 1,
+            })
+
+            collect_vm_snapshot(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                output_root=Path(directory) / "retry",
+                run_id="run-retry-active-budget",
+                logical_job_id="logical-july",
+                resume_from=resume_manifest,
+                resume_budget_seconds=123,
+            )
+
+            self.assertEqual(client.wait_budget, 123)
+
     def test_resume_status_error_other_than_not_found_remains_visible(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
         with tempfile.TemporaryDirectory() as directory:
@@ -884,6 +932,76 @@ class CollectionTests(unittest.TestCase):
                     self.assertEqual(recovery["previous_export_uuid"], f"old-export-{index}")
                     self.assertEqual(recovery["replacement_export_uuid"], "fixture-export")
                     self.assertTrue(recovery["replacement_started"])
+
+    def test_replacement_export_receives_a_fresh_wait_budget(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        with tempfile.TemporaryDirectory() as directory:
+            resume_manifest = Path(directory) / "resume.json"
+            resume_manifest.write_text(json.dumps({
+                "schema_version": 3,
+                "run_id": "old-run",
+                "logical_job_id": "logical-july",
+                "client_id": profile.client_id,
+                "tenant_id": profile.tenant_id,
+                "source": "tenable_vm_vulnerabilities",
+                "export_uuid": "expired-budget-export",
+                "chunks": [],
+            }), encoding="utf-8")
+            client = BudgetAwareStatusClient(
+                ApiError("Export nao encontrado.", status_code=404)
+            )
+
+            collect_vm_snapshot(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                output_root=Path(directory) / "retry",
+                run_id="run-retry-replacement-budget",
+                logical_job_id="logical-july",
+                resume_from=resume_manifest,
+                resume_budget_seconds=1,
+            )
+
+            self.assertIsNone(client.wait_budget)
+
+    def test_same_unavailable_uuid_is_reported_once_when_manifest_and_argument_match(
+        self,
+    ) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        with tempfile.TemporaryDirectory() as directory:
+            resume_manifest = Path(directory) / "resume.json"
+            resume_manifest.write_text(json.dumps({
+                "schema_version": 3,
+                "run_id": "old-run",
+                "logical_job_id": "logical-july",
+                "client_id": profile.client_id,
+                "tenant_id": profile.tenant_id,
+                "source": "tenable_vm_vulnerabilities",
+                "export_uuid": "expired-shared-export",
+                "chunks": [],
+            }), encoding="utf-8")
+            client = StatusAwareResumeClient(
+                ApiError("Export nao encontrado.", status_code=404)
+            )
+            progress: list[dict[str, Any]] = []
+
+            collect_vm_snapshot(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={"state": ["OPEN"]}),
+                output_root=Path(directory) / "retry",
+                run_id="run-retry-deduplicated",
+                logical_job_id="logical-july",
+                export_uuid="expired-shared-export",
+                resume_from=resume_manifest,
+                progress_callback=progress.append,
+            )
+
+            recovery_events = [
+                event for event in progress
+                if event.get("event") == "TENABLE_EXPORT_RECOVERY_UNAVAILABLE"
+            ]
+            self.assertEqual(len(recovery_events), 1)
 
     def test_cancelled_provided_uuid_starts_new_export_before_waiting(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")

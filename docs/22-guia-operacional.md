@@ -191,6 +191,13 @@ retentativa. Cada job ativo é controlado separadamente; se um subprocesso não
 responder, o fallback encerra somente sua árvore e registra PID/evento. Depois, use
 a ação de falhas/interrompidos em vez de reabrir resultado terminal.
 
+O orçamento padrão de 10 horas pertence ao UUID VM. Ao retomar o mesmo UUID, a
+aplicação usa apenas o saldo desde sua criação, sem reduzir o prazo das consultas de
+ativos. Se a consulta de status confirmar que o UUID expirou ou terminou sem chunks
+recuperáveis, um UUID substituto é iniciado com 10 horas novas e promovido no banco
+junto com seu manifesto. Uma nova retentativa usa o substituto persistido; ela não
+volta silenciosamente ao UUID antigo.
+
 Lotes anteriores permanecem em `LEGACY`. Eles conservam o worker monolítico e não
 são migrados automaticamente para o pipeline em fases. Uma retentativa derivada de
 um lote importado `RECOVERED` é a exceção: período, UUID e manifesto continuam

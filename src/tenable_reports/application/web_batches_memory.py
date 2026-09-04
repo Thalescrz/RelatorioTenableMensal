@@ -235,6 +235,52 @@ class InMemoryWebBatchRepository(WebBatchRepository):
             self._jobs[job_id] = updated
             return updated
 
+    def record_vm_export_replacement(
+        self,
+        job_id: UUID,
+        *,
+        previous_export_uuid: str,
+        replacement_export_uuid: str,
+        resume_manifest_path: str | None,
+        origin: str | None,
+        observed_at: str,
+    ) -> WebBatchJob:
+        with self._lock:
+            current = self._jobs[job_id]
+            if current.vm_export_uuid != previous_export_uuid:
+                raise ValueError(
+                    "O UUID VM anterior nao corresponde ao trabalho atual."
+                )
+            payload = {
+                **dict(current.payload),
+                "vm_export_uuid": replacement_export_uuid,
+                "vm_resume_manifest": (
+                    resume_manifest_path or current.vm_resume_manifest_path
+                ),
+                "vm_remote": {
+                    "origin": origin,
+                    "status": "STARTED",
+                    "completed_chunks": 0,
+                    "total_chunks": 0,
+                    "persisted_chunks": [],
+                    "observed_at": observed_at,
+                    "progress_at": None,
+                },
+            }
+            updated = replace(
+                current,
+                payload=payload,
+                vm_export_uuid=replacement_export_uuid,
+                vm_resume_manifest_path=(
+                    resume_manifest_path or current.vm_resume_manifest_path
+                ),
+                remote_export_started_at=observed_at,
+                remote_status_at=None,
+                remote_progress_at=None,
+            )
+            self._jobs[job_id] = updated
+            return updated
+
     def request_action(
         self,
         batch_id: UUID,

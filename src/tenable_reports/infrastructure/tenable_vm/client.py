@@ -630,6 +630,7 @@ class TenableVmClient:
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
         chunk_callback: Callable[[int], None] | None = None,
         no_progress_timeout_seconds: float | None = None,
+        max_total_wait_seconds: float | None = None,
         cancellation_probe: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         started = self.monotonic()
@@ -646,6 +647,21 @@ class TenableVmClient:
         total_wait_limit = max(
             self.config.max_wait_seconds,
             self.config.max_processing_wait_seconds,
+        )
+        if max_total_wait_seconds is not None:
+            if max_total_wait_seconds <= 0:
+                raise ValueError("max_total_wait_seconds deve ser positivo.")
+            total_wait_limit = min(
+                total_wait_limit,
+                float(max_total_wait_seconds),
+            )
+        queue_wait_limit = min(
+            self.config.max_wait_seconds,
+            total_wait_limit,
+        )
+        processing_wait_limit = min(
+            self.config.max_processing_wait_seconds,
+            total_wait_limit,
         )
 
         def raise_if_cancelled() -> None:
@@ -823,7 +839,7 @@ class TenableVmClient:
                     progress_made=progress_made,
                     timeout_phase="no_progress",
                 )
-            if processing_started_at is None and elapsed >= self.config.max_wait_seconds:
+            if processing_started_at is None and elapsed >= queue_wait_limit:
                 raise ExportTimeoutError(
                     f"Tempo maximo excedido na fila do export {label}.",
                     export_uuid=export_uuid,
@@ -833,7 +849,7 @@ class TenableVmClient:
                 )
             if (
                 processing_started_at is not None
-                and processing_elapsed >= self.config.max_processing_wait_seconds
+                and processing_elapsed >= processing_wait_limit
             ):
                 raise ExportTimeoutError(
                     f"Tempo maximo excedido durante o processamento do export {label}.",
@@ -867,6 +883,7 @@ class TenableVmClient:
         *,
         progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
         chunk_callback: Callable[[int], None] | None = None,
+        max_total_wait_seconds: float | None = None,
         cancellation_probe: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         return self._wait_for_completion(
@@ -874,6 +891,7 @@ class TenableVmClient:
             self.get_export_status,
             label="VM",
             no_progress_timeout_seconds=self.config.no_progress_timeout_seconds,
+            max_total_wait_seconds=max_total_wait_seconds,
             progress_callback=progress_callback,
             chunk_callback=chunk_callback,
             cancellation_probe=cancellation_probe,

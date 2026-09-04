@@ -853,6 +853,8 @@ class CliCollectionRoutingTests(unittest.TestCase):
                 "profile.json",
                 "--checkpoint",
                 "checkpoint.json",
+                "--vm-resume-budget-seconds",
+                "321",
                 "--confirm-live-api",
             ]
         )
@@ -879,6 +881,7 @@ class CliCollectionRoutingTests(unittest.TestCase):
 
         self.assertIs(collect_args.handler, cli_module.command_collect_client)
         self.assertEqual(collect_args.checkpoint, "checkpoint.json")
+        self.assertEqual(collect_args.vm_resume_budget_seconds, 321)
         self.assertTrue(collect_args.confirm_live_api)
         self.assertIs(build_args.handler, cli_module.command_build_client)
         self.assertEqual(build_args.checkpoint, "checkpoint.json")

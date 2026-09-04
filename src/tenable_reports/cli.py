@@ -1645,10 +1645,7 @@ def _execute_period(
         ))
         client = _client_from_environment(
             credentials,
-            no_progress_timeout_seconds=float(
-                getattr(args, "remote_processing_timeout_seconds", None)
-                or no_progress_timeout_seconds
-            ),
+            no_progress_timeout_seconds=no_progress_timeout_seconds,
             max_processing_wait_seconds=getattr(
                 args, "remote_processing_timeout_seconds", None
             ),
@@ -4287,6 +4284,14 @@ def _add_complete_collection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--vm-export-uuid")
     parser.add_argument("--asset-resume-manifest")
     parser.add_argument("--vm-resume-manifest")
+    parser.add_argument(
+        "--vm-resume-budget-seconds",
+        type=int,
+        help=(
+            "Orcamento restante do UUID VM retomado; nao reduz o prazo de "
+            "ativos nem de um UUID substituto novo."
+        ),
+    )
     parser.add_argument("--minimum-free-gb", type=int, default=10)
     parser.add_argument("--was-export-uuid")
     parser.add_argument("--was-num-assets", type=int, default=1000)

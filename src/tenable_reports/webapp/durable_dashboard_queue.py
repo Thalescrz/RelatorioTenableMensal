@@ -523,6 +523,21 @@ class DurableDashboardJobQueue:
             return self.batch_snapshot(existing.id)
 
         source_jobs = self.repository.list_batch_jobs(source.id)
+        replacement_progress: dict[UUID, WebBatchEvent] = {}
+        for event in self.repository.list_events(source.id):
+            progress = event.payload
+            if (
+                event.job_id is not None
+                and event.event_type == "JOB_PROGRESS"
+                and str(progress.get("event") or "")
+                == "TENABLE_EXPORT_PROGRESS"
+                and str(progress.get("source") or "")
+                == "tenable_vm_vulnerabilities"
+                and str(progress.get("origin") or "").lower() == "created"
+                and str(progress.get("status") or "").upper() == "STARTED"
+                and str(progress.get("export_uuid") or "").strip()
+            ):
+                replacement_progress[event.job_id] = event
         selected = tuple(
             job
             for job in source_jobs
@@ -607,6 +622,33 @@ class DurableDashboardJobQueue:
             "_job_control_file",
         }
         for position, source_job in enumerate(selected, start=1):
+            replacement_event = replacement_progress.get(source_job.id)
+            replacement_payload = (
+                replacement_event.payload if replacement_event is not None else {}
+            )
+            replacement_uuid = str(
+                replacement_payload.get("export_uuid") or ""
+            ).strip()
+            has_unpersisted_replacement = bool(
+                replacement_uuid
+                and replacement_uuid != source_job.vm_export_uuid
+            )
+            retry_vm_export_uuid = (
+                replacement_uuid
+                if has_unpersisted_replacement
+                else source_job.vm_export_uuid
+            )
+            retry_vm_resume_manifest = (
+                str(replacement_payload.get("partial_manifest") or "").strip()
+                or None
+                if has_unpersisted_replacement
+                else source_job.vm_resume_manifest_path
+            )
+            retry_remote_started_at = (
+                replacement_event.created_at
+                if has_unpersisted_replacement and replacement_event is not None
+                else source_job.remote_export_started_at
+            )
             job_id = uuid5(batch_id, str(source_job.id))
             payload = {
                 key: value
@@ -636,10 +678,10 @@ class DurableDashboardJobQueue:
                     ),
                     "selected_components": selected_components,
                 })
-            if is_retry and source_job.vm_export_uuid:
-                payload["vm_export_uuid"] = source_job.vm_export_uuid
-            if is_retry and source_job.vm_resume_manifest_path:
-                payload["vm_resume_manifest"] = source_job.vm_resume_manifest_path
+            if is_retry and retry_vm_export_uuid:
+                payload["vm_export_uuid"] = retry_vm_export_uuid
+            if is_retry and retry_vm_resume_manifest:
+                payload["vm_resume_manifest"] = retry_vm_resume_manifest
             mode = str(payload.get("mode") or "manual")
             control_file = self._control_file(
                 batch_id=batch_id,
@@ -691,19 +733,23 @@ class DurableDashboardJobQueue:
                         reusable_checkpoint
                     ),
                     vm_export_uuid=(
-                        source_job.vm_export_uuid if is_retry else None
+                        retry_vm_export_uuid if is_retry else None
                     ),
                     vm_resume_manifest_path=(
-                        source_job.vm_resume_manifest_path if is_retry else None
+                        retry_vm_resume_manifest if is_retry else None
                     ),
                     remote_export_started_at=(
-                        source_job.remote_export_started_at if is_retry else None
+                        retry_remote_started_at if is_retry else None
                     ),
                     remote_status_at=(
-                        source_job.remote_status_at if is_retry else None
+                        None
+                        if is_retry and has_unpersisted_replacement
+                        else source_job.remote_status_at if is_retry else None
                     ),
                     remote_progress_at=(
-                        source_job.remote_progress_at if is_retry else None
+                        None
+                        if is_retry and has_unpersisted_replacement
+                        else source_job.remote_progress_at if is_retry else None
                     ),
                     control_file=control_file,
                     created_at=created_at,
@@ -1180,6 +1226,32 @@ class DurableDashboardJobQueue:
             return
         should_append = True
         if (
+            str(event.get("event") or "")
+            == "TENABLE_EXPORT_RECOVERY_UNAVAILABLE"
+            and str(event.get("source") or "")
+            == "tenable_vm_vulnerabilities"
+            and event.get("replacement_started") is True
+            and str(event.get("previous_export_uuid") or "").strip()
+            and str(event.get("replacement_export_uuid") or "").strip()
+            and str(active.vm_export_uuid or "")
+            == str(event.get("previous_export_uuid") or "")
+        ):
+            observed_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+            updated = self.repository.record_vm_export_replacement(
+                active.id,
+                previous_export_uuid=str(event["previous_export_uuid"]),
+                replacement_export_uuid=str(event["replacement_export_uuid"]),
+                resume_manifest_path=(
+                    str(event.get("partial_manifest"))
+                    if event.get("partial_manifest")
+                    else None
+                ),
+                origin=str(event.get("replacement_origin") or "") or None,
+                observed_at=observed_at,
+            )
+            with self._active_lock:
+                self._active_jobs[str(job_id)] = updated
+        if (
             str(event.get("event") or "") == "TENABLE_EXPORT_PROGRESS"
             and str(event.get("source") or "") == "tenable_vm_vulnerabilities"
             and str(event.get("export_uuid") or "").strip()
@@ -1202,29 +1274,28 @@ class DurableDashboardJobQueue:
                         error_fingerprint,
                         observed,
                     )
-                if not active.vm_export_uuid:
-                    observed_at = observed.isoformat().replace("+00:00", "Z")
-                    updated = self.repository.record_vm_export_progress(
-                        active.id,
-                        export_uuid=str(event["export_uuid"]),
-                        resume_manifest_path=(
-                            str(event.get("partial_manifest"))
-                            if event.get("partial_manifest")
-                            else None
-                        ),
-                        origin=str(event.get("origin") or "") or None,
-                        remote_status=str(event.get("status") or "STARTED").upper(),
-                        observed_at=observed_at,
-                        progress_at=None,
-                        completed_chunks=int(event.get("completed_chunks") or 0),
-                        total_chunks=int(event.get("total_chunks") or 0),
-                        persisted_chunks=tuple(
-                            int(item) for item in (event.get("persisted_chunks") or ())
-                        ),
-                        status_confirmed=False,
-                    )
-                    with self._active_lock:
-                        self._active_jobs[str(job_id)] = updated
+                observed_at = observed.isoformat().replace("+00:00", "Z")
+                updated = self.repository.record_vm_export_progress(
+                    active.id,
+                    export_uuid=str(event["export_uuid"]),
+                    resume_manifest_path=(
+                        str(event.get("partial_manifest"))
+                        if event.get("partial_manifest")
+                        else None
+                    ),
+                    origin=str(event.get("origin") or "") or None,
+                    remote_status=str(event.get("status") or "STARTED").upper(),
+                    observed_at=observed_at,
+                    progress_at=None,
+                    completed_chunks=int(event.get("completed_chunks") or 0),
+                    total_chunks=int(event.get("total_chunks") or 0),
+                    persisted_chunks=tuple(
+                        int(item) for item in (event.get("persisted_chunks") or ())
+                    ),
+                    status_confirmed=False,
+                )
+                with self._active_lock:
+                    self._active_jobs[str(job_id)] = updated
             else:
                 persisted = tuple(
                     sorted(int(item) for item in (event.get("persisted_chunks") or ()))
@@ -1400,12 +1471,17 @@ class DurableDashboardJobQueue:
                     0,
                     int((datetime.now(UTC) - remote_started).total_seconds()),
                 )
-                payload["remote_processing_timeout_seconds"] = max(
+                remote_budget_seconds = max(
                     1,
-                    36_000 - elapsed,
+                    int(payload.get("remote_processing_timeout_seconds") or 36_000),
+                )
+                payload["remote_processing_timeout_seconds"] = remote_budget_seconds
+                payload["vm_resume_budget_seconds"] = max(
+                    1,
+                    remote_budget_seconds - elapsed,
                 )
             except (TypeError, ValueError):
-                payload["remote_processing_timeout_seconds"] = 36_000
+                payload["vm_resume_budget_seconds"] = 36_000
         with self.executor._lock:
             self.executor._jobs[job_id] = payload
         with self._active_lock:

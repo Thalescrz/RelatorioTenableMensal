@@ -22,6 +22,7 @@ from tenable_reports.domain.web_batches import (
     BatchJobStatus,
     BatchStatus,
     WebBatch,
+    WebBatchEvent,
     WebBatchJob,
 )
 from tenable_reports.webapp.durable_dashboard_queue import (
@@ -348,6 +349,65 @@ def test_retry_preserves_uuid_manifest_and_original_remote_budget(tmp_path: Path
     assert retried.payload["vm_export_uuid"].endswith("0888")
     assert retried.payload["vm_resume_manifest"] == str(manifest)
     assert retried.remote_export_started_at == "2026-09-02T00:00:00Z"
+
+
+def test_retry_recovers_latest_replacement_uuid_from_immutable_progress_event(
+    tmp_path: Path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    source = WebBatch(
+        id=UUID(int=1260),
+        idempotency_key="batch:replacement:event",
+        kind="RETRY_INCOMPLETE",
+        status=BatchStatus.COMPLETE_WITH_FAILURES,
+    )
+    old_manifest = str((tmp_path / "old.partial.json").resolve())
+    new_manifest = str((tmp_path / "new.partial.json").resolve())
+    job = WebBatchJob(
+        id=UUID(int=1261),
+        batch_id=source.id,
+        client_id="client-replacement",
+        position=1,
+        status=BatchJobStatus.FAILED,
+        phase=BatchJobPhase.TERMINAL,
+        attempt_number=3,
+        payload={"mode": "manual", "days": 30},
+        error_code="TENABLE_TEMPORARY",
+        error_message="Tempo maximo excedido aguardando o export VM.",
+        vm_export_uuid="00000000-0000-0000-0000-000000000881",
+        vm_resume_manifest_path=old_manifest,
+        remote_export_started_at="2026-09-02T00:00:00Z",
+    )
+    repository.create_batch(source, (job,))
+    repository.append_event(WebBatchEvent(
+        batch_id=source.id,
+        job_id=job.id,
+        event_type="JOB_PROGRESS",
+        payload={
+            "event": "TENABLE_EXPORT_PROGRESS",
+            "source": "tenable_vm_vulnerabilities",
+            "export_uuid": "00000000-0000-0000-0000-000000000882",
+            "origin": "created",
+            "status": "STARTED",
+            "partial_manifest": new_manifest,
+            "status_query_ok": False,
+        },
+        created_at="2026-09-03T22:55:55Z",
+    ))
+    queue = _queue(tmp_path, repository)
+    try:
+        detail = queue.derive_batch(DerivedBatchRequest(
+            source_batch_id=source.id,
+            kind=BatchAction.RETRY_INCOMPLETE,
+            idempotency_key="retry:replacement:event",
+        ))
+    finally:
+        queue.close()
+
+    retried = repository.list_batch_jobs(UUID(detail["batch"]["id"]))[0]
+    assert retried.vm_export_uuid.endswith("0882")
+    assert retried.vm_resume_manifest_path == new_manifest
+    assert retried.remote_export_started_at == "2026-09-03T22:55:55Z"
 
 
 def test_individual_retry_derives_only_selected_failed_job(tmp_path: Path) -> None:

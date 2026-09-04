@@ -520,6 +520,59 @@ class PostgresWebBatchRepository(WebBatchRepository):
             raise ValueError("O UUID VM do trabalho nao pode ser substituido.")
         return _job_from_row(row)
 
+    def record_vm_export_replacement(
+        self,
+        job_id: UUID,
+        *,
+        previous_export_uuid: str,
+        replacement_export_uuid: str,
+        resume_manifest_path: str | None,
+        origin: str | None,
+        observed_at: str,
+    ) -> WebBatchJob:
+        remote_payload = {
+            "vm_export_uuid": replacement_export_uuid,
+            "vm_resume_manifest": resume_manifest_path,
+            "vm_remote": {
+                "origin": origin,
+                "status": "STARTED",
+                "completed_chunks": 0,
+                "total_chunks": 0,
+                "persisted_chunks": [],
+                "observed_at": observed_at,
+                "progress_at": None,
+            },
+        }
+        assert_sanitized_payload(remote_payload, path="job.vm_remote")
+        with self.database.connection() as connection:
+            row = connection.execute(
+                f"""
+                update {SCHEMA_NAME}.web_batch_jobs
+                set vm_export_uuid = %s,
+                    vm_resume_manifest_path = coalesce(%s, vm_resume_manifest_path),
+                    remote_export_started_at = %s,
+                    remote_status_at = null,
+                    remote_progress_at = null,
+                    payload = payload || %s
+                where id = %s
+                  and vm_export_uuid = %s
+                returning {_JOB_COLUMNS}
+                """,
+                (
+                    replacement_export_uuid,
+                    resume_manifest_path,
+                    observed_at,
+                    _jsonb(remote_payload),
+                    job_id,
+                    previous_export_uuid,
+                ),
+            ).fetchone()
+        if row is None:
+            raise ValueError(
+                "O UUID VM anterior nao corresponde ao trabalho atual."
+            )
+        return _job_from_row(row)
+
     def request_action(
         self,
         batch_id: UUID,

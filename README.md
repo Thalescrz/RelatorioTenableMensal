@@ -137,6 +137,11 @@ O teto padrão é de 36.000 segundos (10 horas) por UUID, somando fila e
 processamento e sobrevivendo a reinícios/retentativas; ao expirar, UUID e chunks
 continuam preservados e o export não é cancelado na Tenable. A API expõe apenas
 que existe checkpoint validado, nunca seu caminho.
+Esse saldo limita somente a espera do UUID VM retomado. A coleta de ativos mantém
+seu prazo integral. Se a Tenable confirmar que o UUID anterior expirou ou ficou
+terminal sem chunks recuperáveis, a aplicação cria e registra um UUID substituto
+com um novo orçamento de 10 horas; as próximas retentativas passam a usar esse
+substituto, sem voltar ao UUID expirado.
 
 O estado geral usa uma única atualização por navegador e carrega os clientes de
 um lote somente quando **Ver clientes do lote** é aberto. Um POST confirmado

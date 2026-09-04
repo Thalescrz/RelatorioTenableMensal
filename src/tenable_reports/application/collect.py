@@ -481,6 +481,7 @@ def collect_vm_snapshot(
     snapshot_suffix: str | None = None,
     cancellation_probe: Callable[[], bool] | None = None,
     auto_cancel_on_timeout: bool = True,
+    resume_budget_seconds: float | None = None,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
     started_at = utc_now_iso()
@@ -497,6 +498,7 @@ def collect_vm_snapshot(
         tenant_id=profile.tenant_id,
     )
     unavailable_recoveries: list[dict[str, str]] = []
+    unavailable_export_uuids: set[str] = set()
     if resumed_export_uuid and not _resumable_export_is_available(
         client,
         resumed_export_uuid,
@@ -506,13 +508,14 @@ def collect_vm_snapshot(
             "previous_export_uuid": resumed_export_uuid,
             "recovery_origin": "resume_manifest",
         })
+        unavailable_export_uuids.add(resumed_export_uuid)
         resumed_export_uuid = None
         resumed_chunks = {}
     provided_export_uuid = export_uuid
-    if provided_export_uuid and not _resumable_export_is_available(
-        client,
-        provided_export_uuid,
-        {},
+    if provided_export_uuid in unavailable_export_uuids:
+        provided_export_uuid = None
+    elif provided_export_uuid and not _resumable_export_is_available(
+        client, provided_export_uuid, {}
     ):
         unavailable_recoveries.append({
             "previous_export_uuid": provided_export_uuid,
@@ -638,15 +641,6 @@ def collect_vm_snapshot(
         partial_manifest_path,
         manifest_payload(status="PROCESSING"),
     )
-    emit_progress(
-        "STARTED",
-        completed_chunks=0,
-        total_chunks=0,
-        progress_made=False,
-        auto_cancelled=False,
-        status_query_ok=False,
-        query=sanitized_mapping(query),
-    )
     if progress_callback is not None:
         for recovery in unavailable_recoveries:
             progress_callback({
@@ -656,8 +650,18 @@ def collect_vm_snapshot(
                 "replacement_export_uuid": actual_export_uuid,
                 "replacement_origin": job.origin,
                 "replacement_started": job.origin == "created",
+                "partial_manifest": str(partial_manifest_path.resolve()),
                 "reason": "UUID anterior terminal, expirado ou sem chunks recuperaveis.",
             })
+    emit_progress(
+        "STARTED",
+        completed_chunks=0,
+        total_chunks=0,
+        progress_made=False,
+        auto_cancelled=False,
+        status_query_ok=False,
+        query=sanitized_mapping(query),
+    )
 
     warning_emitted = False
 
@@ -694,6 +698,12 @@ def collect_vm_snapshot(
             wait_arguments["chunk_callback"] = persist_chunk
         if "cancellation_probe" in parameters:
             wait_arguments["cancellation_probe"] = cancellation_probe
+        if (
+            "max_total_wait_seconds" in parameters
+            and job.origin in {"provided", "resumed"}
+            and resume_budget_seconds is not None
+        ):
+            wait_arguments["max_total_wait_seconds"] = resume_budget_seconds
         _, chunk_ids = wait_method(actual_export_uuid, **wait_arguments)
     except ExecutionInterruptedError as exc:
         exc.export_uuid = exc.export_uuid or actual_export_uuid
@@ -831,6 +841,7 @@ def collect_vm_snapshot_by_state(
     snapshot_suffix: str | None = None,
     cancellation_probe: Callable[[], bool] | None = None,
     auto_cancel_on_timeout: bool = True,
+    resume_budget_seconds: float | None = None,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
     normalized_strategy = str(strategy).strip().lower()
@@ -866,6 +877,7 @@ def collect_vm_snapshot_by_state(
             snapshot_suffix=snapshot_suffix,
             cancellation_probe=cancellation_probe,
             auto_cancel_on_timeout=auto_cancel_on_timeout,
+            resume_budget_seconds=resume_budget_seconds,
         )
 
     segments = (
@@ -910,6 +922,7 @@ def collect_vm_snapshot_by_state(
             snapshot_suffix=(f"{snapshot_suffix}-{segment_name}" if snapshot_suffix else segment_name),
             cancellation_probe=cancellation_probe,
             auto_cancel_on_timeout=auto_cancel_on_timeout,
+            resume_budget_seconds=resume_budget_seconds,
         )
         collected.append((segment_name, date_field, result))
 
