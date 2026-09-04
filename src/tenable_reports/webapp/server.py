@@ -3280,6 +3280,13 @@ class DashboardApplication:
         client_rows = self.config.list_clients()
         clients = {item["client_id"]: item for item in client_rows}
         batch_options: dict[str, Any] = {"execution_model": "STAGED_V1"}
+        for request_key, option_key in (
+            ("_batch_idempotency_key", "_idempotency_key"),
+            ("_batch_origin", "_origin"),
+            ("_batch_competence", "_competence"),
+        ):
+            if request.get(request_key) is not None:
+                batch_options[option_key] = request[request_key]
         if run_scope == "all":
             batch_options.update(build_manual_batch_options(
                 clients=client_rows,
@@ -3321,6 +3328,12 @@ class DashboardApplication:
             client_request = dict(request)
             client_request.pop("client_ids", None)
             client_request.pop("selection_filter_snapshot", None)
+            for internal_key in (
+                "_batch_idempotency_key",
+                "_batch_origin",
+                "_batch_competence",
+            ):
+                client_request.pop(internal_key, None)
             if run_scope == "all":
                 client_request["was_failure_policy"] = "retry_then_continue"
             client_request["historical_source"] = str(

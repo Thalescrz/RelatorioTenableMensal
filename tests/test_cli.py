@@ -2386,3 +2386,11 @@ def test_import_web_batch_recovery_apply_uses_postgresql_repository() -> None:
     assert payload["counts"]["INTERRUPTED"] == 1
     assert "client_ids" not in payload
     assert len(repository.list_batches()) == 1
+
+
+def test_run_monthly_batch_cli_has_headless_safe_defaults() -> None:
+    args = cli_module.build_parser().parse_args(["run-monthly-batch"])
+    assert args.project_root == "."
+    assert args.config == "orchestration/clients.json"
+    assert args.wait_timeout_seconds == 108_300
+    assert args.handler is cli_module.command_run_monthly_batch

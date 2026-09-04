@@ -699,6 +699,22 @@ class DurableDashboardJobQueue:
         ).strip().upper()
         if execution_model not in {"LEGACY", "STAGED_V1"}:
             raise ValueError("execution_model invalido.")
+        batch_idempotency_key = str(
+            copied_batch_options.pop("_idempotency_key", "") or ""
+        ).strip()
+        batch_origin = str(copied_batch_options.pop("_origin", "MANUAL") or "MANUAL")
+        batch_competence = str(copied_batch_options.pop("_competence", "") or "").strip() or None
+        if batch_idempotency_key:
+            existing = next(
+                (
+                    item
+                    for item in self.repository.list_batches(limit=500)
+                    if item.idempotency_key == batch_idempotency_key
+                ),
+                None,
+            )
+            if existing is not None:
+                return self.batch_snapshot(existing.id)["jobs"]
         batch_id = uuid4()
         requested_client_ids = tuple(client_id for client_id, _ in requests)
         conflicts = self.repository.active_client_conflicts(
@@ -725,7 +741,7 @@ class DurableDashboardJobQueue:
         assert_sanitized_payload(options, path="batch_options")
         batch = WebBatch(
             id=batch_id,
-            idempotency_key=f"batch:create:{batch_id}",
+            idempotency_key=batch_idempotency_key or f"batch:create:{batch_id}",
             kind=(
                 "GENERATE_ALL"
                 if "selected_client_ids" in copied_batch_options or len(created) > 1
@@ -733,6 +749,8 @@ class DurableDashboardJobQueue:
             ),
             status=BatchStatus.QUEUED,
             options=options,
+            origin=batch_origin,
+            competence=batch_competence,
             created_at=created_at,
         )
 

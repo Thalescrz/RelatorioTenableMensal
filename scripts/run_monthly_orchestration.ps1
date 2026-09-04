@@ -1,8 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Config = (Join-Path $PSScriptRoot "..\orchestration\clients.json"),
-    [int]$MaxParallel = 0,
-    [switch]$ApplyRetention
+    [int]$WaitTimeoutSeconds = 108300
 )
 
 $ErrorActionPreference = "Stop"
@@ -13,13 +12,11 @@ if (-not (Test-Path -LiteralPath $venvPython)) {
 }
 $resolvedConfig = (Resolve-Path -LiteralPath $Config).Path
 $arguments = @(
-    "-m", "tenable_reports", "orchestrate",
+    "-m", "tenable_reports", "run-monthly-batch",
+    "--project-root", $projectRoot,
     "--config", $resolvedConfig,
-    "--mode", "automatic",
-    "--confirm-live-api"
+    "--wait-timeout-seconds", "$WaitTimeoutSeconds"
 )
-if ($MaxParallel -gt 0) { $arguments += @("--max-parallel", "$MaxParallel") }
-if ($ApplyRetention) { $arguments += "--apply-retention" }
 
 & $venvPython @arguments
 exit $LASTEXITCODE

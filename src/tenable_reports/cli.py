@@ -5215,6 +5215,50 @@ def command_serve_web(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_run_monthly_batch(args: argparse.Namespace) -> int:
+    from tenable_reports.application.monthly_batch import (
+        MonthlyBatchRequest,
+        run_monthly_batch,
+    )
+    from tenable_reports.webapp.server import DashboardApplication
+
+    root = Path(args.project_root).resolve()
+    config = Path(args.config)
+    if not config.is_absolute():
+        config = (root / config).resolve()
+    app = DashboardApplication(
+        project_root=root,
+        config_path=config,
+        require_durable_batches=True,
+    )
+    try:
+        result = run_monthly_batch(
+            MonthlyBatchRequest(reference_at=args.reference_at),
+            application=app,
+            wait=True,
+            wait_timeout_seconds=args.wait_timeout_seconds,
+        )
+    finally:
+        app.jobs.close()
+    payload = {
+        "status": "COMPLETE",
+        "root_batch_id": result.root_batch_id,
+        "idempotency_key": result.idempotency_key,
+        "competence": result.competence,
+        "reused": result.reused,
+        "snapshot": result.snapshot,
+    }
+    counts = (result.snapshot or {}).get("counts") or {}
+    incomplete = sum(
+        int(counts.get(key) or 0)
+        for key in ("failed", "partial", "waiting_manual")
+    )
+    if incomplete:
+        payload["status"] = "COMPLETE_WITH_FAILURES"
+    print(json.dumps(payload, ensure_ascii=False))
+    return 1 if incomplete else 0
+
+
 def command_database_bootstrap(args: argparse.Namespace) -> int:
     load_dotenv_file(args.database_env_file, override=True)
     load_dotenv_file(args.admin_env_file, override=False)
@@ -6148,6 +6192,16 @@ def build_parser() -> argparse.ArgumentParser:
     serve_web.add_argument("--port", type=int, default=8765)
     serve_web.add_argument("--open-browser", action="store_true")
     serve_web.set_defaults(handler=command_serve_web)
+
+    monthly_batch = subparsers.add_parser(
+        "run-monthly-batch",
+        help="Executa ou acompanha o lote mensal durável sem interface web.",
+    )
+    monthly_batch.add_argument("--project-root", default=".")
+    monthly_batch.add_argument("--config", default="orchestration/clients.json")
+    monthly_batch.add_argument("--reference-at")
+    monthly_batch.add_argument("--wait-timeout-seconds", type=int, default=108_300)
+    monthly_batch.set_defaults(handler=command_run_monthly_batch)
     return parser
 
 
