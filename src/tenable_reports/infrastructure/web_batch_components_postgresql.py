@@ -26,6 +26,9 @@ _COMPONENT_COLUMNS = """
     last_contact_at, last_progress_at, worker_id, lease_expires_at,
     failure_code, failure_message, retryable, created_at, started_at, ended_at
 """
+_QUALIFIED_COMPONENT_COLUMNS = ", ".join(
+    f"component.{column.strip()}" for column in _COMPONENT_COLUMNS.split(",")
+)
 
 
 def _utc_datetime(value: Any) -> datetime | None:
@@ -200,7 +203,7 @@ class PostgresRemoteComponentRepository:
                     started_at = coalesce(component.started_at, now())
                 from candidate
                 where component.id = candidate.id
-                returning {_COMPONENT_COLUMNS}
+                returning {_QUALIFIED_COMPONENT_COLUMNS}
                 """,
                 (normalized_worker, normalized_lease),
             ).fetchone()
