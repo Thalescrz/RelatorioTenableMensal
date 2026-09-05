@@ -155,10 +155,10 @@ responsável**, selecione/limpe somente os resultados visíveis e confirme
 **Gerar N clientes**. Seleção vazia não cria lote; o servidor valida a lista
 explícita e persiste a fotografia de incluídos, excluídos, filtro e responsáveis.
 
-Nesse fluxo coletivo, a primeira falha WAS provoca uma única retentativa automática
-somente do componente WEB. Se a segunda tentativa falhar, o cliente continua na
-fila, publica os documentos sem WAS e registra `WAS_RETRY_EXHAUSTED`. A política
-é associada ao lote, inclusive quando apenas um cliente foi selecionado.
+Nesse fluxo coletivo, VM, WEB e Cloud habilitados são acompanhados como componentes
+independentes. Falha retentável abre automaticamente uma segunda janela de 10
+horas para o componente afetado, consultando primeiro seu UUID/cursor. Uma terceira
+janela só existe quando a segunda precisou criar uma operação substituta.
 
 ### Controle durável do lote
 
@@ -191,18 +191,13 @@ retentativa. Cada job ativo é controlado separadamente; se um subprocesso não
 responder, o fallback encerra somente sua árvore e registra PID/evento. Depois, use
 a ação de falhas/interrompidos em vez de reabrir resultado terminal.
 
-O orçamento padrão de 10 horas pertence ao UUID VM. Ao retomar o mesmo UUID, a
-aplicação usa apenas o saldo desde sua criação, sem reduzir o prazo das consultas de
-ativos. Se a consulta de status confirmar que o UUID expirou ou terminou sem chunks
-recuperáveis, um UUID substituto é iniciado com 10 horas novas e promovido no banco
-junto com seu manifesto. Uma nova retentativa usa o substituto persistido; ela não
-volta silenciosamente ao UUID antigo.
-
-O saldo calculado para um UUID preservado é exclusivo daquele UUID. Ele não é
-reutilizado como configuração global da execução nem limita a coleta de ativos. Se
-for necessário criar um UUID substituto, o coletor volta a usar o teto vigente de
-10 horas. Valores transitórios gravados por versões anteriores são ignorados como
-configuração global.
+O orçamento padrão de 10 horas pertence à janela do componente, não a cada POST.
+Ao retomar o mesmo UUID/cursor, a aplicação usa o saldo persistido. Se a origem
+confirmar que o identificador expirou ou é irrecuperável, a Janela 2 cria um único
+substituto usando o saldo que ainda resta; ela não reinicia o relógio. Essa
+substituição habilita a Janela 3. Após seu fim, somente uma ação manual explícita
+abre nova janela. Valores transitórios de versões anteriores não viram configuração
+global.
 
 Lotes anteriores permanecem em `LEGACY`. Eles conservam o worker monolítico e não
 são migrados automaticamente para o pipeline em fases. Uma retentativa derivada de
@@ -216,13 +211,20 @@ o prefixo do lote desejado.
 
 ### Automático mensal
 
-A tarefa agendada chama o fluxo automático no primeiro dia do mês e coleta o mês
-anterior completo. O script de instalação é `scripts/install_monthly_task.ps1`; o
-fluxo executado fica em `scripts/run_monthly_orchestration.ps1`.
+A tarefa chama `run-monthly-batch` no primeiro dia, às 00:05 por padrão, e usa o
+mês anterior completo. A chave `automatic-monthly:<carteira>:<competência>` torna
+a chamada idempotente: repetir o script acompanha ou retorna a mesma família.
 
-O automático mensal aplica a mesma política de uma retentativa exclusiva do WAS e
-fallback sem WEB. Ele não aguarda interação e nunca repete VM, assets, TAG ou Cloud
-por causa dessa falha.
+No painel **Admin → Automação mensal**:
+
+1. ajuste e salve o horário; isso não cria lote nem altera o Windows;
+2. use **Validar sem executar** e confira competência e clientes elegíveis;
+3. use **Sincronizar tarefa** somente após a confirmação exibida;
+4. ative ou desative a tarefa separadamente.
+
+O script executado é `scripts/run_monthly_orchestration.ps1`; a instalação manual
+continua disponível em `scripts/install_monthly_task.ps1`. VM, WAS e Cloud usam a
+mesma política 10h + 10h + 10h condicional do botão **Gerar todos**.
 
 ## Acompanhar progresso
 
@@ -231,6 +233,11 @@ na fila/ativa, decisão WEB, fila de montagem, montagem ativa, legado e terminal
 além da concorrência remota efetiva e da fila local. Durante VM, observe UUID do
 export, origem, status e chunks persistidos. Durante WAS e Cloud, acompanhe estados
 independentes.
+
+Os contadores do lote são filtros da família inteira, não somas dos jobs brutos.
+Use **Todos**, **Pendentes**, **Em execução**, **Em retry automático**,
+**Aguardando retry manual**, **Semiconcluídos**, **Falha definitiva** ou
+**Concluídos**; busca e responsável continuam combinados com o filtro escolhido.
 
 Estados importantes:
 
@@ -264,12 +271,12 @@ coletados e solicita uma decisão:
 - **Continuar sem WEB** conclui a publicação com alerta;
 - **Tentar WEB novamente** executa somente WAS e reutiliza chunks já persistidos.
 
-Em **Gerar todos** e na execução mensal automática, a aplicação tenta o WAS uma
-segunda vez antes da publicação. O sucesso remove o alerta inicial. Uma segunda
-falha publica os documentos sem WEB, registra `WAS_RETRY_EXHAUSTED` e pode manter
-**Tentar WEB novamente** disponível quando a causa continuar classificada como
-retentável. Essa ação posterior reconstrói o contexto pelo histórico compacto e
-substitui os DOCX VM/TAG sem repetir VM ou Cloud.
+Em **Gerar todos** e na execução mensal automática, WAS usa as duas janelas
+automáticas e a terceira condicional do coordenador. Ao esgotar a política, o
+conjunto permanece semiconcluído e **Tentar WEB novamente** continua disponível
+quando a causa for retentável. Essa ação posterior usa uma única janela manual,
+reconstrói o contexto pelo histórico compacto e substitui os DOCX VM/TAG sem
+repetir VM ou Cloud.
 
 No Word, “não foram identificadas vulnerabilidades WEB” significa coleta concluída
 sem ocorrências. A mensagem “não foi possível concluir a coleta WEB” indica dados
@@ -283,8 +290,8 @@ falha** seleciona somente componentes cuja tentativa mais recente está falha ou
 interrompida e marcada como retentável; **Selecionar componentes** permite reduzir
 essa seleção. Componente concluído fica desabilitado.
 
-No lote, **Falhas** contabiliza todos os jobs falhos, enquanto
-**Não retentáveis** destaca aqueles que exigem correção prévia. O botão
+Na família, **Falha definitiva** destaca os clientes que exigem correção prévia;
+falha antiga deixa de contar quando há retry automático posterior. O botão
 **Tentar falhas, parciais e interrompidos** usa a mesma decisão exibida em
 **Ver clientes do lote**. Registros antigos `UNEXPECTED` são reinterpretados
 somente quando a mensagem comprova timeout, export sem progresso ou
@@ -297,10 +304,8 @@ somente documentos com seção WEB. VM pode retomar UUID/chunks ou normalizar ra
 completo sem abrir API nova. A substituição só ocorre depois da validação; falha
 preserva manifesto, hashes, `MAIN` e documentos anteriores.
 
-No bootstrap padrão, o caminho compatível Cloud está disponível. Retry seletivo de
-VM/WAS requer que o executor de componentes esteja configurado; sem ele, a
-solicitação retorna indisponibilidade explícita e não cai para uma execução completa.
-Conjuntos excluídos nunca podem ser retentados.
+No bootstrap padrão, o executor faseado oferece retry seletivo para VM, WAS e
+Cloud. Conjuntos excluídos nunca podem ser retentados.
 
 Para uma execução com coleta nova, confirme também:
 
@@ -315,9 +320,9 @@ Para uma execução com coleta nova, confirme também:
 ## Export preso e cancelamento
 
 Em `STAGED_V1`, 900 segundos sem progresso geram alerta, mas não encerram a
-coleta. O teto padrão é de 36.000 segundos (10 horas) por UUID, somando fila e
-processamento. Esse prazo começa na primeira observação durável do UUID e não é
-reiniciado ao reiniciar o servidor ou derivar uma retentativa. Ao atingir o teto,
+coleta. O teto padrão é de 36.000 segundos (10 horas) por janela do componente,
+somando fila e processamento. Esse prazo não é reiniciado pelo servidor nem pela
+criação de um substituto dentro da mesma janela. Ao atingir o teto,
 o processo local termina como falha retentável, preservando UUID, checkpoint e
 chunks. A aplicação não cancela automaticamente o export remoto.
 

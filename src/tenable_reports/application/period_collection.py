@@ -34,6 +34,25 @@ from tenable_reports.domain.reporting import ReportingPeriod
 
 
 @dataclass(frozen=True, slots=True)
+class VmCorePeriodCollection:
+    normalized: Any
+    vm_export_mode: str
+    vm_export_outcome: str
+    vm_export_comparison_path: Path | None
+    warnings: tuple[Mapping[str, Any], ...]
+    collection_route: str
+    reconstruction_status: str
+    collection_sources: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class WasPeriodCollection:
+    collection_status: str
+    warnings: tuple[Mapping[str, Any], ...]
+    was_failure: WasFailureDetails | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ExternalPeriodCollection:
     normalized: Any
     was_collection_status: str
@@ -47,7 +66,7 @@ class ExternalPeriodCollection:
     was_failure: WasFailureDetails | None = None
 
 
-def collect_external_period(
+def collect_vm_core_period(
     *,
     args: Any,
     profile: ClientProfile,
@@ -55,7 +74,6 @@ def collect_external_period(
     output_root: Path,
     run_id: str,
     client: Any,
-    was_client: Any,
     inventory_client: Any,
     selected_tags: Sequence[VmTag],
     asset_filters: Mapping[str, object],
@@ -67,7 +85,7 @@ def collect_external_period(
     plugin_catalog: Any = None,
     plugin_catalog_callback: Any = None,
     progress_callback: Any = None,
-) -> ExternalPeriodCollection:
+) -> VmCorePeriodCollection:
     execution_control = getattr(args, "execution_control", None)
     cancellation_probe = (
         execution_control.is_stop_requested
@@ -89,6 +107,22 @@ def collect_external_period(
             run_id=run_id,
         )
     check_interruption()
+    asset_resume_manifest = getattr(args, "asset_resume_manifest", None)
+    if not asset_resume_manifest:
+        asset_root = (
+            Path(output_root)
+            / "raw"
+            / profile.client_id
+            / run_id
+            / "tenable_vm_assets_v2"
+        )
+        existing_asset_manifests = sorted(
+            asset_root.glob("*/manifest.json"),
+            key=lambda path: path.stat().st_mtime_ns,
+            reverse=True,
+        )
+        if existing_asset_manifests:
+            asset_resume_manifest = existing_asset_manifests[0]
     assets = collect_asset_snapshot(
         client=client,
         profile=profile,
@@ -99,6 +133,7 @@ def collect_external_period(
         output_root=output_root,
         run_id=run_id,
         export_uuid=getattr(args, "asset_export_uuid", None),
+        resume_from=asset_resume_manifest,
         cancellation_probe=cancellation_probe,
     )
     check_interruption()
@@ -229,8 +264,44 @@ def collect_external_period(
             "tenable_vm_vulnerabilities",
         )
 
+    check_interruption()
+    return VmCorePeriodCollection(
+        normalized=normalized,
+        vm_export_mode=vm_export_mode,
+        vm_export_outcome=vm_export_outcome,
+        vm_export_comparison_path=vm_export_comparison_path,
+        warnings=tuple(warnings),
+        collection_route=collection_route,
+        reconstruction_status=reconstruction_status,
+        collection_sources=tuple(collection_sources),
+    )
+
+
+def collect_was_period(
+    *,
+    args: Any,
+    profile: ClientProfile,
+    period: ReportingPeriod,
+    output_root: Path,
+    run_id: str,
+    was_client: Any,
+    progress_callback: Any = None,
+) -> WasPeriodCollection:
+    execution_control = getattr(args, "execution_control", None)
+    cancellation_probe = (
+        execution_control.is_stop_requested
+        if execution_control is not None
+        else None
+    )
+
+    def check_interruption() -> None:
+        if execution_control is not None:
+            execution_control.raise_if_stop_requested()
+
+    check_interruption()
     was_collection_status = "DISABLED"
     was_failure = None
+    warnings: list[Mapping[str, Any]] = []
     if profile.was_scope.enabled:
         was_attempt = collect_optional_was_snapshot(
             client=was_client,
@@ -266,15 +337,73 @@ def collect_external_period(
         warnings.extend(was_attempt.warnings)
 
     check_interruption()
-    return ExternalPeriodCollection(
-        normalized=normalized,
-        was_collection_status=was_collection_status,
-        vm_export_mode=vm_export_mode,
-        vm_export_outcome=vm_export_outcome,
-        vm_export_comparison_path=vm_export_comparison_path,
+    return WasPeriodCollection(
+        collection_status=was_collection_status,
         warnings=tuple(warnings),
-        collection_route=collection_route,
-        reconstruction_status=reconstruction_status,
-        collection_sources=tuple(collection_sources),
         was_failure=was_failure,
+    )
+
+
+def collect_external_period(
+    *,
+    args: Any,
+    profile: ClientProfile,
+    period: ReportingPeriod,
+    output_root: Path,
+    run_id: str,
+    client: Any,
+    was_client: Any,
+    inventory_client: Any,
+    selected_tags: Sequence[VmTag],
+    asset_filters: Mapping[str, object],
+    finding_filters: Mapping[str, object],
+    vm_strategy: str,
+    vm_num_assets: int,
+    vm_selective_mode: str,
+    route: Any,
+    plugin_catalog: Any = None,
+    plugin_catalog_callback: Any = None,
+    progress_callback: Any = None,
+) -> ExternalPeriodCollection:
+    """Compatibility facade for the legacy monolithic collection command."""
+
+    vm = collect_vm_core_period(
+        args=args,
+        profile=profile,
+        period=period,
+        output_root=output_root,
+        run_id=run_id,
+        client=client,
+        inventory_client=inventory_client,
+        selected_tags=selected_tags,
+        asset_filters=asset_filters,
+        finding_filters=finding_filters,
+        vm_strategy=vm_strategy,
+        vm_num_assets=vm_num_assets,
+        vm_selective_mode=vm_selective_mode,
+        route=route,
+        plugin_catalog=plugin_catalog,
+        plugin_catalog_callback=plugin_catalog_callback,
+        progress_callback=progress_callback,
+    )
+    was = collect_was_period(
+        args=args,
+        profile=profile,
+        period=period,
+        output_root=output_root,
+        run_id=run_id,
+        was_client=was_client,
+        progress_callback=progress_callback,
+    )
+    return ExternalPeriodCollection(
+        normalized=vm.normalized,
+        was_collection_status=was.collection_status,
+        vm_export_mode=vm.vm_export_mode,
+        vm_export_outcome=vm.vm_export_outcome,
+        vm_export_comparison_path=vm.vm_export_comparison_path,
+        warnings=tuple((*vm.warnings, *was.warnings)),
+        collection_route=vm.collection_route,
+        reconstruction_status=vm.reconstruction_status,
+        collection_sources=vm.collection_sources,
+        was_failure=was.was_failure,
     )

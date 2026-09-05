@@ -177,6 +177,29 @@ class PostgreSqlTests(unittest.TestCase):
         self.assertIn("published_documents_kind_check", sql)
         self.assertIn("published_documents_tag_idx", sql)
 
+    def test_remote_component_migration_adds_family_windows_and_claim_indexes(self) -> None:
+        sql = (
+            ROOT
+            / "src/tenable_reports/infrastructure/postgresql_migrations/0014_remote_component_windows.sql"
+        ).read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        self.assertIn("add column if not exists root_batch_id uuid", normalized)
+        self.assertIn("add column if not exists parent_batch_id uuid", normalized)
+        self.assertIn("add column if not exists origin text", normalized)
+        self.assertIn("add column if not exists competence text", normalized)
+        self.assertIn(
+            "create table if not exists tenable_reports.web_batch_remote_components",
+            normalized,
+        )
+        self.assertIn("replacement_created_in_window_2", normalized)
+        self.assertIn("replacement_created_in_window_3", normalized)
+        self.assertIn("check (window_number between 1 and 3)", normalized)
+        self.assertIn("web_batch_remote_components_claim_idx", normalized)
+        self.assertIn(
+            "unique (batch_job_id, component, attempt_number)", normalized
+        )
+
     def test_postgresql_history_payload_excludes_fingerprint_lists_and_round_trips(self) -> None:
         snapshot = HistorySnapshot(
             snapshot_id="snapshot-compact",

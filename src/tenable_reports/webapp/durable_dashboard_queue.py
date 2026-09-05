@@ -3,25 +3,53 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import threading
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from tenable_reports.application.execution_control import FileExecutionControl
 from tenable_reports.application.failures import FailureCode, classify_failure
+from tenable_reports.application.automatic_recovery import (
+    AutomaticRecoveryPolicy,
+    RecoveryAction,
+    RecoveryDecision,
+    decide_recovery,
+)
+from tenable_reports.application.component_collection import (
+    ComponentCollectionCheckpoint,
+    component_checkpoint_path,
+    load_component_checkpoint,
+    merge_component_checkpoints,
+    persist_component_checkpoint,
+)
+from tenable_reports.application.staged_execution import (
+    RemoteCollectionDependencies,
+    RemoteCollectionRequest,
+    collect_client_remote,
+)
 from tenable_reports.application.web_batches import (
     BatchClientConflictError,
     BatchConfirmationError,
     BatchJobResult,
     DerivedBatchRequest,
     NoEligibleBatchJobsError,
+    RemoteComponentRepository,
     WebBatchRepository,
     assert_sanitized_payload,
 )
+from tenable_reports.domain.remote_components import (
+    RemoteIdentifierKind,
+    RemoteObservation,
+    RemoteObservationKind,
+    RemoteComponentState,
+    RemoteComponentWindow,
+)
+from tenable_reports.domain.report_components import ReportComponent
 from tenable_reports.domain.web_batches import (
     BATCH_TERMINAL_STATUSES,
     BatchAction,
@@ -36,6 +64,7 @@ from tenable_reports.webapp.job_queue import (
     DurableRunner,
     DurableWorkerPool,
     DurableWorkerPoolGroup,
+    RemoteComponentWorkerPool,
 )
 
 
@@ -47,6 +76,35 @@ _PRIVATE_DASHBOARD_KEYS = frozenset(
     {"checkpoint", "checkpoint_path", "collection_checkpoint_path"}
 )
 _DEFAULT_REMOTE_PROCESSING_TIMEOUT_SECONDS = 36_000
+_REMOTE_COMPONENT_TERMINAL_STATES = frozenset(
+    {
+        RemoteComponentState.COMPLETE,
+        RemoteComponentState.COMPLETE_WITH_WARNINGS,
+        RemoteComponentState.NOT_APPLICABLE,
+        RemoteComponentState.WAITING_MANUAL_RETRY,
+        RemoteComponentState.NON_RETRYABLE_FAILURE,
+        RemoteComponentState.INTERRUPTED,
+    }
+)
+_REMOTE_COMPONENT_PUBLISHABLE_STATES = frozenset(
+    {
+        RemoteComponentState.COMPLETE,
+        RemoteComponentState.COMPLETE_WITH_WARNINGS,
+        RemoteComponentState.NOT_APPLICABLE,
+    }
+)
+_INVALID_REMOTE_IDENTIFIER_CODES = frozenset(
+    {
+        "TENABLE_EXPORT_RECOVERY_UNAVAILABLE",
+        "REMOTE_IDENTIFIER_INVALID",
+        "REMOTE_IDENTIFIER_EXPIRED",
+        "REMOTE_EXPORT_CANCELLED",
+        "REMOTE_EXPORT_FAILED",
+        "REMOTE_EXPORT_ABORTED",
+        "CLOUD_CURSOR_INVALID",
+        "CHECKPOINT_IDENTITY_MISMATCH",
+    }
+)
 
 
 def _checkpoint_ready_for_build(value: str | Path | None) -> bool:
@@ -76,6 +134,7 @@ def _checkpoint_ready_for_build(value: str | Path | None) -> bool:
             "COMPLETE",
             "FAILED",
             "SKIPPED",
+            "NOT_APPLICABLE",
         }:
             return False
     return True
@@ -210,6 +269,7 @@ class DurableDashboardJobQueue:
         start_worker: bool = True,
         remote_runner: DurableRunner | None = None,
         build_runner: DurableRunner | None = None,
+        remote_component_repository: RemoteComponentRepository | None = None,
         remote_workers: int = 0,
         enable_staged_executor: bool = False,
         staged_output_root: str | Path | None = None,
@@ -226,11 +286,15 @@ class DurableDashboardJobQueue:
         )
         self._active_lock = threading.RLock()
         self._active_jobs: dict[str, WebBatchJob] = {}
+        self._active_components: dict[str, RemoteComponentWindow] = {}
+        self._component_finalize_lock = threading.RLock()
         self._progress_events: dict[str, tuple[tuple[Any, ...], datetime]] = {}
         self._remote_processing_timeout_seconds = max(
             1,
             int(remote_processing_timeout_seconds),
         )
+        self._remote_component_repository = remote_component_repository
+        self._component_pool: RemoteComponentWorkerPool | None = None
         self.executor.progress_sink = self._persist_progress
         self.executor.process_sink = self._persist_process
         self.executor.fallback_sink = self._persist_fallback
@@ -248,7 +312,11 @@ class DurableDashboardJobQueue:
         ]
         normalized_remote_workers = int(remote_workers)
         if enable_staged_executor:
-            remote_runner = remote_runner or self._run_remote_job
+            remote_runner = remote_runner or (
+                self._initialize_remote_components
+                if remote_component_repository is not None
+                else self._run_remote_job
+            )
             build_runner = build_runner or self._run_build_job
         if remote_runner is not None:
             if normalized_remote_workers < 1:
@@ -265,7 +333,11 @@ class DurableDashboardJobQueue:
                     poll_interval=poll_interval,
                     start_workers=False,
                     reconcile=False,
-                    result_handler=self._handle_remote_result,
+                    result_handler=(
+                        self._handle_component_initializer_result
+                        if remote_component_repository is not None
+                        else self._handle_remote_result
+                    ),
                 )
             )
         elif normalized_remote_workers != 0:
@@ -286,8 +358,25 @@ class DurableDashboardJobQueue:
         self._dispatcher = DurableWorkerPoolGroup(
             repository=repository,
             pools=tuple(pools),
-            start_workers=start_worker,
+            start_workers=False if remote_component_repository is not None else start_worker,
         )
+        if remote_component_repository is not None:
+            if normalized_remote_workers < 1:
+                raise ValueError(
+                    "remote_workers deve ser positivo para componentes remotos."
+                )
+            self._component_pool = RemoteComponentWorkerPool(
+                repository=remote_component_repository,
+                runner=self._run_remote_component,
+                worker_prefix=f"tenable-component-{worker_id}",
+                workers=normalized_remote_workers,
+                poll_interval=poll_interval,
+                lease_seconds=self._remote_processing_timeout_seconds + 300,
+                start_workers=False,
+            )
+            if start_worker:
+                self._dispatcher.start()
+                self._component_pool.start()
 
     def enqueue(
         self,
@@ -317,6 +406,15 @@ class DurableDashboardJobQueue:
             raise ValueError("Retentativa sem componente válido.")
         if not failed_only:
             raise ValueError("A interface permite somente retentativas de falhas.")
+        staged_source = self._staged_retry_source_job(
+            run_id=run_id,
+            client_id=client_id,
+        )
+        if staged_source is not None:
+            return self._enqueue_staged_component_retry(
+                source_job=staged_source,
+                selected_components=tuple(ReportComponent(item) for item in components),
+            )
         batch_id = uuid4()
         conflicts = self.repository.active_client_conflicts(
             (client_id,),
@@ -376,6 +474,193 @@ class DurableDashboardJobQueue:
         self._dispatcher.wake()
         return self.batch_snapshot(batch_id)["jobs"][0]
 
+    def _staged_retry_source_job(
+        self,
+        *,
+        run_id: str,
+        client_id: str,
+    ) -> WebBatchJob | None:
+        if self._remote_component_repository is None:
+            return None
+        candidates = [
+            job
+            for batch in self.repository.list_batches(limit=500)
+            for job in self.repository.list_batch_jobs(batch.id)
+            if job.client_id == client_id
+            and str(job.run_id or job.payload.get("run_id") or "") == run_id
+        ]
+        candidates.sort(
+            key=lambda item: (str(item.created_at or ""), item.attempt_number),
+            reverse=True,
+        )
+        for candidate in candidates:
+            components = self._remote_component_repository.list_for_jobs(
+                (candidate.id,)
+            ).get(candidate.id, ())
+            if components:
+                return candidate
+        return None
+
+    def _enqueue_staged_component_retry(
+        self,
+        *,
+        source_job: WebBatchJob,
+        selected_components: Sequence[ReportComponent],
+    ) -> Mapping[str, Any]:
+        component_repository = self._remote_component_repository
+        if component_repository is None:
+            raise RuntimeError("Repositório de componentes remotos ausente.")
+        source_batch = self.repository.get_batch(source_job.batch_id)
+        if source_batch is None:
+            raise KeyError("Lote de origem não encontrado.")
+        source_rows = component_repository.list_for_jobs((source_job.id,)).get(
+            source_job.id,
+            (),
+        )
+        latest: dict[ReportComponent, RemoteComponentWindow] = {}
+        for row in source_rows:
+            current = latest.get(row.component)
+            if current is None or row.attempt_number > current.attempt_number:
+                latest[row.component] = row
+        if set(latest) != set(ReportComponent):
+            raise ValueError("A execução não possui estado completo dos componentes.")
+        selected = tuple(dict.fromkeys(ReportComponent(item) for item in selected_components))
+        invalid = tuple(
+            component
+            for component in selected
+            if latest[component].state
+            not in {
+                RemoteComponentState.WAITING_MANUAL_RETRY,
+                RemoteComponentState.INTERRUPTED,
+            }
+            or not latest[component].retryable
+        )
+        if invalid:
+            names = ", ".join(component.value for component in invalid)
+            raise ValueError(f"Componente não está disponível para retentativa: {names}.")
+
+        batch_id = uuid4()
+        conflicts = self.repository.active_client_conflicts(
+            (source_job.client_id,),
+            excluding_batch_id=batch_id,
+        )
+        if conflicts:
+            raise BatchClientConflictError(conflicts)
+        job_id = uuid4()
+        created_at = _now()
+        mode = str(source_job.payload.get("mode") or "manual")
+        control_file = self._control_file(
+            batch_id=batch_id,
+            job_id=job_id,
+            mode=mode,
+        )
+        payload = {
+            **dict(source_job.payload),
+            "job_id": job_id.hex,
+            "batch_id": str(batch_id),
+            "client_id": source_job.client_id,
+            "operation": "staged_component_retry",
+            "source_run_id": str(source_job.run_id or source_job.payload.get("run_id")),
+            "run_id": str(source_job.run_id or source_job.payload.get("run_id")),
+            "selected_components": [item.value for item in selected],
+            "status": BatchJobStatus.RUNNING.value,
+            "created_at": created_at,
+            "_job_control_file": control_file,
+        }
+        batch = WebBatch(
+            id=batch_id,
+            idempotency_key=f"component-retry:{payload['run_id']}:{uuid4()}",
+            kind=BatchAction.RETRY_INCOMPLETE.value,
+            status=BatchStatus.RUNNING,
+            options={
+                "execution_model": "STAGED_V1",
+                "source_run_id": payload["source_run_id"],
+                "selected_components": payload["selected_components"],
+            },
+            source_batch_id=source_batch.id,
+            root_batch_id=source_batch.root_batch_id,
+            parent_batch_id=source_batch.id,
+            origin="MANUAL_RETRY",
+            competence=source_batch.competence,
+            requested_action=BatchAction.RETRY_INCOMPLETE,
+            created_at=created_at,
+            started_at=created_at,
+        )
+        job = WebBatchJob(
+            id=job_id,
+            batch_id=batch_id,
+            client_id=source_job.client_id,
+            position=1,
+            status=BatchJobStatus.RUNNING,
+            attempt_number=source_job.attempt_number + 1,
+            phase=BatchJobPhase.REMOTE_RUNNING,
+            payload=payload,
+            retry_of_batch_job_id=source_job.id,
+            control_file=control_file,
+            logical_job_id=source_job.logical_job_id,
+            run_id=payload["run_id"],
+            created_at=created_at,
+            started_at=created_at,
+            remote_started_at=created_at,
+        )
+        self.repository.create_batch(batch, (job,))
+        deadline = datetime.now(UTC) + timedelta(seconds=36_000)
+        created = component_repository.create_for_job(
+            batch_job_id=job.id,
+            components=tuple(ReportComponent),
+            window_number=1,
+            deadline_at=deadline,
+            origin="MANUAL_RETRY",
+            attempt_number=1,
+        )
+        for row in created:
+            source = latest[row.component]
+            common = {
+                "identifier_kind": source.identifier_kind,
+                "remote_identifier": source.remote_identifier,
+                "identifier_origin": source.identifier_origin,
+                "query_fingerprint": source.query_fingerprint,
+                "checkpoint_path": source.checkpoint_path,
+                "completed_units": source.completed_units,
+                "total_units": source.total_units,
+                "last_remote_status": source.last_remote_status,
+                "last_contact_at": source.last_contact_at,
+                "last_progress_at": source.last_progress_at,
+            }
+            if row.component in selected:
+                component_repository.transition(
+                    row.id,
+                    expected_state=RemoteComponentState.PENDING,
+                    requested_state=RemoteComponentState.PENDING,
+                    **common,
+                )
+                continue
+            component_repository.transition(
+                row.id,
+                expected_state=RemoteComponentState.PENDING,
+                requested_state=source.state,
+                **common,
+                failure_code=source.failure_code,
+                failure_message=source.failure_message,
+                retryable=source.retryable,
+                ended_at=source.ended_at,
+            )
+        self.repository.append_event(
+            WebBatchEvent(
+                batch_id=batch.id,
+                job_id=job.id,
+                event_type="MANUAL_COMPONENT_RETRY_CREATED",
+                payload={
+                    "source_batch_id": str(source_batch.id),
+                    "source_job_id": str(source_job.id),
+                    "selected_components": [item.value for item in selected],
+                },
+            )
+        )
+        if self._component_pool is not None:
+            self._component_pool.wake()
+        return self.batch_snapshot(batch.id)["jobs"][0]
+
     def _control_file(
         self,
         *,
@@ -415,6 +700,22 @@ class DurableDashboardJobQueue:
         ).strip().upper()
         if execution_model not in {"LEGACY", "STAGED_V1"}:
             raise ValueError("execution_model invalido.")
+        batch_idempotency_key = str(
+            copied_batch_options.pop("_idempotency_key", "") or ""
+        ).strip()
+        batch_origin = str(copied_batch_options.pop("_origin", "MANUAL") or "MANUAL")
+        batch_competence = str(copied_batch_options.pop("_competence", "") or "").strip() or None
+        if batch_idempotency_key:
+            existing = next(
+                (
+                    item
+                    for item in self.repository.list_batches(limit=500)
+                    if item.idempotency_key == batch_idempotency_key
+                ),
+                None,
+            )
+            if existing is not None:
+                return self.batch_snapshot(existing.id)["jobs"]
         batch_id = uuid4()
         requested_client_ids = tuple(client_id for client_id, _ in requests)
         conflicts = self.repository.active_client_conflicts(
@@ -441,7 +742,7 @@ class DurableDashboardJobQueue:
         assert_sanitized_payload(options, path="batch_options")
         batch = WebBatch(
             id=batch_id,
-            idempotency_key=f"batch:create:{batch_id}",
+            idempotency_key=batch_idempotency_key or f"batch:create:{batch_id}",
             kind=(
                 "GENERATE_ALL"
                 if "selected_client_ids" in copied_batch_options or len(created) > 1
@@ -449,6 +750,8 @@ class DurableDashboardJobQueue:
             ),
             status=BatchStatus.QUEUED,
             options=options,
+            origin=batch_origin,
+            competence=batch_competence,
             created_at=created_at,
         )
 
@@ -926,7 +1229,11 @@ class DurableDashboardJobQueue:
         remote_capacity = sum(
             int(pool.get("workers") or 0)
             for pool in capacities
-            if BatchJobPhase.REMOTE_QUEUED.value in tuple(pool.get("phases") or ())
+            if (
+                BatchJobPhase.REMOTE_QUEUED.value
+                in tuple(pool.get("phases") or ())
+                or "REMOTE_COMPONENT" in tuple(pool.get("phases") or ())
+            )
         )
         build_capacity = sum(
             int(pool.get("workers") or 0)
@@ -1241,17 +1548,245 @@ class DurableDashboardJobQueue:
             ],
         }
 
+    def batch_family_snapshot(self, batch_id: UUID | str) -> dict[str, Any]:
+        requested_id = (
+            batch_id if isinstance(batch_id, UUID) else UUID(str(batch_id))
+        )
+        requested = self.repository.get_batch(requested_id)
+        if requested is None:
+            raise KeyError("Lote não encontrado.")
+        root_id = requested.root_batch_id or requested.id
+        batches = tuple(
+            batch
+            for batch in self.repository.list_batches(limit=500)
+            if (batch.root_batch_id or batch.id) == root_id
+        )
+        jobs = tuple(
+            job
+            for batch in batches
+            for job in self.repository.list_batch_jobs(batch.id)
+        )
+        components_by_job = (
+            self._remote_component_repository.list_for_jobs(
+                tuple(job.id for job in jobs)
+            )
+            if self._remote_component_repository is not None
+            else {}
+        )
+        latest_job_by_client: dict[str, WebBatchJob] = {}
+        for job in jobs:
+            current = latest_job_by_client.get(job.client_id)
+            if current is None or (
+                str(job.created_at or ""), job.attempt_number, str(job.id)
+            ) > (
+                str(current.created_at or ""),
+                current.attempt_number,
+                str(current.id),
+            ):
+                latest_job_by_client[job.client_id] = job
+
+        active_component_states = {
+            RemoteComponentState.PENDING,
+            RemoteComponentState.RUNNING_WINDOW_1,
+            RemoteComponentState.RUNNING_WINDOW_2,
+            RemoteComponentState.RUNNING_WINDOW_3,
+        }
+
+        def latest_components(job: WebBatchJob) -> tuple[RemoteComponentWindow, ...]:
+            latest: dict[ReportComponent, RemoteComponentWindow] = {}
+            for component in components_by_job.get(job.id, ()):
+                current = latest.get(component.component)
+                if current is None or component.attempt_number > current.attempt_number:
+                    latest[component.component] = component
+            return tuple(
+                latest[component]
+                for component in ReportComponent
+                if component in latest
+            )
+
+        def effective_status(
+            job: WebBatchJob,
+            components: Sequence[RemoteComponentWindow],
+        ) -> str:
+            retryability = _batch_job_retryability(job)
+            if any(
+                item.state is RemoteComponentState.NON_RETRYABLE_FAILURE
+                for item in components
+            ) or (
+                retryability.candidate
+                and not retryability.retryable
+                and job.status is BatchJobStatus.FAILED
+            ):
+                return "DEFINITIVE_FAILURE"
+            if any(
+                item.state in active_component_states
+                and item.origin == "AUTOMATIC_RETRY"
+                for item in components
+            ):
+                return "AUTOMATIC_RETRY"
+            if job.status in {
+                BatchJobStatus.RUNNING,
+                BatchJobStatus.INTERRUPT_REQUESTED,
+            } or any(item.state in active_component_states for item in components):
+                return "RUNNING"
+            if any(
+                item.state is RemoteComponentState.WAITING_MANUAL_RETRY
+                for item in components
+            ):
+                return "WAITING_MANUAL_RETRY"
+            if job.status is BatchJobStatus.PARTIALLY_COMPLETE:
+                return "PARTIALLY_COMPLETE"
+            if job.status in {
+                BatchJobStatus.COMPLETE,
+                BatchJobStatus.COMPLETE_WITH_WARNINGS,
+            }:
+                return "COMPLETE"
+            if job.status is BatchJobStatus.FAILED:
+                return (
+                    "WAITING_MANUAL_RETRY"
+                    if retryability.retryable
+                    else "DEFINITIVE_FAILURE"
+                )
+            return "PENDING"
+
+        clients: list[dict[str, Any]] = []
+        for client_id in sorted(latest_job_by_client):
+            job = latest_job_by_client[client_id]
+            components = latest_components(job)
+            clients.append(
+                {
+                    "client_id": client_id,
+                    "effective_status": effective_status(job, components),
+                    "job_id": str(job.id),
+                    "batch_id": str(job.batch_id),
+                    "job_status": job.status.value,
+                    "phase": job.phase.value,
+                    "attempt_number": job.attempt_number,
+                    "run_id": job.run_id or job.payload.get("run_id"),
+                    "error_code": job.error_code,
+                    "error_message": job.error_message,
+                    "components": [
+                        {
+                            "component": item.component.value,
+                            "state": item.state.value,
+                            "window_number": item.window_number,
+                            "attempt_number": item.attempt_number,
+                            "origin": item.origin,
+                            "completed_units": item.completed_units,
+                            "total_units": item.total_units,
+                            "remote_identifier": item.remote_identifier,
+                            "failure_code": item.failure_code,
+                            "failure_message": item.failure_message,
+                            "retryable": item.retryable,
+                            "created_at": (
+                                item.created_at.isoformat()
+                                if item.created_at is not None
+                                else None
+                            ),
+                            "ended_at": (
+                                item.ended_at.isoformat()
+                                if item.ended_at is not None
+                                else None
+                            ),
+                        }
+                        for item in components
+                    ],
+                }
+            )
+        count_keys = {
+            "PENDING": "pending",
+            "RUNNING": "running",
+            "AUTOMATIC_RETRY": "automatic_retry",
+            "WAITING_MANUAL_RETRY": "waiting_manual",
+            "PARTIALLY_COMPLETE": "partial",
+            "DEFINITIVE_FAILURE": "failed",
+            "COMPLETE": "complete",
+        }
+        counts = {value: 0 for value in count_keys.values()}
+        for client in clients:
+            counts[count_keys[client["effective_status"]]] += 1
+        root = self.repository.get_batch(root_id)
+        if root is None:
+            raise KeyError("Lote raiz não encontrado.")
+        return {
+            "root_batch_id": str(root_id),
+            "requested_batch_id": str(requested.id),
+            "batch": {
+                "id": str(root.id),
+                "kind": root.kind,
+                "status": root.status.value,
+                "created_at": root.created_at,
+                "started_at": root.started_at,
+                "ended_at": root.ended_at,
+            },
+            "batches": [
+                {
+                    "id": str(batch.id),
+                    "kind": batch.kind,
+                    "status": batch.status.value,
+                    "parent_batch_id": (
+                        str(batch.parent_batch_id)
+                        if batch.parent_batch_id is not None
+                        else None
+                    ),
+                    "created_at": batch.created_at,
+                    "ended_at": batch.ended_at,
+                }
+                for batch in sorted(batches, key=lambda item: str(item.created_at or ""))
+            ],
+            "total_count": len(clients),
+            "counts": counts,
+            "clients": clients,
+        }
+
     def snapshot(self) -> list[dict[str, Any]]:
         return list(self.dashboard_snapshot().jobs)
 
     def wait_until_idle(self, *, timeout: float) -> bool:
-        return self._dispatcher.wait_until_idle(timeout=timeout)
+        if self._component_pool is None:
+            return self._dispatcher.wait_until_idle(timeout=timeout)
+        import time
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        if not self._dispatcher.wait_until_idle(
+            timeout=max(0.0, deadline - time.monotonic())
+        ):
+            return False
+        if not self._component_pool.wait_until_idle(
+            timeout=max(0.0, deadline - time.monotonic())
+        ):
+            return False
+        return self._dispatcher.wait_until_idle(
+            timeout=max(0.0, deadline - time.monotonic())
+        )
 
     def capacity_snapshot(self) -> tuple[dict[str, Any], ...]:
-        return self._dispatcher.capacity_snapshot()
+        capacities = self._dispatcher.capacity_snapshot()
+        if self._component_pool is None:
+            return capacities
+        return (
+            *tuple(
+                item
+                for item in capacities
+                if tuple(item.get("phases") or ())
+                != (BatchJobPhase.REMOTE_QUEUED.value,)
+            ),
+            self._component_pool.capacity_snapshot(),
+        )
 
     def close(self) -> None:
-        self._dispatcher.close()
+        errors: list[RuntimeError] = []
+        if self._component_pool is not None:
+            try:
+                self._component_pool.close()
+            except RuntimeError as exc:
+                errors.append(exc)
+        try:
+            self._dispatcher.close()
+        except RuntimeError as exc:
+            errors.append(exc)
+        if errors:
+            raise errors[0]
 
     def _drain_executor_pending(self, count: int) -> None:
         for _ in range(count):
@@ -1265,8 +1800,11 @@ class DurableDashboardJobQueue:
     ) -> None:
         with self._active_lock:
             active = self._active_jobs.get(str(job_id))
+            active_component = self._active_components.get(str(job_id))
         if active is None:
             return
+        if active_component is not None:
+            self._persist_component_progress(active_component, event)
         should_append = True
         if (
             str(event.get("event") or "")
@@ -1389,6 +1927,94 @@ class DurableDashboardJobQueue:
             )
         )
 
+    def _persist_component_progress(
+        self,
+        component: RemoteComponentWindow,
+        event: Mapping[str, Any],
+    ) -> None:
+        repository = self._remote_component_repository
+        if repository is None:
+            return
+        event_type = str(event.get("event") or "")
+        source = str(event.get("source") or "")
+        if event_type in {
+            "TENABLE_EXPORT_RECOVERY_UNAVAILABLE",
+            "TENABLE_CLOUD_RECOVERY_UNAVAILABLE",
+        }:
+            current = repository.get(component.id)
+            if current is None:
+                return
+            changes: dict[str, Any] = {
+                "identifier_kind": None,
+                "remote_identifier": None,
+                "identifier_origin": "replacement_required",
+            }
+            if current.window_number == 2:
+                changes["replacement_created_in_window_2"] = True
+            elif current.window_number == 3:
+                changes["replacement_created_in_window_3"] = True
+            repository.transition(
+                current.id,
+                expected_state=current.state,
+                requested_state=current.state,
+                **changes,
+            )
+            return
+        expected_source = {
+            ReportComponent.VM_CORE: "tenable_vm_vulnerabilities",
+            ReportComponent.WAS: "tenable_was_findings",
+            ReportComponent.CLOUD: "tenable_cloud_security",
+        }[component.component]
+        if event_type == "TENABLE_EXPORT_PROGRESS" and source != expected_source:
+            return
+        if event_type == "TENABLE_CLOUD_PROGRESS" and component.component is not ReportComponent.CLOUD:
+            return
+        if event_type not in {"TENABLE_EXPORT_PROGRESS", "TENABLE_CLOUD_PROGRESS"}:
+            return
+        completed = int(
+            event.get("completed_chunks")
+            if event_type == "TENABLE_EXPORT_PROGRESS"
+            else event.get("current")
+            or 0
+        )
+        raw_total = (
+            event.get("total_chunks")
+            if event_type == "TENABLE_EXPORT_PROGRESS"
+            else event.get("total")
+        )
+        total = int(raw_total) if raw_total is not None else None
+        status = str(event.get("status") or "PROCESSING").upper()
+        observation_kind = (
+            RemoteObservationKind.COMPLETE
+            if status in {"COMPLETE", "FINISHED", "REPLAYED"}
+            else RemoteObservationKind.PROCESSING
+        )
+        observed = repository.record_observation(
+            component.id,
+            RemoteObservation(
+                kind=observation_kind,
+                completed_units=completed,
+                total_units=total,
+                remote_status=status,
+            ),
+        )
+        identifier = str(
+            event.get("export_uuid") or event.get("snapshot_id") or ""
+        ).strip()
+        if identifier:
+            repository.transition(
+                component.id,
+                expected_state=observed.state,
+                requested_state=observed.state,
+                identifier_kind=(
+                    RemoteIdentifierKind.UUID
+                    if event.get("export_uuid")
+                    else RemoteIdentifierKind.DATASET
+                ),
+                remote_identifier=identifier,
+                identifier_origin=str(event.get("origin") or "created"),
+            )
+
     def _persist_process(self, job_id: str, process_id: int) -> None:
         with self._active_lock:
             active = self._active_jobs.get(str(job_id))
@@ -1430,6 +2056,547 @@ class DurableDashboardJobQueue:
                 / f"{job.id.hex}.json"
             ).resolve()
         )
+
+    def _component_run_id(self, job: WebBatchJob) -> str:
+        return str(
+            job.run_id
+            or job.payload.get("run_id")
+            or f"{job.id.hex}-{job.client_id}"
+        )
+
+    def _component_request(
+        self,
+        job: WebBatchJob,
+        *,
+        component: ReportComponent,
+    ) -> RemoteCollectionRequest:
+        run_id = self._component_run_id(job)
+        checkpoint_path = Path(self._checkpoint_file(job)).resolve()
+        period = {
+            "start_at": job.payload.get("start_at"),
+            "end_at": job.payload.get("end_at"),
+        }
+        if not all(period.values()):
+            # The CLI resolves relative/manual and automatic periods. The
+            # component command owns the authoritative values; this request is
+            # used only to derive the isolated path before it runs.
+            period = {
+                "start_at": "1970-01-01T00:00:00Z",
+                "end_at": "1970-01-02T00:00:00Z",
+            }
+        return RemoteCollectionRequest(
+            storage_root=self._staged_output_root,
+            checkpoint_path=checkpoint_path,
+            client_id=job.client_id,
+            tenant_id=job.client_id,
+            run_id=run_id,
+            logical_job_id=str(job.logical_job_id or job.id.hex),
+            execution_type=(
+                "AUTOMATIC_MONTHLY"
+                if str(job.payload.get("mode") or "manual") == "automatic"
+                else "MANUAL"
+            ),
+            mode=str(job.payload.get("mode") or "manual"),
+            origin=(
+                "SCHEDULED"
+                if str(job.payload.get("mode") or "manual") == "automatic"
+                else "MANUAL"
+            ),
+            attempt_number=job.attempt_number,
+            period=period,
+        )
+
+    def _initialize_remote_components(self, job: WebBatchJob) -> BatchJobResult:
+        if self._remote_component_repository is None:
+            raise RuntimeError("Repositório de componentes remotos ausente.")
+        deadline = datetime.now(UTC) + timedelta(
+            seconds=self._remote_processing_timeout_seconds
+        )
+        self._remote_component_repository.create_for_job(
+            batch_job_id=job.id,
+            components=tuple(ReportComponent),
+            window_number=1,
+            deadline_at=deadline,
+            origin=(
+                "SCHEDULED"
+                if str(job.payload.get("mode") or "manual") == "automatic"
+                else "MANUAL"
+            ),
+            attempt_number=1,
+        )
+        return BatchJobResult(
+            status=BatchJobStatus.COMPLETE,
+            payload={"remote_components_initialized": True},
+        )
+
+    def _handle_component_initializer_result(
+        self,
+        job: WebBatchJob,
+        result: BatchJobResult,
+    ) -> None:
+        if result.status is BatchJobStatus.COMPLETE:
+            if self._component_pool is not None:
+                self._component_pool.wake()
+            return
+        self.repository.complete_job(job.id, result)
+
+    def _append_component_event(
+        self,
+        job: WebBatchJob,
+        component: RemoteComponentWindow,
+        *,
+        event_type: str,
+        decision: str,
+    ) -> None:
+        self.repository.append_event(
+            WebBatchEvent(
+                batch_id=job.batch_id,
+                job_id=job.id,
+                event_type=event_type,
+                payload={
+                    "component": component.component.value,
+                    "window_number": component.window_number,
+                    "attempt_number": component.attempt_number,
+                    "origin": component.origin,
+                    "deadline_at": component.deadline_at.isoformat().replace(
+                        "+00:00", "Z"
+                    ),
+                    "remote_identifier": component.remote_identifier,
+                    "completed_units": component.completed_units,
+                    "total_units": component.total_units,
+                    "decision": decision,
+                },
+            )
+        )
+
+    def _create_recovery_component(
+        self,
+        job: WebBatchJob,
+        current: RemoteComponentWindow,
+        *,
+        window_number: int,
+        reuse_identifier: bool,
+        replacement_created_in_window_2: bool,
+        replacement_created_in_window_3: bool,
+        deadline_at: datetime | None = None,
+    ) -> RemoteComponentWindow:
+        repository = self._remote_component_repository
+        if repository is None:
+            raise RuntimeError("Repositório de componentes remotos ausente.")
+        rows = repository.list_for_jobs((job.id,)).get(job.id, ())
+        attempt_number = 1 + max(
+            (
+                row.attempt_number
+                for row in rows
+                if row.component is current.component
+            ),
+            default=0,
+        )
+        created = repository.create_for_job(
+            batch_job_id=job.id,
+            components=(current.component,),
+            window_number=window_number,
+            deadline_at=(
+                deadline_at
+                if deadline_at is not None
+                else datetime.now(UTC)
+                + timedelta(seconds=self._remote_processing_timeout_seconds)
+            ),
+            origin="AUTOMATIC_RETRY",
+            query_fingerprints=(
+                {current.component: current.query_fingerprint}
+                if current.query_fingerprint
+                else None
+            ),
+            attempt_number=attempt_number,
+            parent_component_id=current.id,
+            replacement_created_in_window_2=replacement_created_in_window_2,
+            replacement_created_in_window_3=replacement_created_in_window_3,
+        )[0]
+        changes: dict[str, Any] = {}
+        if reuse_identifier and current.remote_identifier is not None:
+            changes.update(
+                identifier_kind=current.identifier_kind,
+                remote_identifier=current.remote_identifier,
+                identifier_origin="provided",
+                checkpoint_path=current.checkpoint_path,
+            )
+        if changes:
+            created = repository.transition(
+                created.id,
+                expected_state=RemoteComponentState.PENDING,
+                requested_state=RemoteComponentState.PENDING,
+                **changes,
+            )
+        self._append_component_event(
+            job,
+            created,
+            event_type="REMOTE_COMPONENT_WINDOW_CREATED",
+            decision=("REUSE_IDENTIFIER" if reuse_identifier else "CREATE_REPLACEMENT"),
+        )
+        if self._component_pool is not None:
+            self._component_pool.wake()
+        return created
+
+    def _handle_failed_remote_component(
+        self,
+        job: WebBatchJob,
+        component: RemoteComponentWindow,
+        result: BatchJobResult,
+    ) -> None:
+        repository = self._remote_component_repository
+        if repository is None:
+            raise RuntimeError("Repositório de componentes remotos ausente.")
+        failure = classify_failure(
+            {
+                **dict(result.payload),
+                "error_code": result.error_code,
+                "message": result.error_message,
+            }
+        )
+        failure_code = str(result.error_code or failure.code.value).upper()
+        error_text = str(result.error_message or "").casefold()
+        if (
+            failure_code in _INVALID_REMOTE_IDENTIFIER_CODES
+            or "estado cancelled" in error_text
+            or "status 404" in error_text
+        ):
+            observation_kind = RemoteObservationKind.INVALID_IDENTIFIER
+        elif not failure.retryable and not bool(result.payload.get("retryable")):
+            observation_kind = RemoteObservationKind.NON_RETRYABLE_FAILURE
+        else:
+            observation_kind = RemoteObservationKind.TERMINAL_RETRYABLE_FAILURE
+        observed = repository.record_observation(
+            component.id,
+            RemoteObservation(
+                kind=observation_kind,
+                completed_units=component.completed_units,
+                total_units=component.total_units,
+                remote_status="FAILED",
+                failure_code=failure_code,
+            ),
+        )
+        if (
+            component.origin == "MANUAL_RETRY"
+            and observation_kind is not RemoteObservationKind.NON_RETRYABLE_FAILURE
+        ):
+            decision = RecoveryDecision(
+                action=RecoveryAction.WAIT_MANUAL_RETRY,
+                deadline_at=observed.deadline_at,
+                failure_code=failure_code,
+            )
+        else:
+            decision = decide_recovery(
+                observed,
+                RemoteObservation(
+                    kind=observation_kind,
+                    completed_units=observed.completed_units,
+                    total_units=observed.total_units,
+                    remote_status=observed.last_remote_status,
+                    failure_code=failure_code,
+                ),
+                now=datetime.now(UTC),
+                policy=AutomaticRecoveryPolicy(),
+            )
+        if decision.action is RecoveryAction.FAIL_NON_RETRYABLE:
+            terminal_state = RemoteComponentState.NON_RETRYABLE_FAILURE
+            terminal_code = failure_code
+            terminal_retryable = False
+        elif decision.action is RecoveryAction.WAIT_MANUAL_RETRY:
+            terminal_state = RemoteComponentState.WAITING_MANUAL_RETRY
+            terminal_code = decision.failure_code or failure_code
+            terminal_retryable = True
+        else:
+            terminal_state = RemoteComponentState.WAITING_MANUAL_RETRY
+            terminal_code = "AUTOMATIC_WINDOW_ADVANCED"
+            terminal_retryable = True
+        terminal = repository.transition(
+            observed.id,
+            expected_state=observed.state,
+            requested_state=terminal_state,
+            worker_id=None,
+            lease_expires_at=None,
+            failure_code=terminal_code,
+            failure_message=failure.message[:500],
+            retryable=terminal_retryable,
+            ended_at=datetime.now(UTC),
+        )
+        self._append_component_event(
+            job,
+            terminal,
+            event_type="REMOTE_COMPONENT_RECOVERY_DECIDED",
+            decision=decision.action.value,
+        )
+        if decision.action is RecoveryAction.START_NEXT_WINDOW:
+            next_window = int(decision.next_window or component.window_number + 1)
+            missing_identifier = component.remote_identifier is None
+            self._create_recovery_component(
+                job,
+                terminal,
+                window_number=next_window,
+                reuse_identifier=not missing_identifier,
+                replacement_created_in_window_2=(
+                    component.replacement_created_in_window_2
+                    or (next_window == 2 and missing_identifier)
+                ),
+                replacement_created_in_window_3=(
+                    component.replacement_created_in_window_3
+                ),
+            )
+            return
+        if decision.action is RecoveryAction.CREATE_REPLACEMENT:
+            self._create_recovery_component(
+                job,
+                terminal,
+                window_number=component.window_number,
+                reuse_identifier=False,
+                replacement_created_in_window_2=(
+                    component.replacement_created_in_window_2
+                    or decision.mark_replacement_in_window_two
+                ),
+                replacement_created_in_window_3=(
+                    component.replacement_created_in_window_3
+                    or decision.mark_replacement_in_window_three
+                ),
+                deadline_at=component.deadline_at,
+            )
+            return
+        self._finalize_remote_components(job)
+
+    def _run_remote_component(self, component: RemoteComponentWindow) -> None:
+        if self._remote_component_repository is None:
+            raise RuntimeError("Repositório de componentes remotos ausente.")
+        job = self.repository.get_job(component.batch_job_id)
+        if job is None:
+            raise RuntimeError("Trabalho pai do componente não foi encontrado.")
+        request = self._component_request(job, component=component.component)
+        checkpoint = component_checkpoint_path(request, component.component)
+        executor_id = component.id.hex
+        remaining_window_seconds = max(
+            1,
+            min(
+                self._remote_processing_timeout_seconds,
+                int((component.deadline_at - datetime.now(UTC)).total_seconds()),
+            ),
+        )
+        with self._active_lock:
+            self._active_components[executor_id] = component
+        try:
+            result = self._run_executor_job(
+                job,
+                operation="staged_component",
+                executor_job_id=executor_id,
+                payload_overrides={
+                    "component": component.component.value,
+                    "component_checkpoint": str(checkpoint),
+                    "window_number": component.window_number,
+                    "deadline_at": component.deadline_at.isoformat().replace(
+                        "+00:00", "Z"
+                    ),
+                    "run_id": request.run_id,
+                    "logical_job_id": request.logical_job_id,
+                    "attempt_number": request.attempt_number,
+                    "origin": component.origin,
+                    "remote_identifier": component.remote_identifier,
+                    "identifier_kind": (
+                        component.identifier_kind.value
+                        if component.identifier_kind is not None
+                        else None
+                    ),
+                    "identifier_origin": component.identifier_origin,
+                    "previous_component_checkpoint": component.checkpoint_path,
+                    "remote_processing_timeout_seconds": remaining_window_seconds,
+                },
+            )
+        finally:
+            with self._active_lock:
+                self._active_components.pop(executor_id, None)
+        component = (
+            self._remote_component_repository.get(component.id) or component
+        )
+        if result.status not in {
+            BatchJobStatus.COMPLETE,
+            BatchJobStatus.COMPLETE_WITH_WARNINGS,
+        }:
+            self._handle_failed_remote_component(job, component, result)
+            return
+        raw = result.payload.get("_component_result")
+        if not isinstance(raw, Mapping) or not raw.get("checkpoint"):
+            raise RuntimeError("Coleta do componente não retornou checkpoint.")
+        persisted = load_component_checkpoint(
+            str(raw["checkpoint"]),
+            storage_root=self._staged_output_root,
+        )
+        if persisted.component is not component.component:
+            raise RuntimeError("Checkpoint retornou componente incompatível.")
+        if persisted.status not in _REMOTE_COMPONENT_PUBLISHABLE_STATES:
+            self._handle_failed_remote_component(
+                job,
+                component,
+                BatchJobResult(
+                    status=BatchJobStatus.FAILED,
+                    error_code=str(
+                        persisted.metadata.get("failure_code")
+                        or "COMPONENT_COLLECTION_FAILED"
+                    ),
+                    error_message=str(
+                        persisted.metadata.get("failure_message")
+                        or "Falha na coleta remota do componente."
+                    ),
+                    payload={
+                        "retryable": bool(persisted.metadata.get("retryable")),
+                    },
+                ),
+            )
+            return
+        self._remote_component_repository.transition(
+            component.id,
+            expected_state=component.state,
+            requested_state=persisted.status,
+            checkpoint_path=str(persisted.checkpoint_path),
+            query_fingerprint=persisted.query_fingerprint,
+            worker_id=None,
+            lease_expires_at=None,
+            ended_at=datetime.now(UTC),
+        )
+        self._finalize_remote_components(job)
+
+    def _finalize_remote_components(self, job: WebBatchJob) -> None:
+        if self._remote_component_repository is None:
+            return
+        with self._component_finalize_lock:
+            grouped = self._remote_component_repository.list_for_jobs((job.id,))
+            windows = grouped.get(job.id, ())
+            latest: dict[ReportComponent, RemoteComponentWindow] = {}
+            for window in windows:
+                current = latest.get(window.component)
+                if current is None or window.attempt_number > current.attempt_number:
+                    latest[window.component] = window
+            if set(latest) != set(ReportComponent):
+                return
+            if any(
+                window.state not in _REMOTE_COMPONENT_TERMINAL_STATES
+                for window in latest.values()
+            ):
+                return
+            publishable = tuple(
+                window
+                for window in latest.values()
+                if window.state in _REMOTE_COMPONENT_PUBLISHABLE_STATES
+                and window.checkpoint_path
+            )
+            if not publishable:
+                vm_window = latest[ReportComponent.VM_CORE]
+                self.repository.complete_job(
+                    job.id,
+                    BatchJobResult(
+                        status=BatchJobStatus.FAILED,
+                        exit_code=2,
+                        error_code=vm_window.failure_code or "VM_COMPONENT_INCOMPLETE",
+                        error_message=(
+                            vm_window.failure_message
+                            or "O componente VM não produziu dados publicáveis."
+                        ),
+                        payload={
+                            "component_set_status": "FAILED",
+                            "retryable_components": (
+                                [ReportComponent.VM_CORE.value]
+                                if vm_window.retryable
+                                else []
+                            ),
+                        },
+                    ),
+                )
+                return
+            identity_window = next(
+                (
+                    window
+                    for window in publishable
+                    if window.component is ReportComponent.VM_CORE
+                ),
+                publishable[0],
+            )
+            identity_checkpoint = load_component_checkpoint(
+                str(identity_window.checkpoint_path),
+                storage_root=self._staged_output_root,
+            )
+            request = RemoteCollectionRequest(
+                storage_root=self._staged_output_root,
+                checkpoint_path=Path(self._checkpoint_file(job)).resolve(),
+                client_id=identity_checkpoint.client_id,
+                tenant_id=identity_checkpoint.tenant_id,
+                run_id=identity_checkpoint.run_id,
+                logical_job_id=identity_checkpoint.logical_job_id,
+                execution_type=identity_checkpoint.execution_type,
+                mode=identity_checkpoint.mode,
+                origin=identity_checkpoint.origin,
+                attempt_number=identity_checkpoint.attempt_number,
+                period=dict(identity_checkpoint.period),
+            )
+            checkpoints: list[ComponentCollectionCheckpoint] = []
+            for component in ReportComponent:
+                window = latest[component]
+                if window.checkpoint_path:
+                    checkpoints.append(
+                        load_component_checkpoint(
+                            window.checkpoint_path,
+                            storage_root=self._staged_output_root,
+                        )
+                    )
+                    continue
+                failure_checkpoint = ComponentCollectionCheckpoint(
+                    schema_version=1,
+                    checkpoint_path=component_checkpoint_path(request, component),
+                    component=component,
+                    client_id=request.client_id,
+                    tenant_id=request.tenant_id,
+                    run_id=request.run_id,
+                    logical_job_id=request.logical_job_id,
+                    execution_type=request.execution_type,
+                    mode=request.mode,
+                    origin=request.origin,
+                    attempt_number=request.attempt_number,
+                    period=dict(request.period),
+                    status=window.state,
+                    artifacts=(),
+                    metadata={
+                        "failure_code": (
+                            window.failure_code or "COMPONENT_INCOMPLETE"
+                        ),
+                        "failure_message": window.failure_message,
+                        "retryable": window.retryable,
+                        "window_number": window.window_number,
+                    },
+                    query_fingerprint=(
+                        window.query_fingerprint
+                        or hashlib.sha256(
+                            f"{component.value}:unavailable".encode("utf-8")
+                        ).hexdigest()
+                    ),
+                )
+                checkpoints.append(
+                    persist_component_checkpoint(
+                        failure_checkpoint,
+                        storage_root=self._staged_output_root,
+                    )
+                )
+            merged = merge_component_checkpoints(
+                request=request,
+                checkpoints=tuple(checkpoints),
+            )
+            collect_client_remote(
+                request,
+                dependencies=RemoteCollectionDependencies(
+                    collect=lambda _: merged
+                ),
+            )
+            self.repository.advance_job_phase(
+                job.id,
+                expected_phase=BatchJobPhase.REMOTE_RUNNING,
+                requested_phase=BatchJobPhase.READY_FOR_BUILD,
+                collection_checkpoint_path=request.checkpoint_path,
+            )
+            self._dispatcher.wake()
 
     def _run_remote_job(self, job: WebBatchJob) -> BatchJobResult:
         checkpoint = self._checkpoint_file(job)
@@ -1490,8 +2657,10 @@ class DurableDashboardJobQueue:
         *,
         operation: str | None = None,
         checkpoint_path: str | None = None,
+        executor_job_id: str | None = None,
+        payload_overrides: Mapping[str, Any] | None = None,
     ) -> BatchJobResult:
-        job_id = job.id.hex
+        job_id = str(executor_job_id or job.id.hex)
         payload = dict(job.payload)
         payload.pop("vm_resume_budget_seconds", None)
         payload["remote_processing_timeout_seconds"] = (
@@ -1526,6 +2695,8 @@ class DurableDashboardJobQueue:
                 payload["vm_resume_budget_seconds"] = (
                     self._remote_processing_timeout_seconds
                 )
+        if payload_overrides:
+            payload.update(dict(payload_overrides))
         with self.executor._lock:
             self.executor._jobs[job_id] = payload
         with self._active_lock:

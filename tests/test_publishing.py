@@ -27,6 +27,39 @@ def _document(path: Path, text: str) -> Path:
 
 
 class AtomicPublicationTests(unittest.TestCase):
+    def test_manifest_can_use_cloud_as_primary_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            dataset = directory / "cloud-report.json"
+            dataset.write_text("{}", encoding="utf-8")
+            document = _document(directory / "cloud.docx", "Documento Cloud")
+
+            manifest = create_publication_manifest(
+                output_path=directory / "publication-manifest.json",
+                client_id="cliente-a",
+                tenant_id="tenant-a",
+                run_id="run-cloud-first",
+                execution_type="AUTOMATIC_MONTHLY",
+                period={"period_id": "2026-08"},
+                dataset_path=dataset,
+                primary_dataset_component="cloud",
+                documents=(
+                    PublicationDocument(
+                        document,
+                        "cloud",
+                        document_variant="expanded",
+                    ),
+                ),
+                history_database=None,
+            )
+
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            payload["source_datasets"],
+            {"cloud": payload["source_dataset"]},
+        )
+
     def test_json_write_retries_windows_sharing_violation(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             target = Path(directory_name) / "state.json"

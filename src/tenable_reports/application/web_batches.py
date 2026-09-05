@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
 from uuid import UUID
@@ -14,6 +15,12 @@ from tenable_reports.domain.web_batches import (
     WebBatchEvent,
     WebBatchJob,
 )
+from tenable_reports.domain.remote_components import (
+    RemoteComponentState,
+    RemoteComponentWindow,
+    RemoteObservation,
+)
+from tenable_reports.domain.report_components import ReportComponent
 
 
 class NoEligibleBatchJobsError(ValueError):
@@ -292,6 +299,7 @@ class WebBatchRepository(Protocol):
         batch_ids: Sequence[UUID],
     ) -> Mapping[UUID, tuple[WebBatchJob, ...]]: ...
 
+
     def record_job_process(
         self,
         job_id: UUID,
@@ -383,5 +391,58 @@ class WebBatchRepository(Protocol):
     def reconcile_abandoned_jobs(
         self,
         *,
+        active_worker_ids: set[str],
+    ) -> int: ...
+
+
+class RemoteComponentRepository(Protocol):
+    def get(self, component_id: UUID) -> RemoteComponentWindow | None: ...
+
+    def create_for_job(
+        self,
+        *,
+        batch_job_id: UUID,
+        components: Sequence[ReportComponent],
+        window_number: int,
+        deadline_at: datetime,
+        origin: str,
+        query_fingerprints: Mapping[ReportComponent, str] | None = None,
+        attempt_number: int | None = None,
+        parent_component_id: UUID | None = None,
+        replacement_created_in_window_2: bool = False,
+        replacement_created_in_window_3: bool = False,
+    ) -> tuple[RemoteComponentWindow, ...]: ...
+
+    def claim_next(
+        self,
+        *,
+        worker_id: str,
+        lease_seconds: int = 60,
+    ) -> RemoteComponentWindow | None: ...
+
+    def record_observation(
+        self,
+        component_id: UUID,
+        observation: RemoteObservation,
+    ) -> RemoteComponentWindow: ...
+
+    def transition(
+        self,
+        component_id: UUID,
+        *,
+        expected_state: RemoteComponentState,
+        requested_state: RemoteComponentState,
+        **changes: Any,
+    ) -> RemoteComponentWindow: ...
+
+    def list_for_jobs(
+        self,
+        job_ids: Sequence[UUID],
+    ) -> Mapping[UUID, tuple[RemoteComponentWindow, ...]]: ...
+
+    def reconcile_abandoned(
+        self,
+        *,
+        now: datetime,
         active_worker_ids: set[str],
     ) -> int: ...

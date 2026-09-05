@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$TaskName = "Relatorios Tenable - Mensal",
-    [string]$Time = "06:00",
+    [string]$Time = "00:05",
     [string]$Config = (Join-Path $PSScriptRoot "..\orchestration\clients.json")
 )
 

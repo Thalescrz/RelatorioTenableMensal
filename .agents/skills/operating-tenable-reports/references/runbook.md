@@ -100,11 +100,11 @@ etapa. `0/0 · aguardando a Tenable informar chunks` significa total remoto aind
 desconhecido, não zero findings. A UI pode informar checkpoint validado, mas nunca
 mostra seu caminho.
 
-**Gerar todos** usa `retry_then_continue`: a primeira falha WAS retenta somente o
-WEB; a segunda publica sem WAS e registra `WAS_RETRY_EXHAUSTED`. O automático
-mensal usa a mesma política sem interação. A execução individual permanece em
-`wait`, com decisão do analista. Nenhuma dessas retomadas repete VM, assets, TAG ou
-Cloud.
+**Gerar todos** e o mensal usam o coordenador de componentes: Janela 1 de 10h,
+Janela 2 de 10h retomando UUID/cursor e Janela 3 de 10h somente quando a Janela 2
+precisou substituir um identificador comprovadamente inválido. Depois disso o
+componente aguarda retry manual. Sucesso de VM, WAS ou Cloud é preservado e não é
+repetido pela falha de outro.
 
 Ao validar **Forçar nova coleta pela API**, encerre a conferência somente depois
 de confirmar:
@@ -193,6 +193,23 @@ dependência/escopo staged local, não falha da Tenable. `LOCAL_FILESYSTEM_TRANS
 indica contenção persistente do Windows; `WAS_LOCAL_STATE_TRANSIENT` preserva VM e
 isola a falha opcional WEB.
 
+## Automação mensal
+
+Abra **Admin → Automação mensal**. **Salvar política** e **Validar sem executar**
+não chamam a Tenable nem alteram o Agendador. Confira competência, horário e
+clientes elegíveis; depois sincronize/ative a tarefa com confirmação explícita.
+
+O comando operacional é:
+
+```powershell
+.\.venv\Scripts\python.exe -m tenable_reports run-monthly-batch `
+  --project-root . --config orchestration\clients.json
+```
+
+Ele é idempotente por carteira e competência. Na família selecionada, use os
+contadores clicáveis para separar retry automático, espera manual, parcial, falha
+definitiva e concluídos. Um retry manual abre apenas uma janela de 10h.
+
 ## Propriedades seletivas
 
 O padrão é payload completo. **Validar export otimizado** cria comparação real no
@@ -209,9 +226,9 @@ WAS roda separadamente e é best effort. Ausência de licença, permissão ou fi
 gera aviso/mensagem de ausência e não bloqueia VM. Diferencie progresso VM de
 progresso WAS; chunks VM finalizados não dizem nada sobre WAS.
 
-No lote e no mensal, espere no máximo duas tentativas WAS durante a execução. Se a
-segunda falhar, confirme a publicação sem WEB e o alerta `WAS_RETRY_EXHAUSTED`. No
-individual, aguarde a decisão explícita entre continuar sem WEB e retentar.
+No lote e no mensal, acompanhe o WAS pelas mesmas duas janelas automáticas e a
+terceira condicional usadas pelos demais componentes. Ao esgotar, o conjunto fica
+semiconcluído e o WAS passa a aguardar retry manual seletivo.
 
 ## Componentes e retry
 

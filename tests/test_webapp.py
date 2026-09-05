@@ -369,6 +369,27 @@ class WebDashboardTests(unittest.TestCase):
         ):
             self.assertNotIn(private_value, source)
 
+    def test_batch_family_filter_static_asset_is_served_as_javascript(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+            )
+            client = LocalClient(app)
+            try:
+                status, headers, body = client.download(
+                    "/static/batch_family_filters.js"
+                )
+            finally:
+                client.close()
+                app.jobs.close()
+
+        self.assertEqual(status, 200)
+        self.assertIn("javascript", headers.get("Content-Type", "").lower())
+        self.assertIn("filterFamilyClients", body.decode("utf-8"))
+
     def test_report_request_guard_static_asset_is_served_as_javascript(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

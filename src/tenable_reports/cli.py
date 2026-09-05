@@ -10,6 +10,7 @@ import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
 
 from tenable_reports.application.execution_control import FileExecutionControl
@@ -33,7 +34,17 @@ from tenable_reports.application.collection_resources import (
 )
 
 from tenable_reports.application.collect_inventory import collect_bounded_historical_findings
-from tenable_reports.application.period_collection import collect_external_period
+from tenable_reports.application.period_collection import (
+    collect_external_period,
+    collect_vm_core_period,
+    collect_was_period,
+)
+from tenable_reports.application.component_collection import (
+    ComponentCollectionCheckpoint,
+    component_checkpoint_path,
+    component_query_fingerprint,
+    persist_component_checkpoint,
+)
 from tenable_reports.application.staged_execution import (
     CheckpointArtifact,
     CollectionCheckpoint,
@@ -68,6 +79,7 @@ from tenable_reports.application.cloud_execution import (
     CloudExecutionStatus,
     CloudResumeContext,
     TenableCloudLiveCollector,
+    collect_cloud_period,
     execute_cloud_component,
     retry_cloud_component,
 )
@@ -217,6 +229,7 @@ from tenable_reports.domain.report_components import (
     ReportComponent,
     summarize_component_set,
 )
+from tenable_reports.domain.remote_components import RemoteComponentState
 from tenable_reports.domain.report_reference import (
     READY_STATUS,
     ReportCandidate,
@@ -1856,6 +1869,14 @@ def _assemble_period_from_existing(
     collection_sources: tuple[str, ...] = (),
     was_recovery_checkpoint: WasRecoveryCheckpoint | None = None,
     was_recovery_checkpoint_path: Path | None = None,
+    cloud_dataset_path: Path | None = None,
+    cloud_dataset_sha256: str | None = None,
+    cloud_capabilities: Mapping[str, Any] | None = None,
+    cloud_connector_version: str | None = None,
+    cloud_collection_status: str | None = None,
+    cloud_failure_code: str | None = None,
+    cloud_retryable: bool = False,
+    cloud_warnings: tuple[Mapping[str, Any], ...] = (),
 ) -> _CollectedPeriodExecution:
     if (
         selected_tag_count is None
@@ -1959,6 +1980,14 @@ def _assemble_period_from_existing(
         report_registry=report_registry,
         was_recovery_checkpoint=was_recovery_checkpoint,
         was_recovery_checkpoint_path=was_recovery_checkpoint_path,
+        cloud_dataset_path=cloud_dataset_path,
+        cloud_dataset_sha256=cloud_dataset_sha256,
+        cloud_capabilities=cloud_capabilities,
+        cloud_connector_version=cloud_connector_version,
+        cloud_collection_status=cloud_collection_status,
+        cloud_failure_code=cloud_failure_code,
+        cloud_retryable=cloud_retryable,
+        cloud_warnings=cloud_warnings,
     )
 
 
@@ -2402,7 +2431,7 @@ def _cloud_resume_from_checkpoint(
     if not isinstance(metadata, Mapping):
         raise ValueError("Estado Cloud ausente no checkpoint.")
     status = str(metadata.get("status") or "").upper()
-    if status in {"FAILED", "SKIPPED"}:
+    if status in {"FAILED", "SKIPPED", "NOT_APPLICABLE"}:
         return None
     if status != "COMPLETE":
         raise ValueError(
@@ -2467,6 +2496,111 @@ def _validate_tag_dataset_identity(
         raise ValueError("Dataset TAG incompatível com o checkpoint.")
 
 
+def _materialize_checkpoint_artifact(
+    checkpoint: CollectionCheckpoint,
+    *,
+    component: str,
+    kind: str,
+    destination: Path,
+) -> Path:
+    artifact = _validated_artifact_from_checkpoint(
+        checkpoint,
+        component=component,
+        kind=kind,
+    )
+    target = destination.resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.is_file():
+        if sha256_file(target) != artifact.sha256:
+            raise ValueError(
+                "Artefato local existente diverge do checkpoint do componente."
+            )
+        return target
+    shutil.copy2(artifact.path, target)
+    if sha256_file(target) != artifact.sha256:
+        target.unlink(missing_ok=True)
+        raise ValueError("Falha ao materializar artefato validado do componente.")
+    return target
+
+
+def _materialize_disjoint_component_inputs(
+    args: argparse.Namespace,
+    *,
+    profile: ClientProfile,
+    checkpoint: CollectionCheckpoint,
+) -> Path:
+    output_root = _scoped_output_root(
+        args.output_root,
+        checkpoint.execution_type,
+    ).resolve()
+    normalized_directory = (
+        output_root / "normalized" / profile.client_id / checkpoint.run_id
+    )
+    snapshot_directory = (
+        output_root / "snapshots" / profile.client_id / checkpoint.run_id
+    )
+    vm_metadata = checkpoint.component_metadata[ReportComponent.VM_CORE.value]
+    vm_targets = {
+        "normalized_manifest_kind": normalized_directory / "manifest.json",
+        "normalized_assets_kind": normalized_directory / "assets.jsonl.gz",
+        "normalized_findings_kind": normalized_directory / "findings.jsonl.gz",
+        "normalized_quality_issues_kind": (
+            normalized_directory / "quality-issues.jsonl.gz"
+        ),
+        "asset_snapshot_kind": (
+            snapshot_directory / "tenable_vm_assets_v2.snapshot.json"
+        ),
+        "finding_snapshot_kind": (
+            snapshot_directory / "tenable_vm_vulnerabilities.snapshot.json"
+        ),
+    }
+    for metadata_key, destination in vm_targets.items():
+        kind = str(vm_metadata.get(metadata_key) or "").strip()
+        if not kind:
+            raise ValueError("Checkpoint VM sem artefato independente obrigatório.")
+        _materialize_checkpoint_artifact(
+            checkpoint,
+            component=ReportComponent.VM_CORE.value,
+            kind=kind,
+            destination=destination,
+        )
+    tag_scope_kind = str(vm_metadata.get("tag_scope_snapshot_kind") or "").strip()
+    if tag_scope_kind:
+        _materialize_checkpoint_artifact(
+            checkpoint,
+            component=ReportComponent.VM_CORE.value,
+            kind=tag_scope_kind,
+            destination=(
+                snapshot_directory / "tenable_vm_tag_scope.snapshot.json"
+            ),
+        )
+
+    was_metadata = checkpoint.component_metadata.get(ReportComponent.WAS.value)
+    if isinstance(was_metadata, Mapping) and str(
+        was_metadata.get("status") or ""
+    ).upper() in {"COMPLETE", "COMPLETE_WITH_WARNINGS"}:
+        was_targets = {
+            "normalized_was_manifest_kind": normalized_directory / "was-manifest.json",
+            "normalized_was_findings_kind": (
+                normalized_directory / "was-findings.jsonl.gz"
+            ),
+            "was_snapshot_kind": (
+                snapshot_directory / "tenable_was_findings.snapshot.json"
+            ),
+        }
+        for metadata_key, destination in was_targets.items():
+            kind = str(was_metadata.get(metadata_key) or "").strip()
+            if not kind:
+                raise ValueError("Checkpoint WAS completo sem artefato obrigatório.")
+            _materialize_checkpoint_artifact(
+                checkpoint,
+                component=ReportComponent.WAS.value,
+                kind=kind,
+                destination=destination,
+            )
+    return normalized_directory / "findings.jsonl.gz"
+
+
 def _materialize_period_from_checkpoint(
     args: argparse.Namespace,
     profile: ClientProfile,
@@ -2483,6 +2617,72 @@ def _materialize_period_from_checkpoint(
     if not isinstance(was_metadata, Mapping):
         raise ValueError("Estado WAS ausente no checkpoint.")
     cloud_resume = _cloud_resume_from_checkpoint(checkpoint, profile=profile)
+    if not str(vm_metadata.get("canonical_dataset_kind") or "").strip():
+        normalized_findings_path = _materialize_disjoint_component_inputs(
+            args,
+            profile=profile,
+            checkpoint=checkpoint,
+        )
+        cloud_metadata = checkpoint.component_metadata.get("CLOUD")
+        cloud_status = None
+        cloud_failure_code = None
+        cloud_retryable = False
+        cloud_warnings: tuple[Mapping[str, Any], ...] = ()
+        if isinstance(cloud_metadata, Mapping):
+            cloud_status = str(cloud_metadata.get("status") or "").upper() or None
+            cloud_failure_code = (
+                str(cloud_metadata.get("failure_code") or "").strip() or None
+            )
+            cloud_retryable = bool(cloud_metadata.get("retryable", False))
+            cloud_warnings = tuple(
+                dict(item)
+                for item in (cloud_metadata.get("warnings") or ())
+                if isinstance(item, Mapping)
+            )
+        return _assemble_period_from_existing(
+            args,
+            profile=profile,
+            output_root=_scoped_output_root(
+                args.output_root,
+                checkpoint.execution_type,
+            ).resolve(),
+            actual_run_id=checkpoint.run_id,
+            period=period,
+            execution_type=checkpoint.execution_type,
+            normalized_findings_path=normalized_findings_path,
+            selected_tag_count=int(vm_metadata.get("selected_tag_count") or 0),
+            was_collection_status=str(
+                was_metadata.get("collection_status")
+                or was_metadata.get("status")
+                or "NOT_APPLICABLE"
+            ),
+            vm_export_mode=str(vm_metadata.get("vm_export_mode") or "checkpoint"),
+            vm_export_outcome=str(vm_metadata.get("vm_export_outcome") or "REUSED"),
+            collection_route=str(vm_metadata.get("collection_route") or "checkpoint"),
+            reconstruction_status=str(
+                vm_metadata.get("reconstruction_status") or "CURRENT_WINDOW"
+            ),
+            collection_sources=tuple(
+                str(item)
+                for item in (
+                    vm_metadata.get("collection_sources")
+                    or ("tenable_vm_vulnerabilities",)
+                )
+            ),
+            collection_warnings=tuple(
+                dict(item)
+                for item in (vm_metadata.get("warnings") or ())
+                if isinstance(item, Mapping)
+            ),
+            cloud_dataset_path=(cloud_resume[0] if cloud_resume else None),
+            cloud_dataset_sha256=(cloud_resume[1] if cloud_resume else None),
+            cloud_capabilities=(cloud_resume[2] if cloud_resume else None),
+            cloud_connector_version=(cloud_resume[3] if cloud_resume else None),
+            cloud_collection_status=cloud_status,
+            cloud_failure_code=cloud_failure_code,
+            cloud_retryable=cloud_retryable,
+            cloud_warnings=cloud_warnings,
+        )
     canonical = _validated_artifact_from_checkpoint(
         checkpoint,
         component="VM_CORE",
@@ -2766,6 +2966,549 @@ def _prepare_cloud_for_checkpoint(
     )
 
 
+def _component_collection_request(
+    args: argparse.Namespace,
+    *,
+    profile: ClientProfile,
+    period: ReportingPeriod,
+    execution_type: str,
+    component: ReportComponent,
+) -> RemoteCollectionRequest:
+    run_id = str(getattr(args, "run_id", None) or uuid.uuid4())
+    component_path = Path(args.component_checkpoint).resolve()
+    if (
+        component_path.name != "checkpoint.json"
+        or component_path.parent.name != component.value.lower()
+        or component_path.parent.parent.name != run_id
+    ):
+        raise ValueError(
+            "--component-checkpoint deve usar .../<run_id>/<componente>/checkpoint.json."
+        )
+    merged_checkpoint = component_path.parents[2] / f"{run_id}.json"
+    request = RemoteCollectionRequest(
+        storage_root=Path(args.output_root).resolve(),
+        checkpoint_path=merged_checkpoint.resolve(),
+        client_id=profile.client_id,
+        tenant_id=profile.tenant_id,
+        run_id=run_id,
+        logical_job_id=str(getattr(args, "logical_job_id", None) or run_id),
+        execution_type=execution_type,
+        mode=str(args.mode),
+        origin=str(
+            getattr(args, "origin", None)
+            or ("MANUAL" if execution_type == "MANUAL" else "SCHEDULED")
+        ),
+        attempt_number=int(getattr(args, "attempt_number", 1) or 1),
+        period=period.to_dict(),
+    )
+    if component_checkpoint_path(request, component) != component_path:
+        raise ValueError("Caminho do checkpoint de componente incompatível.")
+    return request
+
+
+def _component_common_metadata(args: argparse.Namespace) -> dict[str, Any]:
+    deadline = str(getattr(args, "deadline_at", None) or "").strip()
+    try:
+        parsed_deadline = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("--deadline-at deve ser um instante ISO-8601 válido.") from exc
+    if parsed_deadline.tzinfo is None:
+        raise ValueError("--deadline-at deve informar timezone.")
+    return {
+        "window_number": int(args.window_number),
+        "deadline_at": parsed_deadline.astimezone(UTC).isoformat().replace(
+            "+00:00", "Z"
+        ),
+        "identifier_kind": (
+            str(args.identifier_kind) if getattr(args, "identifier_kind", None) else None
+        ),
+        "identifier_origin": (
+            str(args.identifier_origin)
+            if getattr(args, "identifier_origin", None)
+            else None
+        ),
+        "remote_identifier": (
+            str(args.remote_identifier)
+            if getattr(args, "remote_identifier", None)
+            else None
+        ),
+    }
+
+
+def _component_checkpoint(
+    *,
+    request: RemoteCollectionRequest,
+    component: ReportComponent,
+    status: RemoteComponentState,
+    artifacts: Sequence[CheckpointArtifact],
+    metadata: Mapping[str, Any],
+    query_payload: Mapping[str, Any],
+) -> ComponentCollectionCheckpoint:
+    return ComponentCollectionCheckpoint(
+        schema_version=1,
+        checkpoint_path=component_checkpoint_path(request, component),
+        component=component,
+        client_id=request.client_id,
+        tenant_id=request.tenant_id,
+        run_id=request.run_id,
+        logical_job_id=request.logical_job_id,
+        execution_type=request.execution_type,
+        mode=request.mode,
+        origin=request.origin,
+        attempt_number=request.attempt_number,
+        period=dict(request.period),
+        status=status,
+        artifacts=tuple(artifacts),
+        metadata=dict(metadata),
+        query_fingerprint=component_query_fingerprint(component, query_payload),
+    )
+
+
+def _vm_component_checkpoint(
+    args: argparse.Namespace,
+    *,
+    profile: ClientProfile,
+    period: ReportingPeriod,
+    request: RemoteCollectionRequest,
+) -> ComponentCollectionCheckpoint:
+    component = ReportComponent.VM_CORE
+    component_root = component_checkpoint_path(request, component).parent
+    vm_strategy, vm_num_assets, vm_selective_mode = (
+        _effective_vm_export_settings(args, profile)
+    )
+    compact_repository = _compact_snapshot_repository(args)
+    route, compact_snapshot = resolve_execution_collection_route(
+        profile=profile,
+        period=period,
+        execution_mode=(
+            "automatic"
+            if request.execution_type == "AUTOMATIC_MONTHLY"
+            else "manual"
+        ),
+        historical_source_override=getattr(args, "historical_source", None),
+        compact_repository=compact_repository,
+        force_live_collection=bool(getattr(args, "force_live_collection", False)),
+    )
+    asset_filters, finding_filters = _period_filters(
+        period=period,
+        asset_filters_path=getattr(args, "asset_filters", None),
+        finding_filters_path=getattr(args, "finding_filters", None),
+    )
+    collection_warnings: tuple[Mapping[str, Any], ...]
+    if route.source.value == "snapshot_replay":
+        if compact_snapshot is None:
+            raise RuntimeError("Rota de replay selecionada sem snapshot compacto.")
+        normalized = materialize_compact_snapshot_run(
+            snapshot=compact_snapshot,
+            profile=profile,
+            run_id=request.run_id,
+            output_root=component_root,
+        )
+        normalized_directory = normalized.findings_path.parent
+        (normalized_directory / "was-findings.jsonl.gz").unlink(missing_ok=True)
+        (normalized_directory / "was-manifest.json").unlink(missing_ok=True)
+        snapshot_directory = (
+            component_root / "snapshots" / profile.client_id / request.run_id
+        )
+        (snapshot_directory / "tenable_was_findings.snapshot.json").unlink(
+            missing_ok=True
+        )
+        inputs = load_report_dataset_inputs(
+            profile=profile,
+            run_id=request.run_id,
+            output_root=component_root,
+        )
+        selected_tag_count = len(
+            (inputs.tag_scope or {}).get("selected_tags") or ()
+        )
+        vm_export_mode = "snapshot_replay"
+        vm_export_outcome = "REPLAYED"
+        collection_route = "snapshot_replay"
+        reconstruction_status = route.accuracy.value.upper()
+        collection_sources = tuple(
+            inputs.collection_provenance.get("sources")
+            or ("compact_finding_snapshot",)
+        )
+        collection_warnings = tuple(
+            ({"code": "COLLECTION_ROUTE_WARNING", "message": route.warning},)
+            if route.warning
+            else ()
+        )
+    else:
+        credentials = _load_credentials(args.env_file)
+        client = _client_from_environment(
+            credentials,
+            no_progress_timeout_seconds=_effective_no_progress_timeout_seconds(
+                args,
+                profile,
+                execution_type=request.execution_type,
+            ),
+            max_processing_wait_seconds=getattr(
+                args, "remote_processing_timeout_seconds", None
+            ),
+            max_wait_seconds=getattr(args, "remote_processing_timeout_seconds", None),
+            stall_warning_seconds=getattr(
+                args, "remote_progress_warning_seconds", None
+            ),
+        )
+        selected_tags = _selected_tags(client, profile, args)
+        plugin_catalog = _plugin_catalog_repository(args)
+        external = collect_vm_core_period(
+            args=args,
+            profile=profile,
+            period=period,
+            output_root=component_root,
+            run_id=request.run_id,
+            client=client,
+            inventory_client=_inventory_client_from_environment(credentials),
+            selected_tags=selected_tags,
+            asset_filters=asset_filters,
+            finding_filters=finding_filters,
+            vm_strategy=vm_strategy,
+            vm_num_assets=vm_num_assets,
+            vm_selective_mode=vm_selective_mode,
+            route=route,
+            plugin_catalog=plugin_catalog,
+            plugin_catalog_callback=_plugin_catalog_callback(
+                plugin_catalog, profile
+            ),
+            progress_callback=_emit_progress_event,
+        )
+        normalized = external.normalized
+        selected_tag_count = len(selected_tags)
+        vm_export_mode = external.vm_export_mode
+        vm_export_outcome = external.vm_export_outcome
+        collection_route = external.collection_route
+        reconstruction_status = external.reconstruction_status
+        collection_sources = external.collection_sources
+        collection_warnings = external.warnings
+
+    normalized_directory = Path(normalized.findings_path).resolve().parent
+    snapshot_directory = (
+        component_root / "snapshots" / profile.client_id / request.run_id
+    )
+    paths: list[tuple[str, Path]] = [
+        ("normalized_manifest", Path(normalized.manifest_path)),
+        ("normalized_assets", Path(normalized.assets_path)),
+        ("normalized_findings", Path(normalized.findings_path)),
+        ("normalized_quality_issues", Path(normalized.quality_issues_path)),
+        (
+            "asset_snapshot",
+            snapshot_directory / "tenable_vm_assets_v2.snapshot.json",
+        ),
+        (
+            "finding_snapshot",
+            snapshot_directory / "tenable_vm_vulnerabilities.snapshot.json",
+        ),
+    ]
+    tag_scope_path = snapshot_directory / "tenable_vm_tag_scope.snapshot.json"
+    if tag_scope_path.is_file():
+        paths.append(("tag_scope_snapshot", tag_scope_path))
+    artifacts = tuple(
+        _checkpoint_artifact(component.value, kind, path) for kind, path in paths
+    )
+    metadata = {
+        **_component_common_metadata(args),
+        "normalized_manifest_kind": "normalized_manifest",
+        "normalized_assets_kind": "normalized_assets",
+        "normalized_findings_kind": "normalized_findings",
+        "normalized_quality_issues_kind": "normalized_quality_issues",
+        "asset_snapshot_kind": "asset_snapshot",
+        "finding_snapshot_kind": "finding_snapshot",
+        "tag_scope_snapshot_kind": (
+            "tag_scope_snapshot" if tag_scope_path.is_file() else None
+        ),
+        "selected_tag_count": selected_tag_count,
+        "vm_export_mode": vm_export_mode,
+        "vm_export_outcome": vm_export_outcome,
+        "collection_route": collection_route,
+        "reconstruction_status": reconstruction_status,
+        "collection_sources": list(collection_sources),
+        "warnings": [dict(item) for item in collection_warnings],
+    }
+    return _component_checkpoint(
+        request=request,
+        component=component,
+        status=RemoteComponentState.COMPLETE,
+        artifacts=artifacts,
+        metadata=metadata,
+        query_payload={
+            "asset_filters": asset_filters,
+            "finding_filters": finding_filters,
+            "vm_strategy": vm_strategy,
+            "num_assets": vm_num_assets,
+            "selective_mode": vm_selective_mode,
+            "include_output": bool(args.include_output),
+            "include_software_vulns": bool(args.include_software_vulns),
+        },
+    )
+
+
+def _was_component_checkpoint(
+    args: argparse.Namespace,
+    *,
+    profile: ClientProfile,
+    period: ReportingPeriod,
+    request: RemoteCollectionRequest,
+) -> ComponentCollectionCheckpoint:
+    component = ReportComponent.WAS
+    common = _component_common_metadata(args)
+    filters = _was_period_filters(period=period, profile=profile)
+    if not profile.was_scope.enabled:
+        return _component_checkpoint(
+            request=request,
+            component=component,
+            status=RemoteComponentState.NOT_APPLICABLE,
+            artifacts=(),
+            metadata={**common, "reason_code": "WAS_DISABLED"},
+            query_payload={"enabled": False},
+        )
+    credentials = _load_credentials(args.env_file)
+    component_root = component_checkpoint_path(request, component).parent
+    result = collect_was_period(
+        args=args,
+        profile=profile,
+        period=period,
+        output_root=component_root,
+        run_id=request.run_id,
+        was_client=_was_client_from_environment(credentials),
+        progress_callback=_emit_progress_event,
+    )
+    if result.was_failure is not None:
+        failure = result.was_failure
+        return _component_checkpoint(
+            request=request,
+            component=component,
+            status=(
+                RemoteComponentState.WAITING_MANUAL_RETRY
+                if failure.retryable
+                else RemoteComponentState.NON_RETRYABLE_FAILURE
+            ),
+            artifacts=(),
+            metadata={
+                **common,
+                "collection_status": result.collection_status,
+                "failure_code": failure.code,
+                "retryable": failure.retryable,
+                "warnings": [dict(item) for item in result.warnings],
+                "export_uuid": failure.export_uuid,
+                "identifier_origin": failure.origin or common["identifier_origin"],
+                "remote_status": failure.remote_status,
+                "completed_units": failure.completed_chunks,
+                "total_units": failure.total_chunks,
+            },
+            query_payload={
+                "filters": filters,
+                "num_assets": int(args.was_num_assets),
+                "include_unlicensed": False,
+            },
+        )
+    normalized_directory = (
+        component_root / "normalized" / profile.client_id / request.run_id
+    )
+    snapshot_directory = (
+        component_root / "snapshots" / profile.client_id / request.run_id
+    )
+    paths = (
+        ("normalized_was_manifest", normalized_directory / "was-manifest.json"),
+        ("normalized_was_findings", normalized_directory / "was-findings.jsonl.gz"),
+        (
+            "was_snapshot",
+            snapshot_directory / "tenable_was_findings.snapshot.json",
+        ),
+    )
+    artifacts = tuple(
+        _checkpoint_artifact(component.value, kind, path) for kind, path in paths
+    )
+    return _component_checkpoint(
+        request=request,
+        component=component,
+        status=RemoteComponentState.COMPLETE,
+        artifacts=artifacts,
+        metadata={
+            **common,
+            "collection_status": result.collection_status,
+            "normalized_was_manifest_kind": "normalized_was_manifest",
+            "normalized_was_findings_kind": "normalized_was_findings",
+            "was_snapshot_kind": "was_snapshot",
+            "warnings": [dict(item) for item in result.warnings],
+        },
+        query_payload={
+            "filters": filters,
+            "num_assets": int(args.was_num_assets),
+            "include_unlicensed": False,
+        },
+    )
+
+
+def _cloud_component_checkpoint(
+    args: argparse.Namespace,
+    *,
+    profile: ClientProfile,
+    period: ReportingPeriod,
+    request: RemoteCollectionRequest,
+) -> ComponentCollectionCheckpoint:
+    component = ReportComponent.CLOUD
+    common = _component_common_metadata(args)
+    scope = getattr(profile, "cloud_security_scope", None)
+    if scope is None or not bool(getattr(scope, "enabled", False)):
+        return _component_checkpoint(
+            request=request,
+            component=component,
+            status=RemoteComponentState.NOT_APPLICABLE,
+            artifacts=(),
+            metadata={**common, "reason_code": "CLOUD_DISABLED"},
+            query_payload={"enabled": False},
+        )
+    load_dotenv_file(args.env_file, override=True)
+    credentials = CloudCredentialConfig.from_environment()
+    repository, persistent = _cloud_snapshot_repository_for_args(args)
+    component_root = component_checkpoint_path(request, component).parent
+    result = collect_cloud_period(
+        CloudExecutionRequest(
+            profile=profile,
+            period=period,
+            execution_type=request.execution_type,
+            run_id=request.run_id,
+            attempt_number=request.attempt_number,
+            output_root=component_root,
+            report_directory=component_root / ".staging",
+            template_path=Path(args.cloud_template),
+            force_refresh=bool(getattr(args, "force_cloud_refresh", False)),
+        ),
+        dependencies=CloudExecutionDependencies(
+            repository=repository,
+            collect_live=TenableCloudLiveCollector(
+                credentials,
+                cancellation_probe=_execution_cancellation_probe(args),
+            ),
+            history_persistent=persistent,
+        ),
+        progress_callback=_emit_progress_event,
+    )
+    if result.status in {
+        CloudExecutionStatus.COMPLETE,
+        CloudExecutionStatus.REPLAYED,
+    } and result.dataset_path is not None:
+        dataset = load_cloud_report_dataset(result.dataset_path)
+        artifact = _checkpoint_artifact(
+            component.value,
+            "cloud_dataset",
+            result.dataset_path,
+        )
+        return _component_checkpoint(
+            request=request,
+            component=component,
+            status=RemoteComponentState.COMPLETE,
+            artifacts=(artifact,),
+            metadata={
+                **common,
+                "dataset_kind": "cloud_dataset",
+                "dataset_sha256": artifact.sha256,
+                "snapshot_id": result.snapshot_id,
+                "capabilities": dict(dataset.get("capabilities") or {}),
+                "connector_version": str(
+                    dataset.get("connector_version") or "staged-checkpoint-v1"
+                ),
+                "warnings": [dict(item) for item in result.warnings],
+            },
+            query_payload={
+                "environment": scope.environment,
+                "period": period.to_dict(),
+            },
+        )
+    return _component_checkpoint(
+        request=request,
+        component=component,
+        status=(
+            RemoteComponentState.WAITING_MANUAL_RETRY
+            if result.retryable
+            else RemoteComponentState.NON_RETRYABLE_FAILURE
+        ),
+        artifacts=(),
+        metadata={
+            **common,
+            "failure_code": result.failure_code or "CLOUD_COMPONENT_FAILED",
+            "retryable": bool(result.retryable),
+            "warnings": [dict(item) for item in result.warnings],
+        },
+        query_payload={
+            "environment": scope.environment,
+            "period": period.to_dict(),
+        },
+    )
+
+
+def command_collect_component(args: argparse.Namespace) -> int:
+    if not args.confirm_live_api:
+        raise ValueError(
+            "A coleta de componente exige --confirm-live-api; ela pode iniciar "
+            "uma operação real no tenant."
+        )
+    component = ReportComponent(args.component)
+    if getattr(args, "remote_identifier", None):
+        if str(getattr(args, "identifier_kind", "")) != "UUID" and component in {
+            ReportComponent.VM_CORE,
+            ReportComponent.WAS,
+        }:
+            raise ValueError("VM e WAS exigem identifier-kind UUID.")
+        if component is ReportComponent.VM_CORE:
+            args.vm_export_uuid = str(args.remote_identifier)
+        elif component is ReportComponent.WAS:
+            args.was_export_uuid = str(args.remote_identifier)
+    control = (
+        FileExecutionControl(args.job_control_file)
+        if getattr(args, "job_control_file", None)
+        else None
+    )
+    setattr(args, "execution_control", control)
+    setattr(args, "auto_cancel_on_timeout", False)
+    setattr(args, "no_progress_warning_only", True)
+    if control is not None:
+        control.raise_if_stop_requested()
+    profile = load_client_profile(args.profile)
+    period = _period_for_mode(args, profile)
+    execution_type = "MANUAL" if args.mode == "manual" else "AUTOMATIC_MONTHLY"
+    request = _component_collection_request(
+        args,
+        profile=profile,
+        period=period,
+        execution_type=execution_type,
+        component=component,
+    )
+    args.run_id = request.run_id
+    args.logical_job_id = request.logical_job_id
+    args.origin = request.origin
+    collectors = {
+        ReportComponent.VM_CORE: _vm_component_checkpoint,
+        ReportComponent.WAS: _was_component_checkpoint,
+        ReportComponent.CLOUD: _cloud_component_checkpoint,
+    }
+    checkpoint = collectors[component](
+        args,
+        profile=profile,
+        period=period,
+        request=request,
+    )
+    persisted = persist_component_checkpoint(
+        checkpoint,
+        storage_root=request.storage_root,
+    )
+    print(json.dumps({
+        "event": "TENABLE_COMPONENT_CHECKPOINT",
+        "status": persisted.status.value,
+        "component": persisted.component.value,
+        "window_number": int(args.window_number),
+        "client_id": persisted.client_id,
+        "run_id": persisted.run_id,
+        "remote_identifier": getattr(args, "remote_identifier", None),
+        "identifier_origin": getattr(args, "identifier_origin", None),
+        "checkpoint": str(persisted.checkpoint_path),
+        "artifact_count": len(persisted.artifacts),
+    }, ensure_ascii=False))
+    return 0
+
+
 def command_collect_client(args: argparse.Namespace) -> int:
     if not args.confirm_live_api:
         raise ValueError(
@@ -2858,6 +3601,21 @@ def _build_from_collection_checkpoint(
     args.attempt_number = checkpoint.attempt_number
     args.origin = checkpoint.origin
     args.mode = checkpoint.mode
+    vm_metadata = checkpoint.component_metadata.get(ReportComponent.VM_CORE.value)
+    cloud_metadata = checkpoint.component_metadata.get(ReportComponent.CLOUD.value)
+    vm_available = isinstance(vm_metadata, Mapping) and str(
+        vm_metadata.get("status") or ""
+    ).upper() in {"COMPLETE", "COMPLETE_WITH_WARNINGS"}
+    cloud_available = isinstance(cloud_metadata, Mapping) and str(
+        cloud_metadata.get("status") or ""
+    ).upper() in {"COMPLETE", "COMPLETE_WITH_WARNINGS"}
+    if not vm_available and cloud_available:
+        return _build_cloud_only_from_collection_checkpoint(
+            args,
+            profile=profile,
+            checkpoint=checkpoint,
+            period=period,
+        )
     collected = _materialize_period_from_checkpoint(
         args,
         profile,
@@ -2871,6 +3629,147 @@ def _build_from_collection_checkpoint(
         execution_type=checkpoint.execution_type,
         collected=collected,
     )
+
+
+def _build_cloud_only_from_collection_checkpoint(
+    args: argparse.Namespace,
+    *,
+    profile: ClientProfile,
+    checkpoint: CollectionCheckpoint,
+    period: ReportingPeriod,
+) -> int:
+    cloud_resume = _cloud_resume_from_checkpoint(checkpoint, profile=profile)
+    if cloud_resume is None:
+        raise ValueError("Nenhum componente publicável foi encontrado no checkpoint.")
+    output_root = _scoped_output_root(
+        args.output_root,
+        checkpoint.execution_type,
+    ).resolve()
+    report_directory = (
+        output_root
+        / "reports"
+        / profile.client_id
+        / checkpoint.run_id
+        / _safe_filename_component(str(period.period_id))
+    )
+    collected = SimpleNamespace(
+        run_id=checkpoint.run_id,
+        cloud_dataset_path=cloud_resume[0],
+        cloud_dataset_sha256=cloud_resume[1],
+        cloud_capabilities=cloud_resume[2],
+        cloud_connector_version=cloud_resume[3],
+        cloud_collection_status="COMPLETE",
+        cloud_failure_code=None,
+        cloud_retryable=False,
+        cloud_warnings=(),
+    )
+    cloud_result = _run_cloud_for_client(
+        args=args,
+        profile=profile,
+        collected=collected,
+        period=period,
+        execution_type=checkpoint.execution_type,
+        report_directory=report_directory,
+        translator=build_default_text_translator(),
+    )
+    if cloud_result.status not in {
+        CloudExecutionStatus.COMPLETE,
+        CloudExecutionStatus.REPLAYED,
+    } or not cloud_result.documents:
+        raise ValueError("O dataset Cloud existe, mas o documento não foi publicado.")
+    cloud_documents = tuple(
+        PublicationDocument(
+            path=document.path,
+            document_kind="cloud",
+            document_variant=document.variant,
+        )
+        for document in cloud_result.documents
+    )
+    publication_manifest = create_publication_manifest(
+        output_path=report_directory / "publication-manifest.json",
+        client_id=profile.client_id,
+        tenant_id=profile.tenant_id,
+        run_id=checkpoint.run_id,
+        execution_type=checkpoint.execution_type,
+        period=period.to_dict(),
+        dataset_path=cloud_resume[0],
+        primary_dataset_component="cloud",
+        documents=cloud_documents,
+        history_database=None,
+        origin=checkpoint.origin,
+        logical_job_id=checkpoint.logical_job_id,
+        attempt_number=checkpoint.attempt_number,
+    )
+    operations = _postgres_operations(args.database_env_file, required=False)
+    if operations is not None:
+        operations.record_publication_manifest(publication_manifest)
+
+    vm_metadata = checkpoint.component_metadata.get(ReportComponent.VM_CORE.value)
+    was_metadata = checkpoint.component_metadata.get(ReportComponent.WAS.value)
+    was_scope = getattr(profile, "was_scope", None)
+    attempts = build_initial_component_attempts(
+        client_id=profile.client_id,
+        source_run_id=checkpoint.run_id,
+        vm_status=str(
+            vm_metadata.get("status") if isinstance(vm_metadata, Mapping) else "FAILED"
+        ),
+        vm_failure=(dict(vm_metadata) if isinstance(vm_metadata, Mapping) else None),
+        was_enabled=bool(getattr(was_scope, "enabled", False)),
+        was_status=str(
+            was_metadata.get("status")
+            if isinstance(was_metadata, Mapping)
+            else "NOT_APPLICABLE"
+        ),
+        was_failure=(dict(was_metadata) if isinstance(was_metadata, Mapping) else None),
+        cloud_enabled=True,
+        cloud_status=cloud_result.status.value,
+        cloud_warnings=tuple(
+            dict(item) for item in cloud_result.warnings if isinstance(item, Mapping)
+        ),
+        artifact_references_by_component={
+            ReportComponent.CLOUD: {
+                "documents": [str(Path(item.path).resolve()) for item in cloud_result.documents],
+                "publication_manifest": str(publication_manifest.resolve()),
+            }
+        },
+        checkpoint_path=str(Path(args.checkpoint).resolve())
+        if getattr(args, "checkpoint", None)
+        else None,
+    )
+    component_repository = _report_component_repository(args)
+    if component_repository is not None:
+        for attempt in attempts:
+            component_repository.create_attempt(attempt)
+    summary = summarize_component_set(
+        attempts,
+        planned_components=planned_components_from_attempts(attempts),
+    )
+    payload = {
+        "status": "partial",
+        "run_id": checkpoint.run_id,
+        "client_id": profile.client_id,
+        "publication_manifest": str(publication_manifest.resolve()),
+        "cloud_status": cloud_result.status.value,
+        "cloud_documents": [
+            {"variant": item.variant, "path": str(Path(item.path).resolve())}
+            for item in cloud_result.documents
+        ],
+        "component_set_status": summary.status.value,
+        "retryable_components": [
+            component.value for component in summary.retryable_components
+        ],
+        "components": [
+            {
+                "component": attempt.component.value,
+                "status": attempt.status.value,
+                "retryable": attempt.retryable,
+            }
+            for attempt in attempts
+        ],
+        "external_distribution_performed": False,
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+    return 0
 
 
 def command_build_client(args: argparse.Namespace) -> int:
@@ -3215,16 +4114,30 @@ def _publish_collected_period(
         logical_job_id=getattr(args, "logical_job_id", None),
         attempt_number=getattr(args, "attempt_number", 1),
     )
+    component_state = _persist_initial_component_states(
+        args=args,
+        profile=profile,
+        collected=collected,
+        publication_manifest=publication_manifest,
+        base_document=base_result.output_path,
+        custom_document=custom_result.output_path,
+        tag_documents=tag_documents,
+        cloud_result=cloud_result,
+    )
+    component_set_complete = (
+        str(component_state.get("component_set_status") or "").upper()
+        == "COMPLETE"
+    )
     operations = _postgres_operations(args.database_env_file, required=False)
     if collected.history_publication is not None:
         if collected.snapshot_repository is None or collected.report_registry is None:
             raise RuntimeError("Componentes do histórico não foram preservados na execução.")
         finalize_history_publication(
             collected.history_publication,
-            snapshot_repository=collected.snapshot_repository,
-            registry=collected.report_registry,
-            publication_validated=True,
-            auto_promote=True,
+                snapshot_repository=collected.snapshot_repository,
+                registry=collected.report_registry,
+                publication_validated=True,
+                auto_promote=component_set_complete,
         )
     compact_repository = _compact_snapshot_repository(args)
     compact_snapshot_confirmed = False
@@ -3276,16 +4189,6 @@ def _publish_collected_period(
         )
     if operations is not None:
         operations.record_publication_manifest(publication_manifest)
-    component_state = _persist_initial_component_states(
-        args=args,
-        profile=profile,
-        collected=collected,
-        publication_manifest=publication_manifest,
-        base_document=base_result.output_path,
-        custom_document=custom_result.output_path,
-        tag_documents=tag_documents,
-        cloud_result=cloud_result,
-    )
     cleanup_payload: dict[str, Any] = {
         "status": "NOT_REQUIRED",
         "removed_bytes": 0,
@@ -4312,6 +5215,50 @@ def command_serve_web(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_run_monthly_batch(args: argparse.Namespace) -> int:
+    from tenable_reports.application.monthly_batch import (
+        MonthlyBatchRequest,
+        run_monthly_batch,
+    )
+    from tenable_reports.webapp.server import DashboardApplication
+
+    root = Path(args.project_root).resolve()
+    config = Path(args.config)
+    if not config.is_absolute():
+        config = (root / config).resolve()
+    app = DashboardApplication(
+        project_root=root,
+        config_path=config,
+        require_durable_batches=True,
+    )
+    try:
+        result = run_monthly_batch(
+            MonthlyBatchRequest(reference_at=args.reference_at),
+            application=app,
+            wait=True,
+            wait_timeout_seconds=args.wait_timeout_seconds,
+        )
+    finally:
+        app.jobs.close()
+    payload = {
+        "status": "COMPLETE",
+        "root_batch_id": result.root_batch_id,
+        "idempotency_key": result.idempotency_key,
+        "competence": result.competence,
+        "reused": result.reused,
+        "snapshot": result.snapshot,
+    }
+    counts = (result.snapshot or {}).get("counts") or {}
+    incomplete = sum(
+        int(counts.get(key) or 0)
+        for key in ("failed", "partial", "waiting_manual")
+    )
+    if incomplete:
+        payload["status"] = "COMPLETE_WITH_FAILURES"
+    print(json.dumps(payload, ensure_ascii=False))
+    return 1 if incomplete else 0
+
+
 def command_database_bootstrap(args: argparse.Namespace) -> int:
     load_dotenv_file(args.database_env_file, override=True)
     load_dotenv_file(args.admin_env_file, override=False)
@@ -4881,6 +5828,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     collect_client.set_defaults(handler=command_collect_client)
 
+    collect_component = subparsers.add_parser(
+        "collect-component",
+        help=(
+            "Coleta somente VM_CORE, WAS ou CLOUD e persiste um checkpoint "
+            "independente."
+        ),
+    )
+    _add_complete_collection_arguments(collect_component)
+    collect_component.add_argument(
+        "--component",
+        choices=tuple(item.value for item in ReportComponent),
+        required=True,
+    )
+    collect_component.add_argument("--component-checkpoint", required=True)
+    collect_component.add_argument(
+        "--window-number", type=int, choices=(1, 2, 3), required=True
+    )
+    collect_component.add_argument("--deadline-at", required=True)
+    collect_component.add_argument("--remote-identifier")
+    collect_component.add_argument(
+        "--identifier-kind",
+        choices=("UUID", "CURSOR", "DATASET"),
+    )
+    collect_component.add_argument("--identifier-origin")
+    collect_component.add_argument("--previous-component-checkpoint")
+    collect_component.add_argument("--job-control-file")
+    collect_component.add_argument(
+        "--remote-processing-timeout-seconds", type=int, default=36000
+    )
+    collect_component.add_argument(
+        "--remote-progress-warning-seconds", type=int, default=900
+    )
+    collect_component.set_defaults(handler=command_collect_component)
+
     build_client = subparsers.add_parser(
         "build-client",
         help="Monta e publica localmente a partir de um checkpoint validado.",
@@ -5211,6 +6192,16 @@ def build_parser() -> argparse.ArgumentParser:
     serve_web.add_argument("--port", type=int, default=8765)
     serve_web.add_argument("--open-browser", action="store_true")
     serve_web.set_defaults(handler=command_serve_web)
+
+    monthly_batch = subparsers.add_parser(
+        "run-monthly-batch",
+        help="Executa ou acompanha o lote mensal durável sem interface web.",
+    )
+    monthly_batch.add_argument("--project-root", default=".")
+    monthly_batch.add_argument("--config", default="orchestration/clients.json")
+    monthly_batch.add_argument("--reference-at")
+    monthly_batch.add_argument("--wait-timeout-seconds", type=int, default=108_300)
+    monthly_batch.set_defaults(handler=command_run_monthly_batch)
     return parser
 
 

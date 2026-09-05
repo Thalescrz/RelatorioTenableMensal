@@ -231,6 +231,18 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
 .alerts-list { padding: 20px 0 30px; }.alert-row { display: grid; grid-template-columns: auto 1fr; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }.alert-row .alert-sign { width: 25px; height: 25px; font-size: 12px; }.alert-row strong { font-size: 12px; }.alert-row p { margin: 4px 0; color: #d1a0a0; font: 11px/1.5 monospace; white-space: pre-wrap; }.alert-row small { color: var(--dim); }
 
 .admin-dialog { width: min(920px, calc(100vw - 28px)); }
+.admin-tabs { display: flex; gap: 8px; margin-top: 22px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.admin-tab { padding: 9px 12px; border: 1px solid transparent; border-radius: 9px; color: var(--muted); background: transparent; cursor: pointer; }
+.admin-tab.active { color: var(--ink); border-color: var(--blue); background: rgba(109,169,255,.08); }
+.admin-tab-panel { padding-top: 16px; }
+.monthly-schedule-form { display: grid; gap: 18px; padding-bottom: 24px; }
+.monthly-status-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.monthly-status-grid div { padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.018); }
+.monthly-status-grid span, .monthly-status-grid strong { display: block; }
+.monthly-status-grid span { color: var(--muted); font-size: 9px; }
+.monthly-status-grid strong { margin-top: 5px; font: 600 12px var(--display); }
+.monthly-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.monthly-actions { display: flex; flex-wrap: wrap; gap: 9px; }
 .backfill-intro { margin-top: 22px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 14px; padding: 16px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel); }
 .backfill-icon { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 11px; color: var(--blue); background: rgba(109,169,255,.09); font-size: 22px; }
 .backfill-intro strong { font: 600 14px var(--display); }.backfill-intro p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
@@ -285,7 +297,8 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
 .batch-phase-summary strong { display: block; margin-bottom: 2px; color: var(--ink); font: 650 13px var(--display); }
 .client-phase-detail { color: var(--blue) !important; font-size: 11px !important; }
 .batch-counters { display: grid; grid-template-columns: repeat(6, minmax(64px, 1fr)); gap: 7px; }
-.batch-counters div { min-width: 68px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; background: rgba(10,14,17,.35); }
+.batch-counter-button { min-width: 68px; padding: 9px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); text-align: left; background: rgba(10,14,17,.35); cursor: pointer; }
+.batch-counter-button:hover, .batch-counter-button[aria-pressed="true"] { border-color: var(--blue); background: rgba(109,169,255,.10); }
 .batch-counters strong, .batch-counters span { display: block; }
 .batch-counters strong { font: 650 17px var(--display); }
 .batch-counters span { margin-top: 3px; color: var(--muted); font-size: 8px; }
@@ -322,4 +335,5 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
   .storage-strip { align-items: stretch; flex-direction: column; gap: 8px; }.storage-strip button { margin-left: 0; }
   .batch-panel-head { align-items: stretch; flex-direction: column; }.batch-panel-picker { justify-content: flex-start; }.batch-panel-picker select { width: 100%; }.batch-state { align-self: flex-start; }.batch-panel-body { grid-template-columns: 1fr; }.batch-phase-summary { grid-template-columns: 1fr 1fr; }.batch-counters { grid-template-columns: 1fr 1fr; }.batch-actions { justify-content: stretch; max-width: none; }.batch-actions .button { flex: 1 1 145px; }.batch-choice-options { grid-template-columns: 1fr; }.batch-client-row { grid-template-columns: 1fr; }
   .backfill-intro { grid-template-columns: auto 1fr; }.backfill-intro .button { grid-column: 1 / -1; }.backfill-summary { grid-template-columns: 1fr 1fr; }.backfill-actions { align-items: stretch; flex-direction: column; }.backfill-actions .button { width: 100%; }
+  .monthly-status-grid { grid-template-columns: 1fr 1fr; }.monthly-actions .button { flex: 1 1 180px; }
 }

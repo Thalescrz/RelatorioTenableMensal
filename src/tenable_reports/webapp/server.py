@@ -24,10 +24,12 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from tenable_reports.application.execution_control import FileExecutionControl
+from tenable_reports.application.monthly_schedule import MonthlyScheduleService
 from tenable_reports.application.failures import sanitize_failure_message
 from tenable_reports.application.web_batches import (
     BatchClientConflictError,
     DerivedBatchRequest,
+    RemoteComponentRepository,
     WebBatchRepository,
     build_manual_batch_options,
 )
@@ -101,6 +103,7 @@ from tenable_reports.config.environment import (
     load_dotenv_file,
 )
 from tenable_reports.config.profile import ClientProfile
+from tenable_reports.config.monthly_schedule import MonthlyScheduleConfig
 from tenable_reports.infrastructure.cloud_snapshots_postgresql import (
     PostgresCloudSnapshotRepository,
 )
@@ -122,6 +125,10 @@ from tenable_reports.infrastructure.was_recovery_postgresql import (
 from tenable_reports.infrastructure.web_batches_postgresql import (
     PostgresWebBatchRepository,
 )
+from tenable_reports.infrastructure.web_batch_components_postgresql import (
+    PostgresRemoteComponentRepository,
+)
+from tenable_reports.infrastructure.windows_task_scheduler import WindowsTaskScheduler
 from tenable_reports.domain.report_reference import reference_key_for_candidate
 from tenable_reports.domain.report_components import (
     ComponentAttempt,
@@ -472,6 +479,10 @@ class DashboardConfigStore:
                 "remote_processing_timeout_seconds": 36000,
                 "remote_progress_warning_seconds": 900,
                 "max_clients_per_batch": 64,
+                "automatic_window_seconds": 36000,
+                "automatic_base_windows": 2,
+                "automatic_replacement_window": True,
+                "manual_retry_window_seconds": 36000,
                 "retention_days": 395,
                 "failed_staging_days": 7,
                 "logs_days": 90,
@@ -487,6 +498,21 @@ class DashboardConfigStore:
     def raw(self) -> dict[str, Any]:
         with self._lock:
             return _read_json(self.config_path)
+
+    def monthly_schedule(self) -> MonthlyScheduleConfig:
+        return MonthlyScheduleConfig.from_mapping(
+            self.raw().get("monthly_schedule") or {}
+        )
+
+    def save_monthly_schedule(
+        self,
+        config: MonthlyScheduleConfig,
+    ) -> MonthlyScheduleConfig:
+        with self._lock:
+            payload = _read_json(self.config_path)
+            payload["monthly_schedule"] = config.to_mapping()
+            write_json_atomic(self.config_path, payload)
+        return config
 
     @staticmethod
     def _analyst_payload(record: AnalystRecord) -> dict[str, Any]:
@@ -1867,6 +1893,122 @@ class JobQueue:
                 ]
                 for component in components:
                     command.extend(("--component", component))
+            elif job.get("operation") == "staged_component":
+                config = load_orchestration_config(self.config_path)
+                client = next(
+                    (
+                        item
+                        for item in config.clients
+                        if item.client_id == job["client_id"]
+                    ),
+                    None,
+                )
+                if client is None or not client.enabled:
+                    raise ValueError("Cliente staged não encontrado ou inativo.")
+                command = [
+                    sys.executable,
+                    "-m",
+                    "tenable_reports",
+                    "collect-component",
+                    "--component",
+                    str(job["component"]),
+                    "--component-checkpoint",
+                    str(job["component_checkpoint"]),
+                    "--window-number",
+                    str(job["window_number"]),
+                    "--deadline-at",
+                    str(job["deadline_at"]),
+                    "--mode",
+                    str(job["mode"]),
+                    "--profile",
+                    str(client.profile_path),
+                    "--env-file",
+                    str(client.env_file),
+                    "--database-env-file",
+                    str(config.database_env_file),
+                    "--output-root",
+                    str(config.output_root),
+                    "--run-id",
+                    str(job["run_id"]),
+                    "--logical-job-id",
+                    str(job["logical_job_id"]),
+                    "--attempt-number",
+                    str(job.get("attempt_number") or 1),
+                    "--origin",
+                    str(job.get("origin") or "SCHEDULED"),
+                    "--remote-processing-timeout-seconds",
+                    str(
+                        job.get("remote_processing_timeout_seconds")
+                        or config.remote_processing_timeout_seconds
+                    ),
+                    "--remote-progress-warning-seconds",
+                    str(config.remote_progress_warning_seconds),
+                    "--template",
+                    str(config.template_path),
+                    "--cloud-template",
+                    str(
+                        self.project_root
+                        / "templates"
+                        / "corporate"
+                        / "cloud-base-v1.docx"
+                    ),
+                    "--assets-dir",
+                    str(config.assets_dir),
+                    "--minimum-free-gb",
+                    str(config.minimum_free_gb),
+                    "--confirm-live-api",
+                ]
+                if job.get("_job_control_file"):
+                    command.extend(
+                        ("--job-control-file", str(job["_job_control_file"]))
+                    )
+                if job.get("remote_identifier"):
+                    command.extend(
+                        ("--remote-identifier", str(job["remote_identifier"]))
+                    )
+                if job.get("identifier_kind"):
+                    command.extend(
+                        ("--identifier-kind", str(job["identifier_kind"]))
+                    )
+                if job.get("identifier_origin"):
+                    command.extend(
+                        ("--identifier-origin", str(job["identifier_origin"]))
+                    )
+                if job.get("previous_component_checkpoint"):
+                    command.extend(
+                        (
+                            "--previous-component-checkpoint",
+                            str(job["previous_component_checkpoint"]),
+                        )
+                    )
+                if job.get("force_live_collection"):
+                    command.append("--force-live-collection")
+                if job.get("vm_selective_mode"):
+                    command.extend(
+                        ("--vm-selective-mode", str(job["vm_selective_mode"]))
+                    )
+                if job.get("vm_export_strategy"):
+                    command.extend(
+                        ("--vm-export-strategy", str(job["vm_export_strategy"]))
+                    )
+                if job.get("historical_source"):
+                    command.extend(
+                        ("--historical-source", str(job["historical_source"]))
+                    )
+                if job["days"] is not None:
+                    command.extend(("--days", str(job["days"])))
+                if job["start_at"]:
+                    command.extend(
+                        ("--start-at", job["start_at"], "--end-at", job["end_at"])
+                    )
+                for tag in client.tags:
+                    command.extend(("--tag", tag))
+                if client.include_output:
+                    command.append("--include-output")
+                if client.include_software_vulns:
+                    command.append("--include-software-vulns")
+                if client.mask_sensitive:
+                    command.append("--mask-sensitive")
             elif job.get("operation") == "staged_remote":
                 config = load_orchestration_config(self.config_path)
                 client = next(
@@ -2208,6 +2350,8 @@ class JobQueue:
                 job["progress"] = 100
                 job["exit_code"] = completed.returncode
                 job["run_id"] = payload.get("run_id") or job.get("run_id")
+                if job.get("operation") == "staged_component":
+                    job["_component_result"] = dict(payload)
                 client_payloads = [
                     item.get("payload")
                     for item in payload.get("clients") or ()
@@ -2345,12 +2489,21 @@ class DashboardApplication:
         cloud_contract_invalidator: Callable[..., int] | None = None,
         was_recovery_repository: Any | None = None,
         batch_repository: WebBatchRepository | None = None,
+        remote_component_repository: RemoteComponentRepository | None = None,
         component_repository: ReportComponentRepository | None = None,
         component_retry_enqueuer: Callable[..., Mapping[str, Any]] | None = None,
         require_durable_batches: bool = False,
+        monthly_schedule_service: MonthlyScheduleService | None = None,
     ) -> None:
         self.project_root = project_root.resolve()
         self.config = DashboardConfigStore(project_root=self.project_root, config_path=config_path)
+        self.monthly_schedule = monthly_schedule_service or MonthlyScheduleService(
+            store=self.config,
+            scheduler=WindowsTaskScheduler(
+                project_root=self.project_root,
+                config_path=self.config.config_path,
+            ),
+        )
         self._prepared_archive_lock = threading.RLock()
         self._transient_storage_cache = TransientStorageSnapshotCache()
         self._prepared_archives: dict[
@@ -2381,6 +2534,11 @@ class DashboardApplication:
         if self.batch_repository is None and self.database is not None:
             self.batch_repository = PostgresWebBatchRepository(
                 self.database.database,
+            )
+        self.remote_component_repository = remote_component_repository
+        if self.remote_component_repository is None and self.database is not None:
+            self.remote_component_repository = PostgresRemoteComponentRepository(
+                self.database.database
             )
         self.require_durable_batches = bool(require_durable_batches)
         if self.batch_repository is not None:
@@ -2426,6 +2584,7 @@ class DashboardApplication:
                 executor=executor,
                 worker_id=f"web-{os.getpid()}-{uuid.uuid4().hex[:8]}",
                 remote_workers=remote_workers,
+                remote_component_repository=self.remote_component_repository,
                 enable_staged_executor=True,
                 staged_output_root=staged_output_root,
                 remote_processing_timeout_seconds=(
@@ -3147,6 +3306,13 @@ class DashboardApplication:
         client_rows = self.config.list_clients()
         clients = {item["client_id"]: item for item in client_rows}
         batch_options: dict[str, Any] = {"execution_model": "STAGED_V1"}
+        for request_key, option_key in (
+            ("_batch_idempotency_key", "_idempotency_key"),
+            ("_batch_origin", "_origin"),
+            ("_batch_competence", "_competence"),
+        ):
+            if request.get(request_key) is not None:
+                batch_options[option_key] = request[request_key]
         if run_scope == "all":
             batch_options.update(build_manual_batch_options(
                 clients=client_rows,
@@ -3188,6 +3354,12 @@ class DashboardApplication:
             client_request = dict(request)
             client_request.pop("client_ids", None)
             client_request.pop("selection_filter_snapshot", None)
+            for internal_key in (
+                "_batch_idempotency_key",
+                "_batch_origin",
+                "_batch_competence",
+            ):
+                client_request.pop(internal_key, None)
             if run_scope == "all":
                 client_request["was_failure_policy"] = "retry_then_continue"
             client_request["historical_source"] = str(
@@ -3219,10 +3391,26 @@ class DashboardApplication:
         return {"batches": snapshot()}
 
     def batch_state(self, batch_id: str) -> dict[str, Any]:
-        snapshot = getattr(self.jobs, "batch_snapshot", None)
+        snapshot = getattr(self.jobs, "batch_family_snapshot", None)
         if not callable(snapshot):
             raise RuntimeError("Controle duravel de lotes indisponivel.")
-        return snapshot(batch_id)
+        family = snapshot(batch_id)
+        legacy_snapshot = getattr(self.jobs, "batch_snapshot", None)
+        if callable(legacy_snapshot):
+            legacy = legacy_snapshot(batch_id)
+            family["jobs"] = legacy.get("jobs", [])
+            family["events"] = legacy.get("events", [])
+        clients_by_id = {
+            str(client.get("client_id") or ""): client
+            for client in self.config.list_clients()
+        }
+        for client in family.get("clients", []):
+            profile = clients_by_id.get(str(client.get("client_id") or ""), {})
+            client["display_name"] = profile.get("display_name") or client["client_id"]
+            client["tenant_id"] = profile.get("tenant_id")
+            client["responsible_analyst_id"] = profile.get("responsible_analyst_id")
+            client["responsible_analyst_name"] = profile.get("responsible_analyst_name")
+        return family
 
     def request_batch_action(
         self,
@@ -3681,6 +3869,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "app.css",
                 "app.js",
                 "client_selection.js",
+                "batch_family_filters.js",
+                "monthly_schedule.js",
                 "report_request_guard.js",
                 "dashboard_refresh.js",
                 "batch_retryability.js",
@@ -3806,6 +3996,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json_error(HTTPStatus.SERVICE_UNAVAILABLE, _safe_error(str(exc), limit=500))
             except Exception as exc:
                 self._json_error(HTTPStatus.INTERNAL_SERVER_ERROR, _safe_error(str(exc), limit=500))
+            return
+        if parsed.path == "/api/admin/monthly-schedule":
+            try:
+                self._json(HTTPStatus.OK, self.app.monthly_schedule.status())
+            except Exception as exc:
+                self._json_error(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    _safe_error(str(exc), limit=500),
+                )
             return
         match = re.fullmatch(r"/api/clients/([^/]+)/reports", parsed.path)
         if match:
@@ -4078,6 +4277,29 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 result = self.app.apply_backfill(str(payload.get("confirmation") or ""))
                 self._json(HTTPStatus.OK, result)
                 return
+            if parsed.path == "/api/admin/monthly-schedule/validate":
+                self._json(HTTPStatus.OK, self.app.monthly_schedule.validate())
+                return
+            if parsed.path == "/api/admin/monthly-schedule/apply":
+                self._json(
+                    HTTPStatus.OK,
+                    self.app.monthly_schedule.apply(
+                        str(payload.get("confirmation") or "")
+                    ),
+                )
+                return
+            if parsed.path in {
+                "/api/admin/monthly-schedule/enable",
+                "/api/admin/monthly-schedule/disable",
+            }:
+                self._json(
+                    HTTPStatus.OK,
+                    self.app.monthly_schedule.set_enabled(
+                        parsed.path.endswith("/enable"),
+                        str(payload.get("confirmation") or ""),
+                    ),
+                )
+                return
             match = re.fullmatch(r"/api/reports/([^/]+)/retry-cloud", parsed.path)
             if match:
                 job = self.app.retry_cloud_report(
@@ -4267,11 +4489,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         client_match = re.fullmatch(r"/api/clients/([^/]+)", parsed.path)
         analyst_match = re.fullmatch(r"/api/analysts/([^/]+)", parsed.path)
-        if not client_match and not analyst_match:
+        monthly_schedule = parsed.path == "/api/admin/monthly-schedule"
+        if not client_match and not analyst_match and not monthly_schedule:
             self._json_error(HTTPStatus.NOT_FOUND, "Rota nao encontrada.")
             return
         try:
             payload = self._request_json()
+            if monthly_schedule:
+                self._json(
+                    HTTPStatus.OK,
+                    self.app.monthly_schedule.save(payload),
+                )
+                return
             if analyst_match:
                 analyst = self.app.config.update_analyst(
                     unquote(analyst_match.group(1)),

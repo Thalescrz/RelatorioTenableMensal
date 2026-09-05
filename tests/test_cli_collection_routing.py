@@ -249,10 +249,142 @@ def _tag_materialization_fixture(
 
 
 class CliCollectionRoutingTests(unittest.TestCase):
+    def test_collect_component_parser_exposes_window_and_checkpoint_contract(self) -> None:
+        parser = cli_module.build_parser()
+
+        args = parser.parse_args(
+            [
+                "collect-component",
+                "--profile",
+                "client.json",
+                "--component",
+                "WAS",
+                "--component-checkpoint",
+                "C:/data/checkpoints/client-a/run-a/was/checkpoint.json",
+                "--window-number",
+                "2",
+                "--deadline-at",
+                "2026-09-05T08:00:00Z",
+                "--remote-identifier",
+                "b8b194ad-c897-4af5-98f2-7f7206512c4d",
+                "--identifier-kind",
+                "UUID",
+                "--confirm-live-api",
+            ]
+        )
+
+        self.assertIs(args.handler, cli_module.command_collect_component)
+        self.assertEqual(args.component, "WAS")
+        self.assertEqual(args.window_number, 2)
+        self.assertEqual(args.identifier_kind, "UUID")
+
     def test_collect_client_requires_live_confirmation(self) -> None:
         with self.assertRaisesRegex(ValueError, "confirm-live-api"):
             cli_module.command_collect_client(
                 SimpleNamespace(confirm_live_api=False)
+            )
+
+    def test_build_materializes_disjoint_component_artifacts_before_dataset(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name).resolve()
+            period = _routing_period()
+            profile = _routing_profile()
+            source = root / "checkpoints" / "client-a" / "run-a"
+
+            def artifact(component: str, kind: str, relative: str, content: bytes):
+                path = source / component.lower() / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+                return CheckpointArtifact(
+                    component=component,
+                    kind=kind,
+                    path=path,
+                    sha256=sha256_file(path),
+                )
+
+            artifacts = (
+                artifact("VM_CORE", "normalized_manifest", "manifest.json", b"vm-manifest"),
+                artifact("VM_CORE", "normalized_assets", "assets.jsonl.gz", b"assets"),
+                artifact("VM_CORE", "normalized_findings", "findings.jsonl.gz", b"findings"),
+                artifact("VM_CORE", "normalized_quality_issues", "quality.jsonl.gz", b"issues"),
+                artifact("VM_CORE", "asset_snapshot", "assets.snapshot.json", b"asset-snapshot"),
+                artifact("VM_CORE", "finding_snapshot", "findings.snapshot.json", b"finding-snapshot"),
+                artifact("WAS", "normalized_was_manifest", "was-manifest.json", b"was-manifest"),
+                artifact("WAS", "normalized_was_findings", "was-findings.jsonl.gz", b"was-findings"),
+                artifact("WAS", "was_snapshot", "was.snapshot.json", b"was-snapshot"),
+            )
+            checkpoint = CollectionCheckpoint(
+                schema_version=1,
+                client_id="client-a",
+                tenant_id="tenant-a",
+                run_id="run-a",
+                logical_job_id="job-a",
+                execution_type="MANUAL",
+                mode="manual",
+                origin="MANUAL",
+                attempt_number=1,
+                period=period.to_dict(),
+                component_metadata={
+                    "VM_CORE": {
+                        "status": "COMPLETE",
+                        "normalized_manifest_kind": "normalized_manifest",
+                        "normalized_assets_kind": "normalized_assets",
+                        "normalized_findings_kind": "normalized_findings",
+                        "normalized_quality_issues_kind": "normalized_quality_issues",
+                        "asset_snapshot_kind": "asset_snapshot",
+                        "finding_snapshot_kind": "finding_snapshot",
+                        "selected_tag_count": 0,
+                        "collection_sources": ["tenable_vm_vulnerabilities"],
+                    },
+                    "WAS": {
+                        "status": "COMPLETE",
+                        "normalized_was_manifest_kind": "normalized_was_manifest",
+                        "normalized_was_findings_kind": "normalized_was_findings",
+                        "was_snapshot_kind": "was_snapshot",
+                    },
+                    "CLOUD": {"status": "NOT_APPLICABLE"},
+                },
+                artifacts=artifacts,
+                hashes={item.kind: item.sha256 for item in artifacts},
+            )
+            args = SimpleNamespace(
+                output_root=root / "data",
+                include_output=False,
+                skip_history=True,
+                origin="MANUAL",
+            )
+            sentinel = object()
+
+            with patch.object(
+                cli_module,
+                "_assemble_period_from_existing",
+                return_value=sentinel,
+            ) as assemble:
+                result = cli_module._materialize_period_from_checkpoint(
+                    args,
+                    profile,
+                    checkpoint,
+                    period,
+                )
+
+            self.assertIs(result, sentinel)
+            normalized = root / "data" / "manual" / "normalized" / "client-a" / "run-a"
+            snapshots = root / "data" / "manual" / "snapshots" / "client-a" / "run-a"
+            self.assertEqual((normalized / "findings.jsonl.gz").read_bytes(), b"findings")
+            self.assertEqual((normalized / "was-findings.jsonl.gz").read_bytes(), b"was-findings")
+            self.assertEqual(
+                (snapshots / "tenable_vm_assets_v2.snapshot.json").read_bytes(),
+                b"asset-snapshot",
+            )
+            self.assertEqual(
+                (snapshots / "tenable_was_findings.snapshot.json").read_bytes(),
+                b"was-snapshot",
+            )
+            self.assertEqual(
+                assemble.call_args.kwargs["normalized_findings_path"],
+                normalized / "findings.jsonl.gz",
             )
 
     def test_collect_client_executes_only_remote_stage_and_prints_checkpoint(self) -> None:

@@ -32,7 +32,8 @@ from tenable_reports.infrastructure.postgresql import (
 
 _BATCH_COLUMNS = """
     id, idempotency_key, kind, status, options, source_batch_id,
-    requested_action, version, created_at, started_at, ended_at
+    requested_action, version, created_at, started_at, ended_at,
+    root_batch_id, parent_batch_id, origin, competence
 """
 
 _JOB_COLUMNS = """
@@ -62,6 +63,16 @@ def _iso(value: Any) -> str | None:
 
 
 def _batch_from_row(row: Sequence[Any]) -> WebBatch:
+    root_batch_id = (
+        UUID(str(row[11]))
+        if len(row) > 11 and row[11] is not None
+        else None
+    )
+    parent_batch_id = (
+        UUID(str(row[12]))
+        if len(row) > 12 and row[12] is not None
+        else None
+    )
     return WebBatch(
         id=UUID(str(row[0])),
         idempotency_key=str(row[1]),
@@ -76,6 +87,18 @@ def _batch_from_row(row: Sequence[Any]) -> WebBatch:
         created_at=_iso(row[8]),
         started_at=_iso(row[9]),
         ended_at=_iso(row[10]),
+        root_batch_id=root_batch_id,
+        parent_batch_id=parent_batch_id,
+        origin=(
+            str(row[13])
+            if len(row) > 13 and row[13] is not None
+            else None
+        ),
+        competence=(
+            str(row[14])
+            if len(row) > 14 and row[14] is not None
+            else None
+        ),
     )
 
 
@@ -156,8 +179,9 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 f"""
                 insert into {SCHEMA_NAME}.web_batches (
                     id, idempotency_key, kind, status, options,
-                    source_batch_id, requested_action
-                ) values (%s, %s, %s, %s, %s, %s, %s)
+                    source_batch_id, requested_action, root_batch_id,
+                    parent_batch_id, origin, competence
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (idempotency_key) do update set
                     idempotency_key = excluded.idempotency_key
                 where {SCHEMA_NAME}.web_batches.id = excluded.id
@@ -171,6 +195,10 @@ class PostgresWebBatchRepository(WebBatchRepository):
                     _jsonb(dict(batch.options)),
                     batch.source_batch_id,
                     batch.requested_action.value if batch.requested_action else None,
+                    batch.root_batch_id,
+                    batch.parent_batch_id,
+                    batch.origin,
+                    batch.competence,
                 ),
             ).fetchone()
             if row is None:
@@ -240,8 +268,10 @@ class PostgresWebBatchRepository(WebBatchRepository):
                 insert into {SCHEMA_NAME}.web_batches (
                     id, idempotency_key, kind, status, options,
                     source_batch_id, requested_action, created_at,
-                    started_at, ended_at
-                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    started_at, ended_at, root_batch_id, parent_batch_id,
+                    origin, competence
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s)
                 on conflict (idempotency_key) do nothing
                 returning {_BATCH_COLUMNS}
                 """,
@@ -256,6 +286,10 @@ class PostgresWebBatchRepository(WebBatchRepository):
                     batch.created_at,
                     batch.started_at,
                     batch.ended_at,
+                    batch.root_batch_id,
+                    batch.parent_batch_id,
+                    batch.origin,
+                    batch.competence,
                 ),
             ).fetchone()
             if row is None:

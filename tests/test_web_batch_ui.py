@@ -45,6 +45,44 @@ def _run_selection_script(source: str) -> object:
     return json.loads(completed.stdout)
 
 
+def _run_batch_family_filter_script(source: str) -> object:
+    script_path = STATIC / "batch_family_filters.js"
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            (
+                f"const helpers = require({json.dumps(str(script_path))});"
+                f"const result = (() => {{ {source} }})();"
+                "process.stdout.write(JSON.stringify(result));"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    return json.loads(completed.stdout)
+
+
+def _run_monthly_schedule_script(source: str) -> object:
+    script_path = STATIC / "monthly_schedule.js"
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            (
+                f"const helpers = require({json.dumps(str(script_path))});"
+                f"const result = (() => {{ {source} }})();"
+                "process.stdout.write(JSON.stringify(result));"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    return json.loads(completed.stdout)
+
+
 def _run_report_request_guard_script(source: str) -> object:
     script_path = STATIC / "report_request_guard.js"
     completed = subprocess.run(
@@ -239,6 +277,71 @@ def test_client_selection_helpers_filter_by_query_analyst_and_unassigned() -> No
     ) == ["c"]
 
 
+def test_batch_family_filter_combines_status_query_and_analyst() -> None:
+    clients = [
+        {
+            "client_id": "a",
+            "display_name": "TRT A",
+            "responsible_analyst_id": "ana-1",
+            "effective_status": "AUTOMATIC_RETRY",
+        },
+        {
+            "client_id": "b",
+            "display_name": "TRT B",
+            "responsible_analyst_id": "ana-1",
+            "effective_status": "COMPLETE",
+        },
+    ]
+    assert _run_batch_family_filter_script(
+        "return helpers.filterFamilyClients("
+        f"{json.dumps(clients)}, {{ status: 'AUTOMATIC_RETRY', query: 'trt a', analystId: 'ana-1' }}"
+        ").map(client => client.client_id);"
+    ) == ["a"]
+
+
+def test_batch_family_filter_all_restores_every_matching_client() -> None:
+    clients = [
+        {"client_id": "a", "effective_status": "AUTOMATIC_RETRY"},
+        {"client_id": "b", "effective_status": "COMPLETE"},
+    ]
+    assert _run_batch_family_filter_script(
+        "return helpers.filterFamilyClients("
+        f"{json.dumps(clients)}, {{ status: 'all' }}"
+        ").map(client => client.client_id);"
+    ) == ["a", "b"]
+
+
+def test_monthly_schedule_view_model_explains_policy_and_task_state() -> None:
+    result = _run_monthly_schedule_script(
+        "return helpers.scheduleView({"
+        "config: {enabled: true, day_of_month: 1, local_start_time: '00:05'},"
+        "windows_task: {status: 'DIVERGENT'},"
+        "next_run_at: '2026-10-01T00:05:00-03:00',"
+        "eligible_client_count: 24"
+        "});"
+    )
+    assert result["policyLabel"] == "Ativa"
+    assert result["taskLabel"] == "Divergente"
+    assert result["eligibleClientCopy"] == "24 clientes elegíveis"
+
+
+def test_frontend_exposes_monthly_automation_admin_controls() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+    for element_id in (
+        "admin-monthly-tab",
+        "monthly-enabled",
+        "monthly-start-time",
+        "monthly-validate-button",
+        "monthly-apply-button",
+        "monthly-toggle-button",
+        "monthly-next-run",
+    ):
+        assert f'id="{element_id}"' in html
+    assert html.index("monthly_schedule.js") < html.index("app.js")
+    assert "/api/admin/monthly-schedule" in javascript
+
+
 def test_client_selection_helper_changes_only_visible_ids() -> None:
     assert _run_selection_script(
         "return helpers.selectionForVisibleClients(['a'], ['b', 'c'], true);"
@@ -361,6 +464,7 @@ def test_frontend_exposes_analyst_filters_selection_modal_and_management() -> No
         assert f'id="{element_id}"' in html
     assert 'name="responsible_analyst_id"' in html
     assert html.index("client_selection.js") < html.index("app.js")
+    assert html.index("batch_family_filters.js") < html.index("app.js")
     assert "/api/analysts" in javascript
     assert "selection_filter_snapshot" in javascript
     assert "responsible_analyst_id" in javascript
@@ -421,6 +525,19 @@ def test_frontend_exposes_contextual_durable_batch_controls() -> None:
     assert "button.disabled = true" in javascript
     assert ".batch-panel" in css
     assert ".batch-actions" in css
+    for label in (
+        "Todos",
+        "Pendentes",
+        "Em execução",
+        "Em retry automático",
+        "Aguardando retry manual",
+        "Semiconcluídos",
+        "Falha definitiva",
+        "Concluídos",
+    ):
+        assert label in javascript
+    assert 'aria-pressed=' in javascript
+    assert 'data-family-status' in javascript
 
 
 def test_frontend_exposes_recent_batch_selector_and_client_detail() -> None:

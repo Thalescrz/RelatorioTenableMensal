@@ -1,6 +1,6 @@
 # Design da solução
 
-**Status:** arquitetura vigente em 2026-08-28  
+**Status:** arquitetura vigente em 2026-09-04  
 **Escopo:** decisões estruturais que devem permanecer estáveis enquanto o produto
 evolui. Detalhes operacionais ficam nos guias em `docs`.
 
@@ -31,8 +31,6 @@ sendo a origem dos achados.
 
 - autenticação multiusuário ou exposição pública da interface;
 - distribuição remota automática dos documentos;
-- coleta funcional de Cloud Security;
-- provedor externo de tradução automática;
 - comparação de uma TAG contra outra;
 - uso de IP ou hostname como identidade técnica.
 
@@ -164,15 +162,19 @@ Raw, snapshots completos, normalizados, datasets e imagens existem para montar e
 diagnosticar uma execução. Após sucesso validado, são descartados. DOCX e histórico
 compacto permanecem. Falhas conservam staging por janela curta para retomada.
 
-### Módulos opcionais isolados
+### Componentes remotos e recuperação
 
-WAS possui coleta, normalização e checkpoint próprios. Na execução manual, uma
-falha retentável pausa antes da publicação e oferece continuar sem WEB ou retentar
-somente WAS. Na execução mensal automática, VM é publicada com alerta e a
-retentativa WAS permanece disponível. O reparo de uma publicação reconstrói o
-contexto pelo snapshot compacto, não repete VM, assets, TAG ou Cloud, valida que o
-hash das métricas VM permaneceu igual e substitui os DOCX e o manifesto de forma
-atômica.
+`VM_CORE`, `WAS` e `CLOUD` possuem checkpoint, identificador remoto, progresso e
+resultado próprios. O coordenador executa coletas remotas em paralelo e libera
+uma única fila local de montagem. Sucesso de um componente é preservado quando
+outro falha; conjunto parcial não se torna `MAIN`.
+
+A política durável usa duas janelas automáticas de 10 horas. A segunda reutiliza
+UUID/cursor/checkpoint sempre que válido. Identificador comprovadamente inválido
+permite uma única operação substituta dentro do saldo da Janela 2 e habilita uma
+terceira janela de 10 horas; não existe Janela 4. Depois disso o estado exige ação
+manual. Reinício não altera `deadline_at` e nenhum job remoto é cancelado
+automaticamente.
 
 Ausência de achados é diferente de coleta indisponível. `NO_DATA` permite a mensagem
 mensal de ausência; `NOT_COLLECTED` exibe um alerta editorial e não pode ser

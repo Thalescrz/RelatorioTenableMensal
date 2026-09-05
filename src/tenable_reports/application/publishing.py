@@ -148,6 +148,7 @@ def create_publication_manifest(
     execution_type: str,
     period: Mapping[str, Any],
     dataset_path: str | Path,
+    primary_dataset_component: str = "vm",
     documents: Sequence[str | Path | PublicationDocument],
     additional_datasets: Mapping[str, str | Path] | None = None,
     history_database: str | Path | None,
@@ -156,6 +157,9 @@ def create_publication_manifest(
     logical_job_id: str | None = None,
     attempt_number: int = 1,
 ) -> Path:
+    primary_component = str(primary_dataset_component or "").strip().lower()
+    if primary_component not in {"vm", "cloud"}:
+        raise ValueError("Componente do dataset principal inválido.")
     dataset = Path(dataset_path)
     if not dataset.is_file():
         raise ValueError(f"Dataset de publicacao nao encontrado: {dataset}")
@@ -164,10 +168,12 @@ def create_publication_manifest(
         "size_bytes": dataset.stat().st_size,
         "sha256": sha256_file(dataset),
     }
-    source_datasets: dict[str, dict[str, Any]] = {"vm": source_dataset}
+    source_datasets: dict[str, dict[str, Any]] = {
+        primary_component: source_dataset
+    }
     for name, value in sorted((additional_datasets or {}).items()):
         dataset_name = str(name or "").strip().lower()
-        if not dataset_name or dataset_name == "vm":
+        if not dataset_name or dataset_name in source_datasets:
             raise ValueError("Nome de dataset adicional inválido ou reservado.")
         additional = Path(value)
         if not additional.is_file():

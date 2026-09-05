@@ -149,6 +149,49 @@ def test_manual_batch_options_are_detached_from_mutable_inputs() -> None:
     assert json.dumps(options, ensure_ascii=False, sort_keys=True) == serialized_before
 
 
+def test_derived_batch_keeps_root_and_immediate_parent() -> None:
+    repository = InMemoryWebBatchRepository()
+    root = WebBatch(
+        id=UUID(int=900),
+        idempotency_key="family-root",
+        kind="GENERATE_ALL",
+        status=BatchStatus.QUEUED,
+        origin="MANUAL_GENERATE_ALL",
+        competence="2026-08",
+    )
+    root_job = WebBatchJob(
+        id=UUID(int=901),
+        batch_id=root.id,
+        client_id="client-family",
+        position=1,
+        status=BatchJobStatus.QUEUED,
+        attempt_number=1,
+    )
+    stored_root = repository.create_batch(root, (root_job,))
+    repository.complete_job(
+        root_job.id,
+        BatchJobResult(status=BatchJobStatus.FAILED, error_code="RETRYABLE"),
+    )
+    child = WebBatch(
+        id=UUID(int=902),
+        idempotency_key="family-child",
+        kind="RETRY_INCOMPLETE",
+        status=BatchStatus.QUEUED,
+        source_batch_id=root.id,
+        root_batch_id=stored_root.id,
+        parent_batch_id=stored_root.id,
+        origin="AUTOMATIC_RECOVERY",
+        competence="2026-08",
+    )
+
+    stored_child = repository.create_batch(child, ())
+
+    assert stored_root.root_batch_id == root.id
+    assert stored_root.parent_batch_id is None
+    assert stored_child.root_batch_id == root.id
+    assert stored_child.parent_batch_id == root.id
+
+
 @pytest.mark.parametrize(
     ("current", "requested"),
     (

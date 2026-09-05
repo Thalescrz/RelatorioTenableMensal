@@ -92,3 +92,35 @@ def test_successful_was_with_zero_findings_is_complete_not_partial() -> None:
 
     assert was.status is ComponentStatus.COMPLETE
     assert summary.status is ComponentSetStatus.COMPLETE
+
+
+def test_initial_attempts_allow_cloud_publication_while_vm_waits_manual_retry() -> None:
+    attempts = build_initial_component_attempts(
+        client_id="client-a",
+        source_run_id="run-cloud-first",
+        vm_status="WAITING_MANUAL_RETRY",
+        vm_failure={
+            "code": "AUTOMATIC_RETRY_EXHAUSTED",
+            "message": "As janelas automáticas do VM foram esgotadas.",
+            "retryable": True,
+        },
+        was_enabled=False,
+        was_status="NOT_APPLICABLE",
+        cloud_enabled=True,
+        cloud_status="COMPLETE",
+        cloud_warnings=(),
+        artifact_references_by_component={
+            ReportComponent.CLOUD: {"documents": ["cloud.docx"]},
+        },
+    )
+
+    by_component = {attempt.component: attempt for attempt in attempts}
+    assert by_component[ReportComponent.VM_CORE].status is ComponentStatus.FAILED
+    assert by_component[ReportComponent.VM_CORE].retryable is True
+    assert by_component[ReportComponent.CLOUD].status is ComponentStatus.COMPLETE
+    summary = summarize_component_set(
+        attempts,
+        planned_components=planned_components_from_attempts(attempts),
+    )
+    assert summary.status is ComponentSetStatus.PARTIAL_FAILURE
+    assert summary.available_components == (ReportComponent.CLOUD,)

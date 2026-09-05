@@ -1252,6 +1252,33 @@ class CollectionTests(unittest.TestCase):
             self.assertFalse(attempt.failure.retryable)
             self.assertIsNone(attempt.failure.export_uuid)
 
+    def test_optional_was_stale_provided_uuid_requests_component_replacement(
+        self,
+    ) -> None:
+        class MissingProvidedWasClient(FakeWasCollectionClient):
+            def wait_for_findings_completion(self, export_uuid: str, **kwargs):
+                raise ApiError("Export WAS nao encontrado.", status_code=404)
+
+        profile = load_client_profile(
+            ROOT / "clients/examples/client-profile-intelligence-expanded.json"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            attempt = collect_optional_was_snapshot(
+                client=MissingProvidedWasClient({}),  # type: ignore[arg-type]
+                profile=profile,
+                request=WasExportRequest(filters={"state": ["OPEN"]}),
+                output_root=directory,
+                run_id="run-was-stale-uuid",
+                export_uuid="00000000-0000-0000-0000-000000000701",
+            )
+
+        self.assertEqual(attempt.failure.code, "REMOTE_IDENTIFIER_INVALID")
+        self.assertTrue(attempt.failure.retryable)
+        self.assertEqual(
+            attempt.failure.export_uuid,
+            "00000000-0000-0000-0000-000000000701",
+        )
+
     def test_optional_was_timeout_reports_progress_and_does_not_raise(self) -> None:
         profile = load_client_profile(
             ROOT / "clients/examples/client-profile-intelligence-expanded.json"

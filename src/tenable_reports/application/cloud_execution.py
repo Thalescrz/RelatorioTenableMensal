@@ -678,6 +678,21 @@ def execute_cloud_component(
         )
 
 
+def collect_cloud_period(
+    request: CloudExecutionRequest,
+    *,
+    dependencies: CloudExecutionDependencies,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+) -> CloudComponentResult:
+    """Collect and persist the Cloud dataset without rendering a DOCX remotely."""
+
+    return execute_cloud_component(
+        replace(request, render_documents=False),
+        dependencies=dependencies,
+        progress_callback=progress_callback,
+    )
+
+
 def _resume_failure(
     *,
     request: CloudExecutionRequest,
@@ -891,6 +906,7 @@ __all__ = [
     "CloudLiveCollection",
     "CloudResumeContext",
     "TenableCloudLiveCollector",
+    "collect_cloud_period",
     "execute_cloud_component",
     "retry_cloud_component",
 ]
