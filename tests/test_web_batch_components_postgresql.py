@@ -199,6 +199,17 @@ def test_postgresql_claim_uses_skip_locked_and_closes_before_runner_work() -> No
     assert params[-2:] == ("remote-1", 60)
 
 
+def test_postgresql_claim_qualifies_returned_columns_from_update_join() -> None:
+    database = _Database([_Cursor(one=None)])
+    repository = PostgresRemoteComponentRepository(database)
+
+    assert repository.claim_next(worker_id="remote-1", lease_seconds=60) is None
+
+    sql, _params = database.connection_value.calls[0]
+    returning_clause = " ".join(sql.lower().split()).split(" returning ", 1)[1]
+    assert returning_clause.startswith("component.id, component.batch_job_id")
+
+
 def test_postgresql_transition_is_optimistic() -> None:
     completed = list(component_row(state="COMPLETE"))
     completed[28] = datetime(2026, 9, 4, 11, 0, tzinfo=UTC)
