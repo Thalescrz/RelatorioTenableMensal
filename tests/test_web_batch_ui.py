@@ -311,6 +311,48 @@ def test_batch_family_filter_all_restores_every_matching_client() -> None:
     ) == ["a", "b"]
 
 
+def test_batch_family_filter_is_inactive_until_the_analyst_selects_a_counter() -> None:
+    result = _run_batch_family_filter_script(
+        "if (typeof helpers.toggleFamilyFilter !== 'function') return null;"
+        "const selected = helpers.toggleFamilyFilter(null, 'all');"
+        "const cleared = helpers.toggleFamilyFilter(selected, 'all');"
+        "const completed = helpers.toggleFamilyFilter(cleared, 'COMPLETE');"
+        "return { selected, cleared, completed };"
+    )
+
+    assert result == {
+        "selected": "all",
+        "cleared": None,
+        "completed": "COMPLETE",
+    }
+
+
+def test_inactive_batch_family_filter_keeps_clients_outside_the_selected_batch() -> None:
+    portfolio = [
+        {"client_id": "active", "enabled": True},
+        {"client_id": "trt18", "enabled": False},
+    ]
+    family = [{"client_id": "active", "effective_status": "COMPLETE"}]
+    result = _run_batch_family_filter_script(
+        "if (typeof helpers.filterPortfolioByFamily !== 'function') return null;"
+        "const portfolio = "
+        f"{json.dumps(portfolio)};"
+        "const family = "
+        f"{json.dumps(family)};"
+        "return {"
+        "  inactive: helpers.filterPortfolioByFamily(portfolio, family, { status: null })"
+        "    .map(client => client.client_id),"
+        "  selected: helpers.filterPortfolioByFamily(portfolio, family, { status: 'all' })"
+        "    .map(client => client.client_id),"
+        "};"
+    )
+
+    assert result == {
+        "inactive": ["active", "trt18"],
+        "selected": ["active"],
+    }
+
+
 def test_monthly_schedule_view_model_explains_policy_and_task_state() -> None:
     result = _run_monthly_schedule_script(
         "return helpers.scheduleView({"
