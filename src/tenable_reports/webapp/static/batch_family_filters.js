@@ -26,5 +26,24 @@
     });
   }
 
-  return { filterFamilyClients };
+  function toggleFamilyFilter(currentStatus, requestedStatus) {
+    return currentStatus === requestedStatus ? null : requestedStatus;
+  }
+
+  function filterPortfolioByFamily(
+    clients,
+    familyClients,
+    { status = null, query = "", analystId = "all" } = {},
+  ) {
+    const portfolio = Array.isArray(clients) ? clients : [];
+    if (!status) return portfolio;
+    const familyIds = new Set(filterFamilyClients(familyClients, {
+      status,
+      query,
+      analystId,
+    }).map(client => client.client_id));
+    return portfolio.filter(client => familyIds.has(client.client_id));
+  }
+
+  return { filterFamilyClients, filterPortfolioByFamily, toggleFamilyFilter };
 }));

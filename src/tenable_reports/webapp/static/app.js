@@ -1,7 +1,7 @@
 const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue, mergeSavedClient, conflictingJobsByClient } = window.TenableClientSelection;
-const { filterFamilyClients } = window.TenableBatchFamilyFilters;
+const { filterPortfolioByFamily, toggleFamilyFilter } = window.TenableBatchFamilyFilters;
 const { scheduleView } = window.TenableMonthlySchedule;
-const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, monthlySchedule: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: "all", batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
+const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, monthlySchedule: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: null, batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
 const { createLatestRequestGuard } = window.TenableReportRequestGuard;
 const reportRequestGuard = createLatestRequestGuard();
 const { createRefreshCoordinator } = window.TenableDashboardRefresh;
@@ -295,7 +295,7 @@ async function loadBatchFamily(batchId) {
 }
 
 function setBatchFamilyFilter(status) {
-  state.batchFamilyFilter = state.batchFamilyFilter === status ? "all" : status;
+  state.batchFamilyFilter = toggleFamilyFilter(state.batchFamilyFilter, status);
   render();
 }
 
@@ -573,15 +573,15 @@ function render() {
   const selectedFamily = state.batchFamily?.requested_batch_id === state.selectedBatchId
     ? state.batchFamily
     : null;
-  const familyIds = selectedFamily && state.batchFamilyFilter
-    ? new Set(filterFamilyClients(selectedFamily.clients, {
-        status: state.batchFamilyFilter,
-        query: state.filter,
-        analystId: state.analystFilter,
-      }).map(client => client.client_id))
-    : null;
-  const filtered = filterClients(clients, { query: state.filter, analystId: state.analystFilter })
-    .filter(client => !familyIds || familyIds.has(client.client_id))
+  const filtered = filterPortfolioByFamily(
+    filterClients(clients, { query: state.filter, analystId: state.analystFilter }),
+    selectedFamily?.clients || [],
+    {
+      status: state.batchFamilyFilter,
+      query: state.filter,
+      analystId: state.analystFilter,
+    },
+  )
     .filter(matchesStatusFilter);
   $("#empty-state").classList.toggle("hidden", clients.length > 0);
   $("#client-grid").innerHTML = filtered.map(client => {
@@ -1345,7 +1345,7 @@ $("#run-all-button").addEventListener("click", () => {
 $("#batch-select").addEventListener("change", event => {
   state.selectedBatchId = event.target.value;
   state.batchFamily = null;
-  state.batchFamilyFilter = "all";
+  state.batchFamilyFilter = null;
   renderBatches();
 });
 document.querySelector("[data-open-batch-clients]").addEventListener("click", () => {
