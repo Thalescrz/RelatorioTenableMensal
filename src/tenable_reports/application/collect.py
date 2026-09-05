@@ -370,6 +370,20 @@ def _resumable_export_is_available(
     return len(available_chunks | persisted_chunks) >= total_chunks
 
 
+def _resumable_asset_export_is_available(client: Any, export_uuid: str) -> bool:
+    status_loader = getattr(client, "get_asset_export_status", None)
+    if not callable(status_loader):
+        return True
+    try:
+        status = status_loader(export_uuid)
+    except ApiError as exc:
+        if exc.status_code == 404:
+            return False
+        raise
+    state = str(status.get("status") or "").strip().lower()
+    return state not in FAILURE_STATES and state != "aborted"
+
+
 def find_resumable_vm_manifest(
     output_root: str | Path,
     *,
@@ -1022,7 +1036,9 @@ def collect_asset_snapshot(
     resume_from: str | Path | None = None,
     minimum_free_gb: int = 10,
     last_success_bytes: int | None = None,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
     cancellation_probe: Callable[[], bool] | None = None,
+    resume_budget_seconds: float | None = None,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
     started_at = utc_now_iso()
@@ -1033,17 +1049,40 @@ def collect_asset_snapshot(
         client_id=profile.client_id,
         tenant_id=profile.tenant_id,
     )
-    actual_export_uuid = export_uuid or resumed_export_uuid or client.start_asset_export_v2(
-        filters=request.filters or None,
-        chunk_size=request.chunk_size,
-        include_open_ports=request.include_open_ports,
-        include_resource_tags=request.include_resource_tags,
-    )
-    wait_method = client.wait_for_asset_completion
-    wait_arguments: dict[str, Any] = {}
-    if "cancellation_probe" in inspect.signature(wait_method).parameters:
-        wait_arguments["cancellation_probe"] = cancellation_probe
-    _, chunk_ids = wait_method(actual_export_uuid, **wait_arguments)
+    unavailable_recoveries: list[dict[str, str]] = []
+    provided_export_uuid = export_uuid
+    if resumed_export_uuid and not _resumable_asset_export_is_available(
+        client, resumed_export_uuid
+    ):
+        unavailable_recoveries.append({
+            "previous_export_uuid": resumed_export_uuid,
+            "recovery_origin": "resume_manifest",
+        })
+        resumed_export_uuid = None
+        resumed_chunks = {}
+    if provided_export_uuid and not _resumable_asset_export_is_available(
+        client, provided_export_uuid
+    ):
+        unavailable_recoveries.append({
+            "previous_export_uuid": provided_export_uuid,
+            "recovery_origin": "provided_uuid",
+        })
+        provided_export_uuid = None
+    if provided_export_uuid:
+        job = ExportJob(export_uuid=provided_export_uuid, origin="provided")
+    elif resumed_export_uuid:
+        job = ExportJob(export_uuid=resumed_export_uuid, origin="resumed")
+    else:
+        job = ExportJob(
+            export_uuid=client.start_asset_export_v2(
+                filters=request.filters or None,
+                chunk_size=request.chunk_size,
+                include_open_ports=request.include_open_ports,
+                include_resource_tags=request.include_resource_tags,
+            ),
+            origin="created",
+        )
+    actual_export_uuid = job.export_uuid
 
     raw_directory = (
         Path(output_root)
@@ -1053,6 +1092,89 @@ def collect_asset_snapshot(
         / "tenable_vm_assets_v2"
         / actual_export_uuid
     )
+    state_path = raw_directory / "export-state.json"
+
+    def emit_progress(status: str, **details: Any) -> None:
+        payload = {
+            "event": "TENABLE_EXPORT_PROGRESS",
+            "source": "tenable_vm_assets_v2",
+            "export_uuid": actual_export_uuid,
+            "origin": job.origin,
+            "status": status,
+            "started_at": started_at,
+            **details,
+        }
+        _write_json_replace(state_path, payload)
+        if progress_callback is not None:
+            progress_callback(payload)
+
+    if progress_callback is not None:
+        for recovery in unavailable_recoveries:
+            progress_callback({
+                "event": "TENABLE_EXPORT_RECOVERY_UNAVAILABLE",
+                "source": "tenable_vm_assets_v2",
+                **recovery,
+                "replacement_export_uuid": actual_export_uuid,
+                "replacement_origin": job.origin,
+                "replacement_started": job.created_by_current_run,
+                "reason": "UUID de ativos anterior terminal, expirado ou irrecuperável.",
+            })
+    emit_progress(
+        "STARTED",
+        completed_chunks=0,
+        total_chunks=0,
+        progress_made=False,
+        status_query_ok=False,
+        query=sanitized_mapping(query),
+    )
+
+    def update_progress(status: Mapping[str, Any]) -> None:
+        remote_status = str(status.get("status") or "PROCESSING").upper()
+        details = {
+            str(key): value
+            for key, value in status.items()
+            if key not in {
+                "event", "source", "export_uuid", "origin", "status",
+            }
+        }
+        emit_progress(remote_status, **details)
+
+    wait_method = client.wait_for_asset_completion
+    wait_arguments: dict[str, Any] = {}
+    parameters = inspect.signature(wait_method).parameters
+    if "progress_callback" in parameters:
+        wait_arguments["progress_callback"] = update_progress
+    if "cancellation_probe" in parameters:
+        wait_arguments["cancellation_probe"] = cancellation_probe
+    if (
+        "max_total_wait_seconds" in parameters
+        and job.origin in {"provided", "resumed"}
+        and resume_budget_seconds is not None
+    ):
+        wait_arguments["max_total_wait_seconds"] = resume_budget_seconds
+    try:
+        _, chunk_ids = wait_method(actual_export_uuid, **wait_arguments)
+    except ExecutionInterruptedError as exc:
+        exc.export_uuid = exc.export_uuid or actual_export_uuid
+        emit_progress(
+            "INTERRUPTED",
+            completed_chunks=0,
+            total_chunks=0,
+            progress_made=False,
+        )
+        raise
+    except ExportTimeoutError as exc:
+        exc.export_uuid = actual_export_uuid
+        exc.origin = job.origin
+        emit_progress(
+            "TIMED_OUT",
+            completed_chunks=int(exc.last_status.get("completed_chunks") or 0),
+            total_chunks=int(exc.last_status.get("total_chunks") or 0),
+            progress_made=bool(exc.progress_made),
+            timeout_phase=exc.timeout_phase,
+        )
+        raise
+
     stored_chunks: list[StoredChunk] = []
     for chunk_id in chunk_ids:
         if cancellation_probe is not None and cancellation_probe():
@@ -1082,6 +1204,13 @@ def collect_asset_snapshot(
         )
         stored_chunks.append(stored)
 
+    emit_progress(
+        "FINISHED",
+        completed_chunks=len(stored_chunks),
+        total_chunks=len(chunk_ids),
+        progress_made=bool(stored_chunks),
+    )
+
     manifest = {
         "schema_version": 2,
         "run_id": actual_run_id,
@@ -1089,6 +1218,7 @@ def collect_asset_snapshot(
         "tenant_id": profile.tenant_id,
         "source": "tenable_vm_assets_v2",
         "export_uuid": actual_export_uuid,
+        "origin": job.origin,
         "query": sanitized_mapping(query),
         "chunks": [item.to_manifest() for item in stored_chunks],
     }

@@ -2976,17 +2976,21 @@ def _component_collection_request(
 ) -> RemoteCollectionRequest:
     run_id = str(getattr(args, "run_id", None) or uuid.uuid4())
     component_path = Path(args.component_checkpoint).resolve()
+    output_root = Path(args.output_root).resolve()
+    short_workspace = component_path.parent.parent
     if (
         component_path.name != "checkpoint.json"
         or component_path.parent.name != component.value.lower()
-        or component_path.parent.parent.name != run_id
+        or short_workspace.parent != output_root / ".components"
+        or re.fullmatch(r"[0-9a-f]{16}", short_workspace.name) is None
     ):
         raise ValueError(
-            "--component-checkpoint deve usar .../<run_id>/<componente>/checkpoint.json."
+            "--component-checkpoint deve usar "
+            "<output-root>/.components/<id>/<componente>/checkpoint.json."
         )
-    merged_checkpoint = component_path.parents[2] / f"{run_id}.json"
+    merged_checkpoint = short_workspace.parent / f"{short_workspace.name}.json"
     request = RemoteCollectionRequest(
-        storage_root=Path(args.output_root).resolve(),
+        storage_root=output_root,
         checkpoint_path=merged_checkpoint.resolve(),
         client_id=profile.client_id,
         tenant_id=profile.tenant_id,

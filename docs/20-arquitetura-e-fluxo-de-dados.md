@@ -132,6 +132,20 @@ tentativa mais recente em `FAILED` ou `INTERRUPTED`; componentes concluídos nã
 são repetidos. A publicação seletiva substitui referências apenas depois de
 validar o novo staging e restaura manifesto/documentos anteriores em falha.
 
+O staging remoto usa o caminho curto
+`<output_root>/.components/<hash>/<componente>`. O hash deriva da execução lógica,
+modo, origem e tentativa, sem repetir os nomes extensos do lote, cliente, fonte e
+UUID no prefixo. O painel e o processo CLI derivam o mesmo caminho. Isso mantém os
+artefatos isolados por componente e evita `WinError 3/206` causado pelo limite de
+caminho do Windows.
+
+Em retentativa seletiva, checkpoints já concluídos podem vir da tentativa anterior
+da mesma execução lógica. A consolidação aceita essa diferença de tentativa somente
+quando cliente, tenant, período, execução, modo e origem continuam idênticos e o
+arquivo persistido e seus hashes forem revalidados. Assim, corrigir VM, WAS ou Cloud
+não exige repetir componentes válidos e também não permite misturar clientes ou
+períodos.
+
 O núcleo seletivo cobre VM, WAS e Cloud. No servidor padrão, o caminho de
 compatibilidade Cloud está integrado. VM/WAS pela rota seletiva dependem de um
 executor de componentes configurado; sua ausência retorna erro explícito em vez de
@@ -184,6 +198,12 @@ registra UUID, origem do job, consulta e chunks concluídos, permitindo retomar
 também um export que ainda estava em processamento sem criar uma operação
 duplicada.
 
+O export de assets também registra seu UUID e progresso antes da espera. Se uma
+falha local ocorrer depois do `POST /assets/v2/export`, a retentativa consulta esse
+mesmo UUID e baixa os chunks disponíveis. Somente depois de concluir os assets é
+aberto o export de vulnerabilidades VM que ainda não havia começado. O UUID de
+assets nunca é encaminhado por engano ao endpoint de vulnerabilidades.
+
 Antes de abrir um novo export VM para o mesmo trabalho lógico, a aplicação consulta
 o UUID preservado, inclusive quando a fila o fornece explicitamente à nova
 tentativa. Essa validação ocorre antes de aguardar ou baixar chunks. Estados ativos
@@ -193,6 +213,12 @@ export só é aberto quando o anterior está terminal (`CANCELLED`, `FAILED` ou
 `ERROR`), não existe mais (HTTP 404) ou terminou sem que todos os chunks restantes
 continuem disponíveis. Erros de autenticação, limite ou servidor não são
 convertidos silenciosamente em um novo job.
+
+Falhas legadas de staging que ainda estejam registradas como `UNEXPECTED` são
+reclassificadas como retentáveis apenas quando a mensagem comprova `WinError 3` ou
+`WinError 206`, identifica uma fonte VM/WAS conhecida e contém um UUID válido. A
+retentativa recupera esse identificador; não inicia uma coleta geral nova. HTTP 401
+continua definitivo até a credencial ou permissão ser corrigida.
 
 Manifestos parciais VM/WAS e checkpoints Cloud nascem assim que há identidade
 remota recuperável. No `STAGED_V1`, 900 segundos sem progresso geram apenas

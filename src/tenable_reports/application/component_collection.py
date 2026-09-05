@@ -93,8 +93,44 @@ def component_checkpoint_path(
     request: RemoteCollectionRequest,
     component: ReportComponent | str,
 ) -> Path:
-    """Return the disjoint checkpoint path owned by one remote component."""
+    """Return a short disjoint path owned by one remote component.
 
+    The component collectors append client, run, source and export identifiers to
+    this directory. Keeping the workspace independent from the verbose
+    orchestration checkpoint prevents those segments from being duplicated past
+    the classic Windows path limit. The checkpoint location itself is excluded
+    from the digest so the dashboard and the isolated CLI process derive exactly
+    the same workspace without passing another long path argument.
+    """
+
+    normalized = ReportComponent(component)
+    identity = json.dumps(
+        {
+            "run_id": request.run_id,
+            "logical_job_id": request.logical_job_id,
+            "execution_type": request.execution_type,
+            "mode": request.mode,
+            "origin": request.origin,
+            "attempt_number": request.attempt_number,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    workspace_id = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return (
+        request.storage_root
+        / ".components"
+        / workspace_id
+        / normalized.value.lower()
+        / "checkpoint.json"
+    ).resolve()
+
+
+def _legacy_component_checkpoint_path(
+    request: RemoteCollectionRequest,
+    component: ReportComponent | str,
+) -> Path:
     normalized = ReportComponent(component)
     return (
         request.checkpoint_path.parent
@@ -357,6 +393,8 @@ def load_component_checkpoint(
 def _validate_identity(
     checkpoint: ComponentCollectionCheckpoint,
     request: RemoteCollectionRequest,
+    *,
+    allow_prior_attempt: bool = False,
 ) -> None:
     expected = (
         request.client_id,
@@ -380,13 +418,28 @@ def _validate_identity(
         checkpoint.attempt_number,
         dict(checkpoint.period),
     )
-    if actual != expected:
+    if actual != expected and not (
+        allow_prior_attempt
+        and actual[:-2] == expected[:-2]
+        and actual[-1] == expected[-1]
+        and checkpoint.attempt_number <= request.attempt_number
+    ):
         _failure(
             "CHECKPOINT_IDENTITY_MISMATCH",
             "A identidade do checkpoint de componente não corresponde à solicitação.",
         )
-    expected_path = component_checkpoint_path(request, checkpoint.component)
-    if checkpoint.checkpoint_path != expected_path:
+    if allow_prior_attempt and checkpoint.attempt_number < request.attempt_number:
+        # A selective component retry deliberately combines the freshly
+        # collected component with checkpoints that were already complete in
+        # an earlier attempt of the same logical run. ``load_component_checkpoint``
+        # has already revalidated the persisted file and artifact hashes; its
+        # original disjoint path is therefore the ownership proof we preserve.
+        return
+    expected_paths = {
+        component_checkpoint_path(request, checkpoint.component),
+        _legacy_component_checkpoint_path(request, checkpoint.component),
+    }
+    if checkpoint.checkpoint_path not in expected_paths:
         _failure(
             "CHECKPOINT_IDENTITY_MISMATCH",
             "O caminho do checkpoint de componente não corresponde à solicitação.",
@@ -407,6 +460,7 @@ def merge_component_checkpoints(
     *,
     request: RemoteCollectionRequest,
     checkpoints: Sequence[ComponentCollectionCheckpoint],
+    allow_prior_attempts: bool = False,
 ) -> CollectionCheckpoint:
     """Consolidate terminal component checkpoints into the existing build contract."""
 
@@ -417,7 +471,16 @@ def merge_component_checkpoints(
     for checkpoint in checkpoints:
         if not isinstance(checkpoint, ComponentCollectionCheckpoint):
             _failure("CHECKPOINT_INVALID_SCHEMA", "Checkpoint de componente inválido.")
-        _validate_identity(checkpoint, request)
+        if allow_prior_attempts:
+            checkpoint = load_component_checkpoint(
+                checkpoint.checkpoint_path,
+                storage_root=request.storage_root,
+            )
+        _validate_identity(
+            checkpoint,
+            request,
+            allow_prior_attempt=allow_prior_attempts,
+        )
         if checkpoint.component in seen:
             _failure(
                 "CHECKPOINT_INVALID_SCHEMA",

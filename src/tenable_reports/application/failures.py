@@ -100,6 +100,18 @@ def _code_from_text(value: str) -> FailureCode:
     ):
         return FailureCode.LOCAL_FILESYSTEM_TRANSIENT
     if (
+        ("WINERROR 3" in upper or "WINERROR 206" in upper)
+        and any(
+            source in upper
+            for source in (
+                "TENABLE_VM_ASSETS_V2",
+                "TENABLE_VM_VULNERABILITIES",
+                "TENABLE_WAS_FINDINGS",
+            )
+        )
+    ):
+        return FailureCode.LOCAL_FILESYSTEM_TRANSIENT
+    if (
         re.search(r"TEMPO MAXIMO(?: TOTAL)? EXCEDIDO", upper)
         or any(token in upper for token in (
             "TIMEOUT", "TIMED OUT", "FALHA DE TRANSPORTE",

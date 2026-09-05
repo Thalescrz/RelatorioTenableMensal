@@ -901,11 +901,17 @@ class TenableVmClient:
         self,
         export_uuid: str,
         *,
+        progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+        chunk_callback: Callable[[int], None] | None = None,
+        max_total_wait_seconds: float | None = None,
         cancellation_probe: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any], list[int]]:
         return self._wait_for_completion(
             export_uuid,
             self.get_asset_export_status,
             label="de ativos",
+            progress_callback=progress_callback,
+            chunk_callback=chunk_callback,
+            max_total_wait_seconds=max_total_wait_seconds,
             cancellation_probe=cancellation_probe,
         )

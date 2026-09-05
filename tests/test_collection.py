@@ -1392,6 +1392,74 @@ class CollectionTests(unittest.TestCase):
             self.assertFalse(manifest["query"]["include_open_ports"])
             self.assertFalse(manifest["query"]["include_resource_tags"])
 
+    def test_asset_collection_replaces_expired_uuid_and_emits_recovery_progress(
+        self,
+    ) -> None:
+        class RecoveringAssetClient:
+            def __init__(self) -> None:
+                self.started = 0
+
+            def get_asset_export_status(self, export_uuid: str) -> dict[str, Any]:
+                if export_uuid == "00000000-0000-0000-0000-000000000101":
+                    raise ApiError("Export de ativos expirado.", status_code=404)
+                return {"status": "FINISHED", "chunks_available": [1]}
+
+            def start_asset_export_v2(self, **kwargs: Any) -> str:
+                self.started += 1
+                return "00000000-0000-0000-0000-000000000102"
+
+            def wait_for_asset_completion(
+                self,
+                export_uuid: str,
+                *,
+                progress_callback=None,
+                chunk_callback=None,
+                max_total_wait_seconds=None,
+                cancellation_probe=None,
+            ) -> tuple[dict[str, Any], list[int]]:
+                del max_total_wait_seconds, cancellation_probe
+                status = {
+                    "status": "FINISHED",
+                    "completed_chunks": 1,
+                    "total_chunks": 1,
+                }
+                if progress_callback is not None:
+                    progress_callback(status)
+                if chunk_callback is not None:
+                    chunk_callback(1)
+                return status, [1]
+
+            def download_asset_chunk_bytes(
+                self,
+                export_uuid: str,
+                chunk_id: int,
+            ) -> bytes:
+                return b'[{"id":"asset-recovered"}]'
+
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        client = RecoveringAssetClient()
+        progress: list[dict[str, Any]] = []
+        with tempfile.TemporaryDirectory() as directory:
+            result = collect_asset_snapshot(
+                client=client,  # type: ignore[arg-type]
+                profile=profile,
+                request=AssetExportRequest(filters={}, chunk_size=100),
+                output_root=directory,
+                run_id="run-asset-recovery",
+                export_uuid="00000000-0000-0000-0000-000000000101",
+                progress_callback=progress.append,
+            )
+
+        self.assertEqual(client.started, 1)
+        self.assertEqual(
+            result.snapshot.export_uuid,
+            "00000000-0000-0000-0000-000000000102",
+        )
+        self.assertEqual(progress[0]["event"], "TENABLE_EXPORT_RECOVERY_UNAVAILABLE")
+        self.assertEqual(progress[0]["source"], "tenable_vm_assets_v2")
+        self.assertEqual(progress[1]["status"], "STARTED")
+        self.assertEqual(progress[-1]["status"], "FINISHED")
+
     def test_collection_writes_immutable_raw_and_sanitized_snapshot(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
         client = FakeCollectionClient(

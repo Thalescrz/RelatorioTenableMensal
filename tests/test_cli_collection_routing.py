@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import tenable_reports.cli as cli_module
+from tenable_reports.application.component_collection import component_checkpoint_path
 from tenable_reports.application.publishing import sha256_file
 from tenable_reports.application.staged_execution import (
     CheckpointArtifact,
@@ -21,6 +22,7 @@ from tenable_reports.application.staged_execution import (
     collect_client_remote,
 )
 from tenable_reports.domain.reporting import previous_calendar_month
+from tenable_reports.domain.report_components import ReportComponent
 
 
 def _routing_period():
@@ -249,6 +251,48 @@ def _tag_materialization_fixture(
 
 
 class CliCollectionRoutingTests(unittest.TestCase):
+    def test_component_request_accepts_short_staging_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name).resolve()
+            period = _routing_period()
+            profile = _routing_profile()
+            seed = RemoteCollectionRequest(
+                storage_root=root,
+                checkpoint_path=root / "checkpoints" / "job-a.json",
+                client_id=profile.client_id,
+                tenant_id=profile.tenant_id,
+                run_id="run-short",
+                logical_job_id="job-a",
+                execution_type="MANUAL",
+                mode="manual",
+                origin="MANUAL",
+                attempt_number=1,
+                period=period.to_dict(),
+            )
+            component_path = component_checkpoint_path(seed, ReportComponent.VM_CORE)
+            args = SimpleNamespace(
+                run_id=seed.run_id,
+                logical_job_id=seed.logical_job_id,
+                component_checkpoint=str(component_path),
+                output_root=str(root),
+                mode=seed.mode,
+                origin=seed.origin,
+                attempt_number=seed.attempt_number,
+            )
+
+            request = cli_module._component_collection_request(
+                args,
+                profile=profile,
+                period=period,
+                execution_type=seed.execution_type,
+                component=ReportComponent.VM_CORE,
+            )
+
+        self.assertEqual(
+            component_checkpoint_path(request, ReportComponent.VM_CORE),
+            component_path,
+        )
+
     def test_collect_component_parser_exposes_window_and_checkpoint_contract(self) -> None:
         parser = cli_module.build_parser()
 

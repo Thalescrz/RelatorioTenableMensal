@@ -1962,17 +1962,28 @@ class JobQueue:
                     command.extend(
                         ("--job-control-file", str(job["_job_control_file"]))
                     )
-                if job.get("remote_identifier"):
-                    command.extend(
-                        ("--remote-identifier", str(job["remote_identifier"]))
-                    )
+                remote_identifier = str(
+                    job.get("remote_identifier") or ""
+                ).strip()
+                identifier_origin = str(
+                    job.get("identifier_origin") or ""
+                ).strip()
+                asset_export_retry = bool(
+                    remote_identifier
+                    and str(job.get("component") or "") == "VM_CORE"
+                    and identifier_origin.startswith("asset_export:")
+                )
+                if asset_export_retry:
+                    command.extend(("--asset-export-uuid", remote_identifier))
+                elif remote_identifier:
+                    command.extend(("--remote-identifier", remote_identifier))
                 if job.get("identifier_kind"):
                     command.extend(
                         ("--identifier-kind", str(job["identifier_kind"]))
                     )
-                if job.get("identifier_origin"):
+                if identifier_origin:
                     command.extend(
-                        ("--identifier-origin", str(job["identifier_origin"]))
+                        ("--identifier-origin", identifier_origin)
                     )
                 if job.get("previous_component_checkpoint"):
                     command.extend(

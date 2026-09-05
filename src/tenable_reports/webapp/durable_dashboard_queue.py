@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import re
 import threading
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -105,6 +106,68 @@ _INVALID_REMOTE_IDENTIFIER_CODES = frozenset(
         "CHECKPOINT_IDENTITY_MISMATCH",
     }
 )
+_STAGING_EXPORT_PATTERN = re.compile(
+    r"(?i)(tenable_vm_assets_v2|tenable_vm_vulnerabilities|"
+    r"tenable_was_findings)[\\/]+"
+    r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"
+)
+
+
+def _recoverable_staging_identifier(
+    component: RemoteComponentWindow,
+) -> tuple[RemoteIdentifierKind, str, str] | None:
+    if (
+        component.remote_identifier
+        and component.retryable
+        and component.state in {
+            RemoteComponentState.WAITING_MANUAL_RETRY,
+            RemoteComponentState.INTERRUPTED,
+        }
+    ):
+        return (
+            component.identifier_kind or RemoteIdentifierKind.UUID,
+            component.remote_identifier,
+            component.identifier_origin or "provided",
+        )
+    message = str(component.failure_message or "")
+    if component.failure_code not in {
+        "UNEXPECTED",
+        "LOCAL_STAGING_PATH_ERROR",
+        "LOCAL_FILESYSTEM_TRANSIENT",
+    }:
+        return None
+    folded = message.casefold()
+    if "winerror 3" not in folded and "winerror 206" not in folded:
+        return None
+    match = _STAGING_EXPORT_PATTERN.search(message)
+    if match is None:
+        return None
+    source, identifier = match.groups()
+    normalized_source = source.casefold()
+    if component.component is ReportComponent.VM_CORE:
+        if normalized_source == "tenable_vm_assets_v2":
+            origin = "asset_export:provided"
+        elif normalized_source == "tenable_vm_vulnerabilities":
+            origin = "provided"
+        else:
+            return None
+    elif component.component is ReportComponent.WAS:
+        if normalized_source != "tenable_was_findings":
+            return None
+        origin = "provided"
+    else:
+        return None
+    return RemoteIdentifierKind.UUID, identifier, origin
+
+
+def _component_is_retryable(component: RemoteComponentWindow) -> bool:
+    return bool(
+        component.retryable
+        and component.state in {
+            RemoteComponentState.WAITING_MANUAL_RETRY,
+            RemoteComponentState.INTERRUPTED,
+        }
+    ) or _recoverable_staging_identifier(component) is not None
 
 
 def _checkpoint_ready_for_build(value: str | Path | None) -> bool:
@@ -528,12 +591,7 @@ class DurableDashboardJobQueue:
         invalid = tuple(
             component
             for component in selected
-            if latest[component].state
-            not in {
-                RemoteComponentState.WAITING_MANUAL_RETRY,
-                RemoteComponentState.INTERRUPTED,
-            }
-            or not latest[component].retryable
+            if not _component_is_retryable(latest[component])
         )
         if invalid:
             names = ", ".join(component.value for component in invalid)
@@ -597,7 +655,7 @@ class DurableDashboardJobQueue:
             payload=payload,
             retry_of_batch_job_id=source_job.id,
             control_file=control_file,
-            logical_job_id=source_job.logical_job_id,
+            logical_job_id=str(source_job.logical_job_id or source_job.id.hex),
             run_id=payload["run_id"],
             created_at=created_at,
             started_at=created_at,
@@ -615,10 +673,17 @@ class DurableDashboardJobQueue:
         )
         for row in created:
             source = latest[row.component]
+            recovery = _recoverable_staging_identifier(source)
             common = {
-                "identifier_kind": source.identifier_kind,
-                "remote_identifier": source.remote_identifier,
-                "identifier_origin": source.identifier_origin,
+                "identifier_kind": (
+                    recovery[0] if recovery is not None else source.identifier_kind
+                ),
+                "remote_identifier": (
+                    recovery[1] if recovery is not None else source.remote_identifier
+                ),
+                "identifier_origin": (
+                    recovery[2] if recovery is not None else source.identifier_origin
+                ),
                 "query_fingerprint": source.query_fingerprint,
                 "checkpoint_path": source.checkpoint_path,
                 "completed_units": source.completed_units,
@@ -867,6 +932,23 @@ class DurableDashboardJobQueue:
             return self.batch_snapshot(existing.id)
 
         source_jobs = self.repository.list_batch_jobs(source.id)
+        source_components_by_job = (
+            self._remote_component_repository.list_for_jobs(
+                tuple(job.id for job in source_jobs)
+            )
+            if self._remote_component_repository is not None
+            else {}
+        )
+        latest_components_by_job: dict[
+            UUID, dict[ReportComponent, RemoteComponentWindow]
+        ] = {}
+        for source_job in source_jobs:
+            latest_components: dict[ReportComponent, RemoteComponentWindow] = {}
+            for component in source_components_by_job.get(source_job.id, ()):
+                current = latest_components.get(component.component)
+                if current is None or component.attempt_number > current.attempt_number:
+                    latest_components[component.component] = component
+            latest_components_by_job[source_job.id] = latest_components
         replacement_progress: dict[UUID, WebBatchEvent] = {}
         for event in self.repository.list_events(source.id):
             progress = event.payload
@@ -890,6 +972,12 @@ class DurableDashboardJobQueue:
                 and (
                     request.kind is BatchAction.RERUN_ALL
                     or _batch_job_retryability(job).retryable
+                    or any(
+                        _component_is_retryable(component)
+                        for component in latest_components_by_job.get(
+                            job.id, {}
+                        ).values()
+                    )
                 )
             )
         )
@@ -1026,6 +1114,22 @@ class DurableDashboardJobQueue:
                 payload["vm_export_uuid"] = retry_vm_export_uuid
             if is_retry and retry_vm_resume_manifest:
                 payload["vm_resume_manifest"] = retry_vm_resume_manifest
+            if is_retry and staged_model:
+                for source_component in latest_components_by_job.get(
+                    source_job.id, {}
+                ).values():
+                    recovery = _recoverable_staging_identifier(source_component)
+                    if recovery is None:
+                        continue
+                    _, identifier, identifier_origin = recovery
+                    if source_component.component is ReportComponent.VM_CORE:
+                        if identifier_origin.startswith("asset_export:"):
+                            payload["asset_export_uuid"] = identifier
+                            payload.pop("vm_export_uuid", None)
+                        else:
+                            payload["vm_export_uuid"] = identifier
+                    elif source_component.component is ReportComponent.WAS:
+                        payload["was_export_uuid"] = identifier
             mode = str(payload.get("mode") or "manual")
             control_file = self._control_file(
                 batch_id=batch_id,
@@ -1074,7 +1178,9 @@ class DurableDashboardJobQueue:
                     ),
                     payload=payload,
                     retry_of_batch_job_id=source_job.id if is_retry else None,
-                    logical_job_id=source_job.logical_job_id,
+                    logical_job_id=str(
+                        source_job.logical_job_id or source_job.id.hex
+                    ),
                     collection_checkpoint_path=(
                         reusable_checkpoint
                     ),
@@ -1223,6 +1329,36 @@ class DurableDashboardJobQueue:
         batch_ids = tuple(batch.id for batch in batches)
         jobs_by_batch = self.repository.list_batch_jobs_for_batches(batch_ids)
         events_by_batch = self.repository.list_events_for_batches(batch_ids)
+        all_jobs = tuple(
+            job for batch_jobs in jobs_by_batch.values() for job in batch_jobs
+        )
+        components_by_job = (
+            self._remote_component_repository.list_for_jobs(
+                tuple(job.id for job in all_jobs)
+            )
+            if self._remote_component_repository is not None
+            else {}
+        )
+
+        def effective_retryability(job: WebBatchJob) -> BatchJobRetryability:
+            base = _batch_job_retryability(job)
+            if base.retryable:
+                return base
+            if any(
+                _component_is_retryable(component)
+                for component in components_by_job.get(job.id, ())
+            ):
+                return BatchJobRetryability(
+                    candidate=True,
+                    retryable=True,
+                    recorded_error_code=base.recorded_error_code,
+                    effective_error_code=FailureCode.LOCAL_FILESYSTEM_TRANSIENT.value,
+                    reason=(
+                        "A operação remota foi preservada após uma falha local "
+                        "de staging já corrigida."
+                    ),
+                )
+            return base
 
         summaries: list[dict[str, Any]] = []
         capacities = self.capacity_snapshot()
@@ -1250,7 +1386,7 @@ class DurableDashboardJobQueue:
         }
         for batch in batches[:normalized_summary_limit]:
             jobs = jobs_by_batch[batch.id]
-            retryability = tuple(_batch_job_retryability(job) for job in jobs)
+            retryability = tuple(effective_retryability(job) for job in jobs)
             counts = {
                 status: sum(job.status is status for job in jobs)
                 for status in BatchJobStatus
@@ -1363,7 +1499,7 @@ class DurableDashboardJobQueue:
                 if event.job_id is not None:
                     events_by_job.setdefault(event.job_id, []).append(event)
             for job in jobs_by_batch[batch.id]:
-                retryability = _batch_job_retryability(job)
+                retryability = effective_retryability(job)
                 if job.status in active_statuses:
                     active_job_count += 1
                 row = _safe_dashboard_value(job.payload)
@@ -1609,6 +1745,8 @@ class DurableDashboardJobQueue:
             components: Sequence[RemoteComponentWindow],
         ) -> str:
             retryability = _batch_job_retryability(job)
+            if any(_component_is_retryable(item) for item in components):
+                return "WAITING_MANUAL_RETRY"
             if any(
                 item.state is RemoteComponentState.NON_RETRYABLE_FAILURE
                 for item in components
@@ -1960,12 +2098,15 @@ class DurableDashboardJobQueue:
                 **changes,
             )
             return
-        expected_source = {
-            ReportComponent.VM_CORE: "tenable_vm_vulnerabilities",
-            ReportComponent.WAS: "tenable_was_findings",
-            ReportComponent.CLOUD: "tenable_cloud_security",
+        expected_sources = {
+            ReportComponent.VM_CORE: {
+                "tenable_vm_assets_v2",
+                "tenable_vm_vulnerabilities",
+            },
+            ReportComponent.WAS: {"tenable_was_findings"},
+            ReportComponent.CLOUD: {"tenable_cloud_security"},
         }[component.component]
-        if event_type == "TENABLE_EXPORT_PROGRESS" and source != expected_source:
+        if event_type == "TENABLE_EXPORT_PROGRESS" and source not in expected_sources:
             return
         if event_type == "TENABLE_CLOUD_PROGRESS" and component.component is not ReportComponent.CLOUD:
             return
@@ -1986,7 +2127,8 @@ class DurableDashboardJobQueue:
         status = str(event.get("status") or "PROCESSING").upper()
         observation_kind = (
             RemoteObservationKind.COMPLETE
-            if status in {"COMPLETE", "FINISHED", "REPLAYED"}
+            if source != "tenable_vm_assets_v2"
+            and status in {"COMPLETE", "FINISHED", "REPLAYED"}
             else RemoteObservationKind.PROCESSING
         )
         observed = repository.record_observation(
@@ -2012,7 +2154,11 @@ class DurableDashboardJobQueue:
                     else RemoteIdentifierKind.DATASET
                 ),
                 remote_identifier=identifier,
-                identifier_origin=str(event.get("origin") or "created"),
+                identifier_origin=(
+                    f"asset_export:{str(event.get('origin') or 'created')}"
+                    if source == "tenable_vm_assets_v2"
+                    else str(event.get("origin") or "created")
+                ),
             )
 
     def _persist_process(self, job_id: str, process_id: int) -> None:
@@ -2112,7 +2258,7 @@ class DurableDashboardJobQueue:
         deadline = datetime.now(UTC) + timedelta(
             seconds=self._remote_processing_timeout_seconds
         )
-        self._remote_component_repository.create_for_job(
+        created = self._remote_component_repository.create_for_job(
             batch_job_id=job.id,
             components=tuple(ReportComponent),
             window_number=1,
@@ -2124,6 +2270,42 @@ class DurableDashboardJobQueue:
             ),
             attempt_number=1,
         )
+        recovery_by_component: dict[
+            ReportComponent, tuple[RemoteIdentifierKind, str, str]
+        ] = {}
+        asset_export_uuid = str(job.payload.get("asset_export_uuid") or "").strip()
+        vm_export_uuid = str(job.payload.get("vm_export_uuid") or "").strip()
+        was_export_uuid = str(job.payload.get("was_export_uuid") or "").strip()
+        if asset_export_uuid:
+            recovery_by_component[ReportComponent.VM_CORE] = (
+                RemoteIdentifierKind.UUID,
+                asset_export_uuid,
+                "asset_export:provided",
+            )
+        elif vm_export_uuid:
+            recovery_by_component[ReportComponent.VM_CORE] = (
+                RemoteIdentifierKind.UUID,
+                vm_export_uuid,
+                "provided",
+            )
+        if was_export_uuid:
+            recovery_by_component[ReportComponent.WAS] = (
+                RemoteIdentifierKind.UUID,
+                was_export_uuid,
+                "provided",
+            )
+        for component in created:
+            recovery = recovery_by_component.get(component.component)
+            if recovery is None:
+                continue
+            self._remote_component_repository.transition(
+                component.id,
+                expected_state=RemoteComponentState.PENDING,
+                requested_state=RemoteComponentState.PENDING,
+                identifier_kind=recovery[0],
+                remote_identifier=recovery[1],
+                identifier_origin=recovery[2],
+            )
         return BatchJobResult(
             status=BatchJobStatus.COMPLETE,
             payload={"remote_components_initialized": True},
@@ -2218,7 +2400,13 @@ class DurableDashboardJobQueue:
             changes.update(
                 identifier_kind=current.identifier_kind,
                 remote_identifier=current.remote_identifier,
-                identifier_origin="provided",
+                identifier_origin=(
+                    "asset_export:provided"
+                    if str(current.identifier_origin or "").startswith(
+                        "asset_export:"
+                    )
+                    else "provided"
+                ),
                 checkpoint_path=current.checkpoint_path,
             )
         if changes:
@@ -2254,7 +2442,12 @@ class DurableDashboardJobQueue:
                 "message": result.error_message,
             }
         )
-        failure_code = str(result.error_code or failure.code.value).upper()
+        raw_failure_code = str(result.error_code or "").strip().upper()
+        failure_code = (
+            failure.code.value
+            if raw_failure_code in {"", "UNEXPECTED"}
+            else raw_failure_code
+        )
         error_text = str(result.error_message or "").casefold()
         if (
             failure_code in _INVALID_REMOTE_IDENTIFIER_CODES
@@ -2308,7 +2501,7 @@ class DurableDashboardJobQueue:
             terminal_retryable = True
         else:
             terminal_state = RemoteComponentState.WAITING_MANUAL_RETRY
-            terminal_code = "AUTOMATIC_WINDOW_ADVANCED"
+            terminal_code = failure_code
             terminal_retryable = True
         terminal = repository.transition(
             observed.id,
@@ -2479,6 +2672,43 @@ class DurableDashboardJobQueue:
                 for window in latest.values()
             ):
                 return
+            vm_window = latest[ReportComponent.VM_CORE]
+            cloud_window = latest[ReportComponent.CLOUD]
+            vm_publishable = bool(
+                vm_window.state in _REMOTE_COMPONENT_PUBLISHABLE_STATES
+                and vm_window.checkpoint_path
+            )
+            cloud_publishable = bool(
+                cloud_window.state in {
+                    RemoteComponentState.COMPLETE,
+                    RemoteComponentState.COMPLETE_WITH_WARNINGS,
+                }
+                and cloud_window.checkpoint_path
+            )
+            if not vm_publishable and not cloud_publishable:
+                self.repository.complete_job(
+                    job.id,
+                    BatchJobResult(
+                        status=BatchJobStatus.FAILED,
+                        exit_code=2,
+                        error_code=(
+                            vm_window.failure_code or "VM_COMPONENT_INCOMPLETE"
+                        ),
+                        error_message=(
+                            vm_window.failure_message
+                            or "O componente VM não produziu dados publicáveis."
+                        ),
+                        payload={
+                            "component_set_status": "FAILED",
+                            "retryable_components": (
+                                [ReportComponent.VM_CORE.value]
+                                if vm_window.retryable
+                                else []
+                            ),
+                        },
+                    ),
+                )
+                return
             publishable = tuple(
                 window
                 for window in latest.values()
@@ -2486,7 +2716,6 @@ class DurableDashboardJobQueue:
                 and window.checkpoint_path
             )
             if not publishable:
-                vm_window = latest[ReportComponent.VM_CORE]
                 self.repository.complete_job(
                     job.id,
                     BatchJobResult(
@@ -2583,6 +2812,7 @@ class DurableDashboardJobQueue:
             merged = merge_component_checkpoints(
                 request=request,
                 checkpoints=tuple(checkpoints),
+                allow_prior_attempts=job.retry_of_batch_job_id is not None,
             )
             collect_client_remote(
                 request,

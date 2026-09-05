@@ -298,6 +298,19 @@ somente quando a mensagem comprova timeout, export sem progresso ou
 indisponibilidade do PostgreSQL; o código original continua visível para auditoria.
 Falha realmente não retentável não entra silenciosamente no lote derivado.
 
+Também são recuperáveis os registros antigos com `WinError 3/206` cujo caminho
+identifica `tenable_vm_assets_v2`, `tenable_vm_vulnerabilities` ou
+`tenable_was_findings` e contém um UUID válido. Depois de reiniciar o servidor com
+a correção instalada, **Tentar falhas, parciais e interrompidos** reaproveita esse
+UUID. Para uma falha em assets, a aplicação termina o download dos assets e somente
+então inicia um export novo de vulnerabilidades VM, pois esse segundo export ainda
+não existia.
+
+Se a consulta do UUID retornar estado terminal, expiração ou HTTP 404, apenas o
+componente afetado cria uma operação substituta e registra o evento correspondente.
+Uma resposta 401 não entra nesse fallback: corrija a credencial/permissão, execute
+**Testar API** e só depois faça uma nova tentativa para o cliente.
+
 Cloud é independente e o retry integrado reaproveita dataset/checkpoint quando
 válido, sem repetir VM ou WAS. WAS precisa de base VM reutilizável para reparar
 somente documentos com seção WEB. VM pode retomar UUID/chunks ou normalizar raw

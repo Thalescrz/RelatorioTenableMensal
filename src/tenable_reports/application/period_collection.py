@@ -134,7 +134,9 @@ def collect_vm_core_period(
         run_id=run_id,
         export_uuid=getattr(args, "asset_export_uuid", None),
         resume_from=asset_resume_manifest,
+        progress_callback=progress_callback,
         cancellation_probe=cancellation_probe,
+        resume_budget_seconds=getattr(args, "vm_resume_budget_seconds", None),
     )
     check_interruption()
 
