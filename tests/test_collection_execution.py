@@ -134,6 +134,15 @@ class CollectionExecutionTests(unittest.TestCase):
                 output_root=directory,
                 execution_type="MANUAL",
             )
+            original_dataset = artifact.dataset_path.read_bytes()
+            replayed_artifact = build_report_dataset_from_snapshot(
+                profile=self.profile,
+                run_id="replay-run",
+                period=self.period,
+                output_root=directory,
+                execution_type="MANUAL",
+            )
+            replayed_dataset = replayed_artifact.dataset_path.read_bytes()
 
         self.assertEqual(inputs.assets, self.normalized.assets)
         self.assertEqual(inputs.findings, self.normalized.findings)
@@ -144,6 +153,8 @@ class CollectionExecutionTests(unittest.TestCase):
             artifact.result.dataset.collection_provenance["source_snapshot_id"],
             snapshot.snapshot_id,
         )
+        self.assertEqual(replayed_artifact.dataset_path, artifact.dataset_path)
+        self.assertEqual(replayed_dataset, original_dataset)
 
 
 if __name__ == "__main__":

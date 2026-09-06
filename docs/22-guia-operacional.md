@@ -193,6 +193,16 @@ para autorizar a tentativa derivada. Se todos os componentes do cliente já têm
 checkpoint publicável, essa ação faz somente consolidação e montagem locais, sem
 nova chamada VM, WAS ou Cloud.
 
+Na recuperação da mesma execução, assets, VM e TAGs já completos são validados e
+reutilizados. Se o documento desse `run_id` já estiver publicado e íntegro, a
+tentativa é concluída usando a publicação existente; ela não duplica histórico nem
+reescreve os DOCX. Qualquer incompatibilidade de cliente, período, consulta, TAG ou
+hash interrompe a recuperação com erro local explícito.
+
+Quando os DOCX e o manifesto já existem, mas a execução terminou com `MemoryError`
+antes de registrar os documentos, use a mesma ação de retentativa. A aplicação
+revalida os arquivos e repara o PostgreSQL sem repetir coleta ou montagem.
+
 Ao parar, o arquivo de controle solicita uma saída cooperativa. O export remoto não
 é cancelado: UUID, manifesto parcial e chunks persistidos ficam disponíveis para uma
 retentativa. Cada job ativo é controlado separadamente; se um subprocesso não

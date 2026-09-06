@@ -28,6 +28,7 @@ from tenable_reports.application.monthly_schedule import MonthlyScheduleService
 from tenable_reports.application.failures import sanitize_failure_message
 from tenable_reports.application.web_batches import (
     BatchClientConflictError,
+    BatchJobResult,
     DerivedBatchRequest,
     RemoteComponentRepository,
     WebBatchRepository,
@@ -43,7 +44,11 @@ from tenable_reports.application.postgresql_migration import (
     MainBackfillSourceState,
     main_backfill_source_state,
 )
-from tenable_reports.application.publishing import write_json_atomic
+from tenable_reports.application.publishing import (
+    sha256_file,
+    validate_docx_package,
+    write_json_atomic,
+)
 from tenable_reports.application.report_main_backfill import (
     MainBackfillPlan,
     plan_main_backfill,
@@ -129,14 +134,19 @@ from tenable_reports.infrastructure.web_batch_components_postgresql import (
     PostgresRemoteComponentRepository,
 )
 from tenable_reports.infrastructure.windows_task_scheduler import WindowsTaskScheduler
-from tenable_reports.domain.report_reference import reference_key_for_candidate
+from tenable_reports.domain.report_reference import READY_STATUS, reference_key_for_candidate
 from tenable_reports.domain.report_components import (
     ComponentAttempt,
     ComponentStatus,
     ReportComponent,
     summarize_component_set,
 )
-from tenable_reports.domain.web_batches import BatchAction
+from tenable_reports.domain.web_batches import (
+    BatchAction,
+    BatchJobStatus,
+    WebBatchJob,
+)
+from tenable_reports.application.staged_execution import CollectionCheckpoint
 from tenable_reports.infrastructure.tenable_cloud.client import (
     CloudGraphQLClient,
     CloudGraphQLConfig,
@@ -1157,6 +1167,68 @@ class DashboardDatabase:
             "tag_category": row[12],
             "tag_value": row[13],
         } for row in rows]
+
+    def repair_publication_documents(
+        self,
+        run_id: str,
+        *,
+        client_id: str,
+        tenant_id: str,
+        allowed_root: Path,
+    ) -> list[dict[str, Any]]:
+        operations = PostgresOperationsRepository(self.database, migrate=False)
+        root = allowed_root.resolve()
+        try:
+            manifest = operations.report_run_context(run_id).publication_manifest.resolve()
+        except KeyError:
+            candidates = tuple(
+                root.glob(
+                    f"*/reports/{client_id}/{run_id}/*/publication-manifest.json"
+                )
+            )
+            if len(candidates) != 1:
+                raise ValueError(
+                    "A publicação local precisa possuir exatamente um manifesto."
+                )
+            manifest = candidates[0].resolve()
+        manifest.relative_to(root)
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+        if (
+            not isinstance(payload, Mapping)
+            or str(payload.get("status") or "") != READY_STATUS
+            or str(payload.get("run_id") or "") != run_id
+            or str(payload.get("client_id") or "") != client_id
+            or str(payload.get("tenant_id") or "") != tenant_id
+        ):
+            raise ValueError("Manifesto de publicação incompatível com a execução.")
+        documents = payload.get("documents")
+        if not isinstance(documents, list) or not documents:
+            raise ValueError("Manifesto de publicação sem documentos.")
+        for document in documents:
+            if not isinstance(document, Mapping):
+                raise ValueError("Documento inválido no manifesto de publicação.")
+            path = Path(str(document.get("path") or "")).resolve()
+            path.relative_to(root)
+            validated = validate_docx_package(path)
+            if (
+                str(document.get("package_status") or "").upper() != "VALID"
+                or int(document.get("size_bytes") or 0) != validated["size_bytes"]
+                or str(document.get("sha256") or "") != validated["sha256"]
+            ):
+                raise ValueError("Documento divergente do manifesto de publicação.")
+        dataset = payload.get("source_dataset")
+        if not isinstance(dataset, Mapping):
+            raise ValueError("Dataset ausente no manifesto de publicação.")
+        dataset_path = Path(str(dataset.get("path") or "")).resolve()
+        dataset_path.relative_to(root)
+        if (
+            not dataset_path.is_file()
+            or int(dataset.get("size_bytes") or 0) != dataset_path.stat().st_size
+            or str(dataset.get("sha256") or "") != sha256_file(dataset_path)
+        ):
+            raise ValueError("Dataset divergente do manifesto de publicação.")
+        operations.record_publication_manifest(manifest)
+        return self.report_documents(run_id)
 
     def cloud_results(self, client_id: str) -> dict[str, dict[str, Any]]:
         query = f"""
@@ -2478,6 +2550,57 @@ class JobQueue:
 
 
 class DashboardApplication:
+    def _published_build_result(
+        self,
+        job: WebBatchJob,
+        checkpoint: CollectionCheckpoint,
+    ) -> BatchJobResult | None:
+        registry = self.report_registry
+        if registry is None or checkpoint.client_id != job.client_id:
+            return None
+        try:
+            report = registry.get_report(checkpoint.run_id)
+        except KeyError:
+            return None
+        candidate = report.candidate
+        if (
+            report.deleted
+            or candidate.client_id != checkpoint.client_id
+            or candidate.tenant_id != checkpoint.tenant_id
+            or candidate.publication_status != READY_STATUS
+            or not candidate.documents_valid
+        ):
+            return None
+        database = getattr(self, "database", None)
+        if database is not None:
+            try:
+                documents = database.report_documents(checkpoint.run_id)
+                if not documents:
+                    repair = getattr(database, "repair_publication_documents", None)
+                    if callable(repair):
+                        documents = repair(
+                            checkpoint.run_id,
+                            client_id=checkpoint.client_id,
+                            tenant_id=checkpoint.tenant_id,
+                            allowed_root=self.project_root / "data",
+                        )
+            except Exception:
+                return None
+            if not documents or any(
+                str(document.get("package_status") or "").upper() != "VALID"
+                or not Path(str(document.get("path") or "")).is_file()
+                for document in documents
+            ):
+                return None
+        return BatchJobResult(
+            status=BatchJobStatus.COMPLETE,
+            payload={
+                "status": "COMPLETE",
+                "run_id": checkpoint.run_id,
+                "reused_existing_publication": True,
+            },
+        )
+
     def __init__(
         self,
         *,
@@ -2534,6 +2657,11 @@ class DashboardApplication:
         except Exception as exc:
             self.database = None
             self.database_error = _safe_error(str(exc), limit=500)
+        self.report_registry = report_registry
+        if self.report_registry is None and self.database is not None:
+            self.report_registry = PostgresReportRegistry(
+                self.database.database, migrate=False
+            )
         self.component_repository = component_repository
         if self.component_repository is None and self.database is not None:
             self.component_repository = PostgresReportComponentRepository(
@@ -2601,6 +2729,7 @@ class DashboardApplication:
                 remote_processing_timeout_seconds=(
                     remote_processing_timeout_seconds
                 ),
+                published_build_resolver=self._published_build_result,
             )
         else:
             self.jobs = JobQueue(self.project_root, self.config.config_path, runner)
@@ -2615,11 +2744,6 @@ class DashboardApplication:
                 self.database.database, migrate=False
             )
             self.cloud_contract_invalidator = cloud_repository.invalidate_contract_checks
-        self.report_registry = report_registry
-        if self.report_registry is None and self.database is not None:
-            self.report_registry = PostgresReportRegistry(
-                self.database.database, migrate=False
-            )
         self.was_recovery_repository = was_recovery_repository
         if self.was_recovery_repository is None and self.database is not None:
             self.was_recovery_repository = PostgresWasRecoveryRepository(

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from tenable_reports.application.report_dataset import load_report_dataset_inputs
+from tenable_reports.application.report_dataset import (
+    load_report_dataset_inputs,
+    write_immutable_json,
+)
 from tenable_reports.application.tag_scope import VmTag
 from tenable_reports.config.profile import ClientProfile, TagReportSelection
 from tenable_reports.domain.normalization import NormalizedAsset, NormalizedFinding
@@ -31,17 +33,6 @@ class TagReportDatasetArtifact:
 class TagReportDatasetBundle:
     artifacts: tuple[TagReportDatasetArtifact, ...]
     warnings: tuple[dict[str, Any], ...] = ()
-
-
-def _write_exclusive(path: Path, content: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(content)
-    except Exception:
-        path.unlink(missing_ok=True)
-        raise
 
 
 def _slice_rows(
@@ -162,10 +153,6 @@ def build_tag_report_datasets_from_snapshot(
         selection.tag_uuid: base_directory / selection.tag_uuid / "report-dataset.json"
         for selection, _ in available
     }
-    for path in paths.values():
-        if path.exists():
-            raise FileExistsError(f"Dataset mensal por TAG imutavel ja existe: {path}")
-
     generated_at = datetime.now(UTC)
     artifacts: list[TagReportDatasetArtifact] = []
     for selection, scope in available:
@@ -220,7 +207,12 @@ def build_tag_report_datasets_from_snapshot(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         ).encode("utf-8")
         dataset_path = paths[selection.tag_uuid]
-        _write_exclusive(dataset_path, dataset_content)
+        write_immutable_json(
+            dataset_path,
+            dataset_content,
+            label="Dataset mensal por TAG imutavel",
+            ignored_top_level_keys=("generated_at",),
+        )
         artifacts.append(
             TagReportDatasetArtifact(
                 tag=tag,
@@ -234,4 +226,3 @@ def build_tag_report_datasets_from_snapshot(
         artifacts=tuple(artifacts),
         warnings=tuple(warnings),
     )
-

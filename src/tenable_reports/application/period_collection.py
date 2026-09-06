@@ -8,6 +8,7 @@ from tenable_reports.application.collect import (
     AssetExportRequest,
     VulnerabilityExportRequest,
     collect_asset_snapshot,
+    find_completed_vm_manifest,
     find_resumable_vm_manifest,
 )
 from tenable_reports.application.collect_inventory import (
@@ -212,7 +213,20 @@ def collect_vm_core_period(
             else finding_request
         )
         if not resume_manifest and vm_strategy == "combined":
-            resume_manifest = find_resumable_vm_manifest(
+            snapshot_suffix = (
+                None
+                if vm_selective_mode == "disabled"
+                else "selective"
+                if vm_selective_mode == "enabled"
+                else "full"
+            )
+            resume_manifest = find_completed_vm_manifest(
+                output_root,
+                profile=profile,
+                request=resume_request,
+                run_id=run_id,
+                snapshot_suffix=snapshot_suffix,
+            ) or find_resumable_vm_manifest(
                 output_root,
                 profile=profile,
                 request=resume_request,

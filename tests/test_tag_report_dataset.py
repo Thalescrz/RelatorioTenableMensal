@@ -250,6 +250,18 @@ def test_tag_datasets_are_isolated_and_general_dataset_is_unchanged(tmp_path: Pa
         include_output=False,
         execution_type="AUTOMATIC_MONTHLY",
     )
+    original_contents = {
+        item.tag.uuid: item.dataset_path.read_bytes()
+        for item in bundle.artifacts
+    }
+    replayed_bundle = build_tag_report_datasets_from_snapshot(
+        profile=_profile_with_tags(),
+        run_id=RUN_ID,
+        period=_july_2026(),
+        output_root=tmp_path,
+        include_output=False,
+        execution_type="AUTOMATIC_MONTHLY",
+    )
 
     by_uuid = {
         item.tag.uuid: json.loads(item.dataset_path.read_text(encoding="utf-8"))
@@ -272,6 +284,10 @@ def test_tag_datasets_are_isolated_and_general_dataset_is_unchanged(tmp_path: Pa
         with_tags.dataset.top_open_vulnerabilities
         == without_tags.dataset.top_open_vulnerabilities
     )
+    assert {
+        item.tag.uuid: item.dataset_path.read_bytes()
+        for item in replayed_bundle.artifacts
+    } == original_contents
 
 
 def test_tag_dataset_contains_operational_payload_even_without_findings(tmp_path: Path) -> None:
@@ -318,4 +334,3 @@ def test_missing_tag_scope_is_a_warning_and_does_not_create_partial_dataset(
         and warning["tag_uuid"] == "tag-b"
         for warning in bundle.warnings
     )
-

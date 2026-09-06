@@ -317,7 +317,7 @@ function renderBatches() {
   }).join("");
   select.value = batch.id;
   const finished = Number(batch.completed_count || 0) + Number(batch.partial_count || 0) + Number(batch.failed_count || 0) + Number(batch.interrupted_count || 0) + Number(batch.cancelled_count || 0);
-  const recoveredPaused = batch.kind === "RECOVERED" && batch.status === "PAUSED";
+  const recoverablePaused = batch.status === "PAUSED" && finished === Number(batch.total_count || 0) && Number(batch.retryable_count || 0) > 0;
   $("#batch-title").textContent = batch.kind === "GENERATE_ALL" ? "Geração da carteira" : batch.kind === "RECOVERED" ? "Lote recuperado" : batch.kind === "RETRY_INCOMPLETE" ? "Retentativa de incompletos" : batch.kind === "RERUN_ALL" ? "Nova geração integral" : "Geração individual";
   $("#batch-state").textContent = batchStatusLabel(batch.status);
   $("#batch-state").dataset.status = batch.status;
@@ -325,7 +325,7 @@ function renderBatches() {
   $("#batch-progress-percent").textContent = `${batch.progress_percent}%`;
   $("#batch-progress-bar").value = Number(batch.progress_percent || 0);
   const currentPhase = JOB_PHASE_LABELS[batch.current_phase] || "";
-  $("#batch-current-copy").textContent = batch.current_client_id ? `${currentPhase || "Em execução"}: ${batch.current_client_id}` : recoveredPaused ? `${Number(batch.retryable_count || 0)} pendência(s) disponível(is) para retentativa controlada.` : batch.status === "PAUSED" ? "O lote aguarda retomada manual." : "Nenhum cliente em execução neste instante.";
+  $("#batch-current-copy").textContent = batch.current_client_id ? `${currentPhase || "Em execução"}: ${batch.current_client_id}` : recoverablePaused ? `${Number(batch.retryable_count || 0)} pendência(s) disponível(is) para retentativa controlada.` : batch.status === "PAUSED" ? "O lote aguarda retomada manual." : "Nenhum cliente em execução neste instante.";
   const remoteConcurrency = batch.remote_concurrency || {};
   const buildConcurrency = batch.build_concurrency || {};
   $("#batch-capacity-copy").textContent = `Coleta remota: ${Number(remoteConcurrency.active || 0)}/${Number(remoteConcurrency.capacity || 0)} · Fila de montagem: ${Number(batch.build_queue_count || 0)} · Montagem: ${Number(buildConcurrency.active || 0)}/${Number(buildConcurrency.capacity || 0)}`;
@@ -355,9 +355,9 @@ function renderBatches() {
 
   const actions = [];
   if (["QUEUED", "RUNNING"].includes(batch.status)) actions.push(["pause", "Pausar após o atual", "ghost"]);
-  if (!recoveredPaused && ["QUEUED", "RUNNING", "PAUSE_REQUESTED", "PAUSED"].includes(batch.status)) actions.push(["stop", "Parar lote", "danger"]);
-  if (!recoveredPaused && batch.status === "PAUSED") actions.push(["resume", "Retomar lote", "primary"]);
-  if (recoveredPaused && Number(batch.retryable_count || 0) > 0) actions.push(["retry-incomplete", "Tentar falhas, parciais e interrompidos", "primary"]);
+  if (!recoverablePaused && ["QUEUED", "RUNNING", "PAUSE_REQUESTED", "PAUSED"].includes(batch.status)) actions.push(["stop", "Parar lote", "danger"]);
+  if (!recoverablePaused && batch.status === "PAUSED") actions.push(["resume", "Retomar lote", "primary"]);
+  if (recoverablePaused) actions.push(["retry-incomplete", "Tentar falhas, parciais e interrompidos", "primary"]);
   if (TERMINAL_BATCH_STATES.has(batch.status) && Number(batch.retryable_count || 0) > 0) actions.push(["retry-incomplete", "Tentar falhas, parciais e interrompidos", "ghost"]);
   if (TERMINAL_BATCH_STATES.has(batch.status) && batch.kind === "GENERATE_ALL") actions.push(["rerun-all", "Gerar novamente para todos", "ghost"]);
   $("#batch-actions").innerHTML = actions.map(([action, label, tone]) => `<button class="button ${tone}" data-batch-action="${action}" type="button">${label}</button>`).join("");

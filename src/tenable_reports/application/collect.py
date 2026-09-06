@@ -20,6 +20,8 @@ from tenable_reports import __version__
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.domain.execution_control import ExecutionInterruptedError
 from tenable_reports.domain.models import (
+    Availability,
+    SnapshotStatus,
     SourceSnapshot,
     build_source_snapshot_from_chunk_hashes,
     sanitized_mapping,
@@ -338,6 +340,101 @@ def _load_resume_chunks(
     return str(payload.get("export_uuid") or "") or None, reusable
 
 
+def _load_completed_collection_result(
+    manifest_path: str | Path | None,
+    *,
+    snapshot_path: Path,
+    source: str,
+    run_id: str,
+    client_id: str,
+    tenant_id: str,
+    query: Mapping[str, Any],
+) -> CollectionResult | None:
+    if manifest_path is None:
+        return None
+    manifest = Path(manifest_path).resolve()
+    if manifest.name != "manifest.json" or not snapshot_path.is_file():
+        return None
+    try:
+        manifest_payload = json.loads(manifest.read_text(encoding="utf-8"))
+        snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    expected_identity = (run_id, client_id, tenant_id, source)
+    if (
+        tuple(
+            str(manifest_payload.get(key) or "")
+            for key in ("run_id", "client_id", "tenant_id", "source")
+        )
+        != expected_identity
+        or tuple(
+            str(snapshot_payload.get(key) or "")
+            for key in ("run_id", "client_id", "tenant_id", "source")
+        )
+        != expected_identity
+        or manifest_payload.get("query") != sanitized_mapping(dict(query))
+        or snapshot_payload.get("query") != sanitized_mapping(dict(query))
+    ):
+        return None
+    chunks = manifest_payload.get("chunks")
+    if not isinstance(chunks, list) or any(
+        not isinstance(item, Mapping) or not bool(item.get("complete"))
+        for item in chunks
+    ):
+        return None
+    try:
+        expected_chunk_ids = {
+            int(item["chunk_id"])
+            for item in chunks
+            if isinstance(item, Mapping) and item.get("chunk_id") is not None
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+    _, reusable = _load_resume_chunks(
+        manifest,
+        source=source,
+        client_id=client_id,
+        tenant_id=tenant_id,
+    )
+    if set(reusable) != expected_chunk_ids:
+        return None
+    try:
+        snapshot = SourceSnapshot(
+            snapshot_id=str(snapshot_payload["snapshot_id"]),
+            run_id=str(snapshot_payload["run_id"]),
+            client_id=str(snapshot_payload["client_id"]),
+            tenant_id=str(snapshot_payload["tenant_id"]),
+            source=str(snapshot_payload["source"]),
+            export_uuid=str(snapshot_payload["export_uuid"]),
+            status=SnapshotStatus(str(snapshot_payload["status"])),
+            availability=Availability(str(snapshot_payload["availability"])),
+            started_at=str(snapshot_payload["started_at"]),
+            completed_at=str(snapshot_payload["completed_at"]),
+            record_count=int(snapshot_payload["record_count"]),
+            chunk_ids=tuple(int(item) for item in snapshot_payload["chunk_ids"]),
+            raw_sha256=str(snapshot_payload["raw_sha256"]),
+            raw_manifest_uri=str(snapshot_payload["raw_manifest_uri"]),
+            query=dict(snapshot_payload["query"]),
+            collector_version=str(snapshot_payload["collector_version"]),
+            schema_version=int(snapshot_payload.get("schema_version") or 1),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (
+        snapshot.status is not SnapshotStatus.COMPLETE
+        or set(snapshot.chunk_ids) != expected_chunk_ids
+        or snapshot.raw_manifest_uri != manifest.as_uri()
+        or snapshot.record_count != sum(item.record_count for item in reusable.values())
+    ):
+        return None
+    return CollectionResult(
+        snapshot=snapshot,
+        snapshot_path=snapshot_path,
+        raw_manifest_path=manifest,
+        records=(),
+    )
+
+
 def _resumable_export_is_available(
     client: Any,
     export_uuid: str,
@@ -444,6 +541,55 @@ def find_resumable_vm_manifest(
     return None
 
 
+def find_completed_vm_manifest(
+    output_root: str | Path,
+    *,
+    profile: ClientProfile,
+    request: VulnerabilityExportRequest,
+    run_id: str,
+    snapshot_suffix: str | None = None,
+) -> Path | None:
+    root = Path(output_root)
+    raw_root = (
+        root
+        / "raw"
+        / profile.client_id
+        / run_id
+        / "tenable_vm_vulnerabilities"
+    )
+    snapshot_path = (
+        root
+        / "snapshots"
+        / profile.client_id
+        / run_id
+        / (
+            f"tenable_vm_vulnerabilities-{snapshot_suffix}.snapshot.json"
+            if snapshot_suffix
+            else "tenable_vm_vulnerabilities.snapshot.json"
+        )
+    )
+    if not raw_root.is_dir() or not snapshot_path.is_file():
+        return None
+    candidates = sorted(
+        raw_root.glob("*/manifest.json"),
+        key=lambda path: path.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for candidate in candidates:
+        completed = _load_completed_collection_result(
+            candidate,
+            snapshot_path=snapshot_path,
+            source="tenable_vm_vulnerabilities",
+            run_id=run_id,
+            client_id=profile.client_id,
+            tenant_id=profile.tenant_id,
+            query=request.to_api_query(),
+        )
+        if completed is not None:
+            return candidate.resolve()
+    return None
+
+
 def _download_blocks(
     client: Any,
     *,
@@ -498,8 +644,42 @@ def collect_vm_snapshot(
     resume_budget_seconds: float | None = None,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
-    started_at = utc_now_iso()
     query = request.to_api_query()
+    snapshot_path = (
+        Path(output_root)
+        / "snapshots"
+        / profile.client_id
+        / actual_run_id
+        / (
+            f"tenable_vm_vulnerabilities-{snapshot_suffix}.snapshot.json"
+            if snapshot_suffix
+            else "tenable_vm_vulnerabilities.snapshot.json"
+        )
+    )
+    completed = _load_completed_collection_result(
+        resume_from,
+        snapshot_path=snapshot_path,
+        source="tenable_vm_vulnerabilities",
+        run_id=actual_run_id,
+        client_id=profile.client_id,
+        tenant_id=profile.tenant_id,
+        query=query,
+    )
+    if completed is not None:
+        if progress_callback is not None:
+            progress_callback({
+                "event": "TENABLE_EXPORT_PROGRESS",
+                "source": "tenable_vm_vulnerabilities",
+                "export_uuid": completed.snapshot.export_uuid,
+                "origin": "resumed_complete",
+                "status": "FINISHED",
+                "completed_chunks": len(completed.snapshot.chunk_ids),
+                "total_chunks": len(completed.snapshot.chunk_ids),
+                "persisted_chunks": list(completed.snapshot.chunk_ids),
+                "progress_made": True,
+            })
+        return completed
+    started_at = utc_now_iso()
     query_sha256 = hashlib.sha256(
         json.dumps(
             query, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -818,16 +998,6 @@ def collect_vm_snapshot(
         collector_version=__version__,
         raw_manifest_uri=manifest_path.resolve().as_uri(),
     )
-    snapshot_path = (
-        Path(output_root)
-        / "snapshots"
-        / profile.client_id
-        / actual_run_id
-        / (
-            f"tenable_vm_vulnerabilities-{snapshot_suffix}.snapshot.json"
-            if snapshot_suffix else "tenable_vm_vulnerabilities.snapshot.json"
-        )
-    )
     snapshot.write_json(snapshot_path)
     return CollectionResult(
         snapshot=snapshot,
@@ -1041,8 +1211,37 @@ def collect_asset_snapshot(
     resume_budget_seconds: float | None = None,
 ) -> CollectionResult:
     actual_run_id = run_id or str(uuid.uuid4())
-    started_at = utc_now_iso()
     query = request.to_api_query()
+    snapshot_path = (
+        Path(output_root)
+        / "snapshots"
+        / profile.client_id
+        / actual_run_id
+        / "tenable_vm_assets_v2.snapshot.json"
+    )
+    completed = _load_completed_collection_result(
+        resume_from,
+        snapshot_path=snapshot_path,
+        source="tenable_vm_assets_v2",
+        run_id=actual_run_id,
+        client_id=profile.client_id,
+        tenant_id=profile.tenant_id,
+        query=query,
+    )
+    if completed is not None:
+        if progress_callback is not None:
+            progress_callback({
+                "event": "TENABLE_EXPORT_PROGRESS",
+                "source": "tenable_vm_assets_v2",
+                "export_uuid": completed.snapshot.export_uuid,
+                "origin": "resumed_complete",
+                "status": "FINISHED",
+                "completed_chunks": len(completed.snapshot.chunk_ids),
+                "total_chunks": len(completed.snapshot.chunk_ids),
+                "progress_made": True,
+            })
+        return completed
+    started_at = utc_now_iso()
     resumed_export_uuid, resumed_chunks = _load_resume_chunks(
         resume_from,
         source="tenable_vm_assets_v2",
@@ -1242,13 +1441,6 @@ def collect_asset_snapshot(
         started_at=started_at,
         collector_version=__version__,
         raw_manifest_uri=manifest_path.resolve().as_uri(),
-    )
-    snapshot_path = (
-        Path(output_root)
-        / "snapshots"
-        / profile.client_id
-        / actual_run_id
-        / "tenable_vm_assets_v2.snapshot.json"
     )
     snapshot.write_json(snapshot_path)
     return CollectionResult(

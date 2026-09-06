@@ -10,7 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from tenable_reports.application.execution_control import FileExecutionControl
@@ -29,9 +29,12 @@ from tenable_reports.application.component_collection import (
     persist_component_checkpoint,
 )
 from tenable_reports.application.staged_execution import (
+    CheckpointValidationError,
+    CollectionCheckpoint,
     RemoteCollectionDependencies,
     RemoteCollectionRequest,
     collect_client_remote,
+    load_collection_checkpoint,
 )
 from tenable_reports.application.web_batches import (
     BatchClientConflictError,
@@ -52,6 +55,7 @@ from tenable_reports.domain.remote_components import (
 )
 from tenable_reports.domain.report_components import ReportComponent
 from tenable_reports.domain.web_batches import (
+    BATCH_JOB_TERMINAL_STATUSES,
     BATCH_TERMINAL_STATUSES,
     BatchAction,
     BatchJobPhase,
@@ -371,6 +375,10 @@ class DurableDashboardJobQueue:
         remote_processing_timeout_seconds: int = (
             _DEFAULT_REMOTE_PROCESSING_TIMEOUT_SECONDS
         ),
+        published_build_resolver: Callable[
+            [WebBatchJob, CollectionCheckpoint], BatchJobResult | None
+        ]
+        | None = None,
     ) -> None:
         self.repository = repository
         self.executor = executor
@@ -383,11 +391,13 @@ class DurableDashboardJobQueue:
         self._active_jobs: dict[str, WebBatchJob] = {}
         self._active_components: dict[str, RemoteComponentWindow] = {}
         self._component_finalize_lock = threading.RLock()
+        self._component_claim_lock = threading.RLock()
         self._progress_events: dict[str, tuple[tuple[Any, ...], datetime]] = {}
         self._remote_processing_timeout_seconds = max(
             1,
             int(remote_processing_timeout_seconds),
         )
+        self._published_build_resolver = published_build_resolver
         self._remote_component_repository = remote_component_repository
         self._component_pool: RemoteComponentWorkerPool | None = None
         self.executor.progress_sink = self._persist_progress
@@ -467,6 +477,7 @@ class DurableDashboardJobQueue:
                 workers=normalized_remote_workers,
                 poll_interval=poll_interval,
                 lease_seconds=self._remote_processing_timeout_seconds + 300,
+                claim_lock=self._component_claim_lock,
                 start_workers=False,
             )
             if start_worker:
@@ -939,13 +950,18 @@ class DurableDashboardJobQueue:
         source = self.repository.get_batch(request.source_batch_id)
         if source is None:
             raise KeyError("Lote de origem nao encontrado.")
-        paused_recovery = (
-            source.kind == "RECOVERED"
-            and source.status is BatchStatus.PAUSED
+        source_jobs = self.repository.list_batch_jobs(source.id)
+        paused_terminal_batch = (
+            source.status is BatchStatus.PAUSED
+            and bool(source_jobs)
+            and all(
+                job.status in BATCH_JOB_TERMINAL_STATUSES
+                for job in source_jobs
+            )
         )
         if (
             source.status not in BATCH_TERMINAL_STATUSES
-            and not paused_recovery
+            and not paused_terminal_batch
         ):
             raise ValueError(
                 "O lote de origem ainda esta ativo e nao pode ser derivado."
@@ -963,7 +979,6 @@ class DurableDashboardJobQueue:
         if existing is not None:
             return self.batch_snapshot(existing.id)
 
-        source_jobs = self.repository.list_batch_jobs(source.id)
         source_components_by_job = (
             self._remote_component_repository.list_for_jobs(
                 tuple(job.id for job in source_jobs)
@@ -974,13 +989,64 @@ class DurableDashboardJobQueue:
         latest_components_by_job: dict[
             UUID, dict[ReportComponent, RemoteComponentWindow]
         ] = {}
+
+        def latest_component_attempts(
+            components: Sequence[RemoteComponentWindow],
+        ) -> dict[ReportComponent, RemoteComponentWindow]:
+            latest: dict[ReportComponent, RemoteComponentWindow] = {}
+            for component in components:
+                current = latest.get(component.component)
+                if (
+                    current is None
+                    or component.attempt_number > current.attempt_number
+                ):
+                    latest[component.component] = component
+            return latest
+
         for source_job in source_jobs:
-            latest_components: dict[ReportComponent, RemoteComponentWindow] = {}
-            for component in source_components_by_job.get(source_job.id, ()):
-                current = latest_components.get(component.component)
-                if current is None or component.attempt_number > current.attempt_number:
-                    latest_components[component.component] = component
-            latest_components_by_job[source_job.id] = latest_components
+            latest_components_by_job[source_job.id] = latest_component_attempts(
+                source_components_by_job.get(source_job.id, ())
+            )
+        consolidation_sources_by_job: dict[
+            UUID,
+            tuple[
+                WebBatchJob,
+                dict[ReportComponent, RemoteComponentWindow],
+            ],
+        ] = {}
+        if self._remote_component_repository is not None:
+            jobs_by_id = {job.id: job for job in source_jobs}
+            component_cache = dict(latest_components_by_job)
+            for source_job in source_jobs:
+                candidate = source_job
+                visited: set[UUID] = set()
+                while candidate.id not in visited:
+                    visited.add(candidate.id)
+                    components = component_cache.get(candidate.id)
+                    if components is None:
+                        rows = self._remote_component_repository.list_for_jobs(
+                            (candidate.id,)
+                        )
+                        components = latest_component_attempts(
+                            rows.get(candidate.id, ())
+                        )
+                        component_cache[candidate.id] = components
+                    if _components_ready_for_local_consolidation(components):
+                        consolidation_sources_by_job[source_job.id] = (
+                            candidate,
+                            components,
+                        )
+                        break
+                    ancestor_id = candidate.retry_of_batch_job_id
+                    if ancestor_id is None:
+                        break
+                    ancestor = jobs_by_id.get(ancestor_id)
+                    if ancestor is None:
+                        ancestor = self.repository.get_job(ancestor_id)
+                        if ancestor is None:
+                            break
+                        jobs_by_id[ancestor.id] = ancestor
+                    candidate = ancestor
         local_consolidation_by_job = {
             source_job.id: (
                 source_job.status
@@ -990,9 +1056,7 @@ class DurableDashboardJobQueue:
                     BatchJobStatus.INTERRUPTED,
                     BatchJobStatus.CANCELLED_BY_USER,
                 }
-                and _components_ready_for_local_consolidation(
-                    latest_components_by_job.get(source_job.id, {})
-                )
+                and source_job.id in consolidation_sources_by_job
             )
             for source_job in source_jobs
         }
@@ -1083,10 +1147,18 @@ class DurableDashboardJobQueue:
                 "execution_model": execution_model,
             },
             source_batch_id=source.id,
+            root_batch_id=source.root_batch_id,
+            parent_batch_id=source.id,
             created_at=created_at,
         )
         jobs: list[WebBatchJob] = []
-        local_consolidations: list[tuple[WebBatchJob, WebBatchJob]] = []
+        local_consolidations: list[
+            tuple[
+                WebBatchJob,
+                WebBatchJob,
+                Mapping[ReportComponent, RemoteComponentWindow],
+            ]
+        ] = []
         transient_keys = {
             "batch_id",
             "job_id",
@@ -1273,34 +1345,74 @@ class DurableDashboardJobQueue:
             )
             jobs.append(created_job)
             if local_consolidation:
-                local_consolidations.append((source_job, created_job))
-        try:
-            self.repository.create_batch(derived, tuple(jobs))
-        except ValueError as exc:
-            raise BatchClientConflictError(
-                tuple(job.client_id for job in jobs)
-            ) from exc
-        self.repository.append_event(
-            WebBatchEvent(
-                batch_id=batch_id,
-                event_type="BATCH_DERIVED",
-                payload={
-                    "source_batch_id": str(source.id),
-                    "kind": request.kind.value,
-                    "job_count": len(jobs),
-                    "reason": str(request.reason or "")[:500],
-                },
-                actor=str(request.actor or "")[:200] or None,
-                idempotency_key=f"event:{batch_key}",
+                consolidation_source, consolidation_components = (
+                    consolidation_sources_by_job[source_job.id]
+                )
+                local_consolidations.append(
+                    (
+                        consolidation_source,
+                        created_job,
+                        consolidation_components,
+                    )
+                )
+        with self._component_claim_lock:
+            try:
+                self.repository.create_batch(derived, tuple(jobs))
+            except ValueError as exc:
+                raise BatchClientConflictError(
+                    tuple(job.client_id for job in jobs)
+                ) from exc
+            self.repository.append_event(
+                WebBatchEvent(
+                    batch_id=batch_id,
+                    event_type="BATCH_DERIVED",
+                    payload={
+                        "source_batch_id": str(source.id),
+                        "kind": request.kind.value,
+                        "job_count": len(jobs),
+                        "reason": str(request.reason or "")[:500],
+                    },
+                    actor=str(request.actor or "")[:200] or None,
+                    idempotency_key=f"event:{batch_key}",
+                )
             )
-        )
-        for source_job, created_job in local_consolidations:
-            self._restore_publishable_components_for_local_consolidation(
-                source_job=source_job,
-                retry_job=created_job,
-                latest=latest_components_by_job[source_job.id],
-            )
-            self._finalize_remote_components_safely(created_job)
+            for source_job, created_job, source_components in local_consolidations:
+                try:
+                    self._restore_publishable_components_for_local_consolidation(
+                        source_job=source_job,
+                        retry_job=created_job,
+                        latest=source_components,
+                    )
+                    self._finalize_remote_components_safely(created_job)
+                except Exception:
+                    self.repository.append_event(
+                        WebBatchEvent(
+                            batch_id=created_job.batch_id,
+                            job_id=created_job.id,
+                            event_type="LOCAL_CONSOLIDATION_PREPARATION_FAILED",
+                            payload={
+                                "error_code": (
+                                    "LOCAL_CONSOLIDATION_PREPARATION_FAILED"
+                                ),
+                                "retryable": True,
+                            },
+                        )
+                    )
+                    self.repository.complete_job(
+                        created_job.id,
+                        BatchJobResult(
+                            status=BatchJobStatus.FAILED,
+                            exit_code=2,
+                            error_code=(
+                                "LOCAL_CONSOLIDATION_PREPARATION_FAILED"
+                            ),
+                            error_message=(
+                                "Falha local ao preparar os componentes "
+                                "preservados; os demais clientes continuam."
+                            ),
+                            payload={"retryable": True},
+                        ),
+                    )
         self._dispatcher.wake()
         return self.batch_snapshot(batch_id)
 
@@ -3062,6 +3174,18 @@ class DurableDashboardJobQueue:
         return result
 
     def _run_build_job(self, job: WebBatchJob) -> BatchJobResult:
+        if self._published_build_resolver is not None:
+            try:
+                checkpoint = load_collection_checkpoint(
+                    job.collection_checkpoint_path,
+                    storage_root=self._staged_output_root,
+                )
+            except CheckpointValidationError:
+                checkpoint = None
+            if checkpoint is not None:
+                existing = self._published_build_resolver(job, checkpoint)
+                if existing is not None:
+                    return existing
         return self._run_executor_job(
             job,
             operation="staged_build",

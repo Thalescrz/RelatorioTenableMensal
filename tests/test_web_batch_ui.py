@@ -648,20 +648,21 @@ def test_frontend_exposes_component_status_and_selective_retry_controls() -> Non
     assert "/retry-cloud" in javascript
 
 
-def test_frontend_offers_retry_instead_of_resume_for_recovered_paused_batch() -> None:
+def test_frontend_offers_retry_instead_of_resume_for_terminal_paused_batch() -> None:
     javascript = (STATIC / "app.js").read_text(encoding="utf-8")
 
     assert (
-        'const recoveredPaused = batch.kind === "RECOVERED" '
-        '&& batch.status === "PAUSED";'
+        'const recoverablePaused = batch.status === "PAUSED" '
+        '&& finished === Number(batch.total_count || 0) '
+        '&& Number(batch.retryable_count || 0) > 0;'
     ) in javascript
     assert 'batch.kind === "RECOVERED" ? "Lote recuperado"' in javascript
     assert (
-        'if (!recoveredPaused && batch.status === "PAUSED") '
+        'if (!recoverablePaused && batch.status === "PAUSED") '
         'actions.push(["resume", "Retomar lote", "primary"]);'
     ) in javascript
     assert (
-        'if (recoveredPaused && Number(batch.retryable_count || 0) > 0) '
+        'if (recoverablePaused) '
         'actions.push(["retry-incomplete", "Tentar falhas, parciais e interrompidos", "primary"]);'
     ) in javascript
 

@@ -130,6 +130,41 @@ def _write_exclusive(path: Path, content: bytes) -> None:
         raise
 
 
+def write_immutable_json(
+    path: Path,
+    content: bytes,
+    *,
+    label: str,
+    ignored_top_level_keys: Iterable[str] = (),
+) -> bytes:
+    """Create immutable JSON, or reuse an equivalent interrupted-run artifact."""
+
+    try:
+        _write_exclusive(path, content)
+        return content
+    except FileExistsError:
+        try:
+            existing_content = path.read_bytes()
+            existing = json.loads(existing_content.decode("utf-8"))
+            candidate = json.loads(content.decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise FileExistsError(
+                f"{label} ja existe com conteudo diferente: {path}"
+            ) from exc
+        if not isinstance(existing, dict) or not isinstance(candidate, dict):
+            raise FileExistsError(
+                f"{label} ja existe com conteudo diferente: {path}"
+            )
+        for key in ignored_top_level_keys:
+            existing.pop(str(key), None)
+            candidate.pop(str(key), None)
+        if existing != candidate:
+            raise FileExistsError(
+                f"{label} ja existe com conteudo diferente: {path}"
+            )
+        return existing_content
+
+
 def _artifact(path: Path, content: bytes) -> dict[str, Any]:
     return {
         "uri": path.resolve().as_uri(),
@@ -294,13 +329,15 @@ def build_report_dataset_from_snapshot(
     directory = root / "report-datasets" / profile.client_id / run_id / period.period_id
     dataset_path = directory / "report-dataset.json"
     manifest_path = directory / "manifest.json"
-    for path in (dataset_path, manifest_path):
-        if path.exists():
-            raise FileExistsError(f"Dataset mensal imutavel ja existe: {path}")
     dataset_content = (
         json.dumps(result.dataset.to_dict(), ensure_ascii=False, indent=2) + "\n"
     ).encode("utf-8")
-    _write_exclusive(dataset_path, dataset_content)
+    dataset_content = write_immutable_json(
+        dataset_path,
+        dataset_content,
+        label="Dataset mensal imutavel",
+        ignored_top_level_keys=("generated_at",),
+    )
     manifest = {
         "schema_version": 1,
         "builder_version": __version__,
@@ -342,9 +379,10 @@ def build_report_dataset_from_snapshot(
         "collection_provenance": dict(inputs.collection_provenance),
         "artifact": _artifact(dataset_path, dataset_content),
     }
-    _write_exclusive(
+    write_immutable_json(
         manifest_path,
         (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+        label="Manifesto mensal imutavel",
     )
     return ReportDatasetArtifact(
         result=result,

@@ -21,9 +21,11 @@ class FakeVmClient:
     def __init__(self, values, failures=None) -> None:
         self.values = values
         self.failures = failures or {}
+        self.calls = []
 
     def list_assets_for_tag(self, category_name, value):
         key = (category_name, value)
+        self.calls.append(key)
         if key in self.failures:
             raise self.failures[key]
         return list(self.values.get(key, ()))
@@ -109,6 +111,30 @@ class TagScopeTests(unittest.TestCase):
         )
         self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["match_operator"], "INDEPENDENT_TAG_SCOPES")
+
+    def test_scope_snapshot_retry_reuses_same_run_without_api_recollection(self) -> None:
+        client = FakeVmClient(
+            {("Rede", "Matriz"): [{"id": "asset-a"}]},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            first = collect_tag_scope_snapshot(
+                client=client,
+                profile=profile(),
+                tags=(self.tags[0],),
+                output_root=directory,
+                run_id="same-run",
+            )
+            second = collect_tag_scope_snapshot(
+                client=client,
+                profile=profile(),
+                tags=(self.tags[0],),
+                output_root=directory,
+                run_id="same-run",
+            )
+
+        self.assertEqual(second.path, first.path)
+        self.assertEqual(second.scopes, first.scopes)
+        self.assertEqual(client.calls, [("Rede", "Matriz")])
 
     def test_one_tag_failure_becomes_warning_without_erasing_other_scopes(self) -> None:
         client = FakeVmClient(

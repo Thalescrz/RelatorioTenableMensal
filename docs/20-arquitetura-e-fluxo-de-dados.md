@@ -100,6 +100,21 @@ somente essa consolidação local. Falha nessa fronteira encerra o job com
 `CHECKPOINT_COMPONENT_INCOMPLETE`, sem apagar artefatos nem ficar indefinidamente
 em `REMOTE_RUNNING`.
 
+A recuperação também é idempotente dentro da mesma execução. Manifestos completos
+de assets e VM, além do snapshot de escopo por TAG, são reutilizados somente após
+validar cliente, tenant, execução, consulta, conjunto de TAGs, chunks e hashes. Um
+artefato divergente preserva a regra de imutabilidade e encerra a tentativa, em vez
+de ser sobrescrito ou provocar uma nova coleta silenciosa. Se a publicação válida
+do mesmo `run_id` já estiver registrada, possuir ao menos um documento `VALID` e
+todos os arquivos existirem no disco, a montagem derivada termina reutilizando essa
+publicação, sem regravar dataset, histórico ou documentos.
+
+Se o processo local terminar depois de criar manifesto e DOCX, mas antes de gravar
+as linhas de publicação, a retentativa valida identidade, pacote, tamanho e SHA-256
+dos documentos e do dataset. Somente então reconstrói os registros ausentes no
+PostgreSQL e conclui sem renderizar novamente. `MemoryError` nessa fronteira é uma
+falha local de recurso retentável, não uma falha da API Tenable.
+
 ## Fluxo Cloud Security
 
 O componente Cloud usa `TCS_API_SECRET` e endpoint definido pelo ambiente do perfil.
