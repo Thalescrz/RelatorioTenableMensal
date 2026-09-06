@@ -351,6 +351,11 @@ renderiza o DOCX. Se o Cloud falhar, o checkpoint registra `FAILED`, os relatór
 VM continuam sendo publicados e o componente permanece disponível para
 retentativa; um estado `PENDING` nunca é enviado diretamente ao build.
 
+Se a falha ocorrer depois de o dataset Cloud ter sido gravado, a retentativa valida
+seu hash e repete somente a publicação do snapshot. Ela não faz outra coleta
+GraphQL. Em execuções antigas, a aplicação também procura o dataset no staging da
+tentativa anterior e só o aceita após validar identidade e conteúdo.
+
 A documentação oficial informa que cada chunk VM fica disponível para download
 por até 24 horas depois de criado; por isso o coletor persiste cada chunk assim que
 ele aparece, inclusive antes de `FINISHED` e fora de ordem. Depois desse prazo, um
@@ -392,6 +397,18 @@ manual lê sempre o escopo `data/manual`; automática mensal lê
 `data/automatic-monthly`. Ausência de uma dependência resulta em
 `CHECKPOINT_ARTIFACT_MISSING`, e divergência de escopo em
 `LOCAL_ARTIFACT_SCOPE_MISMATCH`, sem criar publicação parcial.
+
+VM, WAS e Cloud podem terminar em horários diferentes. Assim que os componentes de
+um cliente ficam terminais, ele entra individualmente em `READY_FOR_BUILD`; não é
+necessário esperar o lote inteiro. Após reiniciar o servidor, jobs que ficaram em
+`REMOTE_RUNNING` com todos os checkpoints já gravados são reavaliados e seguem para
+montagem sem nova chamada à Tenable. A sequência esperada nos eventos é
+`REMOTE_COMPONENTS_CONSOLIDATING`, `COLLECTION_READY`, `BUILD_STARTED` e
+`JOB_FINISHED`.
+
+Se a consolidação local falhar, o estado visível é
+`CHECKPOINT_COMPONENT_INCOMPLETE`. Os dados coletados permanecem preservados para
+retentativa; não use **Gerar todos** para contornar essa falha.
 
 No Windows, contenção transitória ao substituir `export-state.json` é retentada
 com arquivo temporário exclusivo. Persistência da contenção resulta em
@@ -543,6 +560,8 @@ o histórico compacto estão preservados.
 | WAS não aparece | licença/permissão, capacidade habilitada e eventos específicos do WAS |
 | Cloud não aparece | opção habilitada, `TCS_API_SECRET`, ambiente e resultado de **Testar API Cloud** |
 | Cloud falhou sozinho | consulte o alerta do componente e use **Tentar Cloud novamente** |
+| Componentes terminaram, mas não montou | reinicie na versão atual e confirme `REMOTE_COMPONENTS_CONSOLIDATING` seguido de `COLLECTION_READY` |
+| `CHECKPOINT_COMPONENT_INCOMPLETE` | preserve o staging e retente somente o job/componente indicado; não gere o lote inteiro novamente |
 | Customizado sem comparação | existência e compatibilidade da referência `MAIN` anterior |
 | Documento por TAG vazio | TAG atual, UUIDs associados e período do dataset |
 | Disco cresce | execuções falhas retidas e política de limpeza de staging |

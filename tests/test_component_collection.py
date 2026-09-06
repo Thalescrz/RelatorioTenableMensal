@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -216,6 +217,33 @@ def test_merge_maps_not_applicable_without_inventing_an_artifact(
 
     assert merged.component_metadata["WAS"]["status"] == "NOT_APPLICABLE"
     assert merged.component_metadata["CLOUD"]["status"] == "NOT_APPLICABLE"
+
+
+def test_merge_accepts_same_window_with_distinct_component_reference_times(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path)
+    checkpoints = []
+    for offset, component in enumerate(ReportComponent, start=1):
+        checkpoint = _checkpoint(tmp_path, component)
+        checkpoints.append(
+            replace(
+                checkpoint,
+                period={
+                    **dict(checkpoint.period),
+                    "reference_at": f"2026-09-04T1{offset}:00:00Z",
+                },
+            )
+        )
+
+    merged = merge_component_checkpoints(
+        request=request,
+        checkpoints=tuple(checkpoints),
+    )
+
+    assert set(merged.component_metadata) == {
+        component.value for component in ReportComponent
+    }
 
 
 def test_persist_rejects_artifact_from_another_component(tmp_path: Path) -> None:

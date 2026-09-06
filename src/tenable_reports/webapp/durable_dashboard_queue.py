@@ -161,13 +161,25 @@ def _recoverable_staging_identifier(
 
 
 def _component_is_retryable(component: RemoteComponentWindow) -> bool:
-    return bool(
+    declared_retryable = bool(
         component.retryable
         and component.state in {
             RemoteComponentState.WAITING_MANUAL_RETRY,
             RemoteComponentState.INTERRUPTED,
         }
     ) or _recoverable_staging_identifier(component) is not None
+    preserved_cloud_dataset = bool(
+        component.component is ReportComponent.CLOUD
+        and component.state
+        in {
+            RemoteComponentState.WAITING_MANUAL_RETRY,
+            RemoteComponentState.NON_RETRYABLE_FAILURE,
+            RemoteComponentState.INTERRUPTED,
+        }
+        and component.checkpoint_path
+        and Path(component.checkpoint_path).is_file()
+    )
+    return declared_retryable or preserved_cloud_dataset
 
 
 def _checkpoint_ready_for_build(value: str | Path | None) -> bool:
@@ -2317,6 +2329,11 @@ class DurableDashboardJobQueue:
         result: BatchJobResult,
     ) -> None:
         if result.status is BatchJobStatus.COMPLETE:
+            # A restart can requeue the parent after every remote component has
+            # already reached a terminal state. Re-running the local merge here
+            # is idempotent and avoids waiting for a component worker that has
+            # nothing left to claim.
+            self._finalize_remote_components_safely(job)
             if self._component_pool is not None:
                 self._component_pool.wake()
             return
@@ -2396,6 +2413,8 @@ class DurableDashboardJobQueue:
             replacement_created_in_window_3=replacement_created_in_window_3,
         )[0]
         changes: dict[str, Any] = {}
+        if current.checkpoint_path:
+            changes["checkpoint_path"] = current.checkpoint_path
         if reuse_identifier and current.remote_identifier is not None:
             changes.update(
                 identifier_kind=current.identifier_kind,
@@ -2407,7 +2426,6 @@ class DurableDashboardJobQueue:
                     )
                     else "provided"
                 ),
-                checkpoint_path=current.checkpoint_path,
             )
         if changes:
             created = repository.transition(
@@ -2554,7 +2572,7 @@ class DurableDashboardJobQueue:
                 deadline_at=component.deadline_at,
             )
             return
-        self._finalize_remote_components(job)
+        self._finalize_remote_components_safely(job)
 
     def _run_remote_component(self, component: RemoteComponentWindow) -> None:
         if self._remote_component_repository is None:
@@ -2589,7 +2607,10 @@ class DurableDashboardJobQueue:
                     "run_id": request.run_id,
                     "logical_job_id": request.logical_job_id,
                     "attempt_number": request.attempt_number,
-                    "origin": component.origin,
+                    # The component window origin describes the retry policy.
+                    # Checkpoint ownership stays bound to the stable job origin
+                    # so every window derives the same isolated workspace.
+                    "origin": request.origin,
                     "remote_identifier": component.remote_identifier,
                     "identifier_kind": (
                         component.identifier_kind.value
@@ -2623,6 +2644,13 @@ class DurableDashboardJobQueue:
         if persisted.component is not component.component:
             raise RuntimeError("Checkpoint retornou componente incompatível.")
         if persisted.status not in _REMOTE_COMPONENT_PUBLISHABLE_STATES:
+            component = self._remote_component_repository.transition(
+                component.id,
+                expected_state=component.state,
+                requested_state=component.state,
+                checkpoint_path=str(persisted.checkpoint_path),
+                query_fingerprint=persisted.query_fingerprint,
+            )
             self._handle_failed_remote_component(
                 job,
                 component,
@@ -2652,12 +2680,63 @@ class DurableDashboardJobQueue:
             lease_expires_at=None,
             ended_at=datetime.now(UTC),
         )
-        self._finalize_remote_components(job)
+        self._finalize_remote_components_safely(job)
+
+    def _finalize_remote_components_safely(self, job: WebBatchJob) -> None:
+        try:
+            self._finalize_remote_components(job)
+        except Exception:
+            current = self.repository.get_job(job.id)
+            if (
+                current is None
+                or current.phase is not BatchJobPhase.REMOTE_RUNNING
+                or current.status is not BatchJobStatus.RUNNING
+            ):
+                return
+            self.repository.append_event(
+                WebBatchEvent(
+                    batch_id=current.batch_id,
+                    job_id=current.id,
+                    event_type="REMOTE_COMPONENT_FINALIZATION_FAILED",
+                    idempotency_key=f"component-finalization-failed:{current.id}",
+                    payload={
+                        "error_code": "CHECKPOINT_COMPONENT_INCOMPLETE",
+                        "retryable": True,
+                    },
+                )
+            )
+            self.repository.complete_job(
+                current.id,
+                BatchJobResult(
+                    status=BatchJobStatus.FAILED,
+                    exit_code=2,
+                    error_code="CHECKPOINT_COMPONENT_INCOMPLETE",
+                    error_message=(
+                        "Falha local ao consolidar os checkpoints dos componentes; "
+                        "os dados remotos preservados podem ser retomados."
+                    ),
+                    payload={"retryable": True},
+                ),
+            )
 
     def _finalize_remote_components(self, job: WebBatchJob) -> None:
         if self._remote_component_repository is None:
             return
         with self._component_finalize_lock:
+            current_job = self.repository.get_job(job.id)
+            if current_job is None:
+                return
+            if current_job.phase in {
+                BatchJobPhase.READY_FOR_BUILD,
+                BatchJobPhase.BUILD_RUNNING,
+                BatchJobPhase.TERMINAL,
+            }:
+                return
+            if (
+                current_job.status is BatchJobStatus.RUNNING
+                and current_job.phase is BatchJobPhase.REMOTE_RUNNING
+            ):
+                job = current_job
             grouped = self._remote_component_repository.list_for_jobs((job.id,))
             windows = grouped.get(job.id, ())
             latest: dict[ReportComponent, RemoteComponentWindow] = {}
@@ -2672,6 +2751,15 @@ class DurableDashboardJobQueue:
                 for window in latest.values()
             ):
                 return
+            self.repository.append_event(
+                WebBatchEvent(
+                    batch_id=job.batch_id,
+                    job_id=job.id,
+                    event_type="REMOTE_COMPONENTS_CONSOLIDATING",
+                    idempotency_key=f"component-consolidating:{job.id}",
+                    payload={"component_count": len(latest)},
+                )
+            )
             vm_window = latest[ReportComponent.VM_CORE]
             cloud_window = latest[ReportComponent.CLOUD]
             vm_publishable = bool(

@@ -88,6 +88,15 @@ abandonada a `REMOTE_QUEUED` com o que já foi persistido e montagem abandonada 
 `checkpoint_ready` como booleano; caminhos de checkpoint ficam restritos ao
 processo local e ao PostgreSQL.
 
+A consolidação é feita por cliente assim que as tentativas mais recentes de seus
+três componentes chegam a estados terminais; ela não aguarda os demais clientes do
+lote. O evento idempotente `REMOTE_COMPONENTS_CONSOLIDATING` precede
+`COLLECTION_READY`. Se o servidor reiniciar depois de os componentes terminarem, o
+inicializador reconhece os checkpoints existentes e repete somente essa consolidação
+local. Falha nessa fronteira encerra o job com
+`CHECKPOINT_COMPONENT_INCOMPLETE`, sem apagar artefatos nem ficar indefinidamente
+em `REMOTE_RUNNING`.
+
 ## Fluxo Cloud Security
 
 O componente Cloud usa `TCS_API_SECRET` e endpoint definido pelo ambiente do perfil.
@@ -118,6 +127,13 @@ checkpoints íntegros, registra alerta sanitizado e mantém VM, WAS, customizado
 A ação **Tentar Cloud novamente** reutiliza o contexto da execução e não repete a
 coleta geral.
 
+Quando o GraphQL e a escrita do dataset terminam, mas a publicação do snapshot
+falha, o checkpoint Cloud preserva o caminho interno, o hash, as capacidades e a
+versão do conector. A janela seguinte revalida esse dataset e repete somente a
+publicação; não pagina novamente a API. Checkpoints anteriores a esse contrato ainda
+podem recuperar o dataset pelo diretório determinístico da própria tentativa, desde
+que o arquivo seja válido e pertença ao mesmo cliente, tenant, período e job lógico.
+
 ## Componentes e retentativa seletiva
 
 Cada conjunto acompanha `VM_CORE`, `WAS` e `CLOUD` de forma independente.
@@ -134,10 +150,11 @@ validar o novo staging e restaura manifesto/documentos anteriores em falha.
 
 O staging remoto usa o caminho curto
 `<output_root>/.components/<hash>/<componente>`. O hash deriva da execução lógica,
-modo, origem e tentativa, sem repetir os nomes extensos do lote, cliente, fonte e
-UUID no prefixo. O painel e o processo CLI derivam o mesmo caminho. Isso mantém os
-artefatos isolados por componente e evita `WinError 3/206` causado pelo limite de
-caminho do Windows.
+modo, origem estável do job e tentativa do job, sem repetir os nomes extensos do
+lote, cliente, fonte e UUID no prefixo. A origem da janela automática é apenas
+telemetria da política de retry e não muda a identidade do workspace. O painel e o
+processo CLI derivam o mesmo caminho. Isso mantém os artefatos isolados por
+componente e evita `WinError 3/206` causado pelo limite de caminho do Windows.
 
 Em retentativa seletiva, checkpoints já concluídos podem vir da tentativa anterior
 da mesma execução lógica. A consolidação aceita essa diferença de tentativa somente
@@ -145,6 +162,10 @@ quando cliente, tenant, período, execução, modo e origem continuam idênticos
 arquivo persistido e seus hashes forem revalidados. Assim, corrigir VM, WAS ou Cloud
 não exige repetir componentes válidos e também não permite misturar clientes ou
 períodos.
+
+O instante `reference_at` é metadado de auditoria resolvido separadamente por cada
+processo. A identidade compartilhada do período usa a janela `[start_at, end_at)` e
+seus atributos estáveis; diferenças apenas em `reference_at` não impedem o merge.
 
 O núcleo seletivo cobre VM, WAS e Cloud. No servidor padrão, o caminho de
 compatibilidade Cloud está integrado. VM/WAS pela rota seletiva dependem de um

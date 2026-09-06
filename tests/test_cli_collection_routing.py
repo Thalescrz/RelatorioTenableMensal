@@ -10,7 +10,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import tenable_reports.cli as cli_module
-from tenable_reports.application.component_collection import component_checkpoint_path
+from tenable_reports.application.component_collection import (
+    ComponentCollectionCheckpoint,
+    component_checkpoint_path,
+    persist_component_checkpoint,
+)
 from tenable_reports.application.publishing import sha256_file
 from tenable_reports.application.staged_execution import (
     CheckpointArtifact,
@@ -23,6 +27,8 @@ from tenable_reports.application.staged_execution import (
 )
 from tenable_reports.domain.reporting import previous_calendar_month
 from tenable_reports.domain.report_components import ReportComponent
+from tenable_reports.domain.remote_components import RemoteComponentState
+from tenable_reports.config.profile import ClientProfile, CloudSecurityScope
 
 
 def _routing_period():
@@ -292,6 +298,172 @@ class CliCollectionRoutingTests(unittest.TestCase):
             component_checkpoint_path(request, ReportComponent.VM_CORE),
             component_path,
         )
+
+    def test_cloud_component_retry_reuses_local_dataset_without_live_api(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name).resolve()
+            period = _routing_period()
+            profile = ClientProfile(
+                schema_version=1,
+                client_id="client-cloud",
+                display_name="CLIENT CLOUD",
+                tenant_id="tenant-cloud",
+                cloud_security_scope=CloudSecurityScope(enabled=True),
+            )
+            source_request = RemoteCollectionRequest(
+                storage_root=root,
+                checkpoint_path=root / "checkpoints" / "job-cloud.json",
+                client_id=profile.client_id,
+                tenant_id=profile.tenant_id,
+                run_id="run-cloud-resume",
+                logical_job_id="job-cloud",
+                execution_type="MANUAL",
+                mode="manual",
+                origin="MANUAL",
+                attempt_number=1,
+                period=period.to_dict(),
+            )
+            request = RemoteCollectionRequest(
+                storage_root=root,
+                checkpoint_path=root / "checkpoints" / "job-cloud-retry.json",
+                client_id=profile.client_id,
+                tenant_id=profile.tenant_id,
+                run_id="run-cloud-resume",
+                logical_job_id="job-cloud",
+                execution_type="MANUAL",
+                mode="manual",
+                origin="MANUAL",
+                attempt_number=2,
+                period=period.to_dict(),
+            )
+            source_component_root = component_checkpoint_path(
+                source_request,
+                ReportComponent.CLOUD,
+            ).parent
+            dataset_path = (
+                source_component_root
+                / "manual"
+                / "normalized"
+                / profile.client_id
+                / request.run_id
+                / "tenable_cloud"
+                / "cloud-report-dataset.json"
+            )
+            dataset_path.parent.mkdir(parents=True, exist_ok=True)
+            dataset_path.write_text(
+                json.dumps(
+                    {
+                        "connector_version": "cloud-graphql-v1",
+                        "capabilities": {"required_ready": True},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            previous = ComponentCollectionCheckpoint(
+                schema_version=1,
+                checkpoint_path=component_checkpoint_path(
+                    source_request,
+                    ReportComponent.CLOUD,
+                ),
+                component=ReportComponent.CLOUD,
+                client_id=source_request.client_id,
+                tenant_id=source_request.tenant_id,
+                run_id=source_request.run_id,
+                logical_job_id=source_request.logical_job_id,
+                execution_type=source_request.execution_type,
+                mode=source_request.mode,
+                origin=source_request.origin,
+                attempt_number=source_request.attempt_number,
+                period=dict(source_request.period),
+                status=RemoteComponentState.WAITING_MANUAL_RETRY,
+                artifacts=(),
+                metadata={
+                    "failure_code": "CLOUD_SNAPSHOT_PUBLICATION_FAILED",
+                    "retryable": True,
+                },
+                query_fingerprint="c" * 64,
+            )
+            persist_component_checkpoint(previous, storage_root=root)
+            args = SimpleNamespace(
+                env_file=root / "client.env",
+                database_env_file=root / "database.env",
+                cloud_template=root / "cloud-template.docx",
+                force_cloud_refresh=False,
+                previous_component_checkpoint=str(previous.checkpoint_path),
+                window_number=2,
+                deadline_at="2026-09-05T18:00:00Z",
+                identifier_kind=None,
+                identifier_origin=None,
+                remote_identifier=None,
+                execution_control=None,
+            )
+            resumed_result = cli_module.CloudComponentResult(
+                status=cli_module.CloudExecutionStatus.COMPLETE,
+                dataset_path=dataset_path,
+                snapshot_id="snapshot-resumed",
+            )
+
+            with (
+                patch.object(
+                    cli_module,
+                    "_cloud_snapshot_repository_for_args",
+                    return_value=(object(), True),
+                ),
+                patch.object(
+                    cli_module,
+                    "load_cloud_report_dataset",
+                    return_value={
+                        "connector_version": "cloud-graphql-v1",
+                        "capabilities": {"required_ready": True},
+                    },
+                ),
+                patch.object(
+                    cli_module,
+                    "retry_cloud_component",
+                    return_value=resumed_result,
+                ) as retry_cloud,
+                patch.object(
+                    cli_module,
+                    "collect_cloud_period",
+                    side_effect=AssertionError("live API must not be called"),
+                ),
+                patch.object(cli_module, "load_dotenv_file"),
+                patch.object(
+                    cli_module.CloudCredentialConfig,
+                    "from_environment",
+                    return_value=object(),
+                ),
+                patch.object(
+                    cli_module,
+                    "TenableCloudLiveCollector",
+                    return_value=object(),
+                ),
+            ):
+                checkpoint = cli_module._cloud_component_checkpoint(
+                    args,
+                    profile=profile,
+                    period=period,
+                    request=request,
+                )
+
+            self.assertEqual(checkpoint.status, RemoteComponentState.COMPLETE)
+            self.assertEqual(
+                checkpoint.artifacts[0].path.parent,
+                component_checkpoint_path(
+                    request,
+                    ReportComponent.CLOUD,
+                ).parent,
+            )
+            self.assertEqual(
+                checkpoint.artifacts[0].sha256,
+                sha256_file(dataset_path),
+            )
+            resume = retry_cloud.call_args.kwargs["resume"]
+            self.assertEqual(resume.dataset_path, dataset_path)
+            self.assertEqual(
+                retry_cloud.call_args.args[0].render_documents,
+                False,
+            )
 
     def test_collect_component_parser_exposes_window_and_checkpoint_contract(self) -> None:
         parser = cli_module.build_parser()

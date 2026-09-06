@@ -461,6 +461,8 @@ def execute_cloud_component(
     if not request.profile.cloud_security_scope.enabled:
         return CloudComponentResult(status=CloudExecutionStatus.DISABLED)
 
+    dataset_path: Path | None = None
+    documents: tuple[CloudGeneratedDocument, ...] = ()
     try:
         compatibility = request.compatibility()
         period = request.period.to_dict()
@@ -641,6 +643,7 @@ def execute_cloud_component(
         )
         return CloudComponentResult(
             status=CloudExecutionStatus.FAILED,
+            dataset_path=dataset_path,
             warnings=(warning,),
             cleanup_ready=False,
             failure_stage=exc.stage,
@@ -669,6 +672,7 @@ def execute_cloud_component(
         )
         return CloudComponentResult(
             status=CloudExecutionStatus.FAILED,
+            dataset_path=dataset_path,
             warnings=(warning,),
             cleanup_ready=False,
             failure_code=str(
@@ -787,46 +791,48 @@ def _resume_cloud_component(
             failure_code="CLOUD_RESUME_DATASET_INVALID",
         )
 
-    _emit(
-        progress_callback,
-        request=request,
-        status="STARTED",
-        stage=ComponentStage.RENDER.value,
-    )
-    try:
-        documents = _render_resumed_dataset(
+    documents: tuple[CloudGeneratedDocument, ...] = ()
+    if request.render_documents:
+        _emit(
+            progress_callback,
             request=request,
-            dependencies=dependencies,
-            dataset_path=dataset_path,
+            status="STARTED",
+            stage=ComponentStage.RENDER.value,
         )
-    except ExecutionInterruptedError:
-        raise
-    except Exception:
-        return _resume_failure(
-            request=request,
-            progress_callback=progress_callback,
-            stage=ComponentStage.RENDER,
-            failure_code="CLOUD_RENDER_FAILED",
-        )
+        try:
+            documents = _render_resumed_dataset(
+                request=request,
+                dependencies=dependencies,
+                dataset_path=dataset_path,
+            )
+        except ExecutionInterruptedError:
+            raise
+        except Exception:
+            return _resume_failure(
+                request=request,
+                progress_callback=progress_callback,
+                stage=ComponentStage.RENDER,
+                failure_code="CLOUD_RENDER_FAILED",
+            )
 
-    _emit(
-        progress_callback,
-        request=request,
-        status="STARTED",
-        stage=ComponentStage.DOCUMENT_VALIDATION.value,
-    )
-    try:
-        for document in documents:
-            dependencies.validate_document(document.path)
-    except ExecutionInterruptedError:
-        raise
-    except Exception:
-        return _resume_failure(
+        _emit(
+            progress_callback,
             request=request,
-            progress_callback=progress_callback,
-            stage=ComponentStage.DOCUMENT_VALIDATION,
-            failure_code="CLOUD_DOCUMENT_VALIDATION_FAILED",
+            status="STARTED",
+            stage=ComponentStage.DOCUMENT_VALIDATION.value,
         )
+        try:
+            for document in documents:
+                dependencies.validate_document(document.path)
+        except ExecutionInterruptedError:
+            raise
+        except Exception:
+            return _resume_failure(
+                request=request,
+                progress_callback=progress_callback,
+                stage=ComponentStage.DOCUMENT_VALIDATION,
+                failure_code="CLOUD_DOCUMENT_VALIDATION_FAILED",
+            )
 
     try:
         period = request.period.to_dict()
