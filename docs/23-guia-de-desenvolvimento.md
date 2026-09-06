@@ -60,6 +60,9 @@ frontmatter e links locais. Ele valida estrutura, não redação exata.
 - indicador geral de exploração separado dos frameworks;
 - coleta geral independente de TAG;
 - comparativo da mesma TAG no tempo;
+- fallback de escopo de TAG grande pelo Asset Export v1 somente quando o Workbench
+  declarar população acima de 5.000 ativos; outros erros não podem disparar coleta
+  adicional silenciosa;
 - WAS opcional sem bloquear VM;
 - recuperação independente de VM/WAS/Cloud em duas janelas automáticas e terceira
   condicional, sem Janela 4 e sem reiniciar prazo na substituição;
@@ -161,6 +164,10 @@ Mudanças na fila precisam preservar estes contratos:
 - no mesmo `run_id`, reutilize coleta completa de assets/VM/TAG somente após validar
   identidade, consulta, configuração de TAG, chunks e hashes; divergência deve
   preservar a imutabilidade do artefato;
+- na descoberta de TAG, preserve o caminho Workbench para escopos enumeráveis. O
+  fallback Asset Export v1 deve filtrar por `tag.<categoria>`, deduplicar UUIDs,
+  persistir `scope_source`, UUID/origem/chunks, publicar o snapshot por substituição
+  atômica e propagar cancelamento; nunca repita o export de findings VM;
 - antes de reconstruir, consulte a publicação do `run_id`; documento válido em
   `READY_FOR_CONTROLLED_DISTRIBUTION` conclui o build idempotentemente, sem nova
   persistência de dataset, histórico ou arquivos;

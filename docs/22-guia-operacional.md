@@ -102,6 +102,13 @@ customizado ou TAG.
 Uma única coleta geral atende os relatórios gerais e os recortes por TAG. Escolher
 uma TAG não reduz o universo dos relatórios gerais.
 
+O Workbench da Tenable lista no máximo 5.000 ativos. Se uma TAG exceder esse limite,
+a aplicação inicia automaticamente um Asset Export v1 exclusivo para o escopo da
+TAG, acompanha UUID e chunks e então aplica o recorte sobre a coleta VM geral já
+existente. Portanto, essa operação adicional coleta somente a associação de ativos;
+ela não repete findings, WAS nem altera os documentos gerais. Se a coleta do escopo
+falhar, o aviso da TAG permanece retentável e os demais documentos são preservados.
+
 ## Gerar relatórios
 
 ### Cliente individual
@@ -582,7 +589,7 @@ o histórico compacto estão preservados.
 | Componentes terminaram, mas não montou | reinicie na versão atual e confirme `REMOTE_COMPONENTS_CONSOLIDATING` seguido de `COLLECTION_READY` |
 | `CHECKPOINT_COMPONENT_INCOMPLETE` | preserve o staging e retente somente o job/componente indicado; não gere o lote inteiro novamente |
 | Customizado sem comparação | existência e compatibilidade da referência `MAIN` anterior |
-| Documento por TAG vazio | TAG atual, UUIDs associados e período do dataset |
+| Documento por TAG vazio | TAG atual, UUIDs associados, período do dataset e, para TAG acima de 5.000 ativos, UUID/chunks do Asset Export v1 de escopo |
 | Disco cresce | execuções falhas retidas e política de limpeza de staging |
 
 Logs podem ser usados para diagnóstico, mas nunca devem ser compartilhados sem

@@ -15,6 +15,11 @@ from tenable_reports.application.tag_scope import (
     resolve_tag_selectors,
 )
 from tenable_reports.config.profile import ClientProfile
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
+from tenable_reports.infrastructure.tenable_vm.client import (
+    ExportJob,
+    TagScopeLimitExceeded,
+)
 
 
 class FakeVmClient:
@@ -29,6 +34,28 @@ class FakeVmClient:
         if key in self.failures:
             raise self.failures[key]
         return list(self.values.get(key, ()))
+
+
+class LargeTagVmClient(FakeVmClient):
+    def __init__(self, chunks) -> None:
+        super().__init__({}, failures={
+            ("Rede", "Matriz"): TagScopeLimitExceeded(
+                "Escopo maior que o Workbench.",
+                total_assets=5001,
+            )
+        })
+        self.chunks = chunks
+        self.export_requests = []
+
+    def start_asset_export_v1_job(self, **kwargs):
+        self.export_requests.append(dict(kwargs))
+        return ExportJob("tag-export-fixture", "created")
+
+    def wait_for_asset_completion(self, export_uuid, **kwargs):
+        return {"status": "FINISHED"}, sorted(self.chunks)
+
+    def download_asset_chunk(self, export_uuid, chunk_id):
+        return list(self.chunks[chunk_id])
 
 
 def profile() -> ClientProfile:
@@ -153,6 +180,84 @@ class TagScopeTests(unittest.TestCase):
         self.assertEqual([scope.tag.uuid for scope in result.scopes], ["tag-a"])
         self.assertEqual(result.warnings[0]["tag_uuid"], "tag-c")
         self.assertEqual(result.warnings[0]["code"], "TAG_SCOPE_UNAVAILABLE")
+
+    def test_large_tag_falls_back_to_asset_export_v1_without_losing_assets(self) -> None:
+        client = LargeTagVmClient({
+            1: ({"id": "asset-a"}, {"id": "asset-shared"}),
+            2: ({"id": "asset-b"}, {"id": "asset-shared"}),
+        })
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = collect_tag_scope_snapshot(
+                client=client,
+                profile=profile(),
+                tags=(self.tags[0],),
+                output_root=directory,
+                run_id="large-tag-run",
+            )
+            payload = json.loads(result.path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result.warnings, ())
+        self.assertEqual(
+            result.scopes[0].asset_ids,
+            frozenset({"asset-a", "asset-b", "asset-shared"}),
+        )
+        self.assertEqual(client.export_requests, [{
+            "filters": {"tag.Rede": ["Matriz"]},
+            "chunk_size": 5000,
+        }])
+        self.assertEqual(
+            payload["selected_tags"][0]["scope_source"],
+            "tenable_vm_asset_export_v1",
+        )
+        self.assertEqual(
+            payload["selected_tags"][0]["export_uuid"],
+            "tag-export-fixture",
+        )
+
+    def test_retry_unavailable_repairs_only_missing_tag_scope(self) -> None:
+        failed = FakeVmClient(
+            {},
+            failures={("Rede", "Matriz"): RuntimeError("temporarily unavailable")},
+        )
+        recovered = LargeTagVmClient({1: ({"id": "asset-recovered"},)})
+
+        with tempfile.TemporaryDirectory() as directory:
+            first = collect_tag_scope_snapshot(
+                client=failed,
+                profile=profile(),
+                tags=(self.tags[0],),
+                output_root=directory,
+                run_id="repair-run",
+            )
+            second = collect_tag_scope_snapshot(
+                client=recovered,
+                profile=profile(),
+                tags=(self.tags[0],),
+                output_root=directory,
+                run_id="repair-run",
+                retry_unavailable=True,
+            )
+            payload = json.loads(second.path.read_text(encoding="utf-8"))
+
+        self.assertEqual(first.warnings[0]["tag_uuid"], "tag-a")
+        self.assertEqual(second.warnings, ())
+        self.assertEqual(second.scopes[0].asset_ids, frozenset({"asset-recovered"}))
+        self.assertEqual(payload["warnings"], [])
+
+    def test_large_tag_export_does_not_swallow_local_cancellation(self) -> None:
+        client = LargeTagVmClient({1: ({"id": "asset-a"},)})
+
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ExecutionInterruptedError):
+                collect_tag_scope_snapshot(
+                    client=client,
+                    profile=profile(),
+                    tags=(self.tags[0],),
+                    output_root=directory,
+                    run_id="cancelled-large-tag",
+                    cancellation_probe=lambda: True,
+                )
 
     def test_asset_and_finding_records_are_restricted_to_the_same_union(self) -> None:
         assets, findings = filter_records_to_asset_scope(

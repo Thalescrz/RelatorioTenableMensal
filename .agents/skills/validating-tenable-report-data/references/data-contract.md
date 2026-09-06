@@ -99,6 +99,12 @@ Depois aplique o mesmo contrato VM localmente. Compare apenas a mesma TAG com su
 referência anterior compatível. A soma dos relatórios por TAG pode exceder o geral
 quando um ativo pertence a múltiplas TAGs; isso não é duplicidade no relatório geral.
 
+Para TAG com mais de 5.000 ativos, o Workbench não é evidência completa. Exija o
+snapshot proveniente do Asset Export v1 filtrado por `tag.<categoria>` e confira
+`scope_source`, UUID/origem, chunks e contagem deduplicada de UUIDs. Os findings
+continuam sendo o dataset VM geral recortado localmente; não aceite uma segunda
+coleta VM ou associação por IP/hostname.
+
 ## Histórico
 
 Confirme que a referência anterior é `MAIN`, imediatamente anterior e compatível em

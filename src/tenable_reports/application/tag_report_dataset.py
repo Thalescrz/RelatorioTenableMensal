@@ -199,9 +199,16 @@ def build_tag_report_datasets_from_snapshot(
         }
         payload["tag_selection_provenance"] = {
             "source": "tenable_vm_tag_scope.snapshot.json",
+            "scope_source": str(
+                scope.get("scope_source") or "tenable_vm_workbench"
+            ),
             "match": "NormalizedAsset.source_asset_id in selected TAG asset_ids",
             "general_collection_reused": True,
             "additional_vm_export_performed": False,
+            "additional_asset_export_performed": (
+                str(scope.get("scope_source") or "")
+                == "tenable_vm_asset_export_v1"
+            ),
         }
         dataset_content = (
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n"

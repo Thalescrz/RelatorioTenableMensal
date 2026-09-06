@@ -312,6 +312,33 @@ def test_tag_dataset_contains_operational_payload_even_without_findings(tmp_path
     assert data["source_coverage"]["general_collection_filtered_by_tags"] is False
 
 
+def test_tag_dataset_records_large_scope_asset_export_provenance(tmp_path: Path) -> None:
+    scope = _tag_scope()
+    scope["selected_tags"][0].update({
+        "scope_source": "tenable_vm_asset_export_v1",
+        "export_uuid": "export-fixture",
+        "export_origin": "created",
+        "chunk_ids": [1, 2],
+    })
+    _write_normalized_run(tmp_path, tag_scope=scope)
+
+    bundle = build_tag_report_datasets_from_snapshot(
+        profile=_profile_with_tags(),
+        run_id=RUN_ID,
+        period=_july_2026(),
+        output_root=tmp_path,
+        execution_type="AUTOMATIC_MONTHLY",
+    )
+    artifact = next(item for item in bundle.artifacts if item.tag.uuid == "tag-a")
+    data = json.loads(artifact.dataset_path.read_text(encoding="utf-8"))
+
+    assert data["tag_selection_provenance"]["scope_source"] == (
+        "tenable_vm_asset_export_v1"
+    )
+    assert data["tag_selection_provenance"]["additional_asset_export_performed"] is True
+    assert data["tag_selection_provenance"]["general_collection_reused"] is True
+
+
 def test_missing_tag_scope_is_a_warning_and_does_not_create_partial_dataset(
     tmp_path: Path,
 ) -> None:

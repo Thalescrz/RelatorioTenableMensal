@@ -51,6 +51,12 @@ Use **Buscar TAGs da Tenable**. Habilite separadamente:
 Uma coleta VM geral é normalizada uma vez. O recorte usa os UUIDs dos ativos da TAG.
 Os dois relatórios gerais mantêm o ambiente inteiro.
 
+O Workbench só enumera com segurança até 5.000 ativos. Quando a resposta indicar
+uma população maior, a aplicação usa automaticamente Asset Export v1 com filtro
+`tag.<categoria>` para obter o escopo completo. Acompanhe o UUID e os chunks nos
+eventos da TAG. Esse export adicional não repete findings VM, assets gerais, WAS ou
+Cloud; se falhar, preserve os outros relatórios e retente apenas o escopo da TAG.
+
 ## Períodos
 
 - Automático: mês-calendário anterior completo, no primeiro dia do mês.

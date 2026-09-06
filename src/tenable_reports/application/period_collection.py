@@ -106,6 +106,8 @@ def collect_vm_core_period(
             tags=selected_tags,
             output_root=output_root,
             run_id=run_id,
+            progress_callback=progress_callback,
+            cancellation_probe=cancellation_probe,
         )
     check_interruption()
     asset_resume_manifest = getattr(args, "asset_resume_manifest", None)

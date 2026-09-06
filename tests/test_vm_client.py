@@ -12,6 +12,7 @@ from tenable_reports.infrastructure.tenable_vm.client import (
     ExportJob,
     ExportFailedError,
     ExportTimeoutError,
+    TagScopeLimitExceeded,
     TenableVmClient,
     TenableVmConfig,
     TransportResponse,
@@ -131,6 +132,34 @@ class TenableVmClientTests(unittest.TestCase):
         self.assertFalse(payload["include_open_ports"])
         self.assertFalse(payload["include_resource_tags"])
 
+    def test_start_asset_export_v1_uses_documented_tag_filter_and_reports_origin(self) -> None:
+        created, created_transport = client_with([
+            response(200, {"export_uuid": "asset-tag-new"})
+        ])
+        reused, _ = client_with([
+            response(409, {"error": {"active_job_id": "asset-tag-existing"}})
+        ])
+
+        created_job = created.start_asset_export_v1_job(
+            filters={"tag.Rede": ["Matriz"]},
+            chunk_size=5000,
+        )
+        payload = json.loads(created_transport.calls[0]["body"])
+
+        self.assertEqual(created_job, ExportJob("asset-tag-new", "created"))
+        self.assertTrue(created_transport.calls[0]["url"].endswith("/assets/export"))
+        self.assertEqual(payload, {
+            "chunk_size": 5000,
+            "filters": {"tag.Rede": ["Matriz"]},
+        })
+        self.assertEqual(
+            reused.start_asset_export_v1_job(
+                filters={"tag.Rede": ["Matriz"]},
+                chunk_size=5000,
+            ),
+            ExportJob("asset-tag-existing", "reused"),
+        )
+
     def test_asset_export_rejects_incompatible_options(self) -> None:
         client, _ = client_with([])
         with self.assertRaises(ValueError):
@@ -166,6 +195,17 @@ class TenableVmClientTests(unittest.TestCase):
         self.assertIn("/workbenches/assets?", url)
         self.assertIn("filter.0.filter=tag.Segmento+de+Rede", url)
         self.assertIn("filter.0.value=Filial+A", url)
+
+    def test_workbench_tag_scope_limit_has_a_dedicated_error(self) -> None:
+        client, _ = client_with([response(200, {
+            "assets": [{"id": "asset-fixture"}],
+            "total": 5001,
+        })])
+
+        with self.assertRaises(TagScopeLimitExceeded) as raised:
+            client.list_assets_for_tag("Rede", "Matriz")
+
+        self.assertEqual(raised.exception.total_assets, 5001)
 
     def test_asset_status_and_chunk_use_v2_export_contract(self) -> None:
         chunk = b'[{"id":"asset-fixture"}]'

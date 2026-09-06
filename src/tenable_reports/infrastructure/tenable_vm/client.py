@@ -69,6 +69,12 @@ class ExportTimeoutError(TimeoutError):
         self.cancellation_error = cancellation_error
 
 
+class TagScopeLimitExceeded(ApiError):
+    def __init__(self, message: str, *, total_assets: int | None = None) -> None:
+        super().__init__(message, endpoint="/workbenches/assets")
+        self.total_assets = total_assets
+
+
 @dataclass(frozen=True, slots=True)
 class ExportJob:
     export_uuid: str
@@ -485,19 +491,69 @@ class TenableVmClient:
                 total = None
             offset += len(page)
             if total is not None and total > 5000:
-                raise ApiError(
+                raise TagScopeLimitExceeded(
                     "A tag possui mais de 5000 ativos; o endpoint Workbench nao garante "
-                    "uma enumeracao completa desse escopo."
+                    "uma enumeracao completa desse escopo.",
+                    total_assets=total,
                 )
             if total is None and len(page) >= 5000:
-                raise ApiError(
+                raise TagScopeLimitExceeded(
                     "A tag retornou o limite de 5000 ativos sem total; nao e seguro "
-                    "assumir que o escopo esta completo."
+                    "assumir que o escopo esta completo.",
+                    total_assets=None,
                 )
             if not page or len(page) < bounded_page_size or (
                 total is not None and offset >= total
             ):
                 return records
+
+    def start_asset_export_v1_job(
+        self,
+        *,
+        filters: Mapping[str, Any] | None = None,
+        chunk_size: int = 5000,
+    ) -> ExportJob:
+        bounded_chunk_size = int(chunk_size)
+        if not 100 <= bounded_chunk_size <= 10000:
+            raise ValueError("chunk_size de ativos deve estar entre 100 e 10000.")
+        payload: dict[str, Any] = {"chunk_size": bounded_chunk_size}
+        if filters:
+            payload["filters"] = dict(filters)
+        try:
+            response = self.request(
+                "POST",
+                "/assets/export",
+                json_body=payload,
+                retry_status_codes=frozenset({429, 500, 502, 503, 504}),
+            )
+        except ApiError as exc:
+            if exc.status_code == 409 and exc.active_job_id:
+                LOGGER.info(
+                    "Export de ativos por TAG equivalente ja estava em andamento; "
+                    "reutilizando o job."
+                )
+                return ExportJob(exc.active_job_id, "reused")
+            raise
+        data = response.json()
+        export_uuid = (
+            data.get("export_uuid") or data.get("uuid")
+            if isinstance(data, dict)
+            else None
+        )
+        if not isinstance(export_uuid, str) or not export_uuid.strip():
+            raise ApiError("Resposta de inicio do export de ativos nao contem export_uuid.")
+        return ExportJob(export_uuid.strip(), "created")
+
+    def start_asset_export_v1(
+        self,
+        *,
+        filters: Mapping[str, Any] | None = None,
+        chunk_size: int = 5000,
+    ) -> str:
+        return self.start_asset_export_v1_job(
+            filters=filters,
+            chunk_size=chunk_size,
+        ).export_uuid
 
     def start_asset_export_v2(
         self,

@@ -54,7 +54,11 @@ da interface, de Word ou de uma resposta HTTP específica.
 8. A janela temporal é aplicada localmente ao campo correto de cada estado.
 9. Um dataset mensal reconciliado alimenta os relatórios gerais.
 10. Para cada TAG habilitada, os UUIDs associados recortam localmente o mesmo dataset
-   VM e formam um dataset de relatório por TAG.
+   VM e formam um dataset de relatório por TAG. O Workbench é usado para descobrir
+   o escopo enquanto ele for enumerável com segurança. Quando a própria resposta
+   informa que a TAG ultrapassa o limite de 5.000 ativos, a aplicação faz um Asset
+   Export v1 adicional, filtrado apenas por `tag.<categoria>`, para obter todos os
+   UUIDs. Esse fallback não refaz nem filtra o export VM geral.
 11. O histórico compatível do cliente ou da própria TAG é recuperado do PostgreSQL.
 12. Os DOCX são renderizados, validados, registrados e oferecidos para download.
 13. Métricas compactas são persistidas; dados intermediários pesados de uma

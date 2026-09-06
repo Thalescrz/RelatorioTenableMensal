@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.domain.models import utc_now_iso
-from tenable_reports.infrastructure.tenable_vm.client import TenableVmClient
+from tenable_reports.domain.execution_control import ExecutionInterruptedError
+from tenable_reports.infrastructure.tenable_vm.client import (
+    TagScopeLimitExceeded,
+    TenableVmClient,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +205,90 @@ def _write_exclusive(path: Path, content: bytes) -> None:
         raise
 
 
+def _write_replace(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _collect_large_tag_scope(
+    *,
+    client: TenableVmClient,
+    tag: VmTag,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None,
+    cancellation_probe: Callable[[], bool] | None,
+) -> tuple[list[str], dict[str, Any]]:
+    job = client.start_asset_export_v1_job(
+        filters={f"tag.{tag.category_name}": [tag.value]},
+        chunk_size=5000,
+    )
+
+    def emit(status: str, **details: Any) -> None:
+        if progress_callback is not None:
+            progress_callback({
+                "event": "TENABLE_EXPORT_PROGRESS",
+                "source": "tenable_vm_asset_export_v1_tag_scope",
+                "export_uuid": job.export_uuid,
+                "origin": job.origin,
+                "status": status,
+                "tag_uuid": tag.uuid,
+                "tag_label": tag.label,
+                **details,
+            })
+
+    emit("STARTED", completed_chunks=0, total_chunks=0, progress_made=False)
+    wait_arguments: dict[str, Any] = {}
+    parameters = inspect.signature(client.wait_for_asset_completion).parameters
+    if "progress_callback" in parameters:
+        wait_arguments["progress_callback"] = lambda status: emit(
+            str(status.get("status") or "PROCESSING").upper(),
+            **{
+                str(key): value
+                for key, value in status.items()
+                if key != "status"
+            },
+        )
+    if "cancellation_probe" in parameters:
+        wait_arguments["cancellation_probe"] = cancellation_probe
+    _, chunk_ids = client.wait_for_asset_completion(job.export_uuid, **wait_arguments)
+    asset_ids: set[str] = set()
+    for chunk_id in chunk_ids:
+        if cancellation_probe is not None and cancellation_probe():
+            raise ExecutionInterruptedError(
+                "Execucao interrompida com export de ativos por TAG preservado.",
+                export_uuid=job.export_uuid,
+            )
+        for item in client.download_asset_chunk(job.export_uuid, chunk_id):
+            asset_id = _text(item.get("id") or item.get("uuid") or item.get("asset_uuid"))
+            if asset_id:
+                asset_ids.add(asset_id)
+    emit(
+        "FINISHED",
+        completed_chunks=len(chunk_ids),
+        total_chunks=len(chunk_ids),
+        progress_made=bool(chunk_ids),
+        asset_count=len(asset_ids),
+    )
+    return sorted(asset_ids), {
+        "scope_source": "tenable_vm_asset_export_v1",
+        "export_uuid": job.export_uuid,
+        "export_origin": job.origin,
+        "chunk_ids": [int(chunk_id) for chunk_id in chunk_ids],
+    }
+
+
 def collect_tag_scope_snapshot(
     *,
     client: TenableVmClient,
@@ -206,6 +296,9 @@ def collect_tag_scope_snapshot(
     tags: Sequence[VmTag],
     output_root: str | Path,
     run_id: str,
+    retry_unavailable: bool = False,
+    progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
+    cancellation_probe: Callable[[], bool] | None = None,
 ) -> TagScopeCollection:
     selected = tuple(tags)
     if not selected:
@@ -217,8 +310,10 @@ def collect_tag_scope_snapshot(
         / run_id
         / "tenable_vm_tag_scope.snapshot.json"
     )
+    existing_payload: dict[str, Any] | None = None
     if path.is_file():
         existing = read_tag_scope_snapshot(path)
+        existing_payload = existing
         if (
             str(existing.get("run_id") or "") != run_id
             or str(existing.get("client_id") or "") != profile.client_id
@@ -270,17 +365,57 @@ def collect_tag_scope_snapshot(
                     ),
                 )
             )
-        return TagScopeCollection(
-            path=path,
-            scopes=tuple(scopes),
-            warnings=warnings,
-        )
-    selected_rows: list[dict[str, Any]] = []
-    scopes: list[TagAssetScope] = []
-    warnings: list[dict[str, Any]] = []
+        if not retry_unavailable or len(scopes) == len(selected):
+            return TagScopeCollection(
+                path=path,
+                scopes=tuple(scopes),
+                warnings=warnings,
+            )
+    selected_rows = [
+        dict(row)
+        for row in ((existing_payload or {}).get("selected_tags") or ())
+        if isinstance(row, Mapping)
+    ]
+    selected_row_ids = {_text(row.get("uuid")) for row in selected_rows}
+    retry_tag_ids = {tag.uuid for tag in selected if tag.uuid not in selected_row_ids}
+    warnings: list[dict[str, Any]] = [
+        dict(warning)
+        for warning in ((existing_payload or {}).get("warnings") or ())
+        if isinstance(warning, Mapping)
+        and _text(warning.get("tag_uuid")) not in retry_tag_ids
+    ]
     for tag in selected:
+        if tag.uuid in selected_row_ids:
+            continue
+        scope_details: dict[str, Any] = {"scope_source": "tenable_vm_workbench"}
         try:
             assets = client.list_assets_for_tag(tag.category_name, tag.value)
+            asset_ids = sorted({
+                _text(item.get("id") or item.get("uuid") or item.get("asset_uuid"))
+                for item in assets
+                if _text(item.get("id") or item.get("uuid") or item.get("asset_uuid"))
+            })
+        except TagScopeLimitExceeded:
+            try:
+                asset_ids, scope_details = _collect_large_tag_scope(
+                    client=client,
+                    tag=tag,
+                    progress_callback=progress_callback,
+                    cancellation_probe=cancellation_probe,
+                )
+            except ExecutionInterruptedError:
+                raise
+            except Exception as exc:
+                warnings.append({
+                    "code": "TAG_SCOPE_UNAVAILABLE",
+                    "tag_uuid": tag.uuid,
+                    "tag_label": tag.label,
+                    "stage": "tag_asset_export_v1",
+                    "message": str(exc)[:500],
+                })
+                continue
+        except ExecutionInterruptedError:
+            raise
         except Exception as exc:
             warnings.append({
                 "code": "TAG_SCOPE_UNAVAILABLE",
@@ -290,17 +425,27 @@ def collect_tag_scope_snapshot(
                 "message": str(exc)[:500],
             })
             continue
-        asset_ids = sorted({
-            _text(item.get("id") or item.get("uuid") or item.get("asset_uuid"))
-            for item in assets
-            if _text(item.get("id") or item.get("uuid") or item.get("asset_uuid"))
-        })
-        scopes.append(TagAssetScope(tag=tag, asset_ids=frozenset(asset_ids)))
         selected_rows.append({
             **tag.to_dict(),
             "asset_count": len(asset_ids),
             "asset_ids": asset_ids,
+            **scope_details,
         })
+        selected_row_ids.add(tag.uuid)
+    rows_by_uuid = {_text(row.get("uuid")): row for row in selected_rows}
+    selected_rows = [rows_by_uuid[tag.uuid] for tag in selected if tag.uuid in rows_by_uuid]
+    scopes = [
+        TagAssetScope(
+            tag=tag,
+            asset_ids=frozenset(
+                _text(asset_id)
+                for asset_id in rows_by_uuid[tag.uuid].get("asset_ids") or ()
+                if _text(asset_id)
+            ),
+        )
+        for tag in selected
+        if tag.uuid in rows_by_uuid
+    ]
     data = {
         "schema_version": 2,
         "source": "tenable_vm_tags",
@@ -315,10 +460,11 @@ def collect_tag_scope_snapshot(
         "selected_tags": selected_rows,
         "warnings": warnings,
     }
-    _write_exclusive(
-        path,
-        (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
-    )
+    content = (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    if existing_payload is None:
+        _write_exclusive(path, content)
+    else:
+        _write_replace(path, content)
     return TagScopeCollection(
         path=path,
         scopes=tuple(scopes),
