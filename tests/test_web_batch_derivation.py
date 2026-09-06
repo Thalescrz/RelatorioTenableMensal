@@ -313,6 +313,68 @@ def test_retry_incomplete_accepts_paused_recovery_and_preserves_uuid(
     assert jobs[0].payload["start_at"] == "2026-07-01T03:00:00Z"
 
 
+def test_retry_incomplete_accepts_paused_retry_when_every_job_is_terminal(
+    tmp_path: Path,
+) -> None:
+    repository = _source_repository((
+        BatchJobStatus.INTERRUPTED,
+        BatchJobStatus.FAILED,
+    ))
+    source = repository.get_batch(SOURCE_ID)
+    assert source is not None
+    repository._batches[SOURCE_ID] = replace(
+        source,
+        kind="RETRY_INCOMPLETE",
+        status=BatchStatus.PAUSED,
+        options={**dict(source.options), "execution_model": "STAGED_V1"},
+    )
+    queue = _queue(tmp_path, repository)
+    try:
+        retry = queue.derive_batch(
+            DerivedBatchRequest(
+                source_batch_id=SOURCE_ID,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key="retry:paused-terminal-retry",
+            )
+        )
+    finally:
+        queue.close()
+
+    jobs = repository.list_batch_jobs(UUID(retry["batch"]["id"]))
+    assert tuple(job.client_id for job in jobs) == ("client-1", "client-2")
+
+
+def test_retry_incomplete_rejects_paused_batch_with_pending_work(
+    tmp_path: Path,
+) -> None:
+    repository = _source_repository((
+        BatchJobStatus.INTERRUPTED,
+        BatchJobStatus.QUEUED,
+    ))
+    source = repository.get_batch(SOURCE_ID)
+    assert source is not None
+    repository._batches[SOURCE_ID] = replace(
+        source,
+        kind="RETRY_INCOMPLETE",
+        status=BatchStatus.PAUSED,
+    )
+    queue = _queue(tmp_path, repository)
+    try:
+        with pytest.raises(
+            ValueError,
+            match="lote de origem ainda esta ativo",
+        ):
+            queue.derive_batch(
+                DerivedBatchRequest(
+                    source_batch_id=SOURCE_ID,
+                    kind=BatchAction.RETRY_INCOMPLETE,
+                    idempotency_key="retry:paused-with-pending-work",
+                )
+            )
+    finally:
+        queue.close()
+
+
 def test_retry_preserves_uuid_manifest_and_original_remote_budget(tmp_path: Path) -> None:
     repository = InMemoryWebBatchRepository()
     source = WebBatch(

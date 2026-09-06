@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from uuid import UUID
 
@@ -196,6 +197,41 @@ def test_repository_rejects_divergent_replay_of_logical_attempt() -> None:
 
     with pytest.raises(ValueError, match="divergente"):
         repository.create_attempt(_attempt())
+
+
+def test_repository_replay_accepts_rebound_checkpoint_for_same_publication() -> None:
+    existing = _attempt(
+        component=ReportComponent.VM_CORE,
+        status=ComponentStatus.COMPLETE,
+        retryable=False,
+        artifact_references={"documents": ["report.docx"]},
+    )
+    existing = replace(
+        existing,
+        stage=ComponentStage.REPORT_PUBLICATION,
+        checkpoint_path=str(
+            (ROOT / "data/fixtures/checkpoints/client-a/original.json").resolve()
+        ),
+    )
+    replay = replace(
+        existing,
+        checkpoint_path=str(
+            (ROOT / "data/fixtures/checkpoints/client-a/rebound.json").resolve()
+        ),
+    )
+    database = _Database([_Cursor(one=_attempt_row(existing))])
+    repository = PostgresReportComponentRepository(database, migrate=False)
+
+    returned = repository.create_attempt(replay)
+
+    sql, _params = database.connection_value.calls[0]
+    normalized_sql = " ".join(sql.lower().split())
+    assert (
+        "or existing.status in ('complete', 'skipped')"
+        in normalized_sql
+    )
+    assert "existing.artifact_references = excluded.artifact_references" in normalized_sql
+    assert returned == existing
 
 
 def test_repository_lists_latest_attempt_for_each_component_in_enum_order() -> None:

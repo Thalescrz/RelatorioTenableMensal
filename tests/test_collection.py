@@ -15,6 +15,7 @@ from tenable_reports.application.collect import (
     collect_asset_snapshot,
     collect_vm_snapshot,
     collect_vm_snapshot_by_state,
+    find_completed_vm_manifest,
     find_resumable_vm_manifest,
     reusable_chunk,
     store_chunk_atomic,
@@ -130,6 +131,11 @@ class FakeAssetCollectionClient:
 
     def download_asset_chunk_bytes(self, export_uuid: str, chunk_id: int) -> bytes:
         return self.chunks[chunk_id]
+
+
+class FailIfCalledAssetClient:
+    def __getattr__(self, name: str):
+        raise AssertionError(f"A API de ativos não deveria ser chamada: {name}")
 
 
 class SegmentedCollectionClient:
@@ -1232,6 +1238,95 @@ class CollectionTests(unittest.TestCase):
             manifest = json.loads(result.raw_manifest_path.read_text(encoding="utf-8"))
             self.assertTrue(manifest["chunks"][0]["complete"])
             self.assertEqual(manifest["chunks"][0]["content_sha256"], stored.content_sha256)
+
+    def test_completed_asset_collection_is_reused_without_remote_call(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        request = AssetExportRequest(filters={"last_seen": 1782860400})
+        with tempfile.TemporaryDirectory() as directory:
+            first = collect_asset_snapshot(
+                client=FakeAssetCollectionClient(
+                    {1: b'{"id":"asset-existing"}\n'}
+                ),  # type: ignore[arg-type]
+                profile=profile,
+                request=request,
+                output_root=directory,
+                run_id="same-asset-run",
+            )
+
+            second = collect_asset_snapshot(
+                client=FailIfCalledAssetClient(),  # type: ignore[arg-type]
+                profile=profile,
+                request=request,
+                output_root=directory,
+                run_id="same-asset-run",
+                resume_from=first.raw_manifest_path,
+            )
+
+        self.assertEqual(second.snapshot, first.snapshot)
+        self.assertEqual(second.snapshot_path, first.snapshot_path)
+        self.assertEqual(second.raw_manifest_path, first.raw_manifest_path)
+
+    def test_completed_vm_collection_is_reused_without_remote_call(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        request = VulnerabilityExportRequest(filters={"state": ["OPEN"]})
+        with tempfile.TemporaryDirectory() as directory:
+            first = collect_vm_snapshot(
+                client=FakeCollectionClient(
+                    {1: b'{"id":"finding-existing","state":"OPEN"}\n'}
+                ),  # type: ignore[arg-type]
+                profile=profile,
+                request=request,
+                output_root=directory,
+                run_id="same-vm-run",
+            )
+
+            second = collect_vm_snapshot(
+                client=FailIfCalledAssetClient(),  # type: ignore[arg-type]
+                profile=profile,
+                request=request,
+                output_root=directory,
+                run_id="same-vm-run",
+                resume_from=first.raw_manifest_path,
+            )
+
+        self.assertEqual(second.snapshot, first.snapshot)
+        self.assertEqual(second.snapshot_path, first.snapshot_path)
+        self.assertEqual(second.raw_manifest_path, first.raw_manifest_path)
+
+    def test_completed_vm_manifest_discovery_requires_same_run_and_query(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        request = VulnerabilityExportRequest(filters={"state": ["OPEN"]})
+        with tempfile.TemporaryDirectory() as directory:
+            first = collect_vm_snapshot(
+                client=FakeCollectionClient({1: b'{"id":"finding"}\n'}),  # type: ignore[arg-type]
+                profile=profile,
+                request=request,
+                output_root=directory,
+                run_id="completed-run",
+            )
+
+            discovered = find_completed_vm_manifest(
+                directory,
+                profile=profile,
+                request=request,
+                run_id="completed-run",
+            )
+            other_query = find_completed_vm_manifest(
+                directory,
+                profile=profile,
+                request=VulnerabilityExportRequest(filters={"state": ["FIXED"]}),
+                run_id="completed-run",
+            )
+            other_run = find_completed_vm_manifest(
+                directory,
+                profile=profile,
+                request=request,
+                run_id="other-run",
+            )
+
+        self.assertEqual(discovered, first.raw_manifest_path)
+        self.assertIsNone(other_query)
+        self.assertIsNone(other_run)
     def test_optional_was_failure_does_not_raise(self) -> None:
         profile = load_client_profile(
             ROOT / "clients/examples/client-profile-intelligence-expanded.json"

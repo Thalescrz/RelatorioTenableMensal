@@ -43,6 +43,7 @@ class RemoteComponentWorkerPool:
         workers: int,
         poll_interval: float = 0.25,
         lease_seconds: int = 36_300,
+        claim_lock: Any | None = None,
         start_workers: bool = True,
     ) -> None:
         self.repository = repository
@@ -63,6 +64,7 @@ class RemoteComponentWorkerPool:
         self._wake_event = threading.Event()
         self._idle_event = threading.Event()
         self._lock = threading.RLock()
+        self._claim_lock = claim_lock or threading.RLock()
         self._workers: dict[str, threading.Thread] = {}
         self._active_count = 0
         self._started = False
@@ -142,10 +144,11 @@ class RemoteComponentWorkerPool:
 
     def _work(self, worker_id: str) -> None:
         while not self._stopping.is_set():
-            component = self.repository.claim_next(
-                worker_id=worker_id,
-                lease_seconds=self.lease_seconds,
-            )
+            with self._claim_lock:
+                component = self.repository.claim_next(
+                    worker_id=worker_id,
+                    lease_seconds=self.lease_seconds,
+                )
             if component is None:
                 with self._lock:
                     if self._active_count == 0:

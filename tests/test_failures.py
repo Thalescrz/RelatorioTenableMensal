@@ -12,6 +12,7 @@ def test_observed_failure_messages_keep_actionable_classification() -> None:
         ("Nao foi possivel ler o artefato: C:/dados/normalized/cliente/manifest.json", FailureCode.LOCAL_ARTIFACT_SCOPE_MISMATCH, False),
         ("CHECKPOINT_ARTIFACT_MISSING: dependencia declarada ausente", FailureCode.CHECKPOINT_ARTIFACT_MISSING, False),
         ("[WinError 5] Access is denied: export-state.json", FailureCode.LOCAL_FILESYSTEM_TRANSIENT, True),
+        ("MemoryError", FailureCode.LOCAL_RESOURCE_EXHAUSTED, True),
         (
             "[WinError 206] filename too long: raw/client/tenable_vm_assets_v2/job",
             FailureCode.LOCAL_FILESYSTEM_TRANSIENT,

@@ -158,6 +158,16 @@ Mudanças na fila precisam preservar estes contratos:
   restaure os checkpoints no novo job e execute apenas a consolidação local; uma
   exceção deve virar `CHECKPOINT_COMPONENT_INCOMPLETE`, nunca ser engolida deixando
   o job em `REMOTE_RUNNING`;
+- no mesmo `run_id`, reutilize coleta completa de assets/VM/TAG somente após validar
+  identidade, consulta, configuração de TAG, chunks e hashes; divergência deve
+  preservar a imutabilidade do artefato;
+- antes de reconstruir, consulte a publicação do `run_id`; documento válido em
+  `READY_FOR_CONTROLLED_DISTRIBUTION` conclui o build idempotentemente, sem nova
+  persistência de dataset, histórico ou arquivos;
+- registro `READY` sem linhas de documento não é suficiente: valide o manifesto,
+  os DOCX, o dataset, tamanhos, SHA-256 e confinamento em `data`; depois repare as
+  linhas de publicação idempotentemente. Classifique `MemoryError` como recurso
+  local esgotado e retentável;
 - pausa bloqueia novos claims sem apagar checkpoints; retomada não altera
   `FAILED`, `INTERRUPTED` ou `CANCELLED_BY_USER`;
 - parada sinaliza todos os jobs ativos, preserva export/chunks e limita o fallback

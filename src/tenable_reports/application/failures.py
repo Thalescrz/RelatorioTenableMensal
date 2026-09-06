@@ -20,6 +20,7 @@ class FailureCode(StrEnum):
     CHECKPOINT_ARTIFACT_MISSING = "CHECKPOINT_ARTIFACT_MISSING"
     CHECKPOINT_COMPONENT_INCOMPLETE = "CHECKPOINT_COMPONENT_INCOMPLETE"
     LOCAL_FILESYSTEM_TRANSIENT = "LOCAL_FILESYSTEM_TRANSIENT"
+    LOCAL_RESOURCE_EXHAUSTED = "LOCAL_RESOURCE_EXHAUSTED"
     UNEXPECTED = "UNEXPECTED"
 
 
@@ -30,6 +31,7 @@ RETRYABLE_CODES = frozenset({
     FailureCode.DISK_INSUFFICIENT,
     FailureCode.CHECKPOINT_COMPONENT_INCOMPLETE,
     FailureCode.LOCAL_FILESYSTEM_TRANSIENT,
+    FailureCode.LOCAL_RESOURCE_EXHAUSTED,
 })
 
 
@@ -67,6 +69,8 @@ class OperationalFailure(Exception):
 
 def _code_from_text(value: str) -> FailureCode:
     upper = value.upper()
+    if "MEMORYERROR" in upper or "NOT ENOUGH MEMORY" in upper:
+        return FailureCode.LOCAL_RESOURCE_EXHAUSTED
     if "EXPORT" in upper and "TERMINOU COM ESTADO CANCEL" in upper:
         return FailureCode.TENABLE_TEMPORARY
     if "EXPORT" in upper and "SEM PROGRESSO" in upper:

@@ -24,6 +24,7 @@ from tenable_reports.application.web_batches_memory import (
     InMemoryWebBatchRepository,
 )
 from tenable_reports.application.report_archives import ReportArchiveResult
+from tenable_reports.application.staged_execution import CollectionCheckpoint
 from tenable_reports.application.report_set_purge import (
     ReportSetPurgeRecord,
     ReportSetPurgeService,
@@ -141,6 +142,167 @@ def valid_run(run_id: str, *, client_id: str = "cliente-a") -> ReportCandidate:
         scope_hash="scope", metric_definition_version="report-definition-v1.2",
         publication_status=READY_STATUS, documents_valid=True,
     )
+
+
+def test_published_build_result_reuses_only_matching_valid_report() -> None:
+    registry = InMemoryReportRegistry()
+    registry.register_report(valid_run("published-run", client_id="client-01"))
+    app = object.__new__(DashboardApplication)
+    app.report_registry = registry
+    checkpoint = CollectionCheckpoint(
+        schema_version=1,
+        client_id="client-01",
+        tenant_id="client-01",
+        run_id="published-run",
+        logical_job_id="logical-run",
+        execution_type="MANUAL",
+        mode="manual",
+        origin="MANUAL",
+        attempt_number=1,
+        period={
+            "start_at": "2026-07-01T03:00:00Z",
+            "end_at": "2026-08-01T03:00:00Z",
+        },
+        component_metadata={},
+        artifacts=(),
+        hashes={},
+    )
+    job = WebBatchJob(
+        id=UUID(int=8001),
+        batch_id=UUID(int=8000),
+        client_id="client-01",
+        position=1,
+        status=BatchJobStatus.RUNNING,
+        attempt_number=2,
+        phase=BatchJobPhase.BUILD_RUNNING,
+    )
+
+    result = app._published_build_result(job, checkpoint)
+
+    assert result is not None
+    assert result.status is BatchJobStatus.COMPLETE
+    assert result.payload == {
+        "status": "COMPLETE",
+        "run_id": "published-run",
+        "reused_existing_publication": True,
+    }
+    assert app._published_build_result(
+        replace(job, client_id="another-client"), checkpoint
+    ) is None
+
+
+def test_published_build_result_rejects_registration_without_documents() -> None:
+    class EmptyDocumentsDatabase:
+        @staticmethod
+        def report_documents(run_id: str) -> list[dict[str, object]]:
+            assert run_id == "published-run"
+            return []
+
+    registry = InMemoryReportRegistry()
+    registry.register_report(valid_run("published-run", client_id="client-01"))
+    app = object.__new__(DashboardApplication)
+    app.report_registry = registry
+    app.database = EmptyDocumentsDatabase()
+    checkpoint = CollectionCheckpoint(
+        schema_version=1,
+        client_id="client-01",
+        tenant_id="client-01",
+        run_id="published-run",
+        logical_job_id="logical-run",
+        execution_type="MANUAL",
+        mode="manual",
+        origin="MANUAL",
+        attempt_number=1,
+        period={
+            "start_at": "2026-07-01T03:00:00Z",
+            "end_at": "2026-08-01T03:00:00Z",
+        },
+        component_metadata={},
+        artifacts=(),
+        hashes={},
+    )
+    job = WebBatchJob(
+        id=UUID(int=8001),
+        batch_id=UUID(int=8000),
+        client_id="client-01",
+        position=1,
+        status=BatchJobStatus.RUNNING,
+        attempt_number=2,
+        phase=BatchJobPhase.BUILD_RUNNING,
+    )
+
+    assert app._published_build_result(job, checkpoint) is None
+
+
+def test_published_build_result_repairs_missing_document_rows(tmp_path: Path) -> None:
+    document = tmp_path / "report.docx"
+    document.write_bytes(b"existing-report")
+
+    class RepairableDocumentsDatabase:
+        repaired = False
+
+        def report_documents(self, run_id: str) -> list[dict[str, object]]:
+            assert run_id == "published-run"
+            if not self.repaired:
+                return []
+            return [{
+                "package_status": "VALID",
+                "path": str(document),
+            }]
+
+        def repair_publication_documents(
+            self,
+            run_id: str,
+            *,
+            client_id: str,
+            tenant_id: str,
+            allowed_root: Path,
+        ) -> list[dict[str, object]]:
+            assert run_id == "published-run"
+            assert client_id == tenant_id == "client-01"
+            assert allowed_root.name == "data"
+            self.repaired = True
+            return self.report_documents(run_id)
+
+    registry = InMemoryReportRegistry()
+    registry.register_report(valid_run("published-run", client_id="client-01"))
+    app = object.__new__(DashboardApplication)
+    app.project_root = tmp_path
+    app.report_registry = registry
+    app.database = RepairableDocumentsDatabase()
+    checkpoint = CollectionCheckpoint(
+        schema_version=1,
+        client_id="client-01",
+        tenant_id="client-01",
+        run_id="published-run",
+        logical_job_id="logical-run",
+        execution_type="MANUAL",
+        mode="manual",
+        origin="MANUAL",
+        attempt_number=1,
+        period={
+            "start_at": "2026-07-01T03:00:00Z",
+            "end_at": "2026-08-01T03:00:00Z",
+        },
+        component_metadata={},
+        artifacts=(),
+        hashes={},
+    )
+    job = WebBatchJob(
+        id=UUID(int=8001),
+        batch_id=UUID(int=8000),
+        client_id="client-01",
+        position=1,
+        status=BatchJobStatus.RUNNING,
+        attempt_number=2,
+        phase=BatchJobPhase.BUILD_RUNNING,
+    )
+
+    result = app._published_build_result(job, checkpoint)
+
+    assert result is not None
+    assert result.payload["reused_existing_publication"] is True
+    assert app.database.repaired is True
 
 
 class LocalClient:

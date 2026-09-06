@@ -210,6 +210,71 @@ def collect_tag_scope_snapshot(
     selected = tuple(tags)
     if not selected:
         raise ValueError("A coleta de escopo exige ao menos uma tag selecionada.")
+    path = (
+        Path(output_root)
+        / "snapshots"
+        / profile.client_id
+        / run_id
+        / "tenable_vm_tag_scope.snapshot.json"
+    )
+    if path.is_file():
+        existing = read_tag_scope_snapshot(path)
+        if (
+            str(existing.get("run_id") or "") != run_id
+            or str(existing.get("client_id") or "") != profile.client_id
+            or str(existing.get("tenant_id") or "") != profile.tenant_id
+        ):
+            raise FileExistsError(
+                "Snapshot de tags existente pertence a outra identidade."
+            )
+        rows = tuple(
+            row
+            for row in existing.get("selected_tags") or ()
+            if isinstance(row, Mapping)
+        )
+        warnings = tuple(
+            dict(warning)
+            for warning in existing.get("warnings") or ()
+            if isinstance(warning, Mapping)
+        )
+        observed_tag_ids = {
+            _text(row.get("uuid")) for row in rows if _text(row.get("uuid"))
+        } | {
+            _text(warning.get("tag_uuid"))
+            for warning in warnings
+            if _text(warning.get("tag_uuid"))
+        }
+        if observed_tag_ids != {tag.uuid for tag in selected}:
+            raise FileExistsError(
+                "Snapshot de tags existente usa uma seleção diferente."
+            )
+        selected_by_uuid = {tag.uuid: tag for tag in selected}
+        scopes: list[TagAssetScope] = []
+        for row in rows:
+            tag = selected_by_uuid[_text(row.get("uuid"))]
+            if (
+                _text(row.get("category_uuid")) != tag.category_uuid
+                or _text(row.get("category_name")) != tag.category_name
+                or _text(row.get("value")) != tag.value
+            ):
+                raise FileExistsError(
+                    "Snapshot de tags existente diverge da configuração atual."
+                )
+            scopes.append(
+                TagAssetScope(
+                    tag=tag,
+                    asset_ids=frozenset(
+                        _text(asset_id)
+                        for asset_id in row.get("asset_ids") or ()
+                        if _text(asset_id)
+                    ),
+                )
+            )
+        return TagScopeCollection(
+            path=path,
+            scopes=tuple(scopes),
+            warnings=warnings,
+        )
     selected_rows: list[dict[str, Any]] = []
     scopes: list[TagAssetScope] = []
     warnings: list[dict[str, Any]] = []
@@ -250,13 +315,6 @@ def collect_tag_scope_snapshot(
         "selected_tags": selected_rows,
         "warnings": warnings,
     }
-    path = (
-        Path(output_root)
-        / "snapshots"
-        / profile.client_id
-        / run_id
-        / "tenable_vm_tag_scope.snapshot.json"
-    )
     _write_exclusive(
         path,
         (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),

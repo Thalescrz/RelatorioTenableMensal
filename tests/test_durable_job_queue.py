@@ -22,7 +22,13 @@ from tenable_reports.application.component_collection import (
     component_checkpoint_path,
     persist_component_checkpoint,
 )
-from tenable_reports.application.staged_execution import load_collection_checkpoint
+from tenable_reports.application.staged_execution import (
+    CollectionCheckpoint,
+    RemoteCollectionDependencies,
+    RemoteCollectionRequest,
+    collect_client_remote,
+    load_collection_checkpoint,
+)
 from tenable_reports.application.web_batches_memory import (
     InMemoryRemoteComponentRepository,
     InMemoryWebBatchRepository,
@@ -1521,6 +1527,315 @@ def test_explicit_retry_consolidates_complete_components_without_remote_collecti
     )
     assert "REMOTE_COMPONENTS_CONSOLIDATING" in event_types
     assert "COLLECTION_READY" in event_types
+
+
+def _seed_complete_component_jobs_for_retry(
+    *,
+    repository: InMemoryWebBatchRepository,
+    component_repository: InMemoryRemoteComponentRepository,
+    queue: DurableDashboardJobQueue,
+    tmp_path: Path,
+    count: int,
+) -> tuple[WebBatch, tuple[WebBatchJob, ...]]:
+    source_batch = replace(
+        _batch(status=BatchStatus.COMPLETE_WITH_FAILURES),
+        options={"execution_model": "STAGED_V1"},
+    )
+    source_jobs = tuple(
+        replace(
+            _job(
+                position,
+                status=BatchJobStatus.FAILED,
+                phase=BatchJobPhase.TERMINAL,
+            ),
+            logical_job_id=f"logical-ready-{position}",
+            run_id=f"run-ready-{position}",
+            error_code="UNEXPECTED",
+            payload={
+                "mode": "manual",
+                "run_id": f"run-ready-{position}",
+                "start_at": "2026-08-01T00:00:00Z",
+                "end_at": "2026-09-01T00:00:00Z",
+            },
+        )
+        for position in range(1, count + 1)
+    )
+    repository.create_batch(source_batch, source_jobs)
+    for source_job in source_jobs:
+        source_request = queue._component_request(
+            source_job,
+            component=ReportComponent.VM_CORE,
+        )
+        rows = component_repository.create_for_job(
+            batch_job_id=source_job.id,
+            components=tuple(ReportComponent),
+            window_number=1,
+            deadline_at=datetime.now(UTC) + timedelta(hours=10),
+            origin="MANUAL",
+            attempt_number=1,
+        )
+        by_component = {row.component: row for row in rows}
+        for offset, component in enumerate(ReportComponent, start=1):
+            status = (
+                RemoteComponentState.NOT_APPLICABLE
+                if component is ReportComponent.CLOUD
+                else RemoteComponentState.COMPLETE
+            )
+            checkpoint = ComponentCollectionCheckpoint(
+                schema_version=1,
+                checkpoint_path=component_checkpoint_path(
+                    source_request,
+                    component,
+                ),
+                component=component,
+                client_id=source_request.client_id,
+                tenant_id=source_request.tenant_id,
+                run_id=source_request.run_id,
+                logical_job_id=source_request.logical_job_id,
+                execution_type=source_request.execution_type,
+                mode=source_request.mode,
+                origin=source_request.origin,
+                attempt_number=source_request.attempt_number,
+                period=dict(source_request.period),
+                status=status,
+                artifacts=(),
+                metadata=(
+                    {"reason_code": "CLOUD_DISABLED"}
+                    if component is ReportComponent.CLOUD
+                    else {}
+                ),
+                query_fingerprint=str(offset) * 64,
+            )
+            persist_component_checkpoint(checkpoint, storage_root=tmp_path)
+            component_repository.transition(
+                by_component[component].id,
+                expected_state=RemoteComponentState.PENDING,
+                requested_state=status,
+                checkpoint_path=str(checkpoint.checkpoint_path),
+                query_fingerprint=checkpoint.query_fingerprint,
+                ended_at=datetime.now(UTC),
+            )
+    return source_batch, source_jobs
+
+
+def test_collective_local_consolidation_hides_pending_components_from_live_workers(
+    tmp_path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-collective-consolidation",
+        start_worker=False,
+        remote_workers=4,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+        poll_interval=0.01,
+    )
+    source_batch, source_jobs = _seed_complete_component_jobs_for_retry(
+        repository=repository,
+        component_repository=component_repository,
+        queue=queue,
+        tmp_path=tmp_path,
+        count=20,
+    )
+    original_create = component_repository.create_for_job
+    worker_claimed = threading.Event()
+    release_worker = threading.Event()
+    first_retry_create = threading.Event()
+
+    def remote_runner(component) -> None:
+        worker_claimed.set()
+        release_worker.wait(2)
+
+    def create_with_race_window(**kwargs):
+        rows = original_create(**kwargs)
+        if kwargs["batch_job_id"] not in {job.id for job in source_jobs} and not first_retry_create.is_set():
+            first_retry_create.set()
+            worker_claimed.wait(0.5)
+        return rows
+
+    component_repository.create_for_job = create_with_race_window
+    assert queue._component_pool is not None
+    queue._component_pool.runner = remote_runner
+    queue._component_pool.start()
+    try:
+        detail = queue.derive_batch(
+            DerivedBatchRequest(
+                source_batch_id=source_batch.id,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key="retry-collective-consolidation",
+                actor="test",
+                reason="Montagem local coletiva.",
+            )
+        )
+        retry_batch_id = UUID(detail["batch"]["id"])
+        retry_jobs = repository.list_batch_jobs(retry_batch_id)
+    finally:
+        release_worker.set()
+        queue.close()
+
+    assert worker_claimed.is_set() is False
+    assert len(retry_jobs) == 20
+    assert all(job.status is BatchJobStatus.QUEUED for job in retry_jobs)
+    assert all(job.phase is BatchJobPhase.READY_FOR_BUILD for job in retry_jobs)
+    assert all(job.collection_checkpoint_path for job in retry_jobs)
+
+
+def test_collective_local_consolidation_failure_does_not_abandon_siblings(
+    tmp_path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-consolidation-isolation",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    source_batch, source_jobs = _seed_complete_component_jobs_for_retry(
+        repository=repository,
+        component_repository=component_repository,
+        queue=queue,
+        tmp_path=tmp_path,
+        count=2,
+    )
+    original_restore = queue._restore_publishable_components_for_local_consolidation
+
+    def restore_with_one_failure(*, source_job, retry_job, latest):
+        if source_job.id == source_jobs[0].id:
+            raise RuntimeError("fixture preparation failure")
+        return original_restore(
+            source_job=source_job,
+            retry_job=retry_job,
+            latest=latest,
+        )
+
+    try:
+        with patch.object(
+            queue,
+            "_restore_publishable_components_for_local_consolidation",
+            side_effect=restore_with_one_failure,
+        ):
+            detail = queue.derive_batch(
+                DerivedBatchRequest(
+                    source_batch_id=source_batch.id,
+                    kind=BatchAction.RETRY_INCOMPLETE,
+                    idempotency_key="retry-consolidation-isolation",
+                    actor="test",
+                    reason="Isolar falha de preparação.",
+                )
+            )
+        retry_jobs = repository.list_batch_jobs(UUID(detail["batch"]["id"]))
+    finally:
+        queue.close()
+
+    assert retry_jobs[0].status is BatchJobStatus.FAILED
+    assert retry_jobs[0].phase is BatchJobPhase.TERMINAL
+    assert retry_jobs[0].error_code == "LOCAL_CONSOLIDATION_PREPARATION_FAILED"
+    assert "fixture preparation failure" not in str(retry_jobs[0].error_message)
+    assert retry_jobs[1].status is BatchJobStatus.QUEUED
+    assert retry_jobs[1].phase is BatchJobPhase.READY_FOR_BUILD
+
+
+def test_local_consolidation_recovers_components_from_retry_ancestor(
+    tmp_path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-ancestor-consolidation",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    root_batch, root_jobs = _seed_complete_component_jobs_for_retry(
+        repository=repository,
+        component_repository=component_repository,
+        queue=queue,
+        tmp_path=tmp_path,
+        count=2,
+    )
+    interrupted_batch_id = UUID(int=1700)
+    interrupted_jobs = tuple(
+        replace(
+            source_job,
+            id=UUID(int=1700 + position),
+            batch_id=interrupted_batch_id,
+            position=position,
+            status=BatchJobStatus.INTERRUPTED,
+            phase=BatchJobPhase.TERMINAL,
+            retry_of_batch_job_id=source_job.id,
+            collection_checkpoint_path=None,
+        )
+        for position, source_job in enumerate(root_jobs, start=1)
+    )
+    repository.create_batch(
+        WebBatch(
+            id=interrupted_batch_id,
+            idempotency_key="batch:interrupted-before-component-copy",
+            kind="RETRY_INCOMPLETE",
+            status=BatchStatus.PAUSED,
+            options={"execution_model": "STAGED_V1"},
+            source_batch_id=root_batch.id,
+        ),
+        interrupted_jobs,
+    )
+
+    try:
+        detail = queue.derive_batch(
+            DerivedBatchRequest(
+                source_batch_id=interrupted_batch_id,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key="retry-components-from-ancestor",
+                actor="test",
+                reason="Recuperar preparação interrompida.",
+            )
+        )
+        retry_jobs = repository.list_batch_jobs(UUID(detail["batch"]["id"]))
+        retry_components = component_repository.list_for_jobs(
+            tuple(job.id for job in retry_jobs)
+        )
+    finally:
+        queue.close()
+
+    assert len(retry_jobs) == 2
+    assert all(job.status is BatchJobStatus.QUEUED for job in retry_jobs)
+    assert all(job.phase is BatchJobPhase.READY_FOR_BUILD for job in retry_jobs)
+    assert all(job.collection_checkpoint_path for job in retry_jobs)
+    assert all(
+        {component.state for component in retry_components[job.id]}
+        == {
+            RemoteComponentState.COMPLETE,
+            RemoteComponentState.NOT_APPLICABLE,
+        }
+        for job in retry_jobs
+    )
 
 
 def test_component_finalization_failure_is_recorded_in_parent_job(tmp_path) -> None:
@@ -3354,3 +3669,175 @@ def test_staged_workers_construct_collect_then_build_commands(tmp_path) -> None:
     checkpoint = Path(collect_command[collect_command.index("--checkpoint") + 1])
     assert checkpoint.is_relative_to(custom_output_root)
     assert snapshot["jobs"][0]["status"] == "COMPLETE"
+
+
+def test_staged_build_reuses_valid_existing_publication(tmp_path) -> None:
+    checkpoint_path = (tmp_path / "checkpoints" / "existing.json").resolve()
+    request = RemoteCollectionRequest(
+        storage_root=tmp_path.resolve(),
+        checkpoint_path=checkpoint_path,
+        client_id="client-01",
+        tenant_id="client-01",
+        run_id="published-run",
+        logical_job_id="logical-run",
+        execution_type="MANUAL",
+        mode="manual",
+        origin="MANUAL",
+        attempt_number=1,
+        period={
+            "start_at": "2026-08-01T03:00:00Z",
+            "end_at": "2026-09-01T03:00:00Z",
+        },
+    )
+    checkpoint = CollectionCheckpoint(
+        schema_version=1,
+        client_id=request.client_id,
+        tenant_id=request.tenant_id,
+        run_id=request.run_id,
+        logical_job_id=request.logical_job_id,
+        execution_type=request.execution_type,
+        mode=request.mode,
+        origin=request.origin,
+        attempt_number=request.attempt_number,
+        period=request.period,
+        component_metadata={},
+        artifacts=(),
+        hashes={},
+    )
+    collect_client_remote(
+        request,
+        dependencies=RemoteCollectionDependencies(collect=lambda _: checkpoint),
+    )
+    executor_calls: list[str] = []
+    resolver_calls: list[tuple[str, str]] = []
+
+    def legacy_runner(*_args, **_kwargs):
+        executor_calls.append("called")
+        return subprocess.CompletedProcess([], 0, stdout='{"status":"COMPLETE"}')
+
+    def resolve_existing(job, loaded_checkpoint):
+        resolver_calls.append((job.client_id, loaded_checkpoint.run_id))
+        return BatchJobResult(
+            status=BatchJobStatus.COMPLETE,
+            payload={
+                "status": "COMPLETE",
+                "run_id": loaded_checkpoint.run_id,
+                "reused_existing_publication": True,
+            },
+        )
+
+    executor = JobQueue(
+        tmp_path,
+        tmp_path / "orchestration" / "clients.json",
+        legacy_runner,
+        start_worker=False,
+    )
+    queue = DurableDashboardJobQueue(
+        repository=InMemoryWebBatchRepository(),
+        executor=executor,
+        worker_id="worker-existing-publication",
+        start_worker=False,
+        staged_output_root=tmp_path,
+        published_build_resolver=resolve_existing,
+    )
+    job = replace(
+        _job(1, status=BatchJobStatus.RUNNING, phase=BatchJobPhase.BUILD_RUNNING),
+        client_id="client-01",
+        collection_checkpoint_path=str(checkpoint_path),
+    )
+    try:
+        result = queue._run_build_job(job)
+    finally:
+        queue.close()
+
+    assert result.status is BatchJobStatus.COMPLETE
+    assert result.payload["reused_existing_publication"] is True
+    assert resolver_calls == [("client-01", "published-run")]
+    assert executor_calls == []
+
+
+def test_staged_build_runs_normally_without_existing_publication(tmp_path) -> None:
+    executor_calls: list[str] = []
+    config_path = tmp_path / "orchestration" / "clients.json"
+    store = DashboardConfigStore(project_root=tmp_path, config_path=config_path)
+    store.add_client(
+        {
+            "client_id": "client-1",
+            "display_name": "Client 1",
+            "access_key": "fixture-access",
+            "secret_key": "fixture-secret",
+        }
+    )
+
+    def legacy_runner(command, *_args, **_kwargs):
+        executor_calls.append(command[3])
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout='{"status":"COMPLETE","run_id":"new-run"}',
+            stderr="",
+        )
+
+    executor = JobQueue(
+        tmp_path,
+        config_path,
+        legacy_runner,
+        start_worker=False,
+    )
+    checkpoint_path = (tmp_path / "checkpoint.json").resolve()
+    request = RemoteCollectionRequest(
+        storage_root=tmp_path.resolve(),
+        checkpoint_path=checkpoint_path,
+        client_id="client-1",
+        tenant_id="client-1",
+        run_id="new-run",
+        logical_job_id="logical-run",
+        execution_type="MANUAL",
+        mode="manual",
+        origin="MANUAL",
+        attempt_number=1,
+        period={
+            "start_at": "2026-08-01T03:00:00Z",
+            "end_at": "2026-09-01T03:00:00Z",
+        },
+    )
+    collect_client_remote(
+        request,
+        dependencies=RemoteCollectionDependencies(
+            collect=lambda _: CollectionCheckpoint(
+                schema_version=1,
+                client_id=request.client_id,
+                tenant_id=request.tenant_id,
+                run_id=request.run_id,
+                logical_job_id=request.logical_job_id,
+                execution_type=request.execution_type,
+                mode=request.mode,
+                origin=request.origin,
+                attempt_number=request.attempt_number,
+                period=request.period,
+                component_metadata={},
+                artifacts=(),
+                hashes={},
+            )
+        ),
+    )
+    queue = DurableDashboardJobQueue(
+        repository=InMemoryWebBatchRepository(),
+        executor=executor,
+        worker_id="worker-no-existing-publication",
+        start_worker=False,
+        staged_output_root=tmp_path,
+        published_build_resolver=lambda *_: None,
+    )
+    job = replace(
+        _job(1, status=BatchJobStatus.RUNNING, phase=BatchJobPhase.BUILD_RUNNING),
+        payload={"client_id": "client-1", "mode": "manual"},
+        collection_checkpoint_path=str(checkpoint_path.resolve()),
+    )
+    try:
+        result = queue._run_build_job(job)
+    finally:
+        queue.close()
+
+    assert result.status is BatchJobStatus.COMPLETE
+    assert executor_calls == ["build-client"]

@@ -101,7 +101,10 @@ class PostgresReportComponentRepository:
                   and existing.retryable = excluded.retryable
                   and existing.failure_code is not distinct from excluded.failure_code
                   and existing.failure_message is not distinct from excluded.failure_message
-                  and existing.checkpoint_path is not distinct from excluded.checkpoint_path
+                  and (
+                      existing.checkpoint_path is not distinct from excluded.checkpoint_path
+                      or existing.status in ('COMPLETE', 'SKIPPED')
+                  )
                   and existing.artifact_references = excluded.artifact_references
                 returning {_ATTEMPT_COLUMNS}
                 """,
