@@ -196,6 +196,8 @@ def test_postgresql_claim_uses_skip_locked_and_closes_before_runner_work() -> No
     normalized = " ".join(sql.lower().split())
     assert "for update skip locked" in normalized
     assert "lease_expires_at" in normalized
+    assert "job.status = 'running'" in normalized
+    assert "job.phase = 'remote_running'" in normalized
     assert params[-2:] == ("remote-1", 60)
 
 

@@ -177,13 +177,21 @@ reduzi-la. `local_build_workers` permanece obrigatoriamente em 1. Use:
 - **Retomar lote** para liberar somente trabalhos preservados e retomáveis em sua
   fase;
 - **Tentar falhas/interrompidos** depois do término para criar uma fila somente de
-  `FAILED`, `INTERRUPTED` e `CANCELLED_BY_USER`; o lote derivado passa a ser a
-  seleção ativa do painel assim que a API o cria;
+  `FAILED`, `INTERRUPTED` e `CANCELLED_BY_USER`, incluindo falhas locais posteriores
+  a componentes remotos já completos; o lote derivado passa a ser a seleção ativa
+  do painel assim que a API o cria;
 - **Gerar todos novamente** quando a seleção precisa de nova execução.
 
 A pausa não repete cliente concluído. A retomada também não reabre falha ou
 interrupção; essas situações exigem o lote derivado. `COMPLETE_WITH_FAILURES` é um
 resultado terminal do lote, não um estado ainda executando.
+
+Reiniciar o servidor não executa trabalho preservado. Jobs que estavam em coleta
+ou montagem são classificados como `INTERRUPTED/TERMINAL`, e o lote fica pausado.
+Selecionar o lote também não inicia nada: clique em **Tentar falhas/interrompidos**
+para autorizar a tentativa derivada. Se todos os componentes do cliente já têm
+checkpoint publicável, essa ação faz somente consolidação e montagem locais, sem
+nova chamada VM, WAS ou Cloud.
 
 Ao parar, o arquivo de controle solicita uma saída cooperativa. O export remoto não
 é cancelado: UUID, manifesto parcial e chunks persistidos ficam disponíveis para uma
@@ -399,10 +407,11 @@ manual lê sempre o escopo `data/manual`; automática mensal lê
 `LOCAL_ARTIFACT_SCOPE_MISMATCH`, sem criar publicação parcial.
 
 VM, WAS e Cloud podem terminar em horários diferentes. Assim que os componentes de
-um cliente ficam terminais, ele entra individualmente em `READY_FOR_BUILD`; não é
-necessário esperar o lote inteiro. Após reiniciar o servidor, jobs que ficaram em
-`REMOTE_RUNNING` com todos os checkpoints já gravados são reavaliados e seguem para
-montagem sem nova chamada à Tenable. A sequência esperada nos eventos é
+um cliente ficam terminais durante uma execução ativa, ele entra individualmente em
+`READY_FOR_BUILD`; não é necessário esperar o lote inteiro. Após reiniciar o
+servidor, o job abandonado fica interrompido até a retentativa explícita. Quando os
+checkpoints já estão completos, essa retentativa segue para montagem sem nova
+chamada à Tenable. A sequência esperada nos eventos é
 `REMOTE_COMPONENTS_CONSOLIDATING`, `COLLECTION_READY`, `BUILD_STARTED` e
 `JOB_FINISHED`.
 

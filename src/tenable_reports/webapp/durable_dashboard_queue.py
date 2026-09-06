@@ -215,6 +215,26 @@ def _checkpoint_ready_for_build(value: str | Path | None) -> bool:
     return True
 
 
+def _components_ready_for_local_consolidation(
+    components: Mapping[ReportComponent, RemoteComponentWindow],
+) -> bool:
+    """Return whether an explicit retry can skip every remote collector."""
+
+    if set(components) != set(ReportComponent):
+        return False
+    for component in ReportComponent:
+        window = components[component]
+        if window.state not in _REMOTE_COMPONENT_PUBLISHABLE_STATES:
+            return False
+        if window.checkpoint_path:
+            if not Path(window.checkpoint_path).is_file():
+                return False
+        elif window.state is not RemoteComponentState.NOT_APPLICABLE:
+            return False
+    vm = components[ReportComponent.VM_CORE]
+    return bool(vm.checkpoint_path and Path(vm.checkpoint_path).is_file())
+
+
 def _safe_dashboard_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {
@@ -961,6 +981,21 @@ class DurableDashboardJobQueue:
                 if current is None or component.attempt_number > current.attempt_number:
                     latest_components[component.component] = component
             latest_components_by_job[source_job.id] = latest_components
+        local_consolidation_by_job = {
+            source_job.id: (
+                source_job.status
+                in {
+                    BatchJobStatus.FAILED,
+                    BatchJobStatus.PARTIALLY_COMPLETE,
+                    BatchJobStatus.INTERRUPTED,
+                    BatchJobStatus.CANCELLED_BY_USER,
+                }
+                and _components_ready_for_local_consolidation(
+                    latest_components_by_job.get(source_job.id, {})
+                )
+            )
+            for source_job in source_jobs
+        }
         replacement_progress: dict[UUID, WebBatchEvent] = {}
         for event in self.repository.list_events(source.id):
             progress = event.payload
@@ -984,6 +1019,10 @@ class DurableDashboardJobQueue:
                 and (
                     request.kind is BatchAction.RERUN_ALL
                     or _batch_job_retryability(job).retryable
+                    or (
+                        request.kind is BatchAction.RETRY_INCOMPLETE
+                        and local_consolidation_by_job.get(job.id, False)
+                    )
                     or any(
                         _component_is_retryable(component)
                         for component in latest_components_by_job.get(
@@ -999,6 +1038,7 @@ class DurableDashboardJobQueue:
                 for job in selected
                 if (
                     job.status is not BatchJobStatus.PARTIALLY_COMPLETE
+                    or local_consolidation_by_job.get(job.id, False)
                     or (
                         any(
                             str(component) in {"VM_CORE", "WAS", "CLOUD"}
@@ -1046,6 +1086,7 @@ class DurableDashboardJobQueue:
             created_at=created_at,
         )
         jobs: list[WebBatchJob] = []
+        local_consolidations: list[tuple[WebBatchJob, WebBatchJob]] = []
         transient_keys = {
             "batch_id",
             "job_id",
@@ -1168,57 +1209,71 @@ class DurableDashboardJobQueue:
                 )
                 else None
             )
-            jobs.append(
-                WebBatchJob(
-                    id=job_id,
-                    batch_id=batch_id,
-                    client_id=source_job.client_id,
-                    position=position,
-                    status=BatchJobStatus.QUEUED,
-                    attempt_number=(
-                        source_job.attempt_number + 1 if is_retry else 1
-                    ),
-                    phase=(
-                        BatchJobPhase.LEGACY
-                        if component_only_retry
-                        else
-                        BatchJobPhase.READY_FOR_BUILD
-                        if reusable_checkpoint
-                        else BatchJobPhase.REMOTE_QUEUED
-                        if staged_model
-                        else BatchJobPhase.LEGACY
-                    ),
-                    payload=payload,
-                    retry_of_batch_job_id=source_job.id if is_retry else None,
-                    logical_job_id=str(
-                        source_job.logical_job_id or source_job.id.hex
-                    ),
-                    collection_checkpoint_path=(
-                        reusable_checkpoint
-                    ),
-                    vm_export_uuid=(
-                        retry_vm_export_uuid if is_retry else None
-                    ),
-                    vm_resume_manifest_path=(
-                        retry_vm_resume_manifest if is_retry else None
-                    ),
-                    remote_export_started_at=(
-                        retry_remote_started_at if is_retry else None
-                    ),
-                    remote_status_at=(
-                        None
-                        if is_retry and has_unpersisted_replacement
-                        else source_job.remote_status_at if is_retry else None
-                    ),
-                    remote_progress_at=(
-                        None
-                        if is_retry and has_unpersisted_replacement
-                        else source_job.remote_progress_at if is_retry else None
-                    ),
-                    control_file=control_file,
-                    created_at=created_at,
-                )
+            local_consolidation = bool(
+                is_retry
+                and staged_model
+                and not reusable_checkpoint
+                and local_consolidation_by_job.get(source_job.id, False)
             )
+            if local_consolidation:
+                payload["status"] = BatchJobStatus.RUNNING.value
+            created_job = WebBatchJob(
+                id=job_id,
+                batch_id=batch_id,
+                client_id=source_job.client_id,
+                position=position,
+                status=(
+                    BatchJobStatus.RUNNING
+                    if local_consolidation
+                    else BatchJobStatus.QUEUED
+                ),
+                attempt_number=(
+                    source_job.attempt_number + 1 if is_retry else 1
+                ),
+                phase=(
+                    BatchJobPhase.LEGACY
+                    if component_only_retry
+                    else BatchJobPhase.READY_FOR_BUILD
+                    if reusable_checkpoint
+                    else BatchJobPhase.REMOTE_RUNNING
+                    if local_consolidation
+                    else BatchJobPhase.REMOTE_QUEUED
+                    if staged_model
+                    else BatchJobPhase.LEGACY
+                ),
+                payload=payload,
+                retry_of_batch_job_id=source_job.id if is_retry else None,
+                logical_job_id=str(
+                    source_job.logical_job_id or source_job.id.hex
+                ),
+                collection_checkpoint_path=reusable_checkpoint,
+                vm_export_uuid=(
+                    retry_vm_export_uuid if is_retry else None
+                ),
+                vm_resume_manifest_path=(
+                    retry_vm_resume_manifest if is_retry else None
+                ),
+                remote_export_started_at=(
+                    retry_remote_started_at if is_retry else None
+                ),
+                remote_status_at=(
+                    None
+                    if is_retry and has_unpersisted_replacement
+                    else source_job.remote_status_at if is_retry else None
+                ),
+                remote_progress_at=(
+                    None
+                    if is_retry and has_unpersisted_replacement
+                    else source_job.remote_progress_at if is_retry else None
+                ),
+                control_file=control_file,
+                created_at=created_at,
+                started_at=created_at if local_consolidation else None,
+                remote_started_at=created_at if local_consolidation else None,
+            )
+            jobs.append(created_job)
+            if local_consolidation:
+                local_consolidations.append((source_job, created_job))
         try:
             self.repository.create_batch(derived, tuple(jobs))
         except ValueError as exc:
@@ -1239,8 +1294,77 @@ class DurableDashboardJobQueue:
                 idempotency_key=f"event:{batch_key}",
             )
         )
+        for source_job, created_job in local_consolidations:
+            self._restore_publishable_components_for_local_consolidation(
+                source_job=source_job,
+                retry_job=created_job,
+                latest=latest_components_by_job[source_job.id],
+            )
+            self._finalize_remote_components_safely(created_job)
         self._dispatcher.wake()
         return self.batch_snapshot(batch_id)
+
+    def _restore_publishable_components_for_local_consolidation(
+        self,
+        *,
+        source_job: WebBatchJob,
+        retry_job: WebBatchJob,
+        latest: Mapping[ReportComponent, RemoteComponentWindow],
+    ) -> None:
+        repository = self._remote_component_repository
+        if repository is None:
+            raise RuntimeError("Repositório de componentes remotos ausente.")
+        if not _components_ready_for_local_consolidation(latest):
+            raise ValueError(
+                "Os componentes preservados não estão prontos para montagem local."
+            )
+        created = repository.create_for_job(
+            batch_job_id=retry_job.id,
+            components=tuple(ReportComponent),
+            window_number=1,
+            deadline_at=datetime.now(UTC)
+            + timedelta(seconds=self._remote_processing_timeout_seconds),
+            origin="MANUAL_RETRY",
+            query_fingerprints={
+                component: latest[component].query_fingerprint
+                for component in ReportComponent
+                if latest[component].query_fingerprint
+            },
+            attempt_number=1,
+        )
+        for row in created:
+            source = latest[row.component]
+            repository.transition(
+                row.id,
+                expected_state=RemoteComponentState.PENDING,
+                requested_state=source.state,
+                identifier_kind=source.identifier_kind,
+                remote_identifier=source.remote_identifier,
+                identifier_origin=source.identifier_origin,
+                query_fingerprint=source.query_fingerprint,
+                checkpoint_path=source.checkpoint_path,
+                completed_units=source.completed_units,
+                total_units=source.total_units,
+                last_remote_status=source.last_remote_status,
+                last_contact_at=source.last_contact_at,
+                last_progress_at=source.last_progress_at,
+                failure_code=source.failure_code,
+                failure_message=source.failure_message,
+                retryable=source.retryable,
+                ended_at=source.ended_at or datetime.now(UTC),
+            )
+        self.repository.append_event(
+            WebBatchEvent(
+                batch_id=retry_job.batch_id,
+                job_id=retry_job.id,
+                event_type="LOCAL_CONSOLIDATION_RETRY_CREATED",
+                payload={
+                    "source_batch_id": str(source_job.batch_id),
+                    "source_job_id": str(source_job.id),
+                    "remote_collection_skipped": True,
+                },
+            )
+        )
 
     def request_action(
         self,
@@ -2308,7 +2432,7 @@ class DurableDashboardJobQueue:
             )
         for component in created:
             recovery = recovery_by_component.get(component.component)
-            if recovery is None:
+            if recovery is None or component.state is not RemoteComponentState.PENDING:
                 continue
             self._remote_component_repository.transition(
                 component.id,

@@ -695,7 +695,8 @@ def test_repository_reconciles_jobs_owned_by_inactive_workers() -> None:
 
     assert reconciled == 1
     reconcile_sql, reconcile_params = database.connection_value.calls[0]
-    assert "else 'interrupted'" in reconcile_sql.lower()
+    assert "set status = 'interrupted'" in reconcile_sql.lower()
+    assert "phase = 'terminal'" in reconcile_sql.lower()
     assert "interrupt_requested" in reconcile_sql.lower()
     assert "worker_id <> all" in reconcile_sql.lower()
     assert reconcile_params == (["new-worker"],)
@@ -725,16 +726,16 @@ def test_repository_finishes_abandoned_stop_requested_batch() -> None:
     assert "ended_at" in normalized_sql
 
 
-def test_repository_requeues_abandoned_remote_and_build_jobs(
+def test_repository_interrupts_abandoned_remote_and_build_jobs_until_retry(
     tmp_path: Path,
 ) -> None:
     checkpoint = tmp_path / "collection-checkpoint.json"
     checkpoint.write_text("{}", encoding="utf-8")
-    remote_row = _job_row(status="QUEUED", phase="REMOTE_QUEUED")
+    remote_row = _job_row(status="INTERRUPTED", phase="TERMINAL")
     build_row = list(
         _job_row(
-            status="QUEUED",
-            phase="READY_FOR_BUILD",
+            status="INTERRUPTED",
+            phase="TERMINAL",
             checkpoint_path=str(checkpoint.resolve()),
         )
     )
@@ -744,7 +745,9 @@ def test_repository_requeues_abandoned_remote_and_build_jobs(
     database = _Database(
         [
             _Cursor(many=(remote_row, tuple(build_row))),
+            _Cursor(one=_batch_row(status="PAUSED")),
             _Cursor(one=(1,)),
+            _Cursor(one=_batch_row(status="PAUSED")),
             _Cursor(one=(1,)),
             _Cursor(many=()),
         ]
@@ -759,12 +762,13 @@ def test_repository_requeues_abandoned_remote_and_build_jobs(
     reconcile_sql, _ = database.connection_value.calls[0]
     assert "REMOTE_RUNNING" in reconcile_sql
     assert "BUILD_RUNNING" in reconcile_sql
-    assert "REMOTE_QUEUED" in reconcile_sql
-    assert "READY_FOR_BUILD" in reconcile_sql
-    first_event = database.connection_value.calls[1][1]
-    second_event = database.connection_value.calls[2][1]
-    assert first_event[2] == "JOB_REQUEUED_AFTER_RESTART"
-    assert second_event[2] == "JOB_REQUEUED_AFTER_RESTART"
+    assert "then 'queued'" not in reconcile_sql.lower()
+    assert "then 'remote_queued'" not in reconcile_sql.lower()
+    assert "then 'ready_for_build'" not in reconcile_sql.lower()
+    first_event = database.connection_value.calls[2][1]
+    second_event = database.connection_value.calls[4][1]
+    assert first_event[2] == "JOB_RECOVERED_AS_INTERRUPTED"
+    assert second_event[2] == "JOB_RECOVERED_AS_INTERRUPTED"
 
 
 def test_repository_pauses_preexisting_queued_batches_on_startup() -> None:

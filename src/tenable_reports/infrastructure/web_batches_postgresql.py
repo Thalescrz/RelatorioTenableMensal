@@ -1240,37 +1240,20 @@ class PostgresWebBatchRepository(WebBatchRepository):
             rows = connection.execute(
                 f"""
                 update {SCHEMA_NAME}.web_batch_jobs
-                set status = case
-                        when status = 'INTERRUPT_REQUESTED' then 'INTERRUPTED'
-                        when phase in ('REMOTE_RUNNING', 'BUILD_RUNNING')
-                            then 'QUEUED'
-                        else 'INTERRUPTED'
-                    end,
-                    phase = case
-                        when status = 'INTERRUPT_REQUESTED' then 'TERMINAL'
-                        when phase = 'REMOTE_RUNNING' then 'REMOTE_QUEUED'
-                        when phase = 'BUILD_RUNNING' then 'READY_FOR_BUILD'
-                        else phase
-                    end,
+                set status = 'INTERRUPTED',
+                    phase = 'TERMINAL',
                     worker_id = null,
                     process_id = null, control_file = null,
-                    ended_at = case
-                        when status = 'INTERRUPT_REQUESTED' or phase = 'LEGACY'
-                            then now()
-                        else null
-                    end,
+                    ended_at = now(),
                     error_code = case
                         when status = 'INTERRUPT_REQUESTED'
                             then 'INTERRUPTED_BY_USER'
-                        when phase = 'LEGACY' then 'LOCAL_WORKER_RESTARTED'
-                        else null
+                        else 'LOCAL_WORKER_RESTARTED'
                     end,
                     error_message = case
                         when status = 'INTERRUPT_REQUESTED'
                             then 'Execucao local interrompida por solicitacao do usuario.'
-                        when phase = 'LEGACY'
-                            then 'Execucao local interrompida por reinicio.'
-                        else null
+                        else 'Execucao local interrompida por reinicio.'
                     end
                 where status in ('RUNNING', 'INTERRUPT_REQUESTED')
                   and (
@@ -1284,25 +1267,6 @@ class PostgresWebBatchRepository(WebBatchRepository):
             ).fetchall()
             jobs = tuple(_job_from_row(row) for row in rows)
             for job in jobs:
-                if job.phase in {
-                    BatchJobPhase.REMOTE_QUEUED,
-                    BatchJobPhase.READY_FOR_BUILD,
-                }:
-                    connection.execute(
-                        f"""
-                        insert into {SCHEMA_NAME}.web_batch_events (
-                            batch_id, job_id, event_type, payload
-                        ) values (%s, %s, %s, %s)
-                        returning id
-                        """,
-                        (
-                            job.batch_id,
-                            job.id,
-                            "JOB_REQUEUED_AFTER_RESTART",
-                            _jsonb({"phase": job.phase.value}),
-                        ),
-                    ).fetchone()
-                    continue
                 connection.execute(
                     f"""
                     update {SCHEMA_NAME}.web_batches
