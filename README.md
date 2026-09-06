@@ -103,8 +103,11 @@ limitada ao menor valor entre clientes elegíveis e 64; a montagem permanece em 
 Lotes antigos continuam como `LEGACY`. A exceção é uma retentativa derivada de um
 lote importado como `RECOVERED`: ela preserva UUID, período e manifesto, mas entra
 em `STAGED_V1` para consultar e baixar os exports de clientes distintos em paralelo.
-Reiniciar a interface não transforma trabalho preservado em nova coleta: o painel
-reconcilia a fase e o checkpoint.
+Reiniciar a interface não transforma trabalho preservado em nova coleta nem inicia
+montagem: trabalhos locais abandonados são marcados como interrompidos e o lote
+fica pausado. A retomada efetiva só ocorre quando o analista seleciona o lote e usa
+**Tentar falhas, parciais e interrompidos**; checkpoints completos seguem direto
+para a consolidação e para a montagem local, sem chamar a Tenable novamente.
 
 No painel do lote:
 

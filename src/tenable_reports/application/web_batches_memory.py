@@ -820,35 +820,6 @@ class InMemoryWebBatchRepository(WebBatchRepository):
                 ):
                     continue
                 ended_at = _now()
-                staged_phase = (
-                    {
-                        BatchJobPhase.REMOTE_RUNNING: BatchJobPhase.REMOTE_QUEUED,
-                        BatchJobPhase.BUILD_RUNNING: BatchJobPhase.READY_FOR_BUILD,
-                    }.get(job.phase)
-                    if job.status is BatchJobStatus.RUNNING
-                    else None
-                )
-                if staged_phase is not None:
-                    self._jobs[job_id] = replace(
-                        job,
-                        status=BatchJobStatus.QUEUED,
-                        phase=staged_phase,
-                        worker_id=None,
-                        process_id=None,
-                        control_file=None,
-                        ended_at=None,
-                    )
-                    self._events.append(
-                        WebBatchEvent(
-                            batch_id=job.batch_id,
-                            job_id=job.id,
-                            event_type="JOB_REQUEUED_AFTER_RESTART",
-                            payload={"phase": staged_phase.value},
-                            created_at=ended_at,
-                        )
-                    )
-                    reconciled += 1
-                    continue
                 self._jobs[job_id] = replace(
                     job,
                     status=BatchJobStatus.INTERRUPTED,

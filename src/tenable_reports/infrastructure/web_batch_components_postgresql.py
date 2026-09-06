@@ -175,6 +175,8 @@ class PostgresRemoteComponentRepository:
                         'PENDING', 'RUNNING_WINDOW_1',
                         'RUNNING_WINDOW_2', 'RUNNING_WINDOW_3'
                     )
+                      and job.status = 'RUNNING'
+                      and job.phase = 'REMOTE_RUNNING'
                       and (
                           component.worker_id is null
                           or component.lease_expires_at <= now()

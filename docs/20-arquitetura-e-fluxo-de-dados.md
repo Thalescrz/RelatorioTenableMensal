@@ -82,18 +82,21 @@ O trabalho persiste uma fase independente do status:
 - `LEGACY`: execução monolítica compatível.
 
 `COLLECTION_READY` é o evento transacional que valida o checkpoint e move o mesmo
-job de `REMOTE_RUNNING` para `READY_FOR_BUILD`. Um reinício devolve coleta
-abandonada a `REMOTE_QUEUED` com o que já foi persistido e montagem abandonada a
-`READY_FOR_BUILD`, sem abrir API remota na fase local. O snapshot HTTP oferece
-`checkpoint_ready` como booleano; caminhos de checkpoint ficam restritos ao
-processo local e ao PostgreSQL.
+job de `REMOTE_RUNNING` para `READY_FOR_BUILD`. Um reinício não reivindica coleta
+nem montagem abandonada: o job vira `INTERRUPTED/TERMINAL` e o lote fica `PAUSED`,
+preservando UUIDs, chunks e checkpoints. Somente a ação explícita **Tentar falhas,
+parciais e interrompidos** cria a nova tentativa. Se os três componentes já forem
+publicáveis, a tentativa restaura seus checkpoints, consolida localmente e entra em
+`READY_FOR_BUILD` sem chamada à API. O snapshot HTTP oferece `checkpoint_ready`
+como booleano; caminhos de checkpoint ficam restritos ao processo local e ao
+PostgreSQL.
 
 A consolidação é feita por cliente assim que as tentativas mais recentes de seus
 três componentes chegam a estados terminais; ela não aguarda os demais clientes do
 lote. O evento idempotente `REMOTE_COMPONENTS_CONSOLIDATING` precede
-`COLLECTION_READY`. Se o servidor reiniciar depois de os componentes terminarem, o
-inicializador reconhece os checkpoints existentes e repete somente essa consolidação
-local. Falha nessa fronteira encerra o job com
+`COLLECTION_READY`. Se o servidor reiniciar depois de os componentes terminarem, a
+retentativa explicitamente solicitada reconhece os checkpoints existentes e repete
+somente essa consolidação local. Falha nessa fronteira encerra o job com
 `CHECKPOINT_COMPONENT_INCOMPLETE`, sem apagar artefatos nem ficar indefinidamente
 em `REMOTE_RUNNING`.
 
@@ -315,6 +318,12 @@ alimenta a derivação, os contadores e o detalhe exibido pela API. O código gr
 `effective_error_code`. **Gerar todos novamente** inclui a seleção confirmada e
 exige a frase de confirmação. Nenhum dos dois altera o lote de origem; conflitos
 com outro trabalho ativo do mesmo cliente retornam HTTP 409.
+
+Selecionar um lote apenas altera o contexto visível do painel. A derivação e a
+execução só começam após o clique em **Tentar falhas, parciais e interrompidos**.
+Além das falhas remotas retentáveis, são elegíveis jobs cuja coleta terminou mas a
+consolidação/montagem não foi registrada: quando VM, WAS e Cloud têm estados
+publicáveis e checkpoints válidos, a nova tentativa pula os coletores remotos.
 
 Um snapshot anterior à fila durável pode ser validado por
 `import-web-batch-recovery --dry-run`. A aplicação mapeia `running` para

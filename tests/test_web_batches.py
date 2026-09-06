@@ -457,7 +457,7 @@ def test_complete_job_marks_the_staged_phase_terminal(tmp_path: Path) -> None:
     assert completed.collection_checkpoint_path == str(checkpoint.resolve())
 
 
-def test_reconcile_abandoned_staged_jobs_returns_each_to_its_queue(
+def test_reconcile_abandoned_staged_jobs_pauses_until_explicit_retry(
     tmp_path: Path,
 ) -> None:
     repository = InMemoryWebBatchRepository()
@@ -485,14 +485,19 @@ def test_reconcile_abandoned_staged_jobs_returns_each_to_its_queue(
     assert reconciled == 2
     stored_remote, stored_build = repository.list_batch_jobs(remote.batch_id)
     assert (stored_remote.status, stored_remote.phase) == (
-        BatchJobStatus.QUEUED,
-        BatchJobPhase.REMOTE_QUEUED,
+        BatchJobStatus.INTERRUPTED,
+        BatchJobPhase.TERMINAL,
     )
     assert (stored_build.status, stored_build.phase) == (
-        BatchJobStatus.QUEUED,
-        BatchJobPhase.READY_FOR_BUILD,
+        BatchJobStatus.INTERRUPTED,
+        BatchJobPhase.TERMINAL,
     )
     assert stored_build.collection_checkpoint_path == str(checkpoint.resolve())
+    assert repository.get_batch(remote.batch_id).status is BatchStatus.PAUSED
+    events = repository.list_events(remote.batch_id)
+    assert [event.event_type for event in events].count(
+        "JOB_RECOVERED_AS_INTERRUPTED"
+    ) == 2
 
 
 def test_reconcile_abandoned_stop_request_finishes_batch() -> None:

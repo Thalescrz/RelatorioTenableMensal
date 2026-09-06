@@ -149,11 +149,15 @@ Mudanças na fila precisam preservar estes contratos:
 - `REMOTE_COMPONENTS_CONSOLIDATING` usa chave idempotente por job, e uma segunda
   chamada depois de `READY_FOR_BUILD`, `BUILD_RUNNING` ou `TERMINAL` não regrava
   checkpoint nem evento;
-- reconciliação ocorre uma vez para todos os worker IDs: coleta abandonada volta a
-  `REMOTE_QUEUED` e build abandonado volta a `READY_FOR_BUILD`;
-- ao reinicializar componentes já terminais, execute novamente apenas a consolidação
-  local; uma exceção deve virar `CHECKPOINT_COMPONENT_INCOMPLETE`, nunca ser engolida
-  deixando o job em `REMOTE_RUNNING`;
+- reconciliação ocorre uma vez para todos os worker IDs: coleta ou build abandonado
+  vira `INTERRUPTED/TERMINAL`, o lote fica pausado e nenhum worker o reivindica no
+  startup;
+- a consulta de claim de componentes exige o job pai em `RUNNING/REMOTE_RUNNING`,
+  impedindo componentes pendentes de lote pausado ou terminal de chamar a API;
+- ao derivar explicitamente uma retentativa cujos componentes já são publicáveis,
+  restaure os checkpoints no novo job e execute apenas a consolidação local; uma
+  exceção deve virar `CHECKPOINT_COMPONENT_INCOMPLETE`, nunca ser engolida deixando
+  o job em `REMOTE_RUNNING`;
 - pausa bloqueia novos claims sem apagar checkpoints; retomada não altera
   `FAILED`, `INTERRUPTED` ou `CANCELLED_BY_USER`;
 - parada sinaliza todos os jobs ativos, preserva export/chunks e limita o fallback
