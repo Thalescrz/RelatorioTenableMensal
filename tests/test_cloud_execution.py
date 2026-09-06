@@ -341,6 +341,26 @@ def test_remote_cloud_preparation_writes_dataset_without_rendering_docx(
     assert calls["validate"] == []
 
 
+def test_remote_cloud_resume_publishes_snapshot_without_rendering_docx(
+    tmp_path: Path,
+) -> None:
+    dependencies, calls = _dependencies(tmp_path)
+    dataset_path, resume = _resume_context(tmp_path)
+
+    result = retry_cloud_component(
+        replace(_request(tmp_path), render_documents=False),
+        dependencies=dependencies,
+        resume=resume,
+    )
+
+    assert result.status is CloudExecutionStatus.COMPLETE
+    assert result.dataset_path == dataset_path
+    assert calls["collect"] == 0
+    assert calls["write"] == 0
+    assert calls["render"] == []
+    assert calls["validate"] == []
+
+
 def test_recent_compatible_non_exact_snapshot_blocks_duplicate_collection(
     tmp_path: Path,
 ) -> None:
@@ -602,6 +622,8 @@ def test_cloud_failure_stage_snapshot_publication_is_sanitized_and_retryable(
         stage=ComponentStage.SNAPSHOT_PUBLICATION,
         failure_code="CLOUD_SNAPSHOT_PUBLICATION_FAILED",
     )
+    assert result.dataset_path is not None
+    assert result.dataset_path.is_file()
 
 def test_cloud_interruption_is_propagated_instead_of_isolated(tmp_path: Path) -> None:
     dependencies, calls = _dependencies(tmp_path)

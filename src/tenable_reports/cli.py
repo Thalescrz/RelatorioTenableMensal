@@ -43,6 +43,7 @@ from tenable_reports.application.component_collection import (
     ComponentCollectionCheckpoint,
     component_checkpoint_path,
     component_query_fingerprint,
+    load_component_checkpoint,
     persist_component_checkpoint,
 )
 from tenable_reports.application.staged_execution import (
@@ -3345,6 +3346,79 @@ def _was_component_checkpoint(
     )
 
 
+def _cloud_component_resume_context(
+    args: argparse.Namespace,
+    *,
+    request: RemoteCollectionRequest,
+) -> CloudResumeContext | None:
+    previous_path = str(
+        getattr(args, "previous_component_checkpoint", None) or ""
+    ).strip()
+    if not previous_path:
+        return None
+    previous = load_component_checkpoint(
+        previous_path,
+        storage_root=request.storage_root,
+    )
+    stable_period_keys = ("start_at", "end_at", "mode", "timezone", "period_id")
+    if (
+        previous.component is not ReportComponent.CLOUD
+        or previous.client_id != request.client_id
+        or previous.tenant_id != request.tenant_id
+        or previous.run_id != request.run_id
+        or previous.logical_job_id != request.logical_job_id
+        or previous.execution_type != request.execution_type
+        or previous.mode != request.mode
+        or previous.origin != request.origin
+        or any(
+            previous.period.get(key) != request.period.get(key)
+            for key in stable_period_keys
+        )
+    ):
+        raise ValueError("Checkpoint Cloud anterior pertence a outra execução.")
+
+    artifacts = tuple(
+        artifact
+        for artifact in previous.artifacts
+        if artifact.component == ReportComponent.CLOUD
+        and artifact.kind == "cloud_dataset"
+    )
+    if len(artifacts) > 1:
+        raise ValueError("Checkpoint Cloud contém datasets duplicados.")
+    if artifacts:
+        dataset_path = artifacts[0].path
+        dataset_sha256 = artifacts[0].sha256
+    else:
+        scope = (
+            "automatic-monthly"
+            if request.execution_type == "AUTOMATIC_MONTHLY"
+            else "manual"
+        )
+        dataset_path = (
+            previous.checkpoint_path.parent
+            / scope
+            / "normalized"
+            / request.client_id
+            / request.run_id
+            / "tenable_cloud"
+            / "cloud-report-dataset.json"
+        ).resolve()
+        if not dataset_path.is_file():
+            return None
+        dataset_sha256 = sha256_file(dataset_path)
+
+    dataset = load_cloud_report_dataset(dataset_path)
+    return CloudResumeContext(
+        stage=ComponentStage.SNAPSHOT_PUBLICATION,
+        dataset_path=dataset_path,
+        dataset_sha256=dataset_sha256,
+        capabilities=dict(dataset.get("capabilities") or {}),
+        connector_version=str(
+            dataset.get("connector_version") or "staged-checkpoint-v1"
+        ),
+    )
+
+
 def _cloud_component_checkpoint(
     args: argparse.Namespace,
     *,
@@ -3364,41 +3438,74 @@ def _cloud_component_checkpoint(
             metadata={**common, "reason_code": "CLOUD_DISABLED"},
             query_payload={"enabled": False},
         )
-    load_dotenv_file(args.env_file, override=True)
-    credentials = CloudCredentialConfig.from_environment()
     repository, persistent = _cloud_snapshot_repository_for_args(args)
     component_root = component_checkpoint_path(request, component).parent
-    result = collect_cloud_period(
-        CloudExecutionRequest(
-            profile=profile,
-            period=period,
-            execution_type=request.execution_type,
-            run_id=request.run_id,
-            attempt_number=request.attempt_number,
-            output_root=component_root,
-            report_directory=component_root / ".staging",
-            template_path=Path(args.cloud_template),
-            force_refresh=bool(getattr(args, "force_cloud_refresh", False)),
-        ),
-        dependencies=CloudExecutionDependencies(
-            repository=repository,
-            collect_live=TenableCloudLiveCollector(
-                credentials,
-                cancellation_probe=_execution_cancellation_probe(args),
-            ),
-            history_persistent=persistent,
-        ),
-        progress_callback=_emit_progress_event,
+    execution_request = CloudExecutionRequest(
+        profile=profile,
+        period=period,
+        execution_type=request.execution_type,
+        run_id=request.run_id,
+        attempt_number=request.attempt_number,
+        output_root=component_root,
+        report_directory=component_root / ".staging",
+        template_path=Path(args.cloud_template),
+        force_refresh=bool(getattr(args, "force_cloud_refresh", False)),
+        render_documents=False,
     )
+    resume = _cloud_component_resume_context(
+        args,
+        request=request,
+    )
+    if resume is not None:
+        def reject_live_collection(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError(
+                "Coleta Cloud live nao permitida durante retomada local."
+            )
+
+        result = retry_cloud_component(
+            execution_request,
+            dependencies=CloudExecutionDependencies(
+                repository=repository,
+                collect_live=reject_live_collection,
+                history_persistent=persistent,
+            ),
+            resume=resume,
+            progress_callback=_emit_progress_event,
+        )
+    else:
+        load_dotenv_file(args.env_file, override=True)
+        credentials = CloudCredentialConfig.from_environment()
+        result = collect_cloud_period(
+            execution_request,
+            dependencies=CloudExecutionDependencies(
+                repository=repository,
+                collect_live=TenableCloudLiveCollector(
+                    credentials,
+                    cancellation_probe=_execution_cancellation_probe(args),
+                ),
+                history_persistent=persistent,
+            ),
+            progress_callback=_emit_progress_event,
+        )
+    owned_dataset_path: Path | None = None
+    if result.dataset_path is not None and Path(result.dataset_path).is_file():
+        source_dataset = Path(result.dataset_path).resolve()
+        try:
+            source_dataset.relative_to(component_root)
+            owned_dataset_path = source_dataset
+        except ValueError:
+            owned_dataset_path = component_root / "cloud-report-dataset.json"
+            owned_dataset_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_dataset, owned_dataset_path)
     if result.status in {
         CloudExecutionStatus.COMPLETE,
         CloudExecutionStatus.REPLAYED,
-    } and result.dataset_path is not None:
-        dataset = load_cloud_report_dataset(result.dataset_path)
+    } and owned_dataset_path is not None:
+        dataset = load_cloud_report_dataset(owned_dataset_path)
         artifact = _checkpoint_artifact(
             component.value,
             "cloud_dataset",
-            result.dataset_path,
+            owned_dataset_path,
         )
         return _component_checkpoint(
             request=request,
@@ -3421,6 +3528,24 @@ def _cloud_component_checkpoint(
                 "period": period.to_dict(),
             },
         )
+    failure_artifacts: tuple[CheckpointArtifact, ...] = ()
+    failure_dataset: Mapping[str, Any] = {}
+    if owned_dataset_path is not None:
+        dataset = load_cloud_report_dataset(owned_dataset_path)
+        artifact = _checkpoint_artifact(
+            component.value,
+            "cloud_dataset",
+            owned_dataset_path,
+        )
+        failure_artifacts = (artifact,)
+        failure_dataset = {
+            "dataset_kind": "cloud_dataset",
+            "dataset_sha256": artifact.sha256,
+            "capabilities": dict(dataset.get("capabilities") or {}),
+            "connector_version": str(
+                dataset.get("connector_version") or "staged-checkpoint-v1"
+            ),
+        }
     return _component_checkpoint(
         request=request,
         component=component,
@@ -3429,10 +3554,14 @@ def _cloud_component_checkpoint(
             if result.retryable
             else RemoteComponentState.NON_RETRYABLE_FAILURE
         ),
-        artifacts=(),
+        artifacts=failure_artifacts,
         metadata={
             **common,
+            **failure_dataset,
             "failure_code": result.failure_code or "CLOUD_COMPONENT_FAILED",
+            "failure_stage": (
+                result.failure_stage.value if result.failure_stage is not None else None
+            ),
             "retryable": bool(result.retryable),
             "warnings": [dict(item) for item in result.warnings],
         },

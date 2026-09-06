@@ -143,8 +143,17 @@ Mudanças na fila precisam preservar estes contratos:
   pode reduzi-la, nunca ampliar o limite;
 - `COLLECTION_READY` valida e persiste o checkpoint na mesma transação que move
   `REMOTE_RUNNING` para `READY_FOR_BUILD`;
+- a tentativa mais recente dos componentes é consolidada por job/cliente, sem
+  barreira global do lote; `reference_at` é auditoria volátil e não participa da
+  identidade compartilhada da janela `[start_at, end_at)`;
+- `REMOTE_COMPONENTS_CONSOLIDATING` usa chave idempotente por job, e uma segunda
+  chamada depois de `READY_FOR_BUILD`, `BUILD_RUNNING` ou `TERMINAL` não regrava
+  checkpoint nem evento;
 - reconciliação ocorre uma vez para todos os worker IDs: coleta abandonada volta a
   `REMOTE_QUEUED` e build abandonado volta a `READY_FOR_BUILD`;
+- ao reinicializar componentes já terminais, execute novamente apenas a consolidação
+  local; uma exceção deve virar `CHECKPOINT_COMPONENT_INCOMPLETE`, nunca ser engolida
+  deixando o job em `REMOTE_RUNNING`;
 - pausa bloqueia novos claims sem apagar checkpoints; retomada não altera
   `FAILED`, `INTERRUPTED` ou `CANCELLED_BY_USER`;
 - parada sinaliza todos os jobs ativos, preserva export/chunks e limita o fallback
@@ -187,6 +196,14 @@ filho único, valide todos os caminhos dentro dele e só altere o manifesto no
 publisher. Qualquer falha restaura os bytes anteriores, remove apenas o staging
 novo e nunca persiste `str(exc)`. WAS sem VM reutilizável deve falhar com
 `MISSING_VM_CHECKPOINT_FOR_WAS`; Cloud não depende de VM.
+
+Uma falha Cloud posterior à escrita do dataset precisa manter um artefato
+`cloud_dataset` com SHA-256, capabilities e versão do conector no checkpoint de
+falha. O retry remoto usa `CloudResumeContext(SNAPSHOT_PUBLICATION)`, proíbe o
+coletor ao vivo e, com `render_documents=False`, não renderiza DOCX. Se o dataset
+vier de uma tentativa anterior, copie-o para o workspace exclusivo da tentativa
+atual antes de persistir o novo checkpoint. Cubra também o formato legado sem
+artefato explícito, aceitando apenas o caminho determinístico validado.
 
 O servidor valida confirmação, conjunto excluído, enum e subconjunto retentável
 antes de chamar o executor. Sem `component_retry_enqueuer`, somente o caminho

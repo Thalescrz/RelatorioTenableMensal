@@ -89,19 +89,19 @@ suíte não deve iniciar uma coleta real.
 - Test: `tests/test_durable_job_queue.py`
 - Test: `tests/test_web_batch_components_postgresql.py`
 
-- [ ] Escrever teste RED com dois clientes concorrentes: o primeiro possui todos
+- [x] Escrever teste RED com dois clientes concorrentes: o primeiro possui todos
   os componentes aplicáveis terminais e o segundo mantém VM em processamento.
-- [ ] Provar no teste que `_finalize_remote_components` consolida e valida somente
+- [x] Provar no teste que `_finalize_remote_components` consolida e valida somente
   o primeiro cliente, emite `COLLECTION_READY` e o move para `READY_FOR_BUILD` sem
   esperar o segundo cliente ou o lote inteiro.
-- [ ] Tornar a finalização idempotente: chamadas concorrentes ou repetidas não
+- [x] Tornar a finalização idempotente: chamadas concorrentes ou repetidas não
   podem duplicar checkpoint, evento, claim de build nem documento.
-- [ ] Garantir que `COMPLETE`, `NOT_APPLICABLE` e falhas terminais toleradas sejam
+- [x] Garantir que `COMPLETE`, `NOT_APPLICABLE` e falhas terminais toleradas sejam
   avaliados por componente e por cliente; um componente ainda em execução bloqueia
   apenas seu próprio cliente.
-- [ ] Preservar o único worker local de montagem e permitir que ele consuma cada
+- [x] Preservar o único worker local de montagem e permitir que ele consuma cada
   `READY_FOR_BUILD` enquanto outros clientes continuam em `REMOTE_RUNNING`.
-- [ ] Expor telemetria suficiente para distinguir “componentes remotos concluídos”,
+- [x] Expor telemetria suficiente para distinguir “componentes remotos concluídos”,
   “consolidando checkpoint”, “pronto para montagem” e “montando documento”.
 
 **Critério de aceite:** em um lote com vários clientes, o primeiro cliente remoto
@@ -120,22 +120,22 @@ de polling manual nem de uma transição global do lote.
 - Test: `tests/test_cli_collection_routing.py`
 - Test: `tests/test_durable_job_queue.py`
 
-- [ ] Escrever teste RED reproduzindo a sequência observada: dataset Cloud gravado,
+- [x] Escrever teste RED reproduzindo a sequência observada: dataset Cloud gravado,
   falha na publicação do snapshot, abertura automática da janela 2 e retomada com
   o mesmo cliente, tenant, período e job lógico.
-- [ ] Persistir caminho, hash e identidade do dataset já concluído antes de tentar
+- [x] Persistir caminho, hash e identidade do dataset já concluído antes de tentar
   publicar o snapshot, de modo que `CLOUD_SNAPSHOT_PUBLICATION_FAILED` preserve um
   checkpoint Cloud retentável e não descarte a coleta GraphQL válida.
-- [ ] Centralizar a derivação do diretório curto do componente para que inicial,
+- [x] Centralizar a derivação do diretório curto do componente para que inicial,
   retry automático e retry manual usem o mesmo identificador estável, sem exigir
   que o nome da pasta seja igual ao `run_id` da tentativa.
-- [ ] Validar escopo por `client_id`, `tenant_id`, período, componente, job lógico e
+- [x] Validar escopo por `client_id`, `tenant_id`, período, componente, job lógico e
   hash do artefato; incompatibilidade real deve produzir código local específico,
   nunca `UNEXPECTED` nem nova chamada silenciosa à API.
-- [ ] Na retentativa de publicação, recarregar e revalidar o dataset persistido,
+- [x] Na retentativa de publicação, recarregar e revalidar o dataset persistido,
   publicar o snapshot e seguir para o merge do checkpoint sem repetir as 11.371
   páginas Cloud já coletadas.
-- [ ] Se o dataset estiver ausente ou com hash inválido, manter o erro visível e
+- [x] Se o dataset estiver ausente ou com hash inválido, manter o erro visível e
   exigir retry Cloud seletivo; não marcar o componente como concluído e não afetar
   VM, WAS, TAG ou documentos já publicados.
 
@@ -150,15 +150,15 @@ aumentar durante a retentativa de publicação.
 - Modify: `docs/22-guia-operacional.md`
 - Modify: `docs/23-guia-de-desenvolvimento.md`
 
-- [ ] Adicionar teste integrado do pipeline com clientes concluindo a coleta em
+- [x] Adicionar teste integrado do pipeline com clientes concluindo a coleta em
   ordens diferentes e montagem serial ocorrendo enquanto o lote remoto continua.
-- [ ] Adicionar teste de reinício entre a falha de publicação Cloud e sua retomada,
+- [x] Adicionar teste de reinício entre a falha de publicação Cloud e sua retomada,
   comprovando a durabilidade do dataset e do checkpoint.
-- [ ] Registrar tempos por transição e códigos sanitizados de falha local, sem
+- [x] Registrar tempos por transição e códigos sanitizados de falha local, sem
   expor caminhos de checkpoint na API ou na interface.
-- [ ] Documentar a transição por cliente e a recuperação de publicação Cloud sem
+- [x] Documentar a transição por cliente e a recuperação de publicação Cloud sem
   nova coleta.
-- [ ] Executar todos os comandos de verificação abaixo antes do fluxo Git.
+- [x] Executar todos os comandos de verificação abaixo antes do fluxo Git.
 
 ## Comandos de verificação
 

@@ -396,6 +396,17 @@ def _validate_identity(
     *,
     allow_prior_attempt: bool = False,
 ) -> None:
+    def stable_period_identity(value: Mapping[str, Any]) -> dict[str, Any]:
+        # Each isolated collector resolves the same [start, end) interval in a
+        # different process. ``reference_at`` records when that resolution was
+        # performed and is therefore audit metadata, not part of the window
+        # identity shared by VM, WAS and Cloud.
+        return {
+            key: item
+            for key, item in dict(value).items()
+            if key != "reference_at"
+        }
+
     expected = (
         request.client_id,
         request.tenant_id,
@@ -405,7 +416,7 @@ def _validate_identity(
         request.mode,
         request.origin,
         request.attempt_number,
-        dict(request.period),
+        stable_period_identity(request.period),
     )
     actual = (
         checkpoint.client_id,
@@ -416,7 +427,7 @@ def _validate_identity(
         checkpoint.mode,
         checkpoint.origin,
         checkpoint.attempt_number,
-        dict(checkpoint.period),
+        stable_period_identity(checkpoint.period),
     )
     if actual != expected and not (
         allow_prior_attempt

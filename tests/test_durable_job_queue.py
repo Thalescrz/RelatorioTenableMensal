@@ -41,6 +41,7 @@ from tenable_reports.domain.web_batches import (
 )
 from tenable_reports.webapp.durable_dashboard_queue import (
     DurableDashboardJobQueue,
+    _component_is_retryable,
 )
 from tenable_reports.webapp.job_queue import (
     RemoteComponentWorkerPool,
@@ -1004,6 +1005,451 @@ def test_replacement_inside_same_window_preserves_original_deadline(tmp_path) ->
         queue.close()
     assert replacement.window_number == 2
     assert replacement.deadline_at == deadline
+
+
+def test_automatic_retry_keeps_stable_checkpoint_identity_origin(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(
+        _job(1, status=BatchJobStatus.RUNNING, phase=BatchJobPhase.REMOTE_RUNNING),
+        payload={
+            "mode": "manual",
+            "run_id": "run-stable-origin",
+            "start_at": "2026-08-01T00:00:00Z",
+            "end_at": "2026-09-01T00:00:00Z",
+        },
+    )
+    repository.create_batch(batch, (job,))
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-stable-origin",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    component = component_repository.create_for_job(
+        batch_job_id=job.id,
+        components=(ReportComponent.VM_CORE,),
+        window_number=2,
+        deadline_at=datetime.now(UTC) + timedelta(hours=10),
+        origin="AUTOMATIC_RETRY",
+        attempt_number=2,
+    )[0]
+    captured: dict[str, object] = {}
+
+    def fail_without_running(*_args, **kwargs):
+        captured.update(dict(kwargs["payload_overrides"]))
+        return BatchJobResult(
+            status=BatchJobStatus.FAILED,
+            error_code="LOCAL_TEST_FAILURE",
+            error_message="Falha local controlada.",
+            payload={"retryable": False},
+        )
+
+    try:
+        with patch.object(queue, "_run_executor_job", side_effect=fail_without_running):
+            queue._run_remote_component(component)
+    finally:
+        queue.close()
+
+    assert captured["origin"] == "MANUAL"
+    assert captured["component_checkpoint"] == str(
+        component_checkpoint_path(
+            queue._component_request(job, component=ReportComponent.VM_CORE),
+            ReportComponent.VM_CORE,
+        )
+    )
+
+
+def test_recovery_window_preserves_local_checkpoint_without_remote_identifier(
+    tmp_path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(
+        _job(1, status=BatchJobStatus.RUNNING, phase=BatchJobPhase.REMOTE_RUNNING),
+        payload={"mode": "manual", "run_id": "run-cloud-checkpoint"},
+    )
+    repository.create_batch(batch, (job,))
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-cloud-checkpoint",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    checkpoint_path = str((tmp_path / "cloud" / "checkpoint.json").resolve())
+    current = component_repository.create_for_job(
+        batch_job_id=job.id,
+        components=(ReportComponent.CLOUD,),
+        window_number=1,
+        deadline_at=datetime.now(UTC) + timedelta(hours=10),
+        origin="MANUAL",
+    )[0]
+    current = component_repository.transition(
+        current.id,
+        expected_state=RemoteComponentState.PENDING,
+        requested_state=RemoteComponentState.WAITING_MANUAL_RETRY,
+        checkpoint_path=checkpoint_path,
+        failure_code="CLOUD_SNAPSHOT_PUBLICATION_FAILED",
+        failure_message="Falha local ao publicar o snapshot.",
+        retryable=True,
+        ended_at=datetime.now(UTC),
+    )
+
+    try:
+        recovered = queue._create_recovery_component(
+            job,
+            current,
+            window_number=2,
+            reuse_identifier=False,
+            replacement_created_in_window_2=True,
+            replacement_created_in_window_3=False,
+        )
+    finally:
+        queue.close()
+
+    assert recovered.remote_identifier is None
+    assert recovered.checkpoint_path == checkpoint_path
+
+
+def test_cloud_failure_with_preserved_local_checkpoint_can_be_retried(
+    tmp_path,
+) -> None:
+    repository = InMemoryRemoteComponentRepository()
+    checkpoint_path = (tmp_path / "cloud" / "checkpoint.json").resolve()
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_text("{}", encoding="utf-8")
+    component = repository.create_for_job(
+        batch_job_id=UUID(int=8801),
+        components=(ReportComponent.CLOUD,),
+        window_number=2,
+        deadline_at=datetime.now(UTC) + timedelta(hours=10),
+        origin="AUTOMATIC_RETRY",
+    )[0]
+    component = repository.transition(
+        component.id,
+        expected_state=RemoteComponentState.PENDING,
+        requested_state=RemoteComponentState.NON_RETRYABLE_FAILURE,
+        checkpoint_path=str(checkpoint_path),
+        failure_code="UNEXPECTED",
+        failure_message="Falha local após a coleta.",
+        retryable=False,
+        ended_at=datetime.now(UTC),
+    )
+
+    assert _component_is_retryable(component) is True
+
+
+def test_failed_component_checkpoint_is_forwarded_to_automatic_retry(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(
+        _job(1, status=BatchJobStatus.RUNNING, phase=BatchJobPhase.REMOTE_RUNNING),
+        payload={
+            "mode": "manual",
+            "run_id": "run-cloud-failure",
+            "start_at": "2026-08-01T00:00:00Z",
+            "end_at": "2026-09-01T00:00:00Z",
+        },
+    )
+    repository.create_batch(batch, (job,))
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-cloud-failure",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    component_repository.create_for_job(
+        batch_job_id=job.id,
+        components=(ReportComponent.CLOUD,),
+        window_number=1,
+        deadline_at=datetime.now(UTC) + timedelta(hours=10),
+        origin="MANUAL",
+    )
+    running = component_repository.claim_next(worker_id="cloud-worker")
+    request = queue._component_request(job, component=ReportComponent.CLOUD)
+    failed_checkpoint = ComponentCollectionCheckpoint(
+        schema_version=1,
+        checkpoint_path=component_checkpoint_path(request, ReportComponent.CLOUD),
+        component=ReportComponent.CLOUD,
+        client_id=request.client_id,
+        tenant_id=request.tenant_id,
+        run_id=request.run_id,
+        logical_job_id=request.logical_job_id,
+        execution_type=request.execution_type,
+        mode=request.mode,
+        origin=request.origin,
+        attempt_number=request.attempt_number,
+        period=dict(request.period),
+        status=RemoteComponentState.WAITING_MANUAL_RETRY,
+        artifacts=(),
+        metadata={
+            "failure_code": "CLOUD_SNAPSHOT_PUBLICATION_FAILED",
+            "failure_message": "Falha local controlada.",
+            "retryable": True,
+        },
+        query_fingerprint="c" * 64,
+    )
+    persist_component_checkpoint(failed_checkpoint, storage_root=tmp_path)
+    result = BatchJobResult(
+        status=BatchJobStatus.COMPLETE,
+        payload={
+            "_component_result": {
+                "checkpoint": str(failed_checkpoint.checkpoint_path),
+            }
+        },
+    )
+
+    try:
+        with patch.object(queue, "_run_executor_job", return_value=result):
+            queue._run_remote_component(running)
+        rows = component_repository.list_for_jobs((job.id,))[job.id]
+    finally:
+        queue.close()
+
+    retry = max(rows, key=lambda item: item.attempt_number)
+    assert retry.window_number == 2
+    assert retry.checkpoint_path == str(failed_checkpoint.checkpoint_path)
+
+
+def test_component_initializer_reconciles_terminal_checkpoints_after_restart(
+    tmp_path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(
+        _job(1, status=BatchJobStatus.RUNNING, phase=BatchJobPhase.REMOTE_RUNNING),
+        payload={
+            "mode": "manual",
+            "run_id": "run-reconcile-terminal",
+            "start_at": "2026-08-01T00:00:00Z",
+            "end_at": "2026-09-01T00:00:00Z",
+        },
+    )
+    repository.create_batch(batch, (job,))
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-reconcile-terminal",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    job = repository.claim_next_job(
+        worker_id="restart-initializer",
+        phases=(BatchJobPhase.REMOTE_QUEUED,),
+    )
+    assert job is not None
+    request = queue._component_request(job, component=ReportComponent.VM_CORE)
+    rows = component_repository.create_for_job(
+        batch_job_id=job.id,
+        components=tuple(ReportComponent),
+        window_number=1,
+        deadline_at=datetime.now(UTC) + timedelta(hours=10),
+        origin="MANUAL",
+        attempt_number=job.attempt_number,
+    )
+    by_component = {row.component: row for row in rows}
+    for offset, component in enumerate(ReportComponent, start=1):
+        status = (
+            RemoteComponentState.NOT_APPLICABLE
+            if component is ReportComponent.CLOUD
+            else RemoteComponentState.COMPLETE
+        )
+        checkpoint = ComponentCollectionCheckpoint(
+            schema_version=1,
+            checkpoint_path=component_checkpoint_path(request, component),
+            component=component,
+            client_id=request.client_id,
+            tenant_id=request.tenant_id,
+            run_id=request.run_id,
+            logical_job_id=request.logical_job_id,
+            execution_type=request.execution_type,
+            mode=request.mode,
+            origin=request.origin,
+            attempt_number=request.attempt_number,
+            period={
+                **dict(request.period),
+                "reference_at": f"2026-09-05T1{offset}:00:00Z",
+            },
+            status=status,
+            artifacts=(),
+            metadata={"reason_code": "CLOUD_DISABLED"} if component is ReportComponent.CLOUD else {},
+            query_fingerprint=str(offset) * 64,
+        )
+        persist_component_checkpoint(checkpoint, storage_root=tmp_path)
+        component_repository.transition(
+            by_component[component].id,
+            expected_state=RemoteComponentState.PENDING,
+            requested_state=status,
+            checkpoint_path=str(checkpoint.checkpoint_path),
+            query_fingerprint=checkpoint.query_fingerprint,
+            ended_at=datetime.now(UTC),
+        )
+
+    try:
+        queue._handle_component_initializer_result(
+            job,
+            BatchJobResult(status=BatchJobStatus.COMPLETE),
+        )
+        queue._handle_component_initializer_result(
+            job,
+            BatchJobResult(status=BatchJobStatus.COMPLETE),
+        )
+        stored = repository.get_job(job.id)
+        event_types = [
+            event.event_type for event in repository.list_events(batch.id)
+        ]
+    finally:
+        queue.close()
+
+    assert stored.phase is BatchJobPhase.READY_FOR_BUILD
+    assert stored.collection_checkpoint_path
+    assert event_types.count("REMOTE_COMPONENTS_CONSOLIDATING") == 1
+    assert event_types.count("COLLECTION_READY") == 1
+
+
+def test_component_finalization_failure_is_recorded_in_parent_job(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    batch = _batch(status=BatchStatus.RUNNING)
+    job = replace(
+        _job(1, status=BatchJobStatus.RUNNING, phase=BatchJobPhase.REMOTE_RUNNING),
+        payload={"mode": "manual", "run_id": "run-finalization-failure"},
+    )
+    repository.create_batch(batch, (job,))
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-finalization-failure",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    job = repository.claim_next_job(
+        worker_id="restart-finalization",
+        phases=(BatchJobPhase.REMOTE_QUEUED,),
+    )
+    assert job is not None
+
+    try:
+        with patch.object(
+            queue,
+            "_finalize_remote_components",
+            side_effect=RuntimeError("fixture detail must stay private"),
+        ):
+            queue._handle_component_initializer_result(
+                job,
+                BatchJobResult(status=BatchJobStatus.COMPLETE),
+            )
+        stored = repository.get_job(job.id)
+    finally:
+        queue.close()
+
+    assert stored.status is BatchJobStatus.FAILED
+    assert stored.phase is BatchJobPhase.TERMINAL
+    assert stored.error_code == "CHECKPOINT_COMPONENT_INCOMPLETE"
+    assert "fixture detail" not in str(stored.error_message)
+
+
+def test_component_finalization_is_isolated_per_client(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-finalization-isolation",
+        start_worker=False,
+        remote_workers=2,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    batch = _batch(status=BatchStatus.RUNNING)
+    failed_job = replace(
+        _job(1, status=BatchJobStatus.RUNNING, phase=BatchJobPhase.REMOTE_RUNNING),
+        client_id="client-failed",
+    )
+    ready_job = replace(
+        _job(2, status=BatchJobStatus.RUNNING, phase=BatchJobPhase.REMOTE_RUNNING),
+        client_id="client-ready",
+    )
+    repository.create_batch(batch, (failed_job, ready_job))
+    ready_checkpoint = tmp_path / "ready.json"
+    ready_checkpoint.write_text("{}", encoding="utf-8")
+
+    def finalize(job):
+        if job.id == failed_job.id:
+            raise RuntimeError("isolated fixture failure")
+        repository.advance_job_phase(
+            job.id,
+            expected_phase=BatchJobPhase.REMOTE_RUNNING,
+            requested_phase=BatchJobPhase.READY_FOR_BUILD,
+            collection_checkpoint_path=ready_checkpoint,
+        )
+
+    try:
+        with patch.object(queue, "_finalize_remote_components", side_effect=finalize):
+            queue._finalize_remote_components_safely(failed_job)
+            queue._finalize_remote_components_safely(ready_job)
+        failed = repository.get_job(failed_job.id)
+        ready = repository.get_job(ready_job.id)
+    finally:
+        queue.close()
+
+    assert failed.status is BatchJobStatus.FAILED
+    assert failed.error_code == "CHECKPOINT_COMPONENT_INCOMPLETE"
+    assert ready.status is BatchJobStatus.QUEUED
+    assert ready.phase is BatchJobPhase.READY_FOR_BUILD
 
 
 def test_restarted_component_uses_only_remaining_original_window(tmp_path) -> None:
