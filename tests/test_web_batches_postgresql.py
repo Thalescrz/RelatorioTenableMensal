@@ -10,6 +10,7 @@ import pytest
 from tenable_reports.application.web_batches import BatchJobResult
 
 from tenable_reports.domain.web_batches import (
+    BatchAction,
     BatchJobPhase,
     BatchJobStatus,
     BatchStatus,
@@ -177,6 +178,19 @@ def test_partial_component_status_migration_extends_job_constraint() -> None:
 
     assert "drop constraint if exists web_batch_jobs_status_check" in sql
     assert "'PARTIALLY_COMPLETE'" in sql
+
+
+def test_batch_action_migration_accepts_every_domain_action() -> None:
+    migration = (
+        ROOT
+        / "src/tenable_reports/infrastructure/postgresql_migrations/0015_web_batch_actions.sql"
+    )
+    sql = " ".join(migration.read_text(encoding="utf-8").split()).lower()
+
+    assert "drop constraint if exists web_batches_requested_action_check" in sql
+    assert "add constraint web_batches_requested_action_check" in sql
+    for action in BatchAction:
+        assert f"'{action.value.lower()}'" in sql
 
 
 def test_batch_mapper_reads_family_origin_and_competence() -> None:

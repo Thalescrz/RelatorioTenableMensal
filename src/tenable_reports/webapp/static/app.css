@@ -124,6 +124,7 @@ h1 em { color: var(--muted); font-style: normal; font-weight: 350; }
 .report-list { padding-bottom: 28px; }
 .report-row { display: grid; grid-template-columns: 1fr auto; gap: 14px; padding: 14px 0; border-top: 1px solid var(--line); align-items: center; }
 .report-row strong { display: block; font-size: 13px; overflow-wrap: anywhere; }.report-row small { color: var(--muted); }.download { text-decoration: none; color: var(--blue); border: 1px solid rgba(109,169,255,.25); border-radius: 9px; padding: 8px 11px; font-size: 11px; font-weight: 700; }
+.report-row .report-executed-at { display: block; margin: 4px 0 1px; color: var(--text); }
 .report-row.deleted { opacity: .62; }.report-badges { display: flex; gap: 6px; margin-bottom: 6px; }.report-badge { border: 1px solid var(--line); border-radius: 5px; padding: 3px 5px; color: var(--muted); font: 700 8px var(--display); letter-spacing: .06em; }.report-badge.main { color: var(--green); border-color: rgba(94,213,154,.35); }.report-documents { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }.report-actions { display: flex; gap: 7px; flex-wrap: wrap; justify-content: flex-end; }.danger { color: var(--red); border-color: rgba(255,104,104,.3); }
 .report-row.report-set-target { border-color: var(--blue); box-shadow: 0 0 0 2px rgba(109,169,255,.22); }
 .component-status-chip { border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; color: var(--muted); background: rgba(255,255,255,.018); font: 700 8px var(--display); letter-spacing: .04em; }

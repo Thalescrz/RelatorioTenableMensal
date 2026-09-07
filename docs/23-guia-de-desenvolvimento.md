@@ -124,6 +124,11 @@ Mudanças de esquema entram como nova migration numerada em
 que já possa ter sido aplicada. O código precisa tolerar atualização incremental e
 o teste deve cobrir ordem, idempotência esperada e leitura/escrita afetada.
 
+Os valores aceitos pelos constraints devem acompanhar integralmente os enums do
+domínio. Em particular, `web_batches.requested_action` aceita pausa, retomada,
+parada, retentativa de incompletos e nova execução de todos; a inclusão de uma ação
+nova exige migration própria e teste que percorra todo o enum `BatchAction`.
+
 Segredos do banco ficam em `credentials/database.env`; exemplos só contêm nomes de
 variáveis e valores fictícios.
 

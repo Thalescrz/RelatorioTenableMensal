@@ -2,7 +2,7 @@ const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValu
 const { filterPortfolioByFamily, toggleFamilyFilter } = window.TenableBatchFamilyFilters;
 const { scheduleView } = window.TenableMonthlySchedule;
 const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, monthlySchedule: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: null, batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
-const { createLatestRequestGuard } = window.TenableReportRequestGuard;
+const { createLatestRequestGuard, reportExecutionCopy } = window.TenableReportRequestGuard;
 const reportRequestGuard = createLatestRequestGuard();
 const { createRefreshCoordinator } = window.TenableDashboardRefresh;
 const { retryabilityView } = window.TenableBatchRetryability;
@@ -801,6 +801,7 @@ async function openClient(clientId, targetRunId = "") {
     $("#reports-count").textContent = `${reports.length} execução(ões)`;
     $("#report-list").innerHTML = reports.length ? reports.map(report => {
       const documents = renderDocumentGroups(report.documents || []);
+      const executedAt = reportExecutionCopy(report, formatDate);
       const omitted = (report.omitted_modules || []).length ? ` · omitidos: ${escapeHtml(report.omitted_modules.join(", "))}` : "";
       const reference = report.reference_run_id ? ` · referência: ${escapeHtml(report.reference_run_id)}` : "";
       const cloudBadge = report.cloud_status && report.cloud_status !== "NOT_REQUESTED"
@@ -812,7 +813,7 @@ async function openClient(clientId, targetRunId = "") {
       const reportArchiveAction = !report.deleted_at
         ? '<button class="mini-button archive-download" data-report-action="archive" type="button">Baixar conjunto ZIP</button>'
         : "";
-      return `<div class="report-row ${report.deleted_at ? "deleted" : ""}" data-report-run="${escapeHtml(report.run_id)}"><div><div class="report-badges">${report.is_main ? '<span class="report-badge main">MAIN</span>' : ""}<span class="report-badge">${escapeHtml(report.origin || "MANUAL")}</span><span class="report-badge">${escapeHtml(report.status || "")}</span>${cloudBadge}${report.deleted_at ? '<span class="report-badge">EXCLUÍDO</span>' : ""}</div><strong>${escapeHtml(report.period_id || report.run_id)}</strong><small>${escapeHtml(report.run_id)} · ${formatBytes(report.size_bytes)}${reference}${omitted}</small><div class="report-documents">${documents || '<small>Documentos não localizados no disco.</small>'}</div></div><div class="report-actions">${reportArchiveAction}${cloudRetryAction}${!report.deleted_at && !report.is_main ? '<button class="mini-button" data-report-action="main" type="button">Definir MAIN</button>' : ""}${report.deleted_at ? '<button class="mini-button" data-report-action="restore" type="button">Restaurar</button>' : '<button class="mini-button danger" data-report-action="delete" type="button">Excluir conjunto</button>'}</div></div>`;
+      return `<div class="report-row ${report.deleted_at ? "deleted" : ""}" data-report-run="${escapeHtml(report.run_id)}"><div><div class="report-badges">${report.is_main ? '<span class="report-badge main">MAIN</span>' : ""}<span class="report-badge">${escapeHtml(report.origin || "MANUAL")}</span><span class="report-badge">${escapeHtml(report.status || "")}</span>${cloudBadge}${report.deleted_at ? '<span class="report-badge">EXCLUÍDO</span>' : ""}</div><strong>${escapeHtml(report.period_id || report.run_id)}</strong>${executedAt ? `<small class="report-executed-at">${escapeHtml(executedAt)}</small>` : ""}<small>${escapeHtml(report.run_id)} · ${formatBytes(report.size_bytes)}${reference}${omitted}</small><div class="report-documents">${documents || '<small>Documentos não localizados no disco.</small>'}</div></div><div class="report-actions">${reportArchiveAction}${cloudRetryAction}${!report.deleted_at && !report.is_main ? '<button class="mini-button" data-report-action="main" type="button">Definir MAIN</button>' : ""}${report.deleted_at ? '<button class="mini-button" data-report-action="restore" type="button">Restaurar</button>' : '<button class="mini-button danger" data-report-action="delete" type="button">Excluir conjunto</button>'}</div></div>`;
     }).join("") : '<div class="loading">Nenhum relatório gerado para este cliente.</div>';
     enhanceComponentActions();
     bindReportActions();

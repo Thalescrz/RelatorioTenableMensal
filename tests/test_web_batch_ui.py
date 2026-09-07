@@ -102,6 +102,25 @@ def _run_report_request_guard_script(source: str) -> object:
     return json.loads(completed.stdout)
 
 
+def _run_report_metadata_script(source: str) -> object:
+    script_path = STATIC / "report_request_guard.js"
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            (
+                f"const helpers = require({json.dumps(str(script_path))});"
+                f"const result = (() => {{ {source} }})();"
+                "process.stdout.write(JSON.stringify(result));"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    return json.loads(completed.stdout)
+
+
 def _run_dashboard_refresh_script(source: str) -> object:
     script_path = STATIC / "dashboard_refresh.js"
     completed = subprocess.run(
@@ -483,6 +502,28 @@ def test_frontend_uses_request_guard_when_loading_client_reports() -> None:
     assert html.index("report_request_guard.js") < html.index("app.js")
     assert "reportRequestGuard.begin(clientId)" in javascript
     assert "reportRequestGuard.isCurrent(reportRequest)" in javascript
+
+
+def test_report_execution_copy_formats_backend_and_document_timestamps() -> None:
+    assert _run_report_metadata_script(
+        "return helpers.reportExecutionCopy("
+        "{executed_at: '2026-09-06T15:51:09-03:00'}, "
+        "value => '06/09/2026, 15:51');"
+    ) == "Executado em: 06/09/2026 às 15:51"
+    assert _run_report_metadata_script(
+        "return helpers.reportExecutionCopy("
+        "{documents: [{ended_at: null, created_at: '2026-09-05T10:30:00-03:00'}]}, "
+        "value => 'DATA<' + value + '>');"
+    ) == "Executado em: DATA<2026-09-05T10:30:00-03:00>"
+    assert _run_report_metadata_script(
+        "return helpers.reportExecutionCopy({}, value => value);"
+    ) == ""
+
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert html.index("report_request_guard.js") < html.index("app.js")
+    assert "reportExecutionCopy(report, formatDate)" in javascript
+    assert 'class="report-executed-at"' in javascript
 
 
 def test_frontend_exposes_analyst_filters_selection_modal_and_management() -> None:

@@ -493,6 +493,11 @@ Na lista de documentos do cliente é possível:
 - excluir permanentemente o conjunto completo com confirmação;
 - promover uma geração como `MAIN` para o próximo comparativo.
 
+Cada conjunto mostra o período do relatório, a data e a hora em que a execução foi
+concluída e, em uma linha técnica separada, o `run_id` e o tamanho total. Para
+publicações legadas sem horário de conclusão, a interface usa o horário em que o
+documento foi registrado no PostgreSQL.
+
 O botão **Baixar ZIP mensal**, no topo do painel, solicita o mês e cria uma pasta
 `Relatorios-Tenable-AAAA-MM`, com uma subpasta por cliente. Esse pacote inclui
 somente o conjunto `MAIN` de cada cliente naquele mês. Clientes sem `MAIN` e
