@@ -98,6 +98,23 @@ _REMOTE_COMPONENT_PUBLISHABLE_STATES = frozenset(
         RemoteComponentState.NOT_APPLICABLE,
     }
 )
+_STAGED_COMPONENT_STALE_RESULT_KEYS = frozenset(
+    {
+        "cloud_progress",
+        "cloud_status",
+        "component_set_status",
+        "components",
+        "ended_at",
+        "error",
+        "error_code",
+        "exit_code",
+        "fallback_terminated",
+        "process_id",
+        "retryable_components",
+        "warnings",
+        "was_recovery",
+    }
+)
 _INVALID_REMOTE_IDENTIFIER_CODES = frozenset(
     {
         "TENABLE_EXPORT_RECOVERY_UNAVAILABLE",
@@ -184,6 +201,30 @@ def _component_is_retryable(component: RemoteComponentWindow) -> bool:
         and Path(component.checkpoint_path).is_file()
     )
     return declared_retryable or preserved_cloud_dataset
+
+
+def _cloud_checkpoint_has_reusable_dataset(
+    component: RemoteComponentWindow,
+    *,
+    storage_root: Path,
+) -> bool:
+    if component.component is not ReportComponent.CLOUD or not component.checkpoint_path:
+        return False
+    try:
+        checkpoint = load_component_checkpoint(
+            component.checkpoint_path,
+            storage_root=storage_root,
+        )
+    except (CheckpointValidationError, OSError, ValueError):
+        return False
+    return bool(
+        checkpoint.status in _REMOTE_COMPONENT_PUBLISHABLE_STATES
+        and any(
+            artifact.component == ReportComponent.CLOUD
+            and artifact.kind == "cloud_dataset"
+            for artifact in checkpoint.artifacts
+        )
+    )
 
 
 def _checkpoint_ready_for_build(value: str | Path | None) -> bool:
@@ -512,14 +553,16 @@ class DurableDashboardJobQueue:
             raise ValueError("Retentativa sem componente válido.")
         if not failed_only:
             raise ValueError("A interface permite somente retentativas de falhas.")
+        selected = tuple(ReportComponent(item) for item in components)
         staged_source = self._staged_retry_source_job(
             run_id=run_id,
             client_id=client_id,
+            selected_components=selected,
         )
         if staged_source is not None:
             return self._enqueue_staged_component_retry(
                 source_job=staged_source,
-                selected_components=tuple(ReportComponent(item) for item in components),
+                selected_components=selected,
             )
         batch_id = uuid4()
         conflicts = self.repository.active_client_conflicts(
@@ -585,6 +628,7 @@ class DurableDashboardJobQueue:
         *,
         run_id: str,
         client_id: str,
+        selected_components: Sequence[ReportComponent],
     ) -> WebBatchJob | None:
         if self._remote_component_repository is None:
             return None
@@ -599,12 +643,43 @@ class DurableDashboardJobQueue:
             key=lambda item: (str(item.created_at or ""), item.attempt_number),
             reverse=True,
         )
+        staged_candidate_found = False
+        fallback_candidate: WebBatchJob | None = None
+        prefer_cloud_resume = ReportComponent.CLOUD in selected_components
         for candidate in candidates:
             components = self._remote_component_repository.list_for_jobs(
                 (candidate.id,)
             ).get(candidate.id, ())
-            if components:
+            if not components:
+                continue
+            staged_candidate_found = True
+            latest: dict[ReportComponent, RemoteComponentWindow] = {}
+            for component in components:
+                current = latest.get(component.component)
+                if current is None or component.attempt_number > current.attempt_number:
+                    latest[component.component] = component
+            if set(latest) != set(ReportComponent):
+                continue
+            eligible = all(
+                _component_is_retryable(latest[component])
+                for component in selected_components
+            )
+            if not eligible:
+                continue
+            if not prefer_cloud_resume or _cloud_checkpoint_has_reusable_dataset(
+                latest[ReportComponent.CLOUD],
+                storage_root=self._staged_output_root,
+            ):
                 return candidate
+            if fallback_candidate is None:
+                fallback_candidate = candidate
+        if fallback_candidate is not None:
+            return fallback_candidate
+        if staged_candidate_found:
+            names = ", ".join(component.value for component in selected_components)
+            raise ValueError(
+                f"Componente não está disponível para retentativa: {names}."
+            )
         return None
 
     def _enqueue_staged_component_retry(
@@ -706,53 +781,51 @@ class DurableDashboardJobQueue:
         )
         self.repository.create_batch(batch, (job,))
         deadline = datetime.now(UTC) + timedelta(seconds=36_000)
-        created = component_repository.create_for_job(
-            batch_job_id=job.id,
-            components=tuple(ReportComponent),
-            window_number=1,
-            deadline_at=deadline,
-            origin="MANUAL_RETRY",
-            attempt_number=1,
-        )
-        for row in created:
-            source = latest[row.component]
+        component_created_at = datetime.now(UTC)
+        windows: list[RemoteComponentWindow] = []
+        for component in ReportComponent:
+            source = latest[component]
             recovery = _recoverable_staging_identifier(source)
-            common = {
-                "identifier_kind": (
-                    recovery[0] if recovery is not None else source.identifier_kind
-                ),
-                "remote_identifier": (
-                    recovery[1] if recovery is not None else source.remote_identifier
-                ),
-                "identifier_origin": (
-                    recovery[2] if recovery is not None else source.identifier_origin
-                ),
-                "query_fingerprint": source.query_fingerprint,
-                "checkpoint_path": source.checkpoint_path,
-                "completed_units": source.completed_units,
-                "total_units": source.total_units,
-                "last_remote_status": source.last_remote_status,
-                "last_contact_at": source.last_contact_at,
-                "last_progress_at": source.last_progress_at,
-            }
-            if row.component in selected:
-                component_repository.transition(
-                    row.id,
-                    expected_state=RemoteComponentState.PENDING,
-                    requested_state=RemoteComponentState.PENDING,
-                    **common,
+            is_selected = component in selected
+            windows.append(
+                RemoteComponentWindow(
+                    id=uuid5(
+                        NAMESPACE_URL,
+                        f"{job.id}:{component.value}:window:1:attempt:1",
+                    ),
+                    batch_job_id=job.id,
+                    component=component,
+                    state=(
+                        RemoteComponentState.PENDING if is_selected else source.state
+                    ),
+                    window_number=1,
+                    attempt_number=1,
+                    origin="MANUAL_RETRY",
+                    deadline_at=deadline,
+                    identifier_kind=(
+                        recovery[0] if recovery is not None else source.identifier_kind
+                    ),
+                    remote_identifier=(
+                        recovery[1] if recovery is not None else source.remote_identifier
+                    ),
+                    identifier_origin=(
+                        recovery[2] if recovery is not None else source.identifier_origin
+                    ),
+                    query_fingerprint=source.query_fingerprint,
+                    checkpoint_path=source.checkpoint_path,
+                    completed_units=source.completed_units,
+                    total_units=source.total_units,
+                    last_remote_status=source.last_remote_status,
+                    last_contact_at=source.last_contact_at,
+                    last_progress_at=source.last_progress_at,
+                    failure_code=None if is_selected else source.failure_code,
+                    failure_message=None if is_selected else source.failure_message,
+                    retryable=False if is_selected else source.retryable,
+                    created_at=component_created_at,
+                    ended_at=None if is_selected else source.ended_at,
                 )
-                continue
-            component_repository.transition(
-                row.id,
-                expected_state=RemoteComponentState.PENDING,
-                requested_state=source.state,
-                **common,
-                failure_code=source.failure_code,
-                failure_message=source.failure_message,
-                retryable=source.retryable,
-                ended_at=source.ended_at,
             )
+        component_repository.create_windows(tuple(windows))
         self.repository.append_event(
             WebBatchEvent(
                 batch_id=batch.id,
@@ -3083,7 +3156,12 @@ class DurableDashboardJobQueue:
                 execution_type=identity_checkpoint.execution_type,
                 mode=identity_checkpoint.mode,
                 origin=identity_checkpoint.origin,
-                attempt_number=identity_checkpoint.attempt_number,
+                # A retentativa seletiva combina checkpoints antigos, já
+                # validados, com o checkpoint novo do componente escolhido.
+                # A identidade consolidada precisa pertencer à tentativa atual
+                # para que ``allow_prior_attempts`` aceite os demais como
+                # predecessores, independentemente de VM ter sido preservado.
+                attempt_number=job.attempt_number,
                 period=dict(identity_checkpoint.period),
             )
             checkpoints: list[ComponentCollectionCheckpoint] = []
@@ -3228,6 +3306,9 @@ class DurableDashboardJobQueue:
     ) -> BatchJobResult:
         job_id = str(executor_job_id or job.id.hex)
         payload = dict(job.payload)
+        if operation in {"staged_component", "staged_build"}:
+            for key in _STAGED_COMPONENT_STALE_RESULT_KEYS:
+                payload.pop(key, None)
         payload.pop("vm_resume_budget_seconds", None)
         payload["remote_processing_timeout_seconds"] = (
             self._remote_processing_timeout_seconds

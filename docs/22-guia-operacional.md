@@ -342,6 +342,13 @@ somente documentos com seção WEB. VM pode retomar UUID/chunks ou normalizar ra
 completo sem abrir API nova. A substituição só ocorre depois da validação; falha
 preserva manifesto, hashes, `MAIN` e documentos anteriores.
 
+Quando o dataset Cloud já está completo no checkpoint, **Tentar Cloud novamente**
+executa somente validação, montagem e publicação locais. O conjunto original passa
+a mostrar uma nova tentativa `COMPLETE`, ganha o DOCX Cloud e recebe uma nova
+revisão do snapshot compacto; a fotografia parcial anterior não é alterada. Se o
+componente já estiver `COMPLETE`, uma nova retentativa Cloud é corretamente
+recusada, pois não há dado faltante a recuperar.
+
 No bootstrap padrão, o executor faseado oferece retry seletivo para VM, WAS e
 Cloud. Conjuntos excluídos nunca podem ser retentados.
 

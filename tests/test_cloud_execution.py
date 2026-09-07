@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -183,6 +184,27 @@ def _resume_context(tmp_path: Path) -> tuple[Path, CloudResumeContext]:
         dataset_path=dataset_path,
         dataset_sha256=sha256_file(dataset_path),
     )
+
+
+def test_resume_context_accepts_nested_immutable_checkpoint_metadata(
+    tmp_path: Path,
+) -> None:
+    dataset_path = tmp_path / "cloud-report-dataset.json"
+    dataset_path.write_text("{}", encoding="utf-8")
+
+    resume = CloudResumeContext(
+        stage=ComponentStage.RENDER,
+        dataset_path=dataset_path,
+        dataset_sha256=sha256_file(dataset_path),
+        capabilities=MappingProxyType({
+            "required_ready": True,
+            "sources": MappingProxyType({
+                "virtual_machines": "AVAILABLE",
+            }),
+        }),
+    )
+
+    assert resume.capabilities["sources"]["virtual_machines"] == "AVAILABLE"
 
 
 def _assert_sanitized_stage_failure(

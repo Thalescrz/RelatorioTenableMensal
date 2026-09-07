@@ -102,40 +102,81 @@ class PostgresRemoteComponentRepository:
             return ()
         normalized_attempt = int(attempt_number or window_number)
         fingerprints = dict(query_fingerprints or {})
-        rows: list[Sequence[Any]] = []
-        with self.database.connection() as connection:
-            for component in normalized:
-                component_id = uuid5(
+        created_at = datetime.now(UTC)
+        windows = tuple(
+            RemoteComponentWindow(
+                id=uuid5(
                     NAMESPACE_URL,
                     f"{batch_job_id}:{component.value}:window:{window_number}:attempt:{normalized_attempt}",
-                )
+                ),
+                batch_job_id=batch_job_id,
+                component=component,
+                state=RemoteComponentState.PENDING,
+                window_number=window_number,
+                attempt_number=normalized_attempt,
+                parent_component_id=parent_component_id,
+                origin=str(origin),
+                deadline_at=deadline_at,
+                replacement_created_in_window_2=replacement_created_in_window_2,
+                replacement_created_in_window_3=replacement_created_in_window_3,
+                query_fingerprint=fingerprints.get(component),
+                created_at=created_at,
+            )
+            for component in normalized
+        )
+        return self.create_windows(windows)
+
+    def create_windows(
+        self,
+        windows: Sequence[RemoteComponentWindow],
+    ) -> tuple[RemoteComponentWindow, ...]:
+        rows: list[Sequence[Any]] = []
+        with self.database.connection() as connection:
+            for window in windows:
                 row = connection.execute(
                     f"""
                     insert into {SCHEMA_NAME}.web_batch_remote_components (
-                        id, batch_job_id, component, state, window_number,
-                        attempt_number, parent_component_id, origin, deadline_at,
-                        replacement_created_in_window_2,
-                        replacement_created_in_window_3, query_fingerprint
+                        {_COMPONENT_COLUMNS}
                     ) values (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s
                     )
                     on conflict (batch_job_id, component, attempt_number)
                     do update set batch_job_id = excluded.batch_job_id
                     returning {_COMPONENT_COLUMNS}
                     """,
                     (
-                        component_id,
-                        batch_job_id,
-                        component.value,
-                        RemoteComponentState.PENDING.value,
-                        window_number,
-                        normalized_attempt,
-                        parent_component_id,
-                        str(origin),
-                        deadline_at,
-                        replacement_created_in_window_2,
-                        replacement_created_in_window_3,
-                        fingerprints.get(component),
+                        window.id,
+                        window.batch_job_id,
+                        window.component.value,
+                        window.state.value,
+                        window.window_number,
+                        window.attempt_number,
+                        window.parent_component_id,
+                        window.origin,
+                        window.deadline_at,
+                        window.replacement_created_in_window_2,
+                        window.replacement_created_in_window_3,
+                        window.identifier_kind.value if window.identifier_kind else None,
+                        window.remote_identifier,
+                        window.identifier_origin,
+                        window.query_fingerprint,
+                        window.checkpoint_path,
+                        window.completed_units,
+                        window.total_units,
+                        window.last_remote_status,
+                        window.last_contact_at,
+                        window.last_progress_at,
+                        window.worker_id,
+                        window.lease_expires_at,
+                        window.failure_code,
+                        window.failure_message,
+                        window.retryable,
+                        window.created_at,
+                        window.started_at,
+                        window.ended_at,
                     ),
                 ).fetchone()
                 if row is None:

@@ -451,6 +451,11 @@ def test_repository_claims_ready_job_for_build_and_records_build_event() -> None
 
     assert claimed is not None
     assert claimed.phase is BatchJobPhase.BUILD_RUNNING
+    claim_sql, _ = database.connection_value.calls[0]
+    normalized_sql = " ".join(claim_sql.split())
+    assert "batch.requested_action is null" in normalized_sql
+    assert "or batch.requested_action in (" in normalized_sql
+    assert "'RETRY_INCOMPLETE', 'RERUN_ALL'" in normalized_sql
     _, event_params = database.connection_value.calls[2]
     assert event_params[2] == "BUILD_STARTED"
 

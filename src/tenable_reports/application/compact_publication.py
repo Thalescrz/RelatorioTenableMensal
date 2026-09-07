@@ -103,6 +103,7 @@ def publish_compact_run_snapshot(
     repository: CompactSnapshotRepository,
     profile: ClientProfile,
     run_id: str,
+    snapshot_run_id: str | None = None,
     execution_type: str,
     period: ReportingPeriod,
     output_root: str | Path,
@@ -115,6 +116,7 @@ def publish_compact_run_snapshot(
     snapshot = prepare_compact_run_snapshot(
         profile=profile,
         source_run_id=run_id,
+        snapshot_run_id=snapshot_run_id,
         execution_type=execution_type,
         period=period,
         output_root=output_root,

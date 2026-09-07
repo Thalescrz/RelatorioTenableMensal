@@ -234,6 +234,60 @@ def test_published_build_result_rejects_registration_without_documents() -> None
     assert app._published_build_result(job, checkpoint) is None
 
 
+def test_published_build_result_requires_cloud_document_when_cloud_completed(
+    tmp_path: Path,
+) -> None:
+    existing = tmp_path / "general.docx"
+    existing.write_bytes(b"valid-fixture")
+
+    class GeneralOnlyDatabase:
+        @staticmethod
+        def report_documents(run_id: str) -> list[dict[str, object]]:
+            assert run_id == "published-run"
+            return [
+                {
+                    "path": str(existing),
+                    "package_status": "VALID",
+                    "document_kind": "general",
+                }
+            ]
+
+    registry = InMemoryReportRegistry()
+    registry.register_report(valid_run("published-run", client_id="client-01"))
+    app = object.__new__(DashboardApplication)
+    app.report_registry = registry
+    app.database = GeneralOnlyDatabase()
+    checkpoint = CollectionCheckpoint(
+        schema_version=1,
+        client_id="client-01",
+        tenant_id="client-01",
+        run_id="published-run",
+        logical_job_id="logical-run",
+        execution_type="MANUAL",
+        mode="manual",
+        origin="MANUAL",
+        attempt_number=2,
+        period={
+            "start_at": "2026-07-01T03:00:00Z",
+            "end_at": "2026-08-01T03:00:00Z",
+        },
+        component_metadata={"CLOUD": {"status": "COMPLETE"}},
+        artifacts=(),
+        hashes={},
+    )
+    job = WebBatchJob(
+        id=UUID(int=8001),
+        batch_id=UUID(int=8000),
+        client_id="client-01",
+        position=1,
+        status=BatchJobStatus.RUNNING,
+        attempt_number=2,
+        phase=BatchJobPhase.BUILD_RUNNING,
+    )
+
+    assert app._published_build_result(job, checkpoint) is None
+
+
 def test_published_build_result_repairs_missing_document_rows(tmp_path: Path) -> None:
     document = tmp_path / "report.docx"
     document.write_bytes(b"existing-report")

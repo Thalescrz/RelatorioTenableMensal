@@ -3407,7 +3407,30 @@ def _cloud_component_resume_context(
             return None
         dataset_sha256 = sha256_file(dataset_path)
 
-    dataset = load_cloud_report_dataset(dataset_path)
+    try:
+        storage_root = request.storage_root.resolve()
+        source_dataset = dataset_path.resolve()
+        source_dataset.relative_to(storage_root)
+        if not source_dataset.is_file():
+            return None
+        actual_sha256 = sha256_file(source_dataset)
+        if str(dataset_sha256).strip().lower() != actual_sha256:
+            return None
+        dataset = load_cloud_report_dataset(source_dataset)
+        rebound_dataset = (
+            component_checkpoint_path(request, ReportComponent.CLOUD).parent
+            / "resume"
+            / "cloud-report-dataset.json"
+        ).resolve()
+        rebound_dataset.parent.mkdir(parents=True, exist_ok=True)
+        if source_dataset != rebound_dataset:
+            shutil.copy2(source_dataset, rebound_dataset)
+        if sha256_file(rebound_dataset) != actual_sha256:
+            return None
+        dataset_path = rebound_dataset
+        dataset_sha256 = actual_sha256
+    except (OSError, ValueError):
+        return None
     return CloudResumeContext(
         stage=ComponentStage.SNAPSHOT_PUBLICATION,
         dataset_path=dataset_path,
@@ -3870,11 +3893,14 @@ def _build_cloud_only_from_collection_checkpoint(
         else None,
     )
     component_repository = _report_component_repository(args)
+    persisted_attempts = attempts
     if component_repository is not None:
-        for attempt in attempts:
-            component_repository.create_attempt(attempt)
+        persisted_attempts = _persist_component_attempts(
+            component_repository,
+            attempts,
+        )
     summary = summarize_component_set(
-        attempts,
+        persisted_attempts,
         planned_components=planned_components_from_attempts(attempts),
     )
     payload = {
@@ -3897,7 +3923,7 @@ def _build_cloud_only_from_collection_checkpoint(
                 "status": attempt.status.value,
                 "retryable": attempt.retryable,
             }
-            for attempt in attempts
+            for attempt in persisted_attempts
         ],
         "external_distribution_performed": False,
     }
@@ -3981,6 +4007,57 @@ def command_run_client(args: argparse.Namespace) -> int:
         return 130
 
 
+def _component_attempt_matches(
+    existing: ComponentAttempt,
+    desired: ComponentAttempt,
+) -> bool:
+    return (
+        existing.client_id == desired.client_id
+        and existing.source_run_id == desired.source_run_id
+        and existing.component is desired.component
+        and existing.status is desired.status
+        and existing.stage is desired.stage
+        and existing.retryable == desired.retryable
+        and existing.failure_code == desired.failure_code
+        and existing.failure_message == desired.failure_message
+        and dict(existing.artifact_references)
+        == dict(desired.artifact_references)
+    )
+
+
+def _persist_component_attempts(
+    repository: Any,
+    desired_attempts: Sequence[ComponentAttempt],
+) -> tuple[ComponentAttempt, ...]:
+    if not desired_attempts:
+        return ()
+    first = desired_attempts[0]
+    latest = {
+        attempt.component: attempt
+        for attempt in repository.latest_attempts(
+            source_run_id=first.source_run_id,
+            client_id=first.client_id,
+        )
+    }
+    for desired in desired_attempts:
+        existing = latest.get(desired.component)
+        if existing is not None and _component_attempt_matches(existing, desired):
+            continue
+        candidate = desired
+        if existing is not None:
+            candidate = replace(
+                desired,
+                id=uuid.uuid4(),
+                attempt_number=existing.attempt_number + 1,
+            )
+        latest[desired.component] = repository.create_attempt(candidate)
+    return tuple(
+        latest[component]
+        for component in ReportComponent
+        if component in latest
+    )
+
+
 def _persist_initial_component_states(
     *,
     args: argparse.Namespace,
@@ -4062,12 +4139,12 @@ def _persist_initial_component_states(
         artifact_references_by_component=references,
         checkpoint_path=checkpoint_path,
     )
+    persisted_attempts = attempts
     if repository is not None:
-        for attempt in attempts:
-            repository.create_attempt(attempt)
+        persisted_attempts = _persist_component_attempts(repository, attempts)
     planned = planned_components_from_attempts(attempts)
     summary = summarize_component_set(
-        attempts,
+        persisted_attempts,
         planned_components=planned,
     )
     return {
@@ -4081,7 +4158,7 @@ def _persist_initial_component_states(
                 "status": attempt.status.value,
                 "retryable": attempt.retryable,
             }
-            for attempt in attempts
+            for attempt in persisted_attempts
         ],
     }
 
@@ -4292,6 +4369,7 @@ def _publish_collected_period(
             repository=compact_repository,
             profile=profile,
             run_id=collected.run_id,
+            snapshot_run_id=getattr(args, "compact_snapshot_run_id", None),
             execution_type=execution_type,
             period=period,
             output_root=collected.output_root,
@@ -6010,6 +6088,7 @@ def build_parser() -> argparse.ArgumentParser:
     build_client.add_argument("--history-database")
     build_client.add_argument("--history-export-csv")
     build_client.add_argument("--skip-history", action="store_true")
+    build_client.add_argument("--compact-snapshot-run-id")
     build_client.add_argument(
         "--template", default="templates/corporate/base-v1.docx"
     )

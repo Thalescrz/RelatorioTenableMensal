@@ -185,6 +185,13 @@ arquivo persistido e seus hashes forem revalidados. Assim, corrigir VM, WAS ou C
 não exige repetir componentes válidos e também não permite misturar clientes ou
 períodos.
 
+O histórico de tentativas de componente é imutável. Quando a recuperação muda o
+estado de `FAILED` para `COMPLETE`, ela acrescenta uma nova tentativa numerada em
+vez de sobrescrever a falha anterior; estados que não mudaram não são duplicados.
+Se a montagem precisar atualizar um conjunto parcial já publicado, ela cria uma
+nova revisão do snapshot compacto vinculada à mesma execução do relatório. O
+snapshot parcial anterior permanece intacto para auditoria.
+
 O instante `reference_at` é metadado de auditoria resolvido separadamente por cada
 processo. A identidade compartilhada do período usa a janela `[start_at, end_at)` e
 seus atributos estáveis; diferenças apenas em `reference_at` não impedem o merge.

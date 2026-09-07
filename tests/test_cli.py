@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from uuid import UUID
 
 import tenable_reports.cli as cli_module
 from tenable_reports.cli import _period_filters, _scoped_output_root, main
@@ -22,7 +23,12 @@ from tenable_reports.application.cloud_execution import (
     CloudResumeContext,
 )
 from tenable_reports.application.collect_was import WasCollectionAttempt
-from tenable_reports.domain.report_components import ComponentStage
+from tenable_reports.domain.report_components import (
+    ComponentAttempt,
+    ComponentStage,
+    ComponentStatus,
+    ReportComponent,
+)
 from tenable_reports.application.tag_scope import VmTag
 from tenable_reports.application.was_recovery import (
     WasFailureDetails,
@@ -38,6 +44,72 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliTests(unittest.TestCase):
+    def test_component_publication_records_only_changed_state_as_next_attempt(
+        self,
+    ) -> None:
+        existing_vm = ComponentAttempt(
+            id=UUID(int=1),
+            client_id="client-a",
+            source_run_id="run-a",
+            component=ReportComponent.VM_CORE,
+            status=ComponentStatus.COMPLETE,
+            stage=ComponentStage.REPORT_PUBLICATION,
+            attempt_number=1,
+            artifact_references={"documents": ["general.docx"]},
+        )
+        existing_cloud = ComponentAttempt(
+            id=UUID(int=2),
+            client_id="client-a",
+            source_run_id="run-a",
+            component=ReportComponent.CLOUD,
+            status=ComponentStatus.FAILED,
+            stage=ComponentStage.COLLECTION,
+            attempt_number=1,
+            retryable=True,
+            failure_code="CLOUD_COMPONENT_FAILED",
+        )
+        desired_vm = ComponentAttempt(
+            id=UUID(int=3),
+            client_id="client-a",
+            source_run_id="run-a",
+            component=ReportComponent.VM_CORE,
+            status=ComponentStatus.COMPLETE,
+            stage=ComponentStage.REPORT_PUBLICATION,
+            attempt_number=1,
+            artifact_references={"documents": ["general.docx"]},
+        )
+        desired_cloud = ComponentAttempt(
+            id=UUID(int=4),
+            client_id="client-a",
+            source_run_id="run-a",
+            component=ReportComponent.CLOUD,
+            status=ComponentStatus.COMPLETE,
+            stage=ComponentStage.REPORT_PUBLICATION,
+            attempt_number=1,
+            artifact_references={"documents": ["cloud.docx"]},
+        )
+        repository = Mock()
+        repository.latest_attempts.return_value = (existing_vm, existing_cloud)
+        repository.create_attempt.side_effect = lambda attempt: attempt
+
+        persisted = cli_module._persist_component_attempts(
+            repository,
+            (desired_vm, desired_cloud),
+        )
+
+        repository.create_attempt.assert_called_once()
+        created = repository.create_attempt.call_args.args[0]
+        self.assertEqual(created.component, ReportComponent.CLOUD)
+        self.assertEqual(created.attempt_number, 2)
+        self.assertEqual(created.status, ComponentStatus.COMPLETE)
+        self.assertEqual(
+            {attempt.component: attempt for attempt in persisted},
+            {
+                ReportComponent.VM_CORE: existing_vm,
+                ReportComponent.CLOUD: created,
+            },
+        )
+
     def test_build_client_publishes_complete_cloud_while_vm_waits_retry(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)

@@ -114,7 +114,7 @@ class PostgresCloudSnapshotRepository:
                     %s::timestamptz, %s::timestamptz, %s, %s,
                     %s::timestamptz, %s::timestamptz, %s, %s, %s, %s
                 )
-                on conflict (snapshot_id) do nothing
+                on conflict do nothing
                 returning snapshot_id
                 """,
                 (
@@ -147,9 +147,9 @@ class PostgresCloudSnapshotRepository:
                 f"""
                 select content_sha256, payload_gzip
                 from {SCHEMA_NAME}.cloud_report_snapshots
-                where snapshot_id = %s
+                where snapshot_id = %s or run_id = %s
                 """,
-                (snapshot.snapshot_id,),
+                (snapshot.snapshot_id, snapshot.run_id),
             ).fetchone()
             if existing and (
                 str(existing[0]) == snapshot.content_sha256

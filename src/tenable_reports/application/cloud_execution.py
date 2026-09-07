@@ -6,7 +6,6 @@ import hashlib
 import hmac
 import json
 import re
-from copy import deepcopy
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -69,6 +68,18 @@ class CloudExecutionStatus(StrEnum):
     FAILED = "FAILED"
 
 
+def _copy_mapping_tree(value: Any) -> Any:
+    """Copy checkpoint JSON values without pickling MappingProxyType nodes."""
+
+    if isinstance(value, Mapping):
+        return {key: _copy_mapping_tree(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_mapping_tree(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_copy_mapping_tree(item) for item in value)
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class CloudLiveCollection:
     snapshot: NormalizedCloudSnapshot
@@ -108,7 +119,7 @@ class CloudResumeContext:
         object.__setattr__(
             self,
             "capabilities",
-            MappingProxyType(deepcopy(dict(self.capabilities))),
+            MappingProxyType(_copy_mapping_tree(self.capabilities)),
         )
         object.__setattr__(self, "connector_version", connector_version)
 
