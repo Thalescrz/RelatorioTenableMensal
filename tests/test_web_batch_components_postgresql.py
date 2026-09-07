@@ -178,6 +178,53 @@ def test_postgresql_create_uses_one_short_connection_and_returns_components() ->
     assert params[1:6] == (JOB_ID, "VM_CORE", "PENDING", 1, 1)
 
 
+def test_postgresql_create_windows_commits_terminal_and_pending_states_together() -> None:
+    database = _Database(
+        [
+            _Cursor(one=component_row(component_id=411, component="VM_CORE", state="COMPLETE")),
+            _Cursor(one=component_row(component_id=412, component="WAS", state="COMPLETE")),
+            _Cursor(one=component_row(component_id=413, component="CLOUD", state="PENDING")),
+        ]
+    )
+    repository = PostgresRemoteComponentRepository(database)
+    created_at = datetime(2026, 9, 4, 10, 0, tzinfo=UTC)
+    windows = tuple(
+        RemoteComponentWindow(
+            id=UUID(int=411 + index),
+            batch_job_id=JOB_ID,
+            component=component,
+            state=(
+                RemoteComponentState.PENDING
+                if component is ReportComponent.CLOUD
+                else RemoteComponentState.COMPLETE
+            ),
+            window_number=1,
+            attempt_number=1,
+            origin="MANUAL_RETRY",
+            deadline_at=DEADLINE,
+            checkpoint_path=(
+                None
+                if component is ReportComponent.CLOUD
+                else f"C:\\checkpoints\\{component.value}.json"
+            ),
+            created_at=created_at,
+            ended_at=(None if component is ReportComponent.CLOUD else created_at),
+        )
+        for index, component in enumerate(ReportComponent)
+    )
+
+    created = repository.create_windows(windows)
+
+    assert tuple(item.state for item in created) == (
+        RemoteComponentState.COMPLETE,
+        RemoteComponentState.COMPLETE,
+        RemoteComponentState.PENDING,
+    )
+    assert database.connection_calls == 1
+    states = tuple(call[1][3] for call in database.connection_value.calls)
+    assert states == ("COMPLETE", "COMPLETE", "PENDING")
+
+
 def test_postgresql_claim_uses_skip_locked_and_closes_before_runner_work() -> None:
     claimed_row = component_row(
         component="VM_CORE",

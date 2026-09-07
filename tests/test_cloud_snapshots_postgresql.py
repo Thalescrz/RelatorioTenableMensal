@@ -46,7 +46,7 @@ class FakeDatabase:
         yield self.connection_value
 
 
-def _snapshot() -> Any:
+def _snapshot(*, attempt_number: int = 1) -> Any:
     module = importlib.import_module(
         "tenable_reports.application.cloud_snapshots"
     )
@@ -60,7 +60,7 @@ def _snapshot() -> Any:
         client_id="cliente-fixture",
         tenant_id="tenant-fixture",
         run_id="run-fixture",
-        attempt_number=1,
+        attempt_number=attempt_number,
         execution_type="MANUAL",
         period_mode="EXPLICIT_RANGE",
         timezone="UTC",
@@ -109,6 +109,43 @@ def test_postgres_repository_publishes_snapshot_without_decoding_payload() -> No
         isinstance(value, bytes) and value.startswith(b"\x1f\x8b")
         for value in params
     )
+
+
+def test_postgres_repository_accepts_same_run_content_from_component_retry() -> None:
+    module = importlib.import_module(
+        "tenable_reports.infrastructure.cloud_snapshots_postgresql"
+    )
+    retry_snapshot = _snapshot(attempt_number=2)
+
+    class ConflictConnection(RecordingConnection):
+        def execute(
+            self,
+            sql: str,
+            params: tuple[Any, ...] | None = None,
+        ) -> Cursor:
+            self.calls.append((sql, params))
+            if "insert into tenable_reports.cloud_report_snapshots" in sql:
+                return Cursor(one=None)
+            if "from tenable_reports.cloud_report_snapshots" in sql:
+                return Cursor(
+                    one=(
+                        retry_snapshot.content_sha256,
+                        retry_snapshot.payload_gzip,
+                    )
+                )
+            return Cursor()
+
+    database = FakeDatabase()
+    database.connection_value = ConflictConnection()
+    repository = module.PostgresCloudSnapshotRepository(database, migrate=False)
+
+    repository.publish(retry_snapshot)
+
+    insert_sql, _ = database.connection_value.calls[0]
+    lookup_sql, lookup_params = database.connection_value.calls[1]
+    assert "on conflict do nothing" in " ".join(insert_sql.split())
+    assert "snapshot_id = %s or run_id = %s" in " ".join(lookup_sql.split())
+    assert lookup_params == (retry_snapshot.snapshot_id, retry_snapshot.run_id)
 
 
 def test_postgres_repository_exposes_replay_history_and_contract_methods() -> None:

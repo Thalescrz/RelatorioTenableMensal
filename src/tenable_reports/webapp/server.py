@@ -2212,6 +2212,19 @@ class JobQueue:
                     "--assets-dir",
                     str(config.assets_dir),
                 ]
+                if job.get("selected_components"):
+                    source_run_id = str(job.get("run_id") or "").strip()
+                    if not source_run_id:
+                        raise ValueError(
+                            "Montagem de componente sem execução de origem."
+                        )
+                    command.extend((
+                        "--compact-snapshot-run-id",
+                        (
+                            f"{source_run_id}-component-retry-"
+                            f"{str(job_id).replace('-', '')}"
+                        ),
+                    ))
                 if job.get("_job_control_file"):
                     command.extend((
                         "--job-control-file", str(job["_job_control_file"])
@@ -2589,6 +2602,17 @@ class DashboardApplication:
             if not documents or any(
                 str(document.get("package_status") or "").upper() != "VALID"
                 or not Path(str(document.get("path") or "")).is_file()
+                for document in documents
+            ):
+                return None
+            cloud_metadata = checkpoint.component_metadata.get("CLOUD")
+            cloud_complete = bool(
+                isinstance(cloud_metadata, Mapping)
+                and str(cloud_metadata.get("status") or "").upper()
+                in {"COMPLETE", "COMPLETE_WITH_WARNINGS"}
+            )
+            if cloud_complete and not any(
+                str(document.get("document_kind") or "").casefold() == "cloud"
                 for document in documents
             ):
                 return None

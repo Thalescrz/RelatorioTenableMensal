@@ -231,6 +231,13 @@ vier de uma tentativa anterior, copie-o para o workspace exclusivo da tentativa
 atual antes de persistir o novo checkpoint. Cubra também o formato legado sem
 artefato explícito, aceitando apenas o caminho determinístico validado.
 
+Metadados lidos do checkpoint podem conter `MappingProxyType` aninhado. Converta a
+árvore para estruturas mutáveis simples antes da montagem; não use `deepcopy` em
+proxies imutáveis. Ao persistir a recuperação, compare com a tentativa mais recente:
+não duplique estados idênticos e registre uma nova `attempt_number` quando o estado
+mudar. A publicação compacta de um retry usa uma identidade de revisão própria para
+preservar a imutabilidade do snapshot parcial já existente.
+
 O servidor valida confirmação, conjunto excluído, enum e subconjunto retentável
 antes de chamar o executor. Sem `component_retry_enqueuer`, somente o caminho
 compatível Cloud pode executar; VM/WAS retornam indisponibilidade explícita.

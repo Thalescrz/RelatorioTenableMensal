@@ -926,33 +926,42 @@ class InMemoryRemoteComponentRepository:
             return ()
         normalized_attempt = int(attempt_number or window_number)
         fingerprints = dict(query_fingerprints or {})
+        created_at = datetime.now(UTC)
+        windows = tuple(
+            RemoteComponentWindow(
+                id=uuid5(
+                    NAMESPACE_URL,
+                    f"{batch_job_id}:{component.value}:window:{window_number}:attempt:{normalized_attempt}",
+                ),
+                batch_job_id=batch_job_id,
+                component=component,
+                state=RemoteComponentState.PENDING,
+                window_number=window_number,
+                attempt_number=normalized_attempt,
+                parent_component_id=parent_component_id,
+                origin=origin,
+                deadline_at=deadline_at,
+                replacement_created_in_window_2=replacement_created_in_window_2,
+                replacement_created_in_window_3=replacement_created_in_window_3,
+                query_fingerprint=fingerprints.get(component),
+                created_at=created_at,
+            )
+            for component in normalized_components
+        )
+        return self.create_windows(windows)
+
+    def create_windows(
+        self,
+        windows: Sequence[RemoteComponentWindow],
+    ) -> tuple[RemoteComponentWindow, ...]:
         created: list[RemoteComponentWindow] = []
         with self._lock:
-            for component in normalized_components:
-                key = (batch_job_id, component, normalized_attempt)
+            for value in windows:
+                key = (value.batch_job_id, value.component, value.attempt_number)
                 existing_id = self._attempt_keys.get(key)
                 if existing_id is not None:
                     created.append(self._components[existing_id])
                     continue
-                component_id = uuid5(
-                    NAMESPACE_URL,
-                    f"{batch_job_id}:{component.value}:window:{window_number}:attempt:{normalized_attempt}",
-                )
-                value = RemoteComponentWindow(
-                    id=component_id,
-                    batch_job_id=batch_job_id,
-                    component=component,
-                    state=RemoteComponentState.PENDING,
-                    window_number=window_number,
-                    attempt_number=normalized_attempt,
-                    parent_component_id=parent_component_id,
-                    origin=origin,
-                    deadline_at=deadline_at,
-                    replacement_created_in_window_2=replacement_created_in_window_2,
-                    replacement_created_in_window_3=replacement_created_in_window_3,
-                    query_fingerprint=fingerprints.get(component),
-                    created_at=datetime.now(UTC),
-                )
                 self._components[value.id] = value
                 self._attempt_keys[key] = value.id
                 created.append(value)

@@ -1002,7 +1002,12 @@ class PostgresWebBatchRepository(WebBatchRepository):
                     where job.status = 'QUEUED'
                       and job.phase = any(%s)
                       and batch.status in ('QUEUED', 'RUNNING')
-                      and batch.requested_action is null
+                      and (
+                          batch.requested_action is null
+                          or batch.requested_action in (
+                              'RETRY_INCOMPLETE', 'RERUN_ALL'
+                          )
+                      )
                     order by batch.created_at, job.position, job.id
                     for update skip locked
                     limit 1

@@ -459,7 +459,17 @@ class CliCollectionRoutingTests(unittest.TestCase):
                 sha256_file(dataset_path),
             )
             resume = retry_cloud.call_args.kwargs["resume"]
-            self.assertEqual(resume.dataset_path, dataset_path)
+            expected_resume_path = (
+                component_checkpoint_path(request, ReportComponent.CLOUD).parent
+                / "resume"
+                / "cloud-report-dataset.json"
+            )
+            self.assertEqual(resume.dataset_path, expected_resume_path)
+            self.assertTrue(expected_resume_path.is_file())
+            self.assertEqual(
+                sha256_file(expected_resume_path),
+                sha256_file(dataset_path),
+            )
             self.assertEqual(
                 retry_cloud.call_args.args[0].render_documents,
                 False,
