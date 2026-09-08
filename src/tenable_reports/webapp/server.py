@@ -166,6 +166,7 @@ STATIC_DIRECTORY = Path(__file__).with_name("static")
 MAX_REQUEST_BYTES = 64 * 1024
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 PREPARED_ARCHIVE_TTL_SECONDS = 5 * 60
+ARCHIVE_PREPARATION_TTL_SECONDS = 10 * 60
 SECRET_PATTERN = re.compile(
     r"(?i)(TENABLE_(?:ACCESS|SECRET)|TCS_API_SECRET|TENABLE_REPORTS_DB_PASSWORD)\s*=\s*[^\s]+"
 )
@@ -1167,6 +1168,93 @@ class DashboardDatabase:
             "tag_category": row[12],
             "tag_value": row[13],
         } for row in rows]
+
+    def report_archive_months(self) -> list[str]:
+        query = f"""
+            select distinct m.period_key
+            from {SCHEMA_NAME}.report_main_references m
+            join {SCHEMA_NAME}.report_runs r on r.run_id = m.run_id
+            where r.deleted_at is null
+            order by m.period_key desc
+        """
+        with self.database.connection() as connection:
+            rows = connection.execute(query).fetchall()
+        return [
+            str(row[0])
+            for row in rows
+            if re.fullmatch(r"\d{4}-\d{2}", str(row[0] or ""))
+        ]
+
+    def main_archive_reports(
+        self,
+        period_id: str,
+        *,
+        client_ids: Sequence[str],
+    ) -> dict[str, list[dict[str, Any]]]:
+        normalized_client_ids = tuple(
+            str(client_id).strip() for client_id in client_ids if str(client_id).strip()
+        )
+        if not normalized_client_ids:
+            return {}
+        query = f"""
+            select m.client_id, r.run_id, m.period_key, m.set_at, r.deleted_at,
+                   d.document_id, d.path, d.size_bytes, d.package_status,
+                   r.execution_type, r.ended_at, p.created_at,
+                   d.document_kind, d.document_variant,
+                   d.tag_uuid, d.tag_category, d.tag_value
+            from {SCHEMA_NAME}.report_main_references m
+            join {SCHEMA_NAME}.report_runs r on r.run_id = m.run_id
+            left join {SCHEMA_NAME}.publications p on p.run_id = r.run_id
+            left join {SCHEMA_NAME}.published_documents d
+                on d.publication_id = p.publication_id
+            where m.period_key = %s
+              and m.client_id = any(%s)
+              and r.deleted_at is null
+            order by m.client_id, m.set_at desc, d.document_id
+        """
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                query,
+                (period_id, list(normalized_client_ids)),
+            ).fetchall()
+        by_client: dict[str, list[dict[str, Any]]] = {}
+        by_run: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            client_id = str(row[0])
+            run_id = str(row[1])
+            report = by_run.get((client_id, run_id))
+            if report is None:
+                report = {
+                    "client_id": client_id,
+                    "run_id": run_id,
+                    "period_id": str(row[2]),
+                    "is_main": True,
+                    "main_set_at": row[3].isoformat() if row[3] else None,
+                    "deleted_at": row[4].isoformat() if row[4] else None,
+                    "documents": [],
+                }
+                by_run[(client_id, run_id)] = report
+                by_client.setdefault(client_id, []).append(report)
+            if row[5] is None or not row[6]:
+                continue
+            report["documents"].append({
+                "document_id": int(row[5]),
+                "name": Path(str(row[6])).name,
+                "path": str(row[6]),
+                "size_bytes": int(row[7] or 0),
+                "package_status": row[8],
+                "run_id": run_id,
+                "period_id": str(row[2]),
+                "execution_type": row[9],
+                "ended_at": row[10].isoformat() if row[10] else None,
+                "created_at": row[11].isoformat() if row[11] else None,
+                "document_kind": row[12],
+                "document_variant": row[13],
+                "tag_uuid": row[14],
+                "tag_category": row[15],
+                "tag_value": row[16],
+            })
+        return by_client
 
     def repair_publication_documents(
         self,
@@ -2667,6 +2755,7 @@ class DashboardApplication:
         self._prepared_archives: dict[
             str, tuple[ReportArchiveResult, float]
         ] = {}
+        self._archive_preparations: dict[str, dict[str, Any]] = {}
         self._stale_archive_cleanup_timer: threading.Timer | None = None
         self._schedule_stale_archive_cleanup()
         self.connection_checker = connection_checker
@@ -3083,6 +3172,10 @@ class DashboardApplication:
         )
 
     def report_archive_months(self) -> list[str]:
+        if self.database is not None:
+            batch_lookup = getattr(self.database, "report_archive_months", None)
+            if callable(batch_lookup):
+                return list(batch_lookup())
         periods: set[str] = set()
         for client in self.config.list_clients():
             for row in self.report_rows(str(client["client_id"])):
@@ -3091,7 +3184,12 @@ class DashboardApplication:
                     periods.add(period_id)
         return sorted(periods, reverse=True)
 
-    def create_report_set_archive(self, run_id: str) -> ReportArchiveResult:
+    def create_report_set_archive(
+        self,
+        run_id: str,
+        *,
+        progress_callback: Callable[[Mapping[str, object]], None] | None = None,
+    ) -> ReportArchiveResult:
         if self.report_registry is None or self.database is None:
             raise RuntimeError("Banco e registro de relatórios precisam estar disponíveis.")
         registered = self.report_registry.get_report(run_id)
@@ -3127,6 +3225,7 @@ class DashboardApplication:
                 row,
                 display_name=str(client.get("display_name") or client_id),
             ),
+            progress_callback=progress_callback,
         )
 
     def create_monthly_report_archive(
@@ -3134,6 +3233,7 @@ class DashboardApplication:
         period_id: str,
         *,
         responsible_analyst_id: str | None = None,
+        progress_callback: Callable[[Mapping[str, object]], None] | None = None,
     ) -> ReportArchiveResult:
         if self.report_registry is None or self.database is None:
             raise RuntimeError("Banco e registro de relatórios precisam estar disponíveis.")
@@ -3152,7 +3252,28 @@ class DashboardApplication:
                 raise ValueError("Analista responsável não encontrado.")
             analyst_name = str(analyst.get("display_name") or normalized_analyst_id)
         clients: list[ArchiveClient] = []
-        for client in self.config.list_clients():
+        configured_clients = [
+            client
+            for client in self.config.list_clients()
+            if (
+                normalized_analyst_id is None
+                or str(client.get("responsible_analyst_id") or "")
+                == normalized_analyst_id
+            )
+        ]
+        batch_lookup = getattr(self.database, "main_archive_reports", None)
+        reports_by_client = (
+            batch_lookup(
+                period_id,
+                client_ids=tuple(
+                    str(client.get("client_id") or "")
+                    for client in configured_clients
+                ),
+            )
+            if callable(batch_lookup)
+            else None
+        )
+        for client in configured_clients:
             if (
                 normalized_analyst_id is not None
                 and str(client.get("responsible_analyst_id") or "")
@@ -3161,24 +3282,33 @@ class DashboardApplication:
                 continue
             client_id = str(client.get("client_id") or "")
             display_name = str(client.get("display_name") or client_id)
-            reports = tuple(
-                self._archive_report_from_row(
-                    {
-                        **row,
-                        "client_id": client_id,
-                        "documents": self.database.report_documents(
-                            str(row.get("run_id") or "")
-                        ),
-                    },
-                    display_name=display_name,
+            if reports_by_client is not None:
+                reports = tuple(
+                    self._archive_report_from_row(
+                        row,
+                        display_name=display_name,
+                    )
+                    for row in reports_by_client.get(client_id, ())
                 )
-                for row in self.report_rows(client_id)
-                if (
-                    str(row.get("period_id") or "") == period_id
-                    and bool(row.get("is_main"))
-                    and not row.get("deleted_at")
+            else:
+                reports = tuple(
+                    self._archive_report_from_row(
+                        {
+                            **row,
+                            "client_id": client_id,
+                            "documents": self.database.report_documents(
+                                str(row.get("run_id") or "")
+                            ),
+                        },
+                        display_name=display_name,
+                    )
+                    for row in self.report_rows(client_id)
+                    if (
+                        str(row.get("period_id") or "") == period_id
+                        and bool(row.get("is_main"))
+                        and not row.get("deleted_at")
+                    )
                 )
-            )
             clients.append(ArchiveClient(
                 client_id=client_id,
                 display_name=display_name,
@@ -3191,15 +3321,16 @@ class DashboardApplication:
             period_id=period_id,
             clients=clients,
             download_scope=analyst_name,
+            progress_callback=progress_callback,
         )
 
-    def prepare_report_archive(
+    def _validate_archive_preparation_request(
         self,
         *,
-        run_id: str | None = None,
-        period_id: str | None = None,
-        responsible_analyst_id: str | None = None,
-    ) -> dict[str, str]:
+        run_id: str | None,
+        period_id: str | None,
+        responsible_analyst_id: str | None,
+    ) -> tuple[str, str, str | None]:
         normalized_run = str(run_id or "").strip()
         normalized_period = str(period_id or "").strip()
         normalized_analyst_id = str(responsible_analyst_id or "").strip() or None
@@ -3209,12 +3340,38 @@ class DashboardApplication:
             raise ValueError(
                 "O filtro por responsável só pode ser usado no ZIP mensal."
             )
+        if normalized_analyst_id is not None and not any(
+            str(item.get("analyst_id") or "") == normalized_analyst_id
+            for item in self.config.list_analysts()
+        ):
+            raise ValueError("Analista responsável não encontrado.")
+        return normalized_run, normalized_period, normalized_analyst_id
+
+    def prepare_report_archive(
+        self,
+        *,
+        run_id: str | None = None,
+        period_id: str | None = None,
+        responsible_analyst_id: str | None = None,
+        progress_callback: Callable[[Mapping[str, object]], None] | None = None,
+    ) -> dict[str, str]:
+        normalized_run, normalized_period, normalized_analyst_id = (
+            self._validate_archive_preparation_request(
+                run_id=run_id,
+                period_id=period_id,
+                responsible_analyst_id=responsible_analyst_id,
+            )
+        )
         archive = (
-            self.create_report_set_archive(normalized_run)
+            self.create_report_set_archive(
+                normalized_run,
+                progress_callback=progress_callback,
+            )
             if normalized_run
             else self.create_monthly_report_archive(
                 normalized_period,
                 responsible_analyst_id=normalized_analyst_id,
+                progress_callback=progress_callback,
             )
         )
         download_id = uuid.uuid4().hex
@@ -3239,6 +3396,170 @@ class DashboardApplication:
             "download_name": archive.download_name,
             "download_url": f"/api/report-archives/download/{download_id}",
         }
+
+    @staticmethod
+    def _public_archive_preparation(
+        preparation: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            str(key): value
+            for key, value in preparation.items()
+            if not str(key).startswith("_")
+        }
+
+    def _update_archive_preparation(
+        self,
+        preparation_id: str,
+        progress: Mapping[str, object],
+    ) -> None:
+        with self._prepared_archive_lock:
+            current = self._archive_preparations.get(preparation_id)
+            if current is None or current.get("status") != "RUNNING":
+                return
+            previous = int(current.get("progress_percent") or 0)
+            requested = int(progress.get("progress_percent") or previous)
+            current.update({
+                "stage": str(progress.get("stage") or current.get("stage") or ""),
+                "message": _safe_error(
+                    str(progress.get("message") or current.get("message") or ""),
+                    limit=300,
+                ),
+                "progress_percent": max(previous, min(99, requested)),
+                "completed_items": max(
+                    0, int(progress.get("completed_items") or 0)
+                ),
+                "total_items": max(0, int(progress.get("total_items") or 0)),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+    def _expire_archive_preparation_later(self, preparation_id: str) -> None:
+        timer = threading.Timer(
+            ARCHIVE_PREPARATION_TTL_SECONDS,
+            self._discard_archive_preparation,
+            args=(preparation_id,),
+        )
+        timer.daemon = True
+        timer.start()
+
+    def _discard_archive_preparation(self, preparation_id: str) -> None:
+        with self._prepared_archive_lock:
+            self._archive_preparations.pop(preparation_id, None)
+
+    def _run_archive_preparation(
+        self,
+        preparation_id: str,
+        *,
+        run_id: str,
+        period_id: str,
+        responsible_analyst_id: str | None,
+    ) -> None:
+        try:
+            prepared = self.prepare_report_archive(
+                run_id=run_id or None,
+                period_id=period_id or None,
+                responsible_analyst_id=responsible_analyst_id,
+                progress_callback=lambda progress: self._update_archive_preparation(
+                    preparation_id,
+                    progress,
+                ),
+            )
+        except (
+            KeyError,
+            ValueError,
+            EmptyReportArchiveError,
+            UnsafeReportArchivePath,
+            InsufficientReportArchiveSpace,
+            RuntimeError,
+        ) as exc:
+            failure_message = _safe_error(str(exc), limit=500)
+        except Exception:
+            failure_message = "Não foi possível preparar o arquivo ZIP."
+        else:
+            with self._prepared_archive_lock:
+                current = self._archive_preparations.get(preparation_id)
+                if current is not None:
+                    current.update({
+                        **prepared,
+                        "status": "READY",
+                        "stage": "READY",
+                        "message": "Arquivo ZIP pronto para download",
+                        "progress_percent": 100,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    })
+            self._expire_archive_preparation_later(preparation_id)
+            return
+
+        with self._prepared_archive_lock:
+            current = self._archive_preparations.get(preparation_id)
+            if current is not None:
+                current.update({
+                    "status": "FAILED",
+                    "stage": "FAILED",
+                    "message": failure_message,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
+        self._expire_archive_preparation_later(preparation_id)
+
+    def start_report_archive_preparation(
+        self,
+        *,
+        run_id: str | None = None,
+        period_id: str | None = None,
+        responsible_analyst_id: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_run, normalized_period, normalized_analyst_id = (
+            self._validate_archive_preparation_request(
+                run_id=run_id,
+                period_id=period_id,
+                responsible_analyst_id=responsible_analyst_id,
+            )
+        )
+        preparation_id = uuid.uuid4().hex
+        now = datetime.now(timezone.utc).isoformat()
+        preparation: dict[str, Any] = {
+            "preparation_id": preparation_id,
+            "status": "RUNNING",
+            "stage": "SELECTING_REPORTS",
+            "message": "Selecionando relatórios",
+            "progress_percent": 1,
+            "completed_items": 0,
+            "total_items": 0,
+            "created_at": now,
+            "updated_at": now,
+            "status_url": (
+                f"/api/report-archives/preparations/{preparation_id}"
+            ),
+        }
+        with self._prepared_archive_lock:
+            self._archive_preparations[preparation_id] = preparation
+        response = self._public_archive_preparation(preparation)
+        worker = threading.Thread(
+            target=self._run_archive_preparation,
+            kwargs={
+                "preparation_id": preparation_id,
+                "run_id": normalized_run,
+                "period_id": normalized_period,
+                "responsible_analyst_id": normalized_analyst_id,
+            },
+            name=f"tenable-archive-{preparation_id[:8]}",
+            daemon=True,
+        )
+        try:
+            worker.start()
+        except Exception:
+            with self._prepared_archive_lock:
+                self._archive_preparations.pop(preparation_id, None)
+            raise
+        return response
+
+    def report_archive_preparation(self, preparation_id: str) -> dict[str, Any]:
+        if not re.fullmatch(r"[a-f0-9]{32}", preparation_id):
+            raise KeyError("Preparação de ZIP não encontrada.")
+        with self._prepared_archive_lock:
+            preparation = self._archive_preparations.get(preparation_id)
+            if preparation is None:
+                raise KeyError("Preparação de ZIP não encontrada ou expirada.")
+            return self._public_archive_preparation(preparation)
 
     def claim_prepared_archive(self, download_id: str) -> ReportArchiveResult:
         if not re.fullmatch(r"[a-f0-9]{32}", download_id):
@@ -4076,6 +4397,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     _safe_error(str(exc), limit=500),
                 )
             return
+        preparation_match = re.fullmatch(
+            r"/api/report-archives/preparations/([a-f0-9]{32})",
+            parsed.path,
+        )
+        if preparation_match:
+            try:
+                self._json(
+                    HTTPStatus.OK,
+                    self.app.report_archive_preparation(
+                        preparation_match.group(1)
+                    ),
+                )
+            except KeyError as exc:
+                self._json_error(
+                    HTTPStatus.NOT_FOUND,
+                    _safe_error(str(exc), limit=500),
+                )
+            return
         prepared_match = re.fullmatch(
             r"/api/report-archives/download/([a-f0-9]{32})",
             parsed.path,
@@ -4316,14 +4655,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/report-archives/prepare":
                 try:
-                    result = self.app.prepare_report_archive(
+                    result = self.app.start_report_archive_preparation(
                         run_id=str(payload.get("run_id") or "") or None,
                         period_id=str(payload.get("period_id") or "") or None,
                         responsible_analyst_id=(
                             str(payload.get("responsible_analyst_id") or "") or None
                         ),
                     )
-                    self._json(HTTPStatus.CREATED, result)
+                    self._json(HTTPStatus.ACCEPTED, result)
                 except KeyError as exc:
                     self._json_error(
                         HTTPStatus.NOT_FOUND,
@@ -4773,13 +5112,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _json(self, status: HTTPStatus, payload: Mapping[str, Any]) -> None:
         content = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(content)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        self.wfile.write(content)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            self.wfile.write(content)
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            # O navegador pode cancelar uma consulta ao atualizar ou fechar a tela.
+            # Não existe uma segunda resposta útil a enviar nesse caso.
+            return
 
     def _json_error(self, status: HTTPStatus, message: str) -> None:
         self._json(status, {"error": message})

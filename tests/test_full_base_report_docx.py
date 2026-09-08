@@ -49,6 +49,102 @@ def _cell_fill(cell) -> str | None:
 
 
 class FullBaseReportDocxTests(unittest.TestCase):
+    def test_was_table_omits_family_column_when_catalog_has_no_matches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = json.loads(FIXTURE.read_text(encoding="utf-8"))
+            rows = [
+                {
+                    "plugin_id": 980001,
+                    "plugin_name": "WAS fixture",
+                    "plugin_family": None,
+                    "severity": "HIGH",
+                    "finding_instances": 2,
+                    "vpr_score": 7.5,
+                }
+            ]
+            dataset["was"] = {
+                "availability": "AVAILABLE",
+                "applications": [],
+                "top_vulnerabilities": rows,
+                "owasp": {},
+            }
+            dataset_path = Path(directory) / "was-without-family.json"
+            dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+            output = Path(directory) / "was-without-family.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=dataset_path,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+            )
+
+            headers = [
+                tuple(cell.text for cell in table.rows[0].cells)
+                for table in Document(output).tables
+            ]
+            self.assertIn(
+                ("Plugin Id", "Nome", "Severidade", "Total", "VPR"),
+                headers,
+            )
+            self.assertNotIn(
+                ("Plugin Id", "Nome", "Família", "Severidade", "Total", "VPR"),
+                headers,
+            )
+
+    def test_was_table_keeps_family_column_when_any_catalog_match_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = json.loads(FIXTURE.read_text(encoding="utf-8"))
+            dataset["was"] = {
+                "availability": "AVAILABLE",
+                "applications": [],
+                "top_vulnerabilities": [
+                    {
+                        "plugin_id": 980001,
+                        "plugin_name": "Com familia",
+                        "plugin_family": "Web Servers",
+                        "severity": "HIGH",
+                        "finding_instances": 2,
+                        "vpr_score": 7.5,
+                    },
+                    {
+                        "plugin_id": 980002,
+                        "plugin_name": "Sem familia",
+                        "plugin_family": None,
+                        "severity": "MEDIUM",
+                        "finding_instances": 1,
+                        "vpr_score": 5.0,
+                    },
+                ],
+                "owasp": {},
+            }
+            dataset_path = Path(directory) / "was-with-family.json"
+            dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+            output = Path(directory) / "was-with-family.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=dataset_path,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+            )
+
+            table = next(
+                table
+                for table in Document(output).tables
+                if tuple(cell.text for cell in table.rows[0].cells)
+                == ("Plugin Id", "Nome", "Família", "Severidade", "Total", "VPR")
+            )
+            self.assertEqual(table.rows[1].cells[2].text, "Web Servers")
+            self.assertEqual(
+                table.rows[2].cells[2].text,
+                "Não informado pela Tenable",
+            )
+
     def test_risk_band_labels_in_highlight_tables_use_approved_palette(self) -> None:
         document = Document()
         aging = _simple_table(

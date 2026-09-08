@@ -17,6 +17,39 @@ from tenable_reports.application.report_archives import (
 
 
 class ReportArchiveTests(unittest.TestCase):
+    def test_archive_reports_monotonic_preparation_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data_root = root / "data"
+            first = data_root / "first.docx"
+            second = data_root / "second.docx"
+            data_root.mkdir(parents=True)
+            first.write_bytes(b"first")
+            second.write_bytes(b"second")
+            progress: list[dict[str, object]] = []
+
+            result = build_report_set_archive(
+                data_root=data_root,
+                temporary_root=root / "temporary",
+                report=ArchiveReportSet(
+                    client_id="cliente-a",
+                    display_name="Cliente A",
+                    run_id="run-a",
+                    period_id="2026-08",
+                    is_main=True,
+                    documents=(ArchiveDocument(first), ArchiveDocument(second)),
+                ),
+                progress_callback=progress.append,
+            )
+
+            percentages = [int(item["progress_percent"]) for item in progress]
+            self.assertEqual(result.included_documents, 2)
+            self.assertEqual(percentages, sorted(percentages))
+            self.assertIn("SELECTING_REPORTS", {item["stage"] for item in progress})
+            self.assertIn("BUILDING_ARCHIVE", {item["stage"] for item in progress})
+            self.assertEqual(progress[-1]["stage"], "FINALIZING")
+            self.assertGreaterEqual(percentages[-1], 95)
+
     def test_monthly_archive_uses_only_main_and_separates_clients(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

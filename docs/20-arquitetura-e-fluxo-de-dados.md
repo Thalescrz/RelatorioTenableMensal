@@ -48,6 +48,9 @@ da interface, de Word ou de uma resposta HTTP específica.
 4. O export VM coleta findings gerais. O caminho combinado é o padrão; estratégias
    experimentais permanecem por cliente para diagnóstico.
 5. Se habilitado, o WAS é consultado em fluxo independente e tolerante a falha.
+   Como o export de findings pode omitir a família, os Plugin IDs presentes são
+   enriquecidos, em melhor esforço, pelo catálogo oficial paginado
+   `GET /was/v2/plugins`; os metadados confirmados ficam no catálogo PostgreSQL.
 6. Se Cloud Security estiver habilitado, o componente GraphQL valida o contrato e
    coleta uma fotografia independente, sem filtrar ou alterar o dataset VM.
 7. Ativos e findings são normalizados. O vínculo válido é o UUID de ativo.
@@ -63,6 +66,11 @@ da interface, de Word ou de uma resposta HTTP específica.
 12. Os DOCX são renderizados, validados, registrados e oferecidos para download.
 13. Métricas compactas são persistidas; dados intermediários pesados de uma
     execução bem-sucedida são removidos.
+
+O enriquecimento de família WAS nunca substitui o valor por OWASP, nome ou outra
+classificação aproximada. Se nenhuma linha exibida tiver correspondência real no
+catálogo, o DOCX omite integralmente a coluna **Família**. Falha do catálogo não
+invalida os findings WAS já coletados nem o dataset VM.
 
 ## Pipeline em fases para novos lotes
 
@@ -139,6 +147,11 @@ tabelas de correção. Uma fotografia normalizada alimenta o único DOCX Cloud p
 e o snapshot compacto PostgreSQL. O valor técnico de variante continua `expanded`
 somente para compatibilidade com o histórico e com a restrição do banco.
 
+O único DOCX Cloud aplica a mesma base tipográfica e cromática corporativa do
+relatório geral: Calibri no conteúdo gerado, azul institucional em títulos e
+cabeçalhos e cores de severidade compartilhadas. Runs herdados do template também
+são normalizados antes da publicação para evitar mistura de Arial, Times e Calibri.
+
 O projeto legado `RelatorioCloudTenable` permanece documentado como base técnica
 histórica do conector GraphQL: ajuda a localizar operações e campos já usados, mas
 não é fonte de verdade para paginação, ausência, histórico, retry, segurança de
@@ -191,6 +204,13 @@ vez de sobrescrever a falha anterior; estados que não mudaram não são duplica
 Se a montagem precisar atualizar um conjunto parcial já publicado, ela cria uma
 nova revisão do snapshot compacto vinculada à mesma execução do relatório. O
 snapshot parcial anterior permanece intacto para auditoria.
+
+Uma retentativa WAS de conjunto já publicado, manual ou automática, reconstrói a
+montagem pelo snapshot compacto validado. Ela não depende do staging pesado já
+reciclado, não repete assets, VM, TAG ou Cloud e preserva o hash da coleta VM. A
+substituição dos DOCX e do manifesto é transacional; os backups temporários usam
+nomes curtos derivados da transação e do hash do destino para não repetir nomes de
+arquivo extensos nem ultrapassar o limite de caminho do Windows.
 
 O instante `reference_at` é metadado de auditoria resolvido separadamente por cada
 processo. A identidade compartilhada do período usa a janela `[start_at, end_at)` e
@@ -434,6 +454,16 @@ inteiros quando cabem no limite. Chunks repetidos usam cache em memória. Uma fa
 preserva somente o chunk fonte, permite que os demais continuem e inclui no DOCX o
 aviso de que o original foi mantido. Plugin Output, hostname, IP, URI e tabelas de
 evidência não passam pelo tradutor. O adaptador é carregado somente quando encontra
-o primeiro texto e depende de acesso ao serviço externo; testes usam tradutor
-determinístico e nunca rede. Chamadas deliberadas com `translator=None` preservam
-o texto fonte.
+o primeiro texto e depende de acesso ao Google Translate; a autorização vigente
+abrange somente descrição, sinopse, solução, remediação e contramedida de VM, WAS,
+TAG e Cloud. O adaptador usa cache por execução, timeout e até três tentativas para
+`429` ou falha `5xx`, e nunca inclui o conteúdo nem a URL completa em mensagens de
+erro. Testes usam transporte determinístico e nunca rede. Chamadas deliberadas com
+`translator=None` preservam o texto fonte.
+
+A resposta do endpoint pode ser uma lista simples ou uma estrutura aninhada que
+combina texto traduzido e código do idioma de origem. O adaptador extrai somente o
+texto traduzido dessa estrutura. O backfill de documentos publicados reconhece e
+remove, apenas dentro dos blocos editoriais autorizados, wrappers literais deixados
+por versões anteriores do parser e atualiza os hashes do manifesto e do PostgreSQL
+na mesma transação.

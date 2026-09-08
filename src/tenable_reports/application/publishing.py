@@ -65,6 +65,22 @@ def sha256_file(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def _backup_path_for_transaction(
+    destination: Path,
+    *,
+    transaction_id: str,
+    operation: str,
+) -> Path:
+    """Return a short same-directory backup path safe for long Windows paths."""
+
+    destination_digest = hashlib.sha256(
+        str(destination).encode("utf-8")
+    ).hexdigest()[:12]
+    return destination.with_name(
+        f".{operation}-{transaction_id}-{destination_digest}.bak"
+    )
+
+
 def validate_docx_package(path: str | Path) -> dict[str, Any]:
     document = Path(path)
     if not document.is_file():
@@ -392,12 +408,110 @@ def replace_publication_documents_atomically(
             destination.parent.mkdir(parents=True, exist_ok=True)
             backup = None
             if destination.exists():
-                backup = destination.with_name(
-                    f".{destination.name}.was-backup-{transaction_id}"
+                backup = _backup_path_for_transaction(
+                    destination,
+                    transaction_id=transaction_id,
+                    operation="was",
                 )
                 destination.replace(backup)
             backups.append((destination, backup))
         for staged, destination, _ in prepared:
+            staged.replace(destination)
+            committed_destinations.append(destination)
+        write_json_atomic(source, updated)
+        if commit_callback is not None:
+            commit_callback()
+    except Exception:
+        for destination, backup in reversed(backups):
+            if backup is not None and backup.exists():
+                backup.replace(destination)
+            elif destination in committed_destinations:
+                destination.unlink(missing_ok=True)
+        write_json_atomic(source, original)
+        raise
+    for _, backup in backups:
+        if backup is not None:
+            backup.unlink(missing_ok=True)
+    return source
+
+
+def refresh_publication_documents_atomically(
+    *,
+    manifest_path: str | Path,
+    replacements: Sequence[PublicationDocumentReplacement],
+    audit_metadata: Mapping[str, Any] | None = None,
+    commit_callback: Callable[[], None] | None = None,
+) -> Path:
+    """Refresh published DOCX files without requiring cleaned source datasets."""
+
+    source = Path(manifest_path).resolve()
+    if not source.is_file():
+        raise ValueError(f"Manifesto de publicacao nao encontrado: {source}")
+    try:
+        original = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Manifesto de publicacao invalido.") from exc
+    if not isinstance(original, Mapping):
+        raise ValueError("Manifesto de publicacao invalido.")
+    existing_documents = original.get("documents")
+    if not isinstance(existing_documents, list):
+        raise ValueError("Manifesto sem documentos validos.")
+    if not replacements:
+        raise ValueError("Nenhum documento foi informado para atualizacao.")
+
+    prepared: dict[Path, tuple[Path, Path, dict[str, Any]]] = {}
+    for replacement in replacements:
+        staged = Path(replacement.staged_path).resolve()
+        destination = Path(replacement.destination.path).resolve()
+        if staged == destination:
+            raise ValueError("Documento staged precisa ser diferente do destino.")
+        if staged.anchor.lower() != destination.anchor.lower():
+            raise ValueError("Staging e destino precisam estar no mesmo volume.")
+        if destination in prepared:
+            raise ValueError(f"Destino de documento duplicado: {destination}")
+        validated = validate_docx_package(staged)
+        validated["path"] = str(destination)
+        validated.update(replacement.destination.metadata())
+        prepared[destination] = (staged, destination, validated)
+
+    refreshed: list[dict[str, Any]] = []
+    matched: set[Path] = set()
+    for item in existing_documents:
+        if not isinstance(item, Mapping):
+            continue
+        item_path = Path(str(item.get("path") or "")).resolve()
+        replacement = prepared.get(item_path)
+        if replacement is None:
+            refreshed.append(dict(item))
+            continue
+        refreshed.append(replacement[2])
+        matched.add(item_path)
+    missing = tuple(path for path in prepared if path not in matched)
+    if missing:
+        raise ValueError("Documento de destino não pertence ao manifesto informado.")
+
+    updated = dict(original)
+    updated["documents"] = refreshed
+    updated["updated_at"] = datetime.now(timezone.utc).isoformat()
+    if audit_metadata is not None:
+        updated["document_backfill"] = dict(audit_metadata)
+
+    transaction_id = uuid.uuid4().hex
+    backups: list[tuple[Path, Path | None]] = []
+    committed_destinations: list[Path] = []
+    try:
+        for _, destination, _ in prepared.values():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            backup = None
+            if destination.exists():
+                backup = _backup_path_for_transaction(
+                    destination,
+                    transaction_id=transaction_id,
+                    operation="backfill",
+                )
+                destination.replace(backup)
+            backups.append((destination, backup))
+        for staged, destination, _ in prepared.values():
             staged.replace(destination)
             committed_destinations.append(destination)
         write_json_atomic(source, updated)

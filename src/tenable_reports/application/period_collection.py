@@ -22,7 +22,10 @@ from tenable_reports.application.historical_materialization import (
     materialize_historical_collection_run,
 )
 from tenable_reports.application.normalize import _collection_records, normalize_collections
-from tenable_reports.application.normalize_was import normalize_was_collection
+from tenable_reports.application.normalize_was import (
+    normalize_was_collection,
+    normalize_was_collection_with_catalog,
+)
 from tenable_reports.application.tag_scope import VmTag, collect_tag_scope_snapshot
 from tenable_reports.application.vm_export_policy import (
     collect_vm_snapshot_with_policy,
@@ -303,6 +306,7 @@ def collect_was_period(
     output_root: Path,
     run_id: str,
     was_client: Any,
+    plugin_catalog: Any = None,
     progress_callback: Any = None,
 ) -> WasPeriodCollection:
     execution_control = getattr(args, "execution_control", None)
@@ -345,11 +349,22 @@ def collect_was_period(
             cancellation_probe=cancellation_probe,
         )
         if was_attempt.result is not None:
-            normalize_was_collection(
-                profile=profile,
-                collection=was_attempt.result,
-                output_root=output_root,
-            )
+            if plugin_catalog is not None:
+                _, catalog_warning = normalize_was_collection_with_catalog(
+                    profile=profile,
+                    collection=was_attempt.result,
+                    output_root=output_root,
+                    plugin_catalog=plugin_catalog,
+                    plugin_client=was_client,
+                )
+                if catalog_warning is not None:
+                    warnings.append(catalog_warning)
+            else:
+                normalize_was_collection(
+                    profile=profile,
+                    collection=was_attempt.result,
+                    output_root=output_root,
+                )
         was_collection_status = was_attempt.status
         was_failure = was_attempt.failure
         warnings.extend(was_attempt.warnings)
@@ -411,6 +426,7 @@ def collect_external_period(
         output_root=output_root,
         run_id=run_id,
         was_client=was_client,
+        plugin_catalog=plugin_catalog,
         progress_callback=progress_callback,
     )
     return ExternalPeriodCollection(

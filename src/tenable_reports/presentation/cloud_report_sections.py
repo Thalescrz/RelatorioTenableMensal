@@ -28,17 +28,17 @@ from tenable_reports.presentation.translation import (
 )
 
 
-BLUE = "2E59FC"
-NAVY = "101326"
-LIGHT_BLUE = "EAF0FF"
-LIGHT_GRAY = "F1F3F6"
-MID_GRAY = "68728A"
-WHITE = "FFFFFF"
+BLUE = base.BLUE
+NAVY = base.NAVY
+LIGHT_BLUE = base.LIGHT_BLUE
+LIGHT_GRAY = base.LIGHT_GRAY
+MID_GRAY = base.MID_GRAY
+WHITE = base.WHITE
 SEVERITY_FILLS = {
-    "CRITICAL": "C00000",
-    "HIGH": "F26B00",
-    "MEDIUM": "FFF200",
-    "LOW": "00B050",
+    "CRITICAL": base.CRITICAL,
+    "HIGH": base.HIGH,
+    "MEDIUM": base.MEDIUM,
+    "LOW": base.LOW,
     "NONE": "B7C9C5",
 }
 SEVERITY_LABELS = {
@@ -67,13 +67,13 @@ class CloudDocumentBuilder:
         text: str = "",
         *,
         bold: bool = False,
-        size: float = 10.5,
+        size: float = 9,
         color: str = NAVY,
         align: int = WD_ALIGN_PARAGRAPH.JUSTIFY,
         keep_with_next: bool = False,
         space_before: float = 0,
         space_after: float = 6,
-        font_name: str = "Times New Roman",
+        font_name: str = "Calibri",
     ) -> Any:
         paragraph = self.document.add_paragraph()
         paragraph.alignment = align
@@ -91,24 +91,24 @@ class CloudDocumentBuilder:
         return paragraph
 
     def heading(self, text: str, level: int = 1) -> Any:
-        sizes = {1: 15, 2: 12.5, 3: 11.5, 4: 10.5}
+        sizes = {1: 14, 2: 11, 3: 10, 4: 9}
         paragraph = self.paragraph(
             text,
             bold=True,
-            size=sizes.get(level, 10.5),
-            color=BLUE if level <= 2 else NAVY,
+            size=sizes.get(level, 9),
+            color=base.NAVY,
             align=WD_ALIGN_PARAGRAPH.LEFT,
             keep_with_next=True,
-            space_before=10 if level <= 2 else 6,
-            space_after=5,
-            font_name="Arial",
+            space_before=8,
+            space_after=4,
+            font_name="Calibri",
         )
         properties = paragraph._p.get_or_add_pPr()
-        outline = properties.find(qn("w:outlineLvl"))
-        if outline is None:
-            outline = OxmlElement("w:outlineLvl")
-            properties.append(outline)
+        outline = OxmlElement("w:outlineLvl")
         outline.set(qn("w:val"), str(max(0, min(level, 9) - 1)))
+        properties.append(outline)
+        if level == 1:
+            base._set_paragraph_bottom_border(paragraph, base.BLUE, size=8)
         return paragraph
 
     def standard_paragraph(
@@ -221,7 +221,7 @@ class CloudDocumentBuilder:
                 size=7.5,
                 color=NAVY if band is not None else WHITE,
                 bold=True,
-                name="Arial",
+                name="Calibri",
             )
         for row_index, values in enumerate(rows):
             row = table.add_row()
@@ -241,7 +241,7 @@ class CloudDocumentBuilder:
                     else WD_ALIGN_PARAGRAPH.CENTER
                 )
                 run = paragraph.add_run("" if value is None else str(value))
-                base._set_run_font(run, size=7.2, color=NAVY, name="Arial")
+                base._set_run_font(run, size=7.2, color=NAVY, name="Calibri")
         self._move(table._tbl)
         return table
 
@@ -261,7 +261,7 @@ class CloudDocumentBuilder:
                 size=8,
                 color=MID_GRAY,
                 align=WD_ALIGN_PARAGRAPH.LEFT,
-                font_name="Arial",
+                font_name="Calibri",
                 space_before=2,
                 space_after=6,
             )

@@ -49,6 +49,47 @@ def client_with(responses: list[TransportResponse]) -> tuple[TenableWasClient, F
 
 
 class TenableWasClientTests(unittest.TestCase):
+    def test_lists_was_plugins_until_all_requested_ids_are_found(self) -> None:
+        client, transport = client_with([
+            response(200, {
+                "pagination": {"total": 3, "offset": 0, "limit": 2},
+                "items": [
+                    {"plugin_id": 101, "name": "Plugin A", "family": "Family A"},
+                    {"plugin_id": 102, "name": "Plugin B", "family": "Family B"},
+                ],
+            }),
+            response(200, {
+                "pagination": {"total": 3, "offset": 2, "limit": 2},
+                "items": [
+                    {"plugin_id": 103, "name": "Plugin C", "family": "Family C"},
+                ],
+            }),
+        ])
+
+        plugins = client.list_was_plugins(
+            wanted_plugin_ids={102, 103},
+            page_size=2,
+        )
+
+        self.assertEqual([item["plugin_id"] for item in plugins], [102, 103])
+        self.assertIn("limit=2", transport.calls[0]["url"])
+        self.assertIn("offset=0", transport.calls[0]["url"])
+        self.assertIn("offset=2", transport.calls[1]["url"])
+        self.assertIn("sort=plugin_id%3Aasc", transport.calls[0]["url"])
+
+    def test_lists_was_plugins_stops_after_requested_ids_are_found(self) -> None:
+        client, transport = client_with([response(200, {
+            "pagination": {"total": 500, "offset": 0, "limit": 200},
+            "items": [
+                {"plugin_id": 201, "name": "Plugin", "family": "Family"},
+            ],
+        })])
+
+        plugins = client.list_was_plugins(wanted_plugin_ids={201})
+
+        self.assertEqual(len(plugins), 1)
+        self.assertEqual(len(transport.calls), 1)
+
     def test_export_job_reports_created_and_reused_origin(self) -> None:
         created_client, _ = client_with([response(200, {"export_uuid": "was-created"})])
         reused_client, _ = client_with([response(409, {"active_job_id": "was-reused"})])

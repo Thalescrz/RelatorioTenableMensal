@@ -69,6 +69,56 @@ def test_cloud_table_uses_its_existing_palette_for_semantic_risk_labels() -> Non
     assert [_cell_fill(cell) for cell in table.rows[1].cells] == expected
 
 
+def test_cloud_builder_uses_general_report_typography() -> None:
+    document = Document()
+    anchor = document.add_paragraph("fixture-anchor")
+    builder = CloudDocumentBuilder(document, anchor)
+
+    paragraph = builder.paragraph("Corpo")
+    heading = builder.heading("Título", 2)
+    table = builder.table(("Nome",), (("Valor",),))
+
+    assert paragraph.runs[0].font.name == "Calibri"
+    assert paragraph.runs[0].font.size.pt == 9
+    assert heading.runs[0].font.name == "Calibri"
+    assert heading.runs[0].font.size.pt == 11
+    assert heading.style.name == "Normal"
+    assert table is not None
+    assert table.rows[0].cells[0].paragraphs[0].runs[0].font.name == "Calibri"
+    assert table.rows[1].cells[0].paragraphs[0].runs[0].font.name == "Calibri"
+
+
+def test_generated_cloud_report_has_no_legacy_arial_or_times_runs(tmp_path: Path) -> None:
+    output = tmp_path / "cloud-calibri.docx"
+    generate_cloud_report(
+        template_path=CLOUD_TEMPLATE,
+        dataset_path=_dataset(tmp_path),
+        profile=_profile(),
+        output_path=output,
+        variant=CloudReportVariant.EXPANDED,
+    )
+
+    document = Document(output)
+    font_names = {
+        run.font.name
+        for paragraph in document.paragraphs
+        for run in paragraph.runs
+        if run.text.strip() and run.font.name
+    }
+    for table in document.tables:
+        font_names.update(
+            run.font.name
+            for row in table.rows
+            for cell in row.cells
+            for paragraph in cell.paragraphs
+            for run in paragraph.runs
+            if run.text.strip() and run.font.name
+        )
+    assert "Arial" not in font_names
+    assert "Times New Roman" not in font_names
+    assert "Calibri" in font_names
+
+
 def _profile():
     profile = load_client_profile(PROFILE)
     return replace(

@@ -104,7 +104,10 @@ from tenable_reports.application.vm_export_policy import (
     collect_vm_snapshot_with_policy,
     selective_vm_properties,
 )
-from tenable_reports.application.normalize_was import normalize_was_collection
+from tenable_reports.application.normalize_was import (
+    normalize_was_collection,
+    normalize_was_collection_with_catalog,
+)
 from tenable_reports.application.report_dataset import (
     build_report_dataset_from_snapshot,
     load_published_report_dataset,
@@ -1621,11 +1624,21 @@ def _retry_was_once_before_publication(
         cancellation_probe=_execution_cancellation_probe(args),
     )
     if attempt.result is not None:
-        normalize_was_collection(
-            profile=profile,
-            collection=attempt.result,
-            output_root=output_root,
-        )
+        plugin_catalog = _plugin_catalog_repository(args)
+        if plugin_catalog is not None:
+            normalize_was_collection_with_catalog(
+                profile=profile,
+                collection=attempt.result,
+                output_root=output_root,
+                plugin_catalog=plugin_catalog,
+                plugin_client=was_client,
+            )
+        else:
+            normalize_was_collection(
+                profile=profile,
+                collection=attempt.result,
+                output_root=output_root,
+            )
     return attempt
 
 
@@ -3277,6 +3290,7 @@ def _was_component_checkpoint(
         output_root=component_root,
         run_id=request.run_id,
         was_client=_was_client_from_environment(credentials),
+        plugin_catalog=_plugin_catalog_repository(args),
         progress_callback=_emit_progress_event,
     )
     if result.was_failure is not None:
@@ -4830,12 +4844,11 @@ def command_resume_was(args: argparse.Namespace) -> int:
 
     period = _period_from_was_checkpoint(checkpoint)
     output_root = Path(checkpoint.output_root)
-    published_automatic_retry = (
-        checkpoint.execution_type == "AUTOMATIC_MONTHLY"
-        and decision is WasRecoveryDecision.RETRY_WAS
-        and existing is not None
-        and WasRecoveryStatus(getattr(existing, "status"))
-        is WasRecoveryStatus.RETRY_AVAILABLE
+    existing_status = getattr(existing, "status", None) if existing is not None else None
+    published_retry = (
+        decision is WasRecoveryDecision.RETRY_WAS
+        and existing_status is not None
+        and WasRecoveryStatus(existing_status) is WasRecoveryStatus.RETRY_AVAILABLE
     )
     published_context = (
         _prepare_published_was_recovery(
@@ -4843,7 +4856,7 @@ def command_resume_was(args: argparse.Namespace) -> int:
             checkpoint=checkpoint,
             profile=profile,
         )
-        if published_automatic_retry else None
+        if published_retry else None
     )
     was_collection_status = checkpoint.was_status
     warnings = _was_warning_from_checkpoint(checkpoint)
@@ -4895,11 +4908,21 @@ def command_resume_was(args: argparse.Namespace) -> int:
                 progress_callback=_emit_progress_event,
             )
             if attempt.result is not None:
-                normalize_was_collection(
-                    profile=profile,
-                    collection=attempt.result,
-                    output_root=output_root,
-                )
+                plugin_catalog = _plugin_catalog_repository(args)
+                if plugin_catalog is not None:
+                    normalize_was_collection_with_catalog(
+                        profile=profile,
+                        collection=attempt.result,
+                        output_root=output_root,
+                        plugin_catalog=plugin_catalog,
+                        plugin_client=was_client,
+                    )
+                else:
+                    normalize_was_collection(
+                        profile=profile,
+                        collection=attempt.result,
+                        output_root=output_root,
+                    )
         if attempt is not None and attempt.failure is not None:
             updated = replace(
                 checkpoint,

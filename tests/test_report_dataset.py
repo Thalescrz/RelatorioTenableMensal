@@ -26,6 +26,14 @@ def normalized_fixture():
 
 
 class ReportDatasetTests(unittest.TestCase):
+    def test_assets_with_zero_vm_findings_raise_explicit_quality_warning(self) -> None:
+        result = self.build([self.asset], [])
+
+        issues = {item.code: item for item in result.dataset.quality_issues}
+        self.assertIn("VM_FINDINGS_EMPTY_WITH_ASSETS", issues)
+        self.assertEqual(issues["VM_FINDINGS_EMPTY_WITH_ASSETS"].severity, "WARNING")
+        self.assertEqual(result.dataset.metrics["non_mitigated"]["total"], 0)
+
     def setUp(self) -> None:
         self.period = previous_calendar_month(
             reference_at="2026-08-12T10:00:00-03:00",

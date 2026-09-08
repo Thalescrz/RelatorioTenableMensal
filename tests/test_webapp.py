@@ -10,6 +10,7 @@ import time
 import unittest
 import os
 import zipfile
+from http import HTTPStatus
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from datetime import datetime, timedelta, timezone
@@ -389,6 +390,26 @@ class LocalClient:
         except HTTPError as exc:
             return exc.code, dict(exc.headers), exc.read()
         return response.status, dict(response.headers), response.read()
+
+
+def wait_for_archive_preparation(
+    client: LocalClient,
+    started: dict[str, object],
+    *,
+    timeout_seconds: float = 3.0,
+) -> dict[str, object]:
+    status_url = str(started["status_url"])
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        status, payload = client.request("GET", status_url)
+        if status != 200:
+            raise AssertionError(payload)
+        if payload["status"] == "READY":
+            return payload
+        if payload["status"] == "FAILED":
+            raise AssertionError(payload)
+        time.sleep(0.01)
+    raise AssertionError("A preparação do ZIP não terminou no prazo do teste.")
 
 
 class _InMemoryComponentRepository:
@@ -1621,9 +1642,15 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn('id="archive-month-select"', html)
         self.assertIn('id="archive-analyst-select"', html)
         self.assertIn('id="archive-download-button"', html)
+        self.assertIn('id="archive-progress"', html)
+        self.assertIn('id="archive-progress-bar"', html)
+        self.assertIn('aria-live="polite"', html)
         self.assertIn("Baixar conjunto ZIP", javascript)
         self.assertIn("/api/report-archives/months", javascript)
         self.assertIn("/api/report-archives/prepare", javascript)
+        self.assertIn("status_url", javascript)
+        self.assertIn("pollArchivePreparation", javascript)
+        self.assertIn("progress_percent", javascript)
         self.assertIn('data-report-action="archive"', javascript)
         self.assertIn("responsible_analyst_id", javascript)
 
@@ -1989,7 +2016,13 @@ class WebDashboardTests(unittest.TestCase):
                     "/api/report-archives/prepare",
                     {"run_id": "run-old"},
                 )
-                self.assertEqual(status, 201)
+                self.assertEqual(status, 202)
+                self.assertEqual(prepared["status"], "RUNNING")
+                self.assertRegex(
+                    prepared["status_url"],
+                    r"^/api/report-archives/preparations/[a-f0-9]{32}$",
+                )
+                prepared = wait_for_archive_preparation(client, prepared)
                 self.assertEqual(
                     prepared["download_name"],
                     "Cliente-A-Relatorios-Tenable-2026-07.zip",
@@ -2011,7 +2044,8 @@ class WebDashboardTests(unittest.TestCase):
                     "/api/report-archives/prepare",
                     {"period_id": "2026-07"},
                 )
-                self.assertEqual(status, 201)
+                self.assertEqual(status, 202)
+                prepared = wait_for_archive_preparation(client, prepared)
                 status, headers, content = client.download(
                     prepared["download_url"]
                 )
@@ -2049,6 +2083,149 @@ class WebDashboardTests(unittest.TestCase):
                 self.assertEqual(list((data_root / ".downloads").glob("*.zip")), [])
             finally:
                 client.close()
+
+    def test_monthly_archive_uses_single_batch_database_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            document = root / "data" / "reports" / "main.docx"
+            document.parent.mkdir(parents=True)
+            document.write_bytes(b"main")
+
+            class BatchArchiveDatabase(_ArchiveDashboardDatabase):
+                def __init__(self) -> None:
+                    super().__init__({}, {})
+                    self.calls = []
+
+                def reports(self, _client_id: str):
+                    raise AssertionError("consulta N+1 de cliente não deve ocorrer")
+
+                def report_documents(self, _run_id: str):
+                    raise AssertionError("consulta N+1 de execução não deve ocorrer")
+
+                def main_archive_reports(self, period_id, *, client_ids):
+                    self.calls.append((period_id, tuple(client_ids)))
+                    return {"cliente-a": [{
+                        "client_id": "cliente-a",
+                        "run_id": "run-main",
+                        "period_id": period_id,
+                        "is_main": True,
+                        "main_set_at": "2026-09-01T10:00:00Z",
+                        "deleted_at": None,
+                        "documents": [{
+                            "path": str(document),
+                            "name": document.name,
+                        }],
+                    }]}
+
+                @staticmethod
+                def report_archive_months():
+                    return ["2026-08"]
+
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=InMemoryReportRegistry(),
+            )
+            app.config.add_client({
+                "client_id": "cliente-a",
+                "display_name": "Cliente A",
+            })
+            database = BatchArchiveDatabase()
+            app.database = database
+
+            self.assertEqual(app.report_archive_months(), ["2026-08"])
+            archive = app.create_monthly_report_archive("2026-08")
+
+            self.assertEqual(database.calls, [("2026-08", ("cliente-a",))])
+            self.assertEqual(archive.included_documents, 1)
+            archive.path.unlink(missing_ok=True)
+
+    def test_archive_preparation_returns_before_slow_builder_completes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / "data" / ".downloads" / "prepared.zip"
+            archive.parent.mkdir(parents=True)
+            archive.write_bytes(b"zip")
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=InMemoryReportRegistry(),
+            )
+            entered = threading.Event()
+            release = threading.Event()
+
+            def slow_builder(_run_id, *, progress_callback=None):
+                entered.set()
+                if progress_callback:
+                    progress_callback({
+                        "stage": "BUILDING_ARCHIVE",
+                        "message": "Montando arquivo ZIP",
+                        "progress_percent": 50,
+                        "completed_items": 1,
+                        "total_items": 2,
+                    })
+                release.wait(timeout=2)
+                return ReportArchiveResult(
+                    path=archive,
+                    download_name="prepared.zip",
+                    included_clients=1,
+                    included_documents=1,
+                    omissions=(),
+                )
+
+            with patch.object(app, "create_report_set_archive", side_effect=slow_builder):
+                started = app.start_report_archive_preparation(run_id="run-a")
+                self.assertTrue(entered.wait(timeout=1))
+                self.assertEqual(started["status"], "RUNNING")
+                self.assertLess(int(started["progress_percent"]), 100)
+                current = app.report_archive_preparation(
+                    str(started["preparation_id"])
+                )
+                self.assertEqual(current["stage"], "BUILDING_ARCHIVE")
+                release.set()
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    current = app.report_archive_preparation(
+                        str(started["preparation_id"])
+                    )
+                    if current["status"] == "READY":
+                        break
+                    time.sleep(0.01)
+
+            self.assertEqual(current["status"], "READY")
+            self.assertEqual(current["progress_percent"], 100)
+            self.assertRegex(
+                current["download_url"],
+                r"^/api/report-archives/download/[a-f0-9]{32}$",
+            )
+
+    def test_archive_preparation_hides_unexpected_internal_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=InMemoryReportRegistry(),
+            )
+            with patch.object(
+                app,
+                "create_report_set_archive",
+                side_effect=LookupError("segredo interno do servidor"),
+            ):
+                started = app.start_report_archive_preparation(run_id="run-a")
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    current = app.report_archive_preparation(
+                        str(started["preparation_id"])
+                    )
+                    if current["status"] == "FAILED":
+                        break
+                    time.sleep(0.01)
+
+            self.assertEqual(current["status"], "FAILED")
+            self.assertEqual(current["stage"], "FAILED")
+            self.assertNotIn("segredo interno", current["message"])
+            self.assertIn("Não foi possível preparar", current["message"])
 
     def test_monthly_archive_can_filter_main_sets_by_responsible_analyst(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2121,7 +2298,8 @@ class WebDashboardTests(unittest.TestCase):
                         "responsible_analyst_id": analyst_id,
                     },
                 )
-                self.assertEqual(status, 201)
+                self.assertEqual(status, 202)
+                prepared = wait_for_archive_preparation(client, prepared)
                 self.assertEqual(
                     prepared["download_name"],
                     "Relatorios-Tenable-Analista-Principal-2026-07.zip",
@@ -2198,7 +2376,8 @@ class WebDashboardTests(unittest.TestCase):
                     "/api/report-archives/prepare",
                     {"run_id": "run-main"},
                 )
-                self.assertEqual(status, 201)
+                self.assertEqual(status, 202)
+                prepared = wait_for_archive_preparation(client, prepared)
                 status, _, content = client.download(prepared["download_url"])
                 self.assertEqual(status, 200)
                 with zipfile.ZipFile(io.BytesIO(content)) as package:
@@ -2325,6 +2504,21 @@ class WebDashboardTests(unittest.TestCase):
                 ))
 
             self.assertFalse(archive_path.exists())
+
+    def test_json_response_ignores_client_disconnect_without_second_response(self) -> None:
+        handler = DashboardHandler.__new__(DashboardHandler)
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+        handler.wfile = Mock()
+        handler.wfile.write.side_effect = ConnectionAbortedError(
+            "navegador fechou a conexão"
+        )
+
+        handler._json(HTTPStatus.OK, {"status": "ok"})
+
+        handler.send_response.assert_called_once_with(HTTPStatus.OK)
+        handler.wfile.write.assert_called_once()
 
     def test_storage_endpoint_reports_free_space_and_queue_reservation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

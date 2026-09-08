@@ -132,3 +132,56 @@ class PostgresPluginCatalogRepository:
                 else str(row[17])
             ),
         ) for row in rows)
+
+    def find_by_plugin_ids(
+        self,
+        *,
+        client_id: str,
+        tenant_id: str,
+        plugin_ids: Sequence[int],
+    ) -> tuple[PluginCatalogEntry, ...]:
+        wanted = sorted({int(value) for value in plugin_ids})
+        if not wanted:
+            return ()
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                f"""
+                select client_id, tenant_id, plugin_id, name, normalized_name,
+                       family, synopsis, description, solution, reference_values,
+                       cves, cvss2_base_score, cvss3_base_score, vpr_score,
+                       exploitable, exploit_frameworks, provenance, observed_at
+                from {SCHEMA_NAME}.plugin_catalog
+                where client_id = %s and tenant_id = %s
+                  and plugin_id = any(%s)
+                order by plugin_id
+                """,
+                (client_id, tenant_id, wanted),
+            ).fetchall()
+        return tuple(self._entry_from_row(row) for row in rows)
+
+    @staticmethod
+    def _entry_from_row(row) -> PluginCatalogEntry:
+        return PluginCatalogEntry(
+            client_id=str(row[0]),
+            tenant_id=str(row[1]),
+            plugin_id=int(row[2]),
+            name=str(row[3]) if row[3] is not None else None,
+            normalized_name=str(row[4]),
+            family=str(row[5]) if row[5] is not None else None,
+            synopsis=str(row[6]) if row[6] is not None else None,
+            description=str(row[7]) if row[7] is not None else None,
+            solution=str(row[8]) if row[8] is not None else None,
+            references=tuple(str(item) for item in (row[9] or ())),
+            cves=tuple(str(item) for item in (row[10] or ())),
+            cvss2_base_score=float(row[11]) if row[11] is not None else None,
+            cvss3_base_score=float(row[12]) if row[12] is not None else None,
+            vpr_score=float(row[13]) if row[13] is not None else None,
+            exploitable=bool(row[14]) if row[14] is not None else None,
+            exploit_frameworks=tuple(str(item) for item in (row[15] or ())),
+            provenance=dict(row[16] or {}),
+            observed_at=(
+                row[17].isoformat()
+                if hasattr(row[17], "isoformat")
+                else str(row[17])
+            ),
+        )

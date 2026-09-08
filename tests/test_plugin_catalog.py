@@ -15,10 +15,13 @@ from tenable_reports.application.plugin_catalog import (
     PluginCatalogEntry,
     build_plugin_catalog_entries,
     enrich_inventory_findings,
+    enrich_was_findings,
+    synchronize_was_plugin_catalog,
 )
 from tenable_reports.config.profile import load_client_profile
 from tenable_reports.domain.inventory_normalization import normalize_inventory_findings
 from tenable_reports.domain.normalization import normalize_assets
+from tenable_reports.domain.was import normalize_was_findings
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -79,6 +82,117 @@ class _ChunkClient:
 
 
 class PluginCatalogTests(unittest.TestCase):
+    def test_was_catalog_sync_fetches_only_uncached_plugin_ids(self) -> None:
+        repository = MemoryPluginCatalogRepository()
+        repository.upsert(build_plugin_catalog_entries(
+            [{"plugin_id": 980001, "name": "Cached", "family": "General"}],
+            client_id="client-a",
+            tenant_id="tenant-a",
+            source="tenable_was_plugins",
+        ))
+        findings = normalize_was_findings(
+            [
+                {
+                    "finding_id": "was-cached",
+                    "asset": {"uuid": "application-fixture"},
+                    "plugin": {"id": 980001, "name": "Cached"},
+                    "state": "OPEN",
+                    "severity": "HIGH",
+                    "last_found": "2026-07-15T00:00:00Z",
+                },
+                {
+                    "finding_id": "was-missing",
+                    "asset": {"uuid": "application-fixture"},
+                    "plugin": {"id": 980002, "name": "Missing"},
+                    "state": "OPEN",
+                    "severity": "HIGH",
+                    "last_found": "2026-07-15T00:00:00Z",
+                },
+            ],
+            client_id="client-a",
+        ).findings
+
+        class PluginClient:
+            requested: set[int] | None = None
+
+            def list_was_plugins(self, *, wanted_plugin_ids: set[int]):
+                self.requested = wanted_plugin_ids
+                return [{
+                    "plugin_id": 980002,
+                    "name": "Missing",
+                    "family": "Web Servers",
+                }]
+
+        client = PluginClient()
+        persisted = synchronize_was_plugin_catalog(
+            findings,
+            client_id="client-a",
+            tenant_id="tenant-a",
+            repository=repository,
+            plugin_client=client,
+        )
+
+        self.assertEqual(client.requested, {980002})
+        self.assertEqual(persisted, 1)
+        self.assertEqual(repository.count, 2)
+
+    def test_was_plugin_payload_builds_family_and_enriches_by_plugin_id(self) -> None:
+        repository = MemoryPluginCatalogRepository()
+        entries = build_plugin_catalog_entries(
+            [{
+                "plugin_id": 980001,
+                "name": "Finding WEB de fixture",
+                "family": "Web Servers",
+            }],
+            client_id="client-a",
+            tenant_id="tenant-a",
+            source="tenable_was_plugins",
+        )
+        repository.upsert(entries)
+        finding = normalize_was_findings(
+            [{
+                "finding_id": "was-fixture",
+                "asset": {"uuid": "application-fixture"},
+                "plugin": {"id": 980001, "name": "Finding WEB de fixture"},
+                "state": "OPEN",
+                "severity": "HIGH",
+                "last_found": "2026-07-15T00:00:00Z",
+            }],
+            client_id="client-a",
+        ).findings[0]
+
+        enriched = enrich_was_findings(
+            [finding],
+            client_id="client-a",
+            tenant_id="tenant-a",
+            repository=repository,
+        )
+
+        self.assertEqual(entries[0].family, "Web Servers")
+        self.assertEqual(enriched[0].plugin_family, "Web Servers")
+
+    def test_was_enrichment_does_not_guess_missing_plugin_id(self) -> None:
+        finding = normalize_was_findings(
+            [{
+                "finding_id": "was-fixture",
+                "asset": {"uuid": "application-fixture"},
+                "plugin": {"id": 980099, "name": "Sem catalogo"},
+                "state": "OPEN",
+                "severity": "HIGH",
+                "last_found": "2026-07-15T00:00:00Z",
+            }],
+            client_id="client-a",
+        ).findings[0]
+
+        enriched = enrich_was_findings(
+            [finding],
+            client_id="client-a",
+            tenant_id="tenant-a",
+            repository=MemoryPluginCatalogRepository(),
+        )
+
+        self.assertIsNone(enriched[0].plugin_family)
+
     def test_migration_defines_tenant_isolated_catalog_and_lookup_index(self) -> None:
         sql = (
             ROOT
