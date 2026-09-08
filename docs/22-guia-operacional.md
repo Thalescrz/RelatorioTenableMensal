@@ -301,11 +301,19 @@ automáticas e a terceira condicional do coordenador. Ao esgotar a política, o
 conjunto permanece semiconcluído e **Tentar WEB novamente** continua disponível
 quando a causa for retentável. Essa ação posterior usa uma única janela manual,
 reconstrói o contexto pelo histórico compacto e substitui os DOCX VM/TAG sem
-repetir VM ou Cloud.
+repetir assets, VM, TAG ou Cloud. O comportamento também vale para uma execução
+manual que já tenha sido publicada e cujo staging pesado tenha sido reciclado.
+Antes da substituição, a aplicação valida o snapshot compacto e, após concluir,
+confirma que o hash da coleta VM permaneceu inalterado.
 
 No Word, “não foram identificadas vulnerabilidades WEB” significa coleta concluída
 sem ocorrências. A mensagem “não foi possível concluir a coleta WEB” indica dados
 indisponíveis e não deve ser validada na plataforma como zero.
+
+A coluna **Família** da tabela WAS depende de correspondência do Plugin ID no
+catálogo oficial. Se nenhuma linha exibida tiver correspondência, a coluna inteira
+é omitida. Isso não significa falha da coleta WAS e não deve ser interpretado como
+categoria OWASP ausente.
 
 ### Componentes e retentativas
 
@@ -525,6 +533,15 @@ ser baixados. Os ZIPs são temporários e não passam a ocupar espaço durável 
 que a resposta termina. A preparação expira em cinco minutos quando o download não
 é iniciado.
 
+Nos dois fluxos, a montagem ocorre em segundo plano e a interface mostra as etapas
+**Selecionando relatórios**, **Verificando documentos**, **Montando arquivo ZIP** e
+**Pronto para baixar**, com percentual e contagem de itens quando disponível. Ao
+chegar a 100%, o navegador inicia o download automaticamente. O percentual cobre a
+preparação no servidor; depois que o navegador assume a transferência, o progresso
+em bytes pertence ao próprio gerenciador de downloads do navegador. Se a montagem
+falhar, o botão é liberado novamente e a mensagem permanece visível para uma nova
+tentativa.
+
 ## Tradução das descrições
 
 Descrições e soluções técnicas em inglês dos detalhamentos VM, TAG e Cloud são
@@ -533,9 +550,16 @@ extensos são enviados em partes ordenadas de até 900 caracteres para evitar qu
 serviço rejeite o conteúdo. Se uma parte falhar, o relatório mantém apenas aquela
 parte no idioma original, continua as demais e mostra um aviso explícito.
 
-A tradução utiliza um serviço externo. Somente os campos editoriais de descrição e
-solução são enviados: Plugin Output, IP, hostname, URI e tabelas de hosts permanecem
-locais. A indisponibilidade do tradutor não bloqueia a publicação do relatório.
+A tradução utiliza o Google Translate como serviço externo. Somente os campos
+editoriais de descrição, sinopse, solução, remediação e contramedida são enviados:
+Plugin Output, IP, hostname, URI, TAG, conta e tabelas de hosts permanecem locais.
+O mesmo contrato vale para VM, WAS, relatórios por TAG e Cloud. Há cache por
+execução, timeout e retentativa curta para erros transitórios; a indisponibilidade
+do tradutor não bloqueia a publicação e o erro não registra o conteúdo enviado.
+O parser aceita a forma aninhada retornada pelo endpoint do Google e descarta o
+código do idioma de origem. Em uma correção controlada de documentos já publicados,
+somente esses mesmos blocos editoriais podem ser alterados; manifesto, hashes no
+PostgreSQL e ZIPs posteriores passam a apontar para os DOCX atualizados.
 
 Para excluir um conjunto:
 
@@ -595,7 +619,9 @@ o histórico compacto estão preservados.
 | Todas as APIs falham | servidor antigo, arquivo de credenciais, relógio e acesso ao tenant |
 | Rota não encontrada | reinicie o servidor usando a versão atual do projeto |
 | Export VM demora | status remoto, fila, chunks, progresso e limites configurados |
+| Ativos existem, mas todas as tabelas VM estão zeradas | procure `VM_FINDINGS_EMPTY_WITH_ASSETS`; confirme licença VM, permissões da chave e recência das análises no tenant antes de gerar novamente |
 | WAS não aparece | licença/permissão, capacidade habilitada e eventos específicos do WAS |
+| Família WAS não aparece | confirme o Plugin ID em `/was/v2/plugins`; sem correspondência real, a coluna é omitida por projeto |
 | Cloud não aparece | opção habilitada, `TCS_API_SECRET`, ambiente e resultado de **Testar API Cloud** |
 | Cloud falhou sozinho | consulte o alerta do componente e use **Tentar Cloud novamente** |
 | Componentes terminaram, mas não montou | reinicie na versão atual e confirme `REMOTE_COMPONENTS_CONSOLIDATING` seguido de `COLLECTION_READY` |

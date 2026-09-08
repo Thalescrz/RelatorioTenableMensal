@@ -738,6 +738,16 @@ def build_report_dataset(
         "BEFORE_PERIOD_END" if lag_seconds < 0 else "LATE"
     )
     quality: list[ReportQualityIssue] = []
+    if asset_rows and not finding_rows:
+        quality.append(ReportQualityIssue(
+            code="VM_FINDINGS_EMPTY_WITH_ASSETS",
+            severity="WARNING",
+            count=len(asset_rows),
+            message=(
+                "A coleta encontrou ativos, mas o export VM retornou zero findings. "
+                "Revise licenciamento, permissoes e recencia dos scans antes da entrega."
+            ),
+        ))
     if timing_status == "LATE":
         quality.append(ReportQualityIssue(
             code="COLLECTION_AFTER_MONTH_CLOSE_GRACE",

@@ -67,7 +67,7 @@ frontmatter e links locais. Ele valida estrutura, não redação exata.
 - recuperação independente de VM/WAS/Cloud em duas janelas automáticas e terceira
   condicional, sem Janela 4 e sem reiniciar prazo na substituição;
 - retentativa WAS publicada sem repetir VM/assets/TAG/Cloud, com hash VM invariável
-  e rollback de documentos/manifesto;
+  e rollback de documentos/manifesto, tanto para origem manual quanto automática;
 - `NOT_COLLECTED` WEB distinto de `NO_DATA` no dataset e no texto do DOCX;
 - Cloud opcional, com falha, progresso e retentativa independentes;
 - `VM_CORE`, `WAS` e `CLOUD` com tentativa, etapa e retryable independentes;
@@ -90,6 +90,13 @@ para retentativa.
 Qualquer nova lista de propriedades seletivas precisa ser validada contra payload
 completo no tenant antes de virar padrão. O fallback seletivo é restrito às falhas
 de contrato já previstas; não mascare autenticação, limite de taxa ou timeout.
+
+O export WAS não é obrigado a trazer `plugin.family`. Resolva famílias somente por
+Plugin ID no endpoint paginado `/was/v2/plugins`, persista o resultado isolado por
+cliente e tenant e trate essa consulta como enriquecimento em melhor esforço. Não
+use OWASP como substituto. Cubra por teste os dois esquemas da tabela: com a coluna
+**Família** quando houver ao menos uma correspondência real e sem ela quando não
+houver nenhuma.
 
 Não inicie export real, servidor ou cancelamento sem necessidade e autorização.
 
@@ -238,6 +245,14 @@ não duplique estados idênticos e registre uma nova `attempt_number` quando o e
 mudar. A publicação compacta de um retry usa uma identidade de revisão própria para
 preservar a imutabilidade do snapshot parcial já existente.
 
+Uma recuperação WAS publicada deve usar o snapshot compacto sempre que o registro
+de recuperação estiver em `RETRY_AVAILABLE`, independentemente de a origem ser
+manual ou mensal automática. Cubra por teste a ausência do staging pesado, a
+proibição de chamadas VM/Cloud e a invariância do hash VM. Backups de substituição
+atômica precisam permanecer no mesmo diretório do destino, mas com nome curto
+baseado em identificador de transação e hash do caminho, para evitar `MAX_PATH` no
+Windows.
+
 O servidor valida confirmação, conjunto excluído, enum e subconjunto retentável
 antes de chamar o executor. Sem `component_retry_enqueuer`, somente o caminho
 compatível Cloud pode executar; VM/WAS retornam indisponibilidade explícita.
@@ -259,6 +274,10 @@ Rótulos integrais de severidade/faixa em tabelas destacadas usam a paleta aprov
 texto livre que apenas contém “crítico” não recebe cor. Cubra idade, faixas CVSS,
 eixos CVSS×VPR e rating VPR, além de builders compartilhados.
 
+O relatório Cloud padrão usa Calibri e a mesma paleta estrutural do relatório geral.
+Testes estruturais devem inspecionar estilos e formatação direta, inclusive runs de
+cabeçalho e rodapé herdados do template, para impedir regressão para Arial ou Times.
+
 Tradução de descrição usa `translate_semantic_text`: parágrafo, sentença e limite
 de palavra, com CVE/URL/versão inteiros quando couberem. A CLI deve criar um único
 `GoogleTextTranslator` lazy por execução e reutilizá-lo no geral, nas TAGs e no
@@ -267,6 +286,15 @@ falso injetado e cache nos testes, nunca rede. Falha de um chunk preserva soment
 fonte daquele chunk, inclui aviso editorial e não bloqueia os demais nem o DOCX.
 `translator=None` continua sendo o modo explícito de preservação do texto. Não
 encaminhe Plugin Output nem identificadores/evidências de ativos ao tradutor.
+O adaptador HTTP usa a rota `clients5.google.com/translate_a/t`, timeout explícito
+e até três tentativas para `429` e `5xx`. Nunca propague a URL completa, o texto ou
+a exceção bruta do transporte para logs e respostas operacionais.
+A resposta real pode chegar como `[[texto_traduzido, idioma_origem]]`; extraia
+recursivamente apenas o primeiro campo textual e rejeite payload vazio ou
+desconhecido. O reparo de documentos legados deve usar `ast.literal_eval`, nunca
+`eval`, atuar exclusivamente após os rótulos editoriais autorizados e ser
+idempotente. Depois do reparo, republique de forma atômica e atualize manifesto e
+catálogo PostgreSQL antes de liberar o ZIP.
 
 Depois de alterar apresentação:
 
@@ -319,6 +347,16 @@ estrutura interna, omissões, caminhos inseguros e limpeza temporária com teste
 Erros de montagem precisam voltar à interface antes do início do streaming. Use
 token curto, de uso único e com expiração; não materialize o ZIP inteiro na memória
 do navegador.
+
+A preparação do ZIP é assíncrona: `POST /api/report-archives/prepare` responde com
+HTTP 202 e um `status_url`; o frontend consulta
+`GET /api/report-archives/preparations/<id>` até `READY` ou `FAILED`. O callback do
+montador publica progresso monotônico nas fases `SELECTING_REPORTS`,
+`SCANNING_DOCUMENTS`, `BUILDING_ARCHIVE` e `FINALIZING`. Somente o estado `READY`
+expõe o token de download. Estados de preparação são efêmeros, protegidos por lock
+e removidos depois do TTL; falhas inesperadas nunca devolvem detalhes internos ao
+navegador. A barra representa a seleção e a criação do pacote no servidor, não os
+bytes já entregues ao gerenciador de downloads do navegador.
 
 ## Documentação e instruções
 

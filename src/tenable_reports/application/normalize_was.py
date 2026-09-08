@@ -4,10 +4,15 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from tenable_reports import __version__
 from tenable_reports.application.collect import CollectionResult
+from tenable_reports.application.plugin_catalog import (
+    PluginCatalogRepository,
+    enrich_was_findings,
+    synchronize_was_plugin_catalog,
+)
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.domain.models import utc_now_iso
 from tenable_reports.domain.was import WasNormalizationResult, normalize_was_findings
@@ -34,7 +39,11 @@ def _write_exclusive(path: Path, content: bytes) -> None:
 
 
 def normalize_was_collection(
-    *, profile: ClientProfile, collection: CollectionResult, output_root: str | Path
+    *,
+    profile: ClientProfile,
+    collection: CollectionResult,
+    output_root: str | Path,
+    plugin_catalog: PluginCatalogRepository | None = None,
 ) -> NormalizedWasSnapshotResult:
     snapshot = collection.snapshot
     if snapshot.client_id != profile.client_id or snapshot.tenant_id != profile.tenant_id:
@@ -44,6 +53,18 @@ def normalize_was_collection(
     normalized = normalize_was_findings(
         _collection_records(collection), client_id=profile.client_id
     )
+    if plugin_catalog is not None:
+        normalized = WasNormalizationResult(
+            findings=enrich_was_findings(
+                normalized.findings,
+                client_id=profile.client_id,
+                tenant_id=profile.tenant_id,
+                repository=plugin_catalog,
+            ),
+            raw_records=normalized.raw_records,
+            rejected_records=normalized.rejected_records,
+            duplicate_records=normalized.duplicate_records,
+        )
     directory = Path(output_root) / "normalized" / profile.client_id / snapshot.run_id
     findings_path = directory / "was-findings.jsonl.gz"
     manifest_path = directory / "was-manifest.json"
@@ -86,3 +107,43 @@ def normalize_was_collection(
     }
     _write_exclusive(manifest_path, (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return NormalizedWasSnapshotResult(normalized, findings_path, manifest_path)
+
+
+def normalize_was_collection_with_catalog(
+    *,
+    profile: ClientProfile,
+    collection: CollectionResult,
+    output_root: str | Path,
+    plugin_catalog: PluginCatalogRepository,
+    plugin_client: Any,
+) -> tuple[NormalizedWasSnapshotResult, Mapping[str, Any] | None]:
+    """Enrich a WAS snapshot from the official plugin catalog when available."""
+
+    warning: Mapping[str, Any] | None = None
+    try:
+        preview = normalize_was_findings(
+            _collection_records(collection), client_id=profile.client_id
+        )
+        synchronize_was_plugin_catalog(
+            preview.findings,
+            client_id=profile.client_id,
+            tenant_id=profile.tenant_id,
+            repository=plugin_catalog,
+            plugin_client=plugin_client,
+        )
+    except Exception as exc:
+        warning = {
+            "code": "WAS_PLUGIN_CATALOG_UNAVAILABLE",
+            "message": (
+                "Catalogo de plugins WAS indisponivel; o relatorio segue sem a "
+                "coluna Familia quando nao houver correspondencia."
+            ),
+            "error_type": type(exc).__name__,
+        }
+    result = normalize_was_collection(
+        profile=profile,
+        collection=collection,
+        output_root=output_root,
+        plugin_catalog=plugin_catalog,
+    )
+    return result, warning

@@ -6,7 +6,14 @@ import unittest
 from pathlib import Path
 
 from tenable_reports.application.collect import CollectionResult
-from tenable_reports.application.normalize_was import normalize_was_collection
+from tenable_reports.application.normalize_was import (
+    normalize_was_collection,
+    normalize_was_collection_with_catalog,
+)
+from tenable_reports.application.plugin_catalog import (
+    MemoryPluginCatalogRepository,
+    build_plugin_catalog_entries,
+)
 from tenable_reports.config.profile import load_client_profile
 from tenable_reports.domain.models import build_source_snapshot
 from tenable_reports.domain.reporting import previous_calendar_month
@@ -150,6 +157,103 @@ class WasNormalizationTests(unittest.TestCase):
             )
             self.assertGreater(manifest["artifact"]["logical_bytes"], 0)
             self.assertEqual(len(list(iter_jsonl_objects(result.findings_path))), 1)
+
+    def test_application_persists_catalog_enriched_was_family(self) -> None:
+        profile = load_client_profile(
+            ROOT / "clients/examples/client-profile-intelligence-expanded.json"
+        )
+        records = [was_record("was-catalog")]
+        snapshot = build_source_snapshot(
+            run_id="run-was-catalog",
+            client_id=profile.client_id,
+            tenant_id=profile.tenant_id,
+            source="tenable_was_findings",
+            export_uuid="was-export-catalog",
+            query={},
+            chunks=[(1, json.dumps(records).encode("utf-8"))],
+            record_count=1,
+            started_at="2026-08-12T00:00:00Z",
+            collector_version="test",
+            raw_manifest_uri="file:///was-manifest.json",
+        )
+        collection = CollectionResult(
+            snapshot=snapshot,
+            snapshot_path=Path("was.snapshot.json"),
+            raw_manifest_path=Path("was.manifest.json"),
+            records=tuple(records),
+        )
+        repository = MemoryPluginCatalogRepository()
+        repository.upsert(build_plugin_catalog_entries(
+            [{
+                "plugin_id": 980001,
+                "name": "Finding WEB de fixture",
+                "family": "Web Servers",
+            }],
+            client_id=profile.client_id,
+            tenant_id=profile.tenant_id,
+            source="tenable_was_plugins",
+        ))
+
+        with tempfile.TemporaryDirectory() as directory:
+            result = normalize_was_collection(
+                profile=profile,
+                collection=collection,
+                output_root=directory,
+                plugin_catalog=repository,
+            )
+
+            stored = list(iter_jsonl_objects(result.findings_path))
+            self.assertEqual(stored[0]["plugin_family"], "Web Servers")
+
+    def test_application_fetches_was_catalog_before_persisting_family(self) -> None:
+        profile = load_client_profile(
+            ROOT / "clients/examples/client-profile-intelligence-expanded.json"
+        )
+        records = [was_record("was-live-catalog")]
+        snapshot = build_source_snapshot(
+            run_id="run-was-live-catalog",
+            client_id=profile.client_id,
+            tenant_id=profile.tenant_id,
+            source="tenable_was_findings",
+            export_uuid="was-export-live-catalog",
+            query={},
+            chunks=[(1, json.dumps(records).encode("utf-8"))],
+            record_count=1,
+            started_at="2026-08-12T00:00:00Z",
+            collector_version="test",
+            raw_manifest_uri="file:///was-manifest.json",
+        )
+        collection = CollectionResult(
+            snapshot=snapshot,
+            snapshot_path=Path("was.snapshot.json"),
+            raw_manifest_path=Path("was.manifest.json"),
+            records=tuple(records),
+        )
+        repository = MemoryPluginCatalogRepository()
+
+        class PluginClient:
+            def list_was_plugins(self, *, wanted_plugin_ids: set[int]):
+                self.requested = wanted_plugin_ids
+                return [{
+                    "plugin_id": 980001,
+                    "name": "Finding WEB de fixture",
+                    "family": {"name": "Web Servers"},
+                }]
+
+        client = PluginClient()
+        with tempfile.TemporaryDirectory() as directory:
+            result, warning = normalize_was_collection_with_catalog(
+                profile=profile,
+                collection=collection,
+                output_root=directory,
+                plugin_catalog=repository,
+                plugin_client=client,
+            )
+
+            stored = list(iter_jsonl_objects(result.findings_path))
+            self.assertEqual(client.requested, {980001})
+            self.assertEqual(stored[0]["plugin_family"], "Web Servers")
+            self.assertIsNone(warning)
 
 
 if __name__ == "__main__":

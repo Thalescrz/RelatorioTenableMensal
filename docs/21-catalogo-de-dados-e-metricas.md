@@ -72,6 +72,17 @@ O modelo WEB conserva:
 - CVSS v3 e VPR.
 
 Ausência de licença, permissão ou achados WAS não deve invalidar o dataset VM.
+`plugin_family` é opcional no export de findings. Quando ausente, a aplicação busca
+o mesmo Plugin ID no catálogo oficial WAS e só persiste uma família confirmada. Na
+tabela compacta, a coluna **Família** aparece apenas se ao menos uma das linhas
+exibidas possuir valor real; se nenhuma tiver correspondência, a coluna é omitida.
+Classificação OWASP continua em sua seção própria e nunca preenche essa coluna.
+
+Quando há ativos normalizados, mas nenhum finding VM, o dataset conserva todos os
+indicadores em zero e inclui o aviso de qualidade
+`VM_FINDINGS_EMPTY_WITH_ASSETS`. Ele diferencia “resultado realmente vazio” de um
+documento silenciosamente vazio e orienta a verificação operacional sem inventar
+vulnerabilidades.
 
 ## Fotografia Cloud normalizada
 
@@ -98,6 +109,9 @@ O dataset `cloud-metrics-v2` conserva:
 - findings de postura e capacidades observadas no tenant;
 - proveniência das tabelas, qualidade, fontes completas ou indisponíveis;
 - série mensal compacta proveniente de fotografias anteriores compatíveis.
+
+O DOCX Cloud padrão usa Calibri e a paleta corporativa compartilhada com o relatório
+geral. Essa é uma regra de apresentação; não altera as populações ou métricas.
 
 VPR `0` é zero e aparece como `0`. VPR ausente é `N/D` e não recebe pontuação
 inventada no ranking. O tipo de correção prefere campo explícito; a regra local

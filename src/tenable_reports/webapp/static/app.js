@@ -634,16 +634,66 @@ function startBrowserDownload(url) {
   link.remove();
 }
 
-async function prepareArchive(payload) {
-  const prepared = await api("/api/report-archives/prepare", {
+const archivePollIntervalMs = 300;
+
+function archiveProgressCopy(preparation) {
+  const completed = Number(preparation.completed_items || 0);
+  const total = Number(preparation.total_items || 0);
+  const items = total > 0 ? ` · ${completed}/${total} itens` : "";
+  return `${preparation.message || "Preparando arquivo ZIP"}${items}`;
+}
+
+async function pollArchivePreparation(statusUrl, onProgress) {
+  if (!/^\/api\/report-archives\/preparations\/[a-f0-9]{32}$/.test(statusUrl || "")) {
+    throw new Error("O servidor devolveu um endereço de acompanhamento inválido.");
+  }
+  while (true) {
+    const preparation = await api(statusUrl);
+    onProgress(preparation);
+    if (preparation.status === "READY") return preparation;
+    if (preparation.status === "FAILED") {
+      throw new Error(preparation.message || "Não foi possível preparar o arquivo ZIP.");
+    }
+    await new Promise(resolve => window.setTimeout(resolve, archivePollIntervalMs));
+  }
+}
+
+async function prepareArchive(payload, onProgress = () => {}) {
+  const started = await api("/api/report-archives/prepare", {
     method: "POST",
     body: payload,
   });
+  onProgress(started);
+  const prepared = await pollArchivePreparation(started.status_url, onProgress);
   if (!/^\/api\/report-archives\/download\/[a-f0-9]{32}$/.test(prepared.download_url || "")) {
     throw new Error("O servidor devolveu um endereço de download inválido.");
   }
   startBrowserDownload(prepared.download_url);
   return prepared;
+}
+
+function resetMonthlyArchiveProgress() {
+  const container = $("#archive-progress");
+  container.hidden = true;
+  $("#archive-progress-label").textContent = "Preparando documentos";
+  $("#archive-progress-percent").textContent = "0%";
+  $("#archive-progress-bar").value = 0;
+  $("#archive-progress-detail").textContent = "Aguardando início.";
+}
+
+function renderMonthlyArchiveProgress(preparation) {
+  const percent = Math.max(0, Math.min(100, Number(preparation.progress_percent || 0)));
+  $("#archive-progress").hidden = false;
+  $("#archive-progress-label").textContent = preparation.status === "READY"
+    ? "Pronto para baixar"
+    : preparation.status === "FAILED"
+      ? "Falha ao preparar"
+      : archiveProgressCopy(preparation);
+  $("#archive-progress-percent").textContent = `${percent}%`;
+  $("#archive-progress-bar").value = percent;
+  $("#archive-progress-detail").textContent = preparation.status === "READY"
+    ? "Download iniciado no navegador."
+    : `Etapa: ${preparation.stage || "PREPARING"}`;
 }
 
 function monthlyPeriodLabel(periodId) {
@@ -672,6 +722,7 @@ async function openMonthlyArchiveDialog(button) {
     $("#archive-analyst-select").innerHTML = '<option value="">Todos os responsáveis</option>' + analysts.map(analyst =>
       `<option value="${escapeHtml(analyst.analyst_id)}">${escapeHtml(analyst.display_name)}${analyst.active ? "" : " (inativo)"}</option>`
     ).join("");
+    resetMonthlyArchiveProgress();
     $("#archive-dialog").showModal();
   } catch (error) {
     toast(error.message, "error");
@@ -837,12 +888,19 @@ function bindReportActions() {
     const runId = button.closest("[data-report-run]").dataset.reportRun;
     const report = state.currentReports.find(item => item.run_id === runId);
     if (!report) return;
+    const originalButtonLabel = button.textContent;
     try {
       let successMessage = "Registro de relatório atualizado.";
       if (button.dataset.reportAction === "archive") {
         button.disabled = true;
-        const prepared = await prepareArchive({ run_id: runId });
-        toast(`Download preparado: ${prepared.download_name}`);
+        const prepared = await prepareArchive(
+          { run_id: runId },
+          progress => {
+            const percent = Math.max(0, Math.min(100, Number(progress.progress_percent || 0)));
+            button.textContent = `${archiveProgressCopy(progress)} · ${percent}%`;
+          },
+        );
+        toast(`Download iniciado: ${prepared.download_name}`);
         return;
       } else if (button.dataset.reportAction === "retry-components") {
         const componentState = await fetchComponentState(runId);
@@ -921,7 +979,10 @@ function bindReportActions() {
     } catch (error) {
       toast(error.message, "error");
     } finally {
-      if (button.isConnected) button.disabled = false;
+      if (button.isConnected) {
+        button.disabled = false;
+        button.textContent = originalButtonLabel;
+      }
     }
   }));
 }
@@ -1313,17 +1374,25 @@ $("#archive-form").addEventListener("submit", async event => {
   const responsibleAnalystId = $("#archive-analyst-select").value;
   if (!periodId) return;
   const button = $("#archive-download-button");
+  const originalButtonLabel = button.textContent;
   button.disabled = true;
   try {
     const payload = { period_id: periodId };
     if (responsibleAnalystId) payload.responsible_analyst_id = responsibleAnalystId;
-    const prepared = await prepareArchive(payload);
+    const prepared = await prepareArchive(payload, progress => {
+      renderMonthlyArchiveProgress(progress);
+      const percent = Math.max(0, Math.min(100, Number(progress.progress_percent || 0)));
+      button.textContent = progress.status === "READY"
+        ? "Download iniciado"
+        : `Preparando ZIP · ${percent}%`;
+    });
     $("#archive-dialog").close();
-    toast(`Download mensal preparado: ${prepared.download_name}`);
+    toast(`Download mensal iniciado: ${prepared.download_name}`);
   } catch (error) {
     toast(error.message, "error");
   } finally {
     button.disabled = false;
+    button.textContent = originalButtonLabel;
   }
 });
 $("#empty-add-button").addEventListener("click", () => { resetClientForm(); $("#manage-dialog").showModal(); });

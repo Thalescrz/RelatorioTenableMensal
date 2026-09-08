@@ -31,7 +31,9 @@ manter o catálogo operacional de analistas responsáveis, testar APIs, buscar T
 iniciar uma geração individual ou selecionar explicitamente os clientes da
 carteira, acompanhar as fases, baixar documentos e escolher a referência `MAIN`
 usada no próximo comparativo. Também é possível baixar um conjunto completo em ZIP
-ou montar o ZIP mensal da carteira usando somente o `MAIN` de cada cliente.
+ou montar o ZIP mensal da carteira usando somente o `MAIN` de cada cliente. A
+preparação do ZIP exibe etapa, percentual e contagem de itens; o download começa
+automaticamente quando o pacote fica pronto.
 
 As credenciais ficam somente em `credentials/*.env`, arquivos ignorados pelo Git.
 Use os exemplos em [credentials](credentials) como referência; nunca grave chaves
@@ -84,7 +86,10 @@ staging quando uma retentativa isolada ainda pode aproveitá-lo. Na geração re
 descrições e soluções em inglês são traduzidas automaticamente para português do
 Brasil. Textos longos são divididos semanticamente; uma falha preserva somente o
 trecho fonte afetado e adiciona um aviso ao documento. Plugin Output, hosts, IPs e
-demais evidências operacionais não são enviados ao serviço de tradução.
+demais evidências operacionais não são enviados ao serviço de tradução. A
+autorização operacional vigente abrange os textos editoriais VM, WAS, por TAG e
+Cloud; a integração com o Google Translate usa timeout, cache e retentativa curta
+para indisponibilidades transitórias, sem registrar o texto enviado nos erros.
 
 No botão **Gerar todos** e no automático mensal, VM, WAS e Cloud habilitados são
 componentes remotos independentes. Cada componente usa uma Janela 1 de 10 horas e,

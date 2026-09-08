@@ -450,6 +450,37 @@ def _compact_rows(items: Any) -> list[tuple[Any, ...]]:
     ) for item in items[:5] if isinstance(item, Mapping)]
 
 
+def _was_compact_table(items: Any) -> tuple[
+    tuple[str, ...], tuple[int, ...], frozenset[int], list[tuple[Any, ...]]
+]:
+    rows = [item for item in (items or [])[:5] if isinstance(item, Mapping)]
+    include_family = any((item.get("plugin_family") or "").strip() for item in rows)
+    headers = ["Plugin Id", "Nome"]
+    widths = [900, 3000]
+    left_columns = {1}
+    if include_family:
+        headers.append("Família")
+        widths.append(2050)
+        left_columns.add(2)
+    headers.extend(("Severidade", "Total", "VPR"))
+    if include_family:
+        widths.extend((1050, 850, 850))
+    else:
+        widths = [1050, 4050, 1400, 1200, 1200]
+    values: list[tuple[Any, ...]] = []
+    for item in rows:
+        row: list[Any] = [item.get("plugin_id"), item.get("plugin_name") or ""]
+        if include_family:
+            row.append(item.get("plugin_family") or "Não informado pela Tenable")
+        row.extend((
+            _severity_pt(item.get("severity")),
+            item.get("finding_instances", item.get("affected_assets", "")),
+            item.get("vpr_score") if item.get("vpr_score") is not None else 0,
+        ))
+        values.append(tuple(row))
+    return tuple(headers), tuple(widths), frozenset(left_columns), values
+
+
 def _principal_vulnerabilities(
     document: DocxDocument, dataset: Mapping[str, Any], *, show_source_filters: bool
 ) -> None:
@@ -654,13 +685,15 @@ def _was_section(document: DocxDocument, dataset: Mapping[str, Any], profile: Cl
     )
     _heading(document, "6.3. WAS Vulnerabilidades Baseadas em Plugin ID", 2)
     _paragraph(document, copy.WAS_PLUGINS)
-    plugin_rows = _compact_rows(was.get("top_vulnerabilities") or [])
+    plugin_headers, plugin_widths, plugin_left_columns, plugin_rows = (
+        _was_compact_table(was.get("top_vulnerabilities") or [])
+    )
     _simple_table(
         document,
-        ("Plugin Id", "Nome", "Família", "Severidade", "Total", "VPR"),
+        plugin_headers,
         plugin_rows,
-        widths=(900, 3000, 2050, 1050, 850, 850),
-        left_columns=frozenset({1, 2}),
+        widths=plugin_widths,
+        left_columns=plugin_left_columns,
         empty_message=copy.EMPTY_TABLE_MONTH if was_available else None,
     )
     add_source_filter_note(

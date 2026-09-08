@@ -157,6 +157,14 @@
         </select>
       </label>
       <p id="archive-month-note">Clientes sem MAIN no período serão registrados no RESUMO.txt.</p>
+      <div id="archive-progress" class="archive-progress" aria-live="polite" hidden>
+        <div class="archive-progress-copy">
+          <span id="archive-progress-label">Preparando documentos</span>
+          <strong id="archive-progress-percent">0%</strong>
+        </div>
+        <progress id="archive-progress-bar" max="100" value="0" aria-label="Progresso da preparação do ZIP"></progress>
+        <small id="archive-progress-detail">Aguardando início.</small>
+      </div>
       <button class="button primary full" id="archive-download-button" type="submit">Gerar e baixar ZIP</button>
     </form>
   </dialog>

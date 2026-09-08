@@ -11,6 +11,7 @@ from tenable_reports.domain.normalization import (
     NormalizedFinding,
     QualitySeverity,
 )
+from tenable_reports.domain.was import NormalizedWasFinding
 
 
 def normalize_plugin_name(value: str | None) -> str:
@@ -40,6 +41,19 @@ def _text(value: Any) -> str | None:
         return None
     normalized = str(value).strip()
     return normalized or None
+
+
+def _family(record: Mapping[str, Any]) -> str | None:
+    value = _first(
+        record,
+        "plugin.family",
+        "definition.family",
+        "family_name",
+        "family",
+    )
+    if isinstance(value, Mapping):
+        value = _first(value, "name", "family_name")
+    return _text(value)
 
 
 def _integer(value: Any) -> int | None:
@@ -165,6 +179,14 @@ class PluginCatalogRepository(Protocol):
         name: str,
     ) -> tuple[PluginCatalogEntry, ...]: ...
 
+    def find_by_plugin_ids(
+        self,
+        *,
+        client_id: str,
+        tenant_id: str,
+        plugin_ids: Sequence[int],
+    ) -> tuple[PluginCatalogEntry, ...]: ...
+
 
 class MemoryPluginCatalogRepository:
     def __init__(self) -> None:
@@ -197,6 +219,20 @@ class MemoryPluginCatalogRepository:
             key=lambda item: item.plugin_id,
         ))
 
+    def find_by_plugin_ids(
+        self,
+        *,
+        client_id: str,
+        tenant_id: str,
+        plugin_ids: Sequence[int],
+    ) -> tuple[PluginCatalogEntry, ...]:
+        wanted = {int(value) for value in plugin_ids}
+        return tuple(
+            self._entries[key]
+            for key in sorted(self._entries)
+            if key[0] == client_id and key[1] == tenant_id and key[2] in wanted
+        )
+
 
 def build_plugin_catalog_entries(
     records: Iterable[Mapping[str, Any]],
@@ -209,10 +245,12 @@ def build_plugin_catalog_entries(
     timestamp = observed_at or datetime.now(timezone.utc).isoformat()
     entries: dict[int, PluginCatalogEntry] = {}
     for record in records:
-        plugin_id = _integer(_first(record, "plugin.id", "definition.id"))
+        plugin_id = _integer(_first(
+            record, "plugin.id", "definition.id", "plugin_id", "id"
+        ))
         if plugin_id is None:
             continue
-        name = _text(_first(record, "plugin.name", "definition.name"))
+        name = _text(_first(record, "plugin.name", "definition.name", "name"))
         direct_exploitable = _boolean(_first(
             record, "plugin.exploit_available", "definition.exploit_available"
         ))
@@ -223,7 +261,7 @@ def build_plugin_catalog_entries(
             plugin_id=plugin_id,
             name=name,
             normalized_name=normalize_plugin_name(name),
-            family=_text(_first(record, "plugin.family", "definition.family")),
+            family=_family(record),
             synopsis=_text(_first(record, "plugin.synopsis", "definition.synopsis")),
             description=_text(_first(record, "plugin.description", "definition.description")),
             solution=_text(_first(record, "plugin.solution", "definition.solution")),
@@ -320,3 +358,67 @@ def enrich_inventory_findings(
             )),
         ))
     return tuple(enriched), tuple(issues)
+
+
+def enrich_was_findings(
+    findings: Iterable[NormalizedWasFinding],
+    *,
+    client_id: str,
+    tenant_id: str,
+    repository: PluginCatalogRepository,
+) -> tuple[NormalizedWasFinding, ...]:
+    rows = tuple(findings)
+    missing_ids = sorted({
+        item.plugin_id for item in rows if not (item.plugin_family or "").strip()
+    })
+    matches = {
+        item.plugin_id: item
+        for item in repository.find_by_plugin_ids(
+            client_id=client_id,
+            tenant_id=tenant_id,
+            plugin_ids=missing_ids,
+        )
+    }
+    return tuple(
+        replace(
+            item,
+            plugin_family=(
+                item.plugin_family
+                or (matches.get(item.plugin_id).family if matches.get(item.plugin_id) else None)
+            ),
+        )
+        for item in rows
+    )
+
+
+def synchronize_was_plugin_catalog(
+    findings: Iterable[NormalizedWasFinding],
+    *,
+    client_id: str,
+    tenant_id: str,
+    repository: PluginCatalogRepository,
+    plugin_client: Any,
+) -> int:
+    rows = tuple(findings)
+    wanted = sorted({
+        item.plugin_id for item in rows if not (item.plugin_family or "").strip()
+    })
+    if not wanted:
+        return 0
+    cached = repository.find_by_plugin_ids(
+        client_id=client_id,
+        tenant_id=tenant_id,
+        plugin_ids=wanted,
+    )
+    resolved = {item.plugin_id for item in cached if (item.family or "").strip()}
+    missing = set(wanted) - resolved
+    if not missing:
+        return 0
+    records = plugin_client.list_was_plugins(wanted_plugin_ids=missing)
+    entries = build_plugin_catalog_entries(
+        records,
+        client_id=client_id,
+        tenant_id=tenant_id,
+        source="tenable_was_plugins",
+    )
+    return repository.upsert(entries)

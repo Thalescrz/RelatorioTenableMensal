@@ -9,7 +9,10 @@ import zipfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Mapping, Sequence
+
+
+ArchiveProgressCallback = Callable[[Mapping[str, object]], None]
 
 
 class ReportArchiveError(RuntimeError):
@@ -65,6 +68,30 @@ class ReportArchiveResult:
 _INVALID_COMPONENT = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _ALLOWED_DOCUMENT_SUFFIXES = {".docx", ".pdf"}
 _SPACE_RESERVE_BYTES = 16 * 1024 * 1024
+
+
+def _emit_progress(
+    callback: ArchiveProgressCallback | None,
+    *,
+    stage: str,
+    message: str,
+    progress_percent: int,
+    completed_items: int,
+    total_items: int,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback({
+            "stage": stage,
+            "message": message,
+            "progress_percent": max(0, min(99, int(progress_percent))),
+            "completed_items": max(0, int(completed_items)),
+            "total_items": max(0, int(total_items)),
+        })
+    except Exception:
+        # Observabilidade nunca deve impedir a criação do pacote.
+        return
 
 
 def _safe_component(value: str, *, fallback: str) -> str:
@@ -168,6 +195,7 @@ def _build_archive(
     initial_omissions: Sequence[str],
     download_name: str,
     allow_empty: bool = False,
+    progress_callback: ArchiveProgressCallback | None = None,
 ) -> ReportArchiveResult:
     root_name = _safe_component(
         f"Relatorios-Tenable-{period_id}",
@@ -178,7 +206,16 @@ def _build_archive(
     included_reports: list[ArchiveReportSet] = []
     used_folders: set[str] = set()
 
-    for report in reports:
+    report_total = len(reports)
+    _emit_progress(
+        progress_callback,
+        stage="SCANNING_DOCUMENTS",
+        message="Verificando documentos disponíveis",
+        progress_percent=25,
+        completed_items=0,
+        total_items=report_total,
+    )
+    for report_index, report in enumerate(reports, start=1):
         if report.deleted:
             omissions.append(f"{report.display_name}: conjunto excluído")
             continue
@@ -209,6 +246,14 @@ def _build_archive(
             included_reports.append(report)
         else:
             omissions.append(f"{report.display_name}: nenhum documento disponível")
+        _emit_progress(
+            progress_callback,
+            stage="SCANNING_DOCUMENTS",
+            message="Verificando documentos disponíveis",
+            progress_percent=25 + round(15 * report_index / max(1, report_total)),
+            completed_items=report_index,
+            total_items=report_total,
+        )
 
     if not entries and not allow_empty:
         raise EmptyReportArchiveError(
@@ -230,14 +275,33 @@ def _build_archive(
     os.close(descriptor)
     archive_path = Path(raw_path)
     try:
+        entry_total = len(entries)
+        _emit_progress(
+            progress_callback,
+            stage="BUILDING_ARCHIVE",
+            message="Montando arquivo ZIP",
+            progress_percent=45,
+            completed_items=0,
+            total_items=entry_total,
+        )
         with zipfile.ZipFile(
             archive_path,
             "w",
             compression=zipfile.ZIP_STORED,
             allowZip64=True,
         ) as package:
-            for source, archive_name in entries:
+            for entry_index, (source, archive_name) in enumerate(entries, start=1):
                 package.write(source, archive_name)
+                _emit_progress(
+                    progress_callback,
+                    stage="BUILDING_ARCHIVE",
+                    message="Montando arquivo ZIP",
+                    progress_percent=(
+                        45 + round(45 * entry_index / max(1, entry_total))
+                    ),
+                    completed_items=entry_index,
+                    total_items=entry_total,
+                )
             package.writestr(
                 f"{root_name}/RESUMO.txt",
                 _summary_text(
@@ -247,6 +311,14 @@ def _build_archive(
                     included_documents=len(entries),
                 ).encode("utf-8"),
             )
+        _emit_progress(
+            progress_callback,
+            stage="FINALIZING",
+            message="Finalizando arquivo ZIP",
+            progress_percent=98,
+            completed_items=entry_total,
+            total_items=entry_total,
+        )
     except Exception:
         archive_path.unlink(missing_ok=True)
         raise
@@ -265,12 +337,21 @@ def build_report_set_archive(
     data_root: str | Path,
     temporary_root: str | Path,
     report: ArchiveReportSet,
+    progress_callback: ArchiveProgressCallback | None = None,
 ) -> ReportArchiveResult:
     client_name = _download_component(
         report.display_name,
         fallback=report.client_id,
     )
     period_id = _safe_component(report.period_id, fallback="periodo")
+    _emit_progress(
+        progress_callback,
+        stage="SELECTING_REPORTS",
+        message="Selecionando conjunto de relatórios",
+        progress_percent=20,
+        completed_items=1,
+        total_items=1,
+    )
     return _build_archive(
         data_root=Path(data_root),
         temporary_root=Path(temporary_root),
@@ -278,6 +359,7 @@ def build_report_set_archive(
         reports=(report,),
         initial_omissions=(),
         download_name=f"{client_name}-Relatorios-Tenable-{period_id}.zip",
+        progress_callback=progress_callback,
     )
 
 
@@ -288,11 +370,21 @@ def build_monthly_report_archive(
     period_id: str,
     clients: Sequence[ArchiveClient],
     download_scope: str | None = None,
+    progress_callback: ArchiveProgressCallback | None = None,
 ) -> ReportArchiveResult:
     _validate_month(period_id)
     selected: list[ArchiveReportSet] = []
     omissions: list[str] = []
-    for client in clients:
+    client_total = len(clients)
+    _emit_progress(
+        progress_callback,
+        stage="SELECTING_REPORTS",
+        message="Selecionando relatórios MAIN",
+        progress_percent=5,
+        completed_items=0,
+        total_items=client_total,
+    )
+    for client_index, client in enumerate(clients, start=1):
         candidates = [
             report
             for report in client.reports
@@ -302,14 +394,31 @@ def build_monthly_report_archive(
             omissions.append(
                 f"{client.display_name}: sem conjunto MAIN para {period_id}"
             )
-            continue
-        candidates.sort(key=_main_selection_key, reverse=True)
-        selected.append(candidates[0])
-        if len(candidates) > 1:
-            omissions.append(
-                f"{client.display_name}: mais de um MAIN encontrado; "
-                f"usado {candidates[0].run_id} por ser a promoção MAIN mais recente"
-            )
+        else:
+            candidates.sort(key=_main_selection_key, reverse=True)
+            selected.append(candidates[0])
+            if len(candidates) > 1:
+                omissions.append(
+                    f"{client.display_name}: mais de um MAIN encontrado; "
+                    f"usado {candidates[0].run_id} por ser a promoção MAIN mais recente"
+                )
+        _emit_progress(
+            progress_callback,
+            stage="SELECTING_REPORTS",
+            message="Selecionando relatórios MAIN",
+            progress_percent=5 + round(15 * client_index / max(1, client_total)),
+            completed_items=client_index,
+            total_items=client_total,
+        )
+    if not clients:
+        _emit_progress(
+            progress_callback,
+            stage="SELECTING_REPORTS",
+            message="Selecionando relatórios MAIN",
+            progress_percent=20,
+            completed_items=0,
+            total_items=0,
+        )
     scope = (
         f"-{_download_component(download_scope, fallback='Responsavel')}"
         if str(download_scope or "").strip()
@@ -323,4 +432,5 @@ def build_monthly_report_archive(
         initial_omissions=omissions,
         download_name=f"Relatorios-Tenable{scope}-{period_id}.zip",
         allow_empty=True,
+        progress_callback=progress_callback,
     )

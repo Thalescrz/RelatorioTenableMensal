@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Callable, Mapping
+from urllib.parse import urlencode
 
 from tenable_reports.infrastructure.tenable_vm.client import (
     ApiError,
@@ -106,3 +107,51 @@ class TenableWasClient(TenableVmClient):
                 if isinstance(value, list):
                     return [item for item in value if isinstance(item, dict)]
         raise ApiError("Resposta dos filtros WAS possui formato inesperado.")
+
+    def list_was_plugins(
+        self,
+        *,
+        wanted_plugin_ids: set[int] | None = None,
+        page_size: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Return WAS plugin metadata, stopping once requested IDs are found."""
+
+        bounded_page_size = max(1, min(int(page_size), 200))
+        wanted = {int(value) for value in (wanted_plugin_ids or set())}
+        found: dict[int, dict[str, Any]] = {}
+        offset = 0
+        while True:
+            query = urlencode({
+                "limit": bounded_page_size,
+                "offset": offset,
+                "sort": "plugin_id:asc",
+            })
+            data = self.request("GET", f"/was/v2/plugins?{query}").json()
+            if not isinstance(data, dict):
+                raise ApiError("Resposta do catalogo de plugins WAS possui formato inesperado.")
+            raw = data.get("items")
+            if not isinstance(raw, list):
+                raise ApiError("Resposta do catalogo de plugins WAS nao contem items.")
+            page = [item for item in raw if isinstance(item, dict)]
+            for item in page:
+                value = item.get("plugin_id", item.get("id"))
+                try:
+                    plugin_id = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if not wanted or plugin_id in wanted:
+                    found[plugin_id] = dict(item)
+            if wanted and wanted.issubset(found):
+                break
+            pagination = data.get("pagination")
+            total_value = pagination.get("total") if isinstance(pagination, dict) else None
+            try:
+                total = int(total_value) if total_value is not None else None
+            except (TypeError, ValueError):
+                total = None
+            offset += len(page)
+            if not page or len(page) < bounded_page_size or (
+                total is not None and offset >= total
+            ):
+                break
+        return [found[key] for key in sorted(found)]

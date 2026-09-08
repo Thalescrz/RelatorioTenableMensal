@@ -11,7 +11,9 @@ from docx import Document
 from tenable_reports.application.publishing import (
     PublicationDocument,
     PublicationDocumentReplacement,
+    _backup_path_for_transaction,
     create_publication_manifest,
+    refresh_publication_documents_atomically,
     replace_publication_documents_atomically,
     sha256_file,
     write_json_atomic,
@@ -27,6 +29,21 @@ def _document(path: Path, text: str) -> Path:
 
 
 class AtomicPublicationTests(unittest.TestCase):
+    def test_transaction_backup_name_does_not_repeat_long_document_name(self) -> None:
+        destination = Path("C:/reports") / ("relatorio-" + ("x" * 180) + ".docx")
+
+        backup = _backup_path_for_transaction(
+            destination,
+            transaction_id="a" * 32,
+            operation="backfill",
+        )
+
+        self.assertEqual(backup.parent, destination.parent)
+        self.assertTrue(backup.name.startswith(".backfill-" + ("a" * 32) + "-"))
+        self.assertTrue(backup.name.endswith(".bak"))
+        self.assertLess(len(backup.name), 70)
+        self.assertNotIn(destination.name, backup.name)
+
     def test_manifest_can_use_cloud_as_primary_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -191,6 +208,57 @@ class AtomicPublicationTests(unittest.TestCase):
 
             self.assertEqual(sha256_file(base), original_hash)
             self.assertEqual(manifest.read_bytes(), original_manifest)
+
+    def test_refresh_documents_preserves_cleaned_dataset_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            manifest, dataset, base, cloud = self._manifest(directory)
+            source_dataset = json.loads(manifest.read_text(encoding="utf-8"))[
+                "source_dataset"
+            ]
+            dataset.unlink()
+            staged_base = _document(
+                directory / ".translation" / "base.docx",
+                "Descrição traduzida",
+            )
+            staged_cloud = _document(
+                directory / ".translation" / "cloud.docx",
+                "Descrição Cloud traduzida",
+            )
+
+            refresh_publication_documents_atomically(
+                manifest_path=manifest,
+                replacements=(
+                    PublicationDocumentReplacement(
+                        staged_path=staged_base,
+                        destination=PublicationDocument(base, "base"),
+                    ),
+                    PublicationDocumentReplacement(
+                        staged_path=staged_cloud,
+                        destination=PublicationDocument(
+                            cloud,
+                            "cloud",
+                            document_variant="expanded",
+                        ),
+                    ),
+                ),
+                audit_metadata={"operation": "TRANSLATION_BACKFILL"},
+            )
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+
+            self.assertEqual(payload["source_dataset"], source_dataset)
+            self.assertEqual(
+                payload["document_backfill"],
+                {"operation": "TRANSLATION_BACKFILL"},
+            )
+            self.assertEqual(Document(base).paragraphs[0].text, "Descrição traduzida")
+            self.assertEqual(
+                Document(cloud).paragraphs[0].text,
+                "Descrição Cloud traduzida",
+            )
+            hashes = {item["document_kind"]: item["sha256"] for item in payload["documents"]}
+            self.assertEqual(hashes["base"], sha256_file(base))
+            self.assertEqual(hashes["cloud"], sha256_file(cloud))
 
 
 if __name__ == "__main__":
