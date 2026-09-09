@@ -242,7 +242,6 @@ from tenable_reports.domain.report_reference import (
 )
 from tenable_reports.presentation.base_report_docx import (
     create_base_template,
-    generate_base_report,
 )
 from tenable_reports.presentation.full_base_report_docx import generate_full_base_report
 from tenable_reports.presentation.report_filenames import (
@@ -2050,13 +2049,17 @@ def command_build_base_template(args: argparse.Namespace) -> int:
 
 
 def command_generate_base_docx(args: argparse.Namespace) -> int:
+    """Compatibilidade: o antigo comando agora usa o relatório-base vigente."""
+
     profile = load_client_profile(args.profile)
-    result = generate_base_report(
+    result = generate_full_base_report(
         template_path=args.template,
         dataset_path=args.dataset,
         profile=profile,
         output_path=args.output,
+        assets_dir=None,
         mask_sensitive=args.mask_sensitive,
+        translator=build_default_text_translator(),
     )
     print(json.dumps({
         "status": "complete",
@@ -2064,6 +2067,7 @@ def command_generate_base_docx(args: argparse.Namespace) -> int:
         "period_id": result.period_id,
         "template_version": result.template_version,
         "top_asset_rows": result.top_asset_rows,
+        "top_open_rows": result.top_open_rows,
         "masked_sensitive_fields": result.masked_sensitive_fields,
         "document": str(result.output_path.resolve()),
     }, ensure_ascii=False))
@@ -5977,7 +5981,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     base_docx = subparsers.add_parser(
         "generate-base-docx",
-        help="Gera o DOCX-base somente a partir do perfil e do report-dataset.json.",
+        help=(
+            "Alias compatível para gerar o relatório-base completo vigente somente "
+            "a partir do perfil e do report-dataset.json."
+        ),
     )
     base_docx.add_argument("--profile", required=True)
     base_docx.add_argument("--dataset", required=True)

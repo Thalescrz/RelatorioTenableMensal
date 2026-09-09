@@ -231,6 +231,27 @@ def test_tag_report_contains_only_approved_operational_sections(tmp_path: Path) 
     assert all("Output" not in header for header in headers)
 
 
+def test_tag_report_uses_official_cover_and_back_cover_shell(tmp_path: Path) -> None:
+    output = tmp_path / "tag-official-shell.docx"
+    generate_tag_report(
+        template_path=TEMPLATE,
+        dataset_path=_tag_dataset(tmp_path),
+        profile=_profile(),
+        output_path=output,
+        mask_sensitive=True,
+    )
+
+    document = Document(output)
+    text = _all_text(document)
+    assert len(document.sections) == 3
+    assert "FORTALEZA - CE" in text
+    assert "BELÉM" in text
+    assert "PORTUGAL" in text
+    with zipfile.ZipFile(output) as package:
+        assert package.read("word/document.xml").count(b"<wp:anchor") >= 10
+
+
+
 def test_tag_report_empty_blocks_have_monthly_message(tmp_path: Path) -> None:
     output = tmp_path / "tag-empty.docx"
     generate_tag_report(

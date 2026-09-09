@@ -1,7 +1,7 @@
 # Relatório-base fiel e documento de customizações
 
 **Revisado em:** 2026-08-13  
-**Versão do relatório-base:** `base-fiel-v2.0`  
+**Versão do relatório-base:** `base-fiel-v2.1`  
 **Entrada:** perfil validado + `report-dataset.json`
 
 ## Resultado
@@ -12,6 +12,12 @@ O renderizador anterior foi substituído porque adicionava parágrafos, cartões
 2. `02-inteligencia-e-customizacoes-<cliente>-<periodo>.docx`: somente módulos adicionais habilitados no perfil e respaldados por dados.
 
 O relatório-base contém os dois Top 5 independentes: o Top 5 VM não mitigado e o Top 5 WEB. A tabela de ativos termina em `Exploitable`. A coluna `Output` continua desligada por padrão e só é acrescentada aos hosts dos Top 5 por configuração explícita.
+
+Na versão `base-fiel-v2.1`, o documento usa a capa e a contracapa oficiais
+sanitizadas. O sumário nativo do Word ocupa a segunda página, é atualizado ao abrir
+o arquivo e acompanha os níveis de título do conteúdo. As oito seções principais
+do relatório-base são numeradas explicitamente de `1` a `8`, inclusive Objetivo,
+Sensor Nessus e Vulnerabilidades e suas correções/contramedidas.
 
 ## Fidelidade editorial
 

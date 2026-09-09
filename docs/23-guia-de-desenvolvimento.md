@@ -269,6 +269,14 @@ tabelas ou títulos novos sem decisão explícita de produto. Datas e identifica
 dinâmicos devem ser substituídos sem destruir formatação de runs, cabeçalhos,
 rodapés, imagens e quebras de seção.
 
+O template `templates/corporate/base-v1.docx` preserva a capa e a contracapa do
+documento oficial, mas substitui cliente, período, cabeçalho interno e metadados por
+valores controlados. Não reconstrua essas páginas com elementos aproximados. O
+conteúdo gerado deve ser inserido entre as duas páginas oficiais. A página 2 contém
+um campo nativo `TOC` do Word com atualização automática habilitada. `SUMÁRIO` usa
+`TOC Heading`, fica fora da própria lista, e as oito seções principais do relatório
+geral usam `Heading 1` com números explícitos de `1` a `8`.
+
 Rótulos integrais de severidade/faixa em tabelas destacadas usam a paleta aprovada:
 `CRITICAL`, `HIGH`, `MEDIUM` e `LOW`. A classificação deve ser estrita;
 texto livre que apenas contém “crítico” não recebe cor. Cubra idade, faixas CVSS,

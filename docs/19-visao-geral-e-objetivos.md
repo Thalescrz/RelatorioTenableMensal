@@ -35,6 +35,12 @@ e Top 5 detalhado de vulnerabilidades WEB quando o WAS estiver disponível. A co
 `Exploitable` dos principais ativos contabiliza findings cujo indicador geral de
 exploração esteja ativo. A coluna `Output` nos detalhamentos é opcional.
 
+A identidade editorial usa a capa e a contracapa oficiais sanitizadas. O sumário
+nativo do Word fica imediatamente após a capa e é reconstruído a partir dos
+estilos de título ao abrir o documento. No relatório-base, todas as oito seções
+principais recebem numeração explícita de `1` a `8`; o título `SUMÁRIO` não participa
+da própria lista.
+
 ### Relatório de inteligência e customizações
 
 Reúne os módulos adicionais habilitados para o cliente: quadros analíticos atuais,
