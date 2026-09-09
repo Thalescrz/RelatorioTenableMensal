@@ -42,9 +42,11 @@ from tenable_reports.presentation.cloud_report_sections import (
     render_vulnerability_aging,
 )
 from tenable_reports.presentation.translation import TextTranslator
+from tenable_reports.presentation import base_report_docx as base
+from tenable_reports.presentation import full_base_report_docx as faithful
 
 
-CLOUD_TEMPLATE_VERSION = "cloud-base-v1.0"
+CLOUD_TEMPLATE_VERSION = "base-fiel-v2.1-cloud-v1.0"
 STANDARD_SECTION_IDS = (
     "cover",
     "table_of_contents",
@@ -170,7 +172,7 @@ def _set_toc_field(
     begin.set(qn("w:fldCharType"), "begin")
     instruction = OxmlElement("w:instrText")
     instruction.set(qn("xml:space"), "preserve")
-    instruction.text = ' TOC \\o "1-3" \\h \\z \\u '
+    instruction.text = ' TOC \\o "1-3" \\h \\z '
     separate = OxmlElement("w:fldChar")
     separate.set(qn("w:fldCharType"), "separate")
     value = OxmlElement("w:t")
@@ -269,6 +271,38 @@ def _sanitize_properties(document: DocxDocument, profile: ClientProfile) -> None
     properties.comments = ""
 
 
+def _set_cloud_cover_title(document: DocxDocument) -> None:
+    for paragraph in document.paragraphs:
+        normalized = paragraph.text.casefold()
+        if "relatório de" in normalized and "vulnerabilidades" in normalized:
+            paragraph.text = "RELATÓRIO TENABLE\nCLOUD SECURITY"
+            for run in paragraph.runs:
+                base._set_run_font(
+                    run,
+                    size=28,
+                    color=base.BLUE,
+                    bold=True,
+                )
+            return
+    raise ValueError("O título da capa oficial não foi localizado.")
+
+
+def _set_cloud_header(document: DocxDocument, client_name: str) -> None:
+    faithful._sanitize_header_footer(document, client_name)
+    for section in document.sections:
+        for container in (
+            section.header,
+            section.first_page_header,
+            section.even_page_header,
+        ):
+            for text_node in container._element.xpath(".//w:t"):
+                if text_node.text:
+                    text_node.text = text_node.text.replace(
+                        "RELATÓRIO DE VULNERABILIDADES",
+                        "RELATÓRIO TENABLE CLOUD SECURITY",
+                    )
+
+
 def generate_cloud_report(
     *,
     template_path: str | Path,
@@ -287,19 +321,24 @@ def generate_cloud_report(
     dataset = load_cloud_report_dataset(dataset_source)
 
     document = Document(template)
-    _configure_heading_styles(document)
-    _replace_template_markers(
+    report_shell = faithful._clear_body_after_cover_break(document)
+    faithful._configure_styles(document)
+    period_label, period_range = base._period_labels(dataset["period"])
+    base._replace_tokens(
         document,
-        client_name=profile.display_name,
-        month_year=_month_year(dataset),
+        {
+            "{{CLIENT_NAME}}": profile.display_name,
+            "{{PERIOD_LABEL}}": period_label,
+            "{{PERIOD_RANGE}}": period_range,
+            "{{TEMPLATE_VERSION}}": CLOUD_TEMPLATE_VERSION,
+        },
     )
+    _set_cloud_cover_title(document)
+    _set_cloud_header(document, profile.display_name)
     include_posture = cloud_posture_available(dataset)
-    toc = _find_paragraph(document, "{{TABLE_OF_CONTENTS}}")
-    _set_toc_field(
-        toc,
-        entries=_toc_entries(include_posture=include_posture),
-    )
-    anchor = _find_paragraph(document, "{{CLOUD_CONTENT_START}}")
+    faithful._toc_heading(document)
+    faithful._toc_field(document)
+    anchor = document.add_paragraph("{{CLOUD_CONTENT_START}}")
     builder = CloudDocumentBuilder(document=document, anchor=anchor)
     rendered_sections = list(STANDARD_SECTION_IDS)
     omitted_sections: list[str] = []
@@ -307,6 +346,12 @@ def generate_cloud_report(
     with tempfile.TemporaryDirectory(prefix="cloud-report-visuals-") as chart_directory:
         chart_dir = Path(chart_directory)
         render_document_control(builder, dataset)
+        first_heading = next(
+            paragraph
+            for paragraph in document.paragraphs
+            if paragraph.style is not None and paragraph.style.name == "Heading 1"
+        )
+        faithful._page_break_before(first_heading)
         render_cloud_overview(builder)
         warning = str(
             (dataset.get("snapshot_context") or {}).get("warning") or ""
@@ -372,10 +417,10 @@ def generate_cloud_report(
         builder.page_break()
         render_conclusion(builder)
 
-        anchor.clear()
-        _set_update_fields(document)
+        anchor._element.getparent().remove(anchor._element)
+        faithful._append_official_back_cover(document, report_shell)
+        base._enable_field_updates(document)
         _sanitize_properties(document, profile)
-        _normalize_document_fonts(document)
         output.parent.mkdir(parents=True, exist_ok=True)
         document.save(output)
 

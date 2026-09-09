@@ -48,6 +48,21 @@ sendo a origem dos achados.
 10. Documento só é publicado depois de validação e registro consistentes.
 11. Staging só é removido depois que DOCX e histórico compacto estão seguros.
 12. Texto editorial aprovado não é reescrito sem decisão explícita de produto.
+13. Geral, customizado, TAG e Cloud compartilham o mesmo shell oficial de capa,
+    sumário e contracapa; somente o corpo técnico varia.
+
+## Contrato editorial comum
+
+`templates/corporate/base-v1.docx` é a fonte única do shell editorial. Todo DOCX
+publicado tem capa oficial, sumário nativo do Word na segunda página, corpo técnico
+específico e contracapa oficial. O campo `TOC` inclui somente `Heading 1` a
+`Heading 3`; títulos e subtítulos possuem numeração explícita por tipo de relatório.
+
+Uma atualização retroativa não reexecuta coletores nem reconstrói indicadores. Ela
+atua apenas nos documentos catalogados por manifestos válidos, preserva conteúdo,
+tabelas e imagens, publica por conjunto de forma atômica, sincroniza SHA-256 no
+manifesto/PostgreSQL e mantém a seleção `MAIN`. Arquivos órfãos e de QA permanecem
+fora desse contrato.
 
 ## Arquitetura em camadas
 

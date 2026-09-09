@@ -608,6 +608,36 @@ logs compartilhados ou documentação.
 Documentos e histórico compacto deixam de permanecer quando o próprio conjunto é
 excluído explicitamente pela interface.
 
+### Atualização do padrão editorial de documentos publicados
+
+Use a republicação apenas para aplicar o shell oficial aos DOCX dos conjuntos
+`MAIN` registrados no PostgreSQL. Ela não realiza coleta, não altera a seleção
+`MAIN` e ignora conjuntos não-MAIN, órfãos, artefatos de QA e a área de descarte.
+Execute primeiro a análise:
+
+```powershell
+$env:PYTHONPATH = (Join-Path $PWD 'src')
+.\.venv\Scripts\python.exe tools\refresh_official_report_documents.py
+```
+
+Depois de conferir as contagens, a aplicação controlada exige PostgreSQL disponível.
+A composição Open XML preserva os relacionamentos e mantém `w:updateFields`
+habilitado; o Word atualiza o sumário nativo ao abrir o arquivo:
+
+```powershell
+$env:PYTHONPATH = (Join-Path $PWD 'src')
+.\.venv\Scripts\python.exe tools\refresh_official_report_documents.py --apply
+```
+
+O resumo deve informar `scope: postgresql-main`. Cada conjunto é substituído
+atomicamente. Em falha, o conjunto original permanece;
+em sucesso, hashes, manifesto e catálogo PostgreSQL são atualizados juntos e o
+manifesto recebe a auditoria `OFFICIAL_REPORT_SHELL_V3`. Uma nova execução ignora
+os conjuntos já marcados; `--include-completed` existe somente para reprocessamento
+deliberado. Um arquivo aberto no Word falha apenas o próprio conjunto e os demais
+continuam; feche o documento e execute novamente para tratar somente o pendente.
+Use `--fail-fast` apenas durante diagnóstico controlado.
+
 Não copie `data`, `credentials` ou arquivos `.env` para o Git. Antes de uma limpeza
 manual, confirme que nenhum processo está em execução e que os DOCX registrados e
 o histórico compacto estão preservados.

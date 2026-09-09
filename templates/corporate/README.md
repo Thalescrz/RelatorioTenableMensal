@@ -1,9 +1,10 @@
-# Template corporativo do relatório-base
+# Template corporativo oficial
 
-`base-v1.docx` é um template controlado e sanitizado, derivado do documento oficial
-fornecido para preservar com fidelidade a capa, a identidade das páginas internas e
-a contracapa. O cliente, o contrato, o período e os metadados do arquivo de origem
-não permanecem no template.
+`base-v1.docx` é o shell editorial controlado e sanitizado, derivado do documento
+oficial fornecido para preservar com fidelidade a capa, a identidade das páginas
+internas e a contracapa. Ele é compartilhado pelos relatórios geral, customizado,
+por TAG e Cloud Security. O cliente, o contrato, o período e os metadados do arquivo
+de origem não permanecem no template.
 
 ## Contrato
 
@@ -12,7 +13,8 @@ não permanecem no template.
   QR code e identidade Tenable/ITProtect preservados;
 - cabeçalho e rodapé internos oficiais, com cliente dinâmico;
 - estilos semânticos de título;
-- sumário nativo do Word na página 2, atualizado a partir dos níveis de título;
+- sumário nativo do Word na página 2, atualizado a partir de `Heading 1` a
+  `Heading 3`;
 - oito seções principais do relatório-base numeradas explicitamente de `1` a `8`;
 - tabela “Principais Ativos Vulneráveis” com cabeçalho repetível;
 - `Exploitable` como última coluna e subconjunto de `Total`;
@@ -34,27 +36,20 @@ Não edite o binário manualmente. Mudanças controladas no shell devem ser feit
 `tools/build_official_word_template.py`, seguidas de reconstrução, testes e
 renderização integral. O arquivo oficial de origem permanece fora do Git.
 
-## Uso no relatório completo
+## Uso nos relatórios
 
-O gerador da Fase 6 está em
-`tenable_reports.presentation.full_base_report_docx`. Ele abre `base-v1.docx`,
-preserva a capa, separa a contracapa, materializa o conteúdo a partir do dataset e
-recoloca a contracapa como última página. O sumário usa o campo Word
-`TOC \\o "1-4" \\h \\z \\u`; `w:updateFields` permanece habilitado para que o Word
+Os geradores abrem `base-v1.docx`, preservam a capa, materializam o conteúdo entre
+as páginas oficiais e recolocam a contracapa como última página. Os quatro tipos
+usam títulos numerados e estilos semânticos. O sumário usa o campo Word
+`TOC \\o "1-3" \\h \\z`; `w:updateFields` permanece habilitado para que o Word
 recalcule números de página e entradas ao abrir o documento.
 
-## Template Cloud Security
+## Referência Cloud legada
 
-`cloud-base-v1.docx` é o template sanitizado do relatório Tenable Cloud Security.
-Ele mantém as três famílias de páginas do modelo aprovado — capa/sumário, conteúdo
-e contracapa — e usa os marcadores `{{CLIENT_NAME}}`,
-`{{REPORT_MONTH_YEAR}}`, `{{TABLE_OF_CONTENTS}}` e `{{CLOUD_CONTENT_START}}`.
-
-O mesmo template e o mesmo dataset `cloud-metrics-v1` geram o **Modelo Base** e o
-**Modelo Ampliado**. Durante a homologação, `scope.cloud_security.layout` pode ser
-`comparison`; depois da decisão editorial deve permanecer `base` ou `expanded`.
-Módulos condicionais do ampliado só aparecem quando o teste de contrato e a
-população correspondente estiverem disponíveis.
+`cloud-base-v1.docx` permanece somente como referência técnica histórica do corpo
+Cloud. Novas publicações usam `base-v1.docx` como shell e geram exclusivamente o
+modelo completo atual. Os valores legados `base`, `expanded` e `comparison` são
+normalizados para esse único modelo; não criam documentos ou visuais diferentes.
 
 A prova reproduzível não usa API nem credencial:
 
@@ -64,7 +59,14 @@ $env:PYTHONPATH = (Join-Path $PWD 'src')
   --output-root artifacts\cloud-prototype --qa
 ```
 
-O comando gera `cloud-modelo-base.docx`, `cloud-modelo-ampliado.docx`, PDFs,
-contact sheets e `cloud-prototype-manifest.json`. O manifesto registra hashes,
-seções, omissões, contagem de páginas e confirma que ambos os documentos vieram da
-mesma fotografia Cloud sanitizada.
+O comando gera o único DOCX Cloud padrão e os artefatos de QA correspondentes.
+
+## Republicação controlada
+
+`tools/refresh_official_report_documents.py` atualiza documentos já publicados sem
+consultar API. O modo padrão é uma análise somente leitura; `--apply` atua apenas
+nos DOCX dos conjuntos `MAIN` registrados no PostgreSQL e referenciados por
+manifestos de publicação válidos, preserva o corpo técnico, gráficos e tabelas,
+valida o pacote, substitui cada conjunto atomicamente e atualiza SHA-256, manifesto
+e catálogo PostgreSQL. Conjuntos não-MAIN, documentos órfãos, arquivos de QA e a
+área de descarte não entram no plano. A operação não altera a seleção `MAIN`.

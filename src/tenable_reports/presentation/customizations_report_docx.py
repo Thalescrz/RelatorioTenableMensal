@@ -432,7 +432,8 @@ def _module_enabled(profile: ClientProfile, module: str) -> bool:
 
 def _cover_title(document: Any) -> None:
     for paragraph in document.paragraphs:
-        if "RELATÓRIO DE" in paragraph.text and "VULNERABILIDADES" in paragraph.text:
+        normalized = paragraph.text.casefold()
+        if "relatório de" in normalized and "vulnerabilidades" in normalized:
             paragraph.text = "INTELIGÊNCIA E\nCUSTOMIZAÇÕES\nTENABLE"
             for run in paragraph.runs:
                 base._set_run_font(run, size=28, color=base.BLUE, bold=True)
@@ -475,10 +476,10 @@ def _monthly_modules(document: Any, data: Mapping[str, Any], temp: Path, rendere
     views = _monthly_views(data)
     if not views:
         return
-    faithful._heading(document, "3.1. Comparativo Mensal de Vulnerabilidades Mitigadas e Não Mitigadas.", 2)
+    faithful._heading(document, "1.1. Comparativo Mensal de Vulnerabilidades Mitigadas e Não Mitigadas.", 2)
     faithful._paragraph(document, MONTHLY_COMPARISON)
     year = str(views[0][1][-1].get("label") or "").split("/")[-1]
-    faithful._heading(document, "3.1.1. Vulnerabilidades “Não Mitigadas”.", 3)
+    faithful._heading(document, "1.1.1. Vulnerabilidades “Não Mitigadas”.", 3)
     for view_index, (view_label, history) in enumerate(views):
         if view_index:
             _new_report_section(document)
@@ -511,7 +512,7 @@ def _monthly_modules(document: Any, data: Mapping[str, Any], temp: Path, rendere
         )
         _chart(document, volume, f"Volume mensal de vulnerabilidades não mitigadas - {view_label}")
 
-    faithful._heading(document, "3.1.2. Vulnerabilidades “Mitigadas”.", 3)
+    faithful._heading(document, "1.1.2. Vulnerabilidades “Mitigadas”.", 3)
     for view_index, (view_label, history) in enumerate(views):
         if view_index:
             _new_report_section(document)
@@ -552,7 +553,7 @@ def _scan_health(document: Any, data: Mapping[str, Any], temp: Path, rendered: l
     known = isinstance(statuses, Mapping) and "scan_auth_health" in statuses
     if not isinstance(health, Mapping) and not known:
         return
-    heading = faithful._heading(document, "Integridade da varredura", 2)
+    heading = faithful._heading(document, "1.2. Integridade da varredura", 2)
     heading.paragraph_format.page_break_before = True
     faithful._paragraph(document, SCAN_HEALTH)
     if not isinstance(health, Mapping) or not _number(health.get("total")):
@@ -576,6 +577,7 @@ def _previous_period(
     previous = data.get("previous_period_overview")
     if not isinstance(previous, Mapping):
         return
+    faithful._heading(document, "1.3. Comparativo com o período anterior", 2)
     faithful._paragraph(document, f"Comparativo relatório anterior ({previous.get('label', '')})")
     rows = []
     for label, key in (("TOTAL", "total"), ("Crítica", "critical"), ("Alta", "high"), ("Média", "medium"), ("Baixa", "low")):
@@ -746,6 +748,11 @@ def _plugin_family(
     known = isinstance(statuses, Mapping) and "vm_plugin_family" in statuses
     if not isinstance(rows, list) and not known:
         return
+    faithful._heading(
+        document,
+        "1.4. Vulnerabilidades mitigadas por família de plugin",
+        2,
+    )
     faithful._paragraph(document, PLUGIN_FAMILY)
     if not rows:
         faithful._paragraph(document, NO_DATA_MESSAGES["vm_plugin_family"])
@@ -776,7 +783,11 @@ def _eol(
     known = isinstance(statuses, Mapping) and "vm_eol_software" in statuses
     if not known and not (isinstance(assets, list) and assets) and not (isinstance(software, list) and software):
         return
-    faithful._heading(document, "Sistemas operacionais e software sem suportes")
+    faithful._heading(
+        document,
+        "1.5. Sistemas operacionais e softwares sem suporte",
+        2,
+    )
     for text in (EOL_INTRO, EOL_TENABLE, EOL_METHOD):
         faithful._paragraph(document, text)
     if not assets and not software:
@@ -789,7 +800,7 @@ def _eol(
         if isinstance(item, Mapping) and item.get("plugin_id") is not None
     )
     plugin_filter = {"Plugin ID": plugin_ids} if plugin_ids else None
-    faithful._heading(document, "6.1. Ativos com SOs e Softwares sem suportes.", 2)
+    faithful._heading(document, "1.5.1. Ativos com SOs e softwares sem suporte.", 3)
     faithful._paragraph(document, EOL_ASSETS)
     asset_rows = []
     for item in assets or []:
@@ -807,7 +818,11 @@ def _eol(
         enabled=profile.presentation.show_source_filters,
         extra_filters=plugin_filter,
     )
-    faithful._heading(document, "6.1. Principais Softwares e SOs sem suportes por vulnerabilidades", 2)
+    faithful._heading(
+        document,
+        "1.5.2. Principais softwares e SOs sem suporte por vulnerabilidades",
+        3,
+    )
     faithful._paragraph(document, EOL_SOFTWARE)
     faithful._paragraph(document, EOL_PROTOCOLS)
     software_rows = []
@@ -829,7 +844,11 @@ def _executive(document: Any, data: Mapping[str, Any], temp: Path, rendered: lis
     rows = data.get("vulnerability_evolution")
     if not isinstance(rows, list) or not rows:
         return
-    faithful._heading(document, "6.3. Análise Executiva da Evolução de Vulnerabilidades e Criticidade dos Ativos", 2)
+    faithful._heading(
+        document,
+        "1.6. Análise Executiva da Evolução de Vulnerabilidades e Criticidade dos Ativos",
+        2,
+    )
     for text in EXECUTIVE_PARAGRAPHS:
         faithful._paragraph(document, text)
     chart = temp / "executive.png"
@@ -843,7 +862,7 @@ def _evolution(document: Any, data: Mapping[str, Any], temp: Path, rendered: lis
     if not views:
         return
     history = views[0][1]
-    faithful._heading(document, "Evolução mensal de Vulnerabilidades")
+    faithful._heading(document, "1.7. Evolução mensal de vulnerabilidades", 2)
     for text in EVOLUTION_PARAGRAPHS:
         faithful._paragraph(document, text)
     evolution_rows = []
@@ -903,11 +922,15 @@ def _containers(
     images = data.get("container_images")
     if not isinstance(images, list) or not images:
         return
-    heading = faithful._heading(document, "TENABLE CLOUD SECURITY (CONTAINER IMAGES)")
+    heading = faithful._heading(
+        document,
+        "1.8. TENABLE CLOUD SECURITY (CONTAINER IMAGES)",
+        2,
+    )
     heading.paragraph_format.page_break_before = True
     faithful._paragraph(document, CONTAINER_INTRO)
     faithful._paragraph(document, CONTAINER_CURRENT)
-    faithful._heading(document, "Top 5 Imagens de container mais vulneráveis", 2)
+    faithful._heading(document, "1.8.1. Top 5 imagens de container mais vulneráveis", 3)
     values = []
     for item in images[:5]:
         if isinstance(item, Mapping):
@@ -919,7 +942,11 @@ def _containers(
         "container_images",
         enabled=profile.presentation.show_source_filters,
     )
-    faithful._heading(document, "Overview das vulnerabilidades das imagens de container", 2)
+    faithful._heading(
+        document,
+        "1.8.2. Overview das vulnerabilidades das imagens de container",
+        3,
+    )
     for item in images[:5]:
         if not isinstance(item, Mapping):
             continue
@@ -958,7 +985,7 @@ def _attack_vector(
     known = isinstance(statuses, Mapping) and "vm_exploit_vector" in statuses
     if not isinstance(vectors, list) and not known:
         return
-    faithful._heading(document, "9.4. Vulnerabilidades Exploráveis por Vetor de Ataque", 2)
+    faithful._heading(document, "1.9. Vulnerabilidades Exploráveis por Vetor de Ataque", 2)
     faithful._paragraph(document, ATTACK_VECTOR)
     faithful._paragraph(document, "Os vetores de ameaça são designados como: Rede (AV:N), Adjacente (AV:A) e Local (AV:L).")
     if not vectors:
@@ -988,7 +1015,11 @@ def _was_unsupported(
     known = isinstance(statuses, Mapping) and "was_unsupported_tech" in statuses
     if not isinstance(items, list) and not known:
         return
-    faithful._heading(document, "WAS Vulnerabilidades WEB – Principais Aplicações “Unsupported”", 3)
+    faithful._heading(
+        document,
+        "1.10. WAS Vulnerabilidades WEB – Principais Aplicações “Unsupported”",
+        2,
+    )
     faithful._paragraph(document, WAS_UNSUPPORTED)
     if not items:
         faithful._paragraph(
@@ -1047,7 +1078,8 @@ def generate_customizations_report(
     faithful._sanitize_properties(document, title="INTELIGÊNCIA E CUSTOMIZAÇÕES TENABLE")
     faithful._toc_heading(document)
     faithful._toc_field(document)
-    document.add_page_break()
+    first_heading = faithful._heading(document, "1. INTELIGÊNCIA E CUSTOMIZAÇÕES TENABLE")
+    faithful._page_break_before(first_heading)
     data = _custom_data(dataset)
     rendered: list[str] = []
     history_status = data.get("history_status")

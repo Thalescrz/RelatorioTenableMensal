@@ -67,6 +67,11 @@ da interface, de Word ou de uma resposta HTTP específica.
 13. Métricas compactas são persistidas; dados intermediários pesados de uma
     execução bem-sucedida são removidos.
 
+Os quatro documentos de apresentação — geral, customizado, por TAG e Cloud — usam
+o mesmo shell oficial `templates/corporate/base-v1.docx`. O corpo técnico continua
+específico de cada gerador, mas sempre é inserido entre capa e contracapa oficiais,
+com sumário Word na segunda página baseado em `Heading 1` a `Heading 3`.
+
 O enriquecimento de família WAS nunca substitui o valor por OWASP, nome ou outra
 classificação aproximada. Se nenhuma linha exibida tiver correspondência real no
 catálogo, o DOCX omite integralmente a coluna **Família**. Falha do catálogo não
@@ -147,10 +152,11 @@ tabelas de correção. Uma fotografia normalizada alimenta o único DOCX Cloud p
 e o snapshot compacto PostgreSQL. O valor técnico de variante continua `expanded`
 somente para compatibilidade com o histórico e com a restrição do banco.
 
-O único DOCX Cloud aplica a mesma base tipográfica e cromática corporativa do
-relatório geral: Calibri no conteúdo gerado, azul institucional em títulos e
-cabeçalhos e cores de severidade compartilhadas. Runs herdados do template também
-são normalizados antes da publicação para evitar mistura de Arial, Times e Calibri.
+O único DOCX Cloud usa o mesmo shell oficial, base tipográfica e paleta corporativa
+do relatório geral: Calibri no conteúdo gerado, azul institucional em títulos e
+cabeçalhos e cores de severidade compartilhadas. Runs herdados do corpo técnico
+também são normalizados antes da publicação para evitar mistura de Arial, Times e
+Calibri. `cloud-base-v1.docx` permanece somente como referência histórica.
 
 O projeto legado `RelatorioCloudTenable` permanece documentado como base técnica
 histórica do conector GraphQL: ajuda a localizar operações e campos já usados, mas

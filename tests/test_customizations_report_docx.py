@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from docx import Document
+from docx.oxml.ns import qn
 
 from tenable_reports.config.profile import load_client_profile
 from tenable_reports.presentation.customizations_report_docx import (
@@ -72,7 +73,7 @@ def test_customizations_are_kept_outside_the_base_document() -> None:
         assert "Vulnerabilidades “Mitigadas”" in text
         assert "Geral" in text
         assert "Servidores" in text
-        assert "Sistemas operacionais e software sem suportes" in text
+        assert "Sistemas operacionais e softwares sem suporte" in text
         assert "TENABLE CLOUD SECURITY (CONTAINER IMAGES)" not in text
         assert "Vulnerabilidades Exploráveis por Vetor de Ataque" in text
         assert "Dados indisponíveis para este indicador." in text
@@ -110,6 +111,49 @@ def test_customizations_report_uses_official_cover_and_back_cover_shell() -> Non
         assert "PORTUGAL" in text
         with zipfile.ZipFile(output) as package:
             assert package.read("word/document.xml").count(b"<wp:anchor") >= 10
+
+
+def test_customizations_report_has_one_numbered_top_level_and_numbered_modules() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "custom-numbered.docx"
+        generate_customizations_report(
+            template_path=ROOT / "templates/corporate/base-v1.docx",
+            dataset_path=ROOT / "tests/fixtures/report-dataset-phase5.json",
+            profile=load_client_profile(
+                ROOT / "clients/examples/client-profile-all-customizations.json"
+            ),
+            output_path=output,
+            mask_sensitive=True,
+        )
+
+        document = Document(output)
+        headings = [
+            (paragraph.style.name, paragraph.text)
+            for paragraph in document.paragraphs
+            if paragraph.style is not None
+            and paragraph.style.name.startswith("Heading ")
+        ]
+        assert [text for style, text in headings if style == "Heading 1"] == [
+            "1. INTELIGÊNCIA E CUSTOMIZAÇÕES TENABLE"
+        ]
+        first_heading = next(
+            paragraph
+            for paragraph in document.paragraphs
+            if paragraph.style is not None and paragraph.style.name == "Heading 1"
+        )
+        assert first_heading._p.get_or_add_pPr().find(qn("w:pageBreakBefore")) is not None
+        assert (
+            "Heading 2",
+            "1.1. Comparativo Mensal de Vulnerabilidades Mitigadas e Não Mitigadas.",
+        ) in headings
+        assert (
+            "Heading 2",
+            "1.5. Sistemas operacionais e softwares sem suporte",
+        ) in headings
+        assert (
+            "Heading 2",
+            "1.9. Vulnerabilidades Exploráveis por Vetor de Ataque",
+        ) in headings
 
 
 def test_customizations_report_mirrors_branding_on_even_body_pages() -> None:

@@ -88,6 +88,15 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 if paragraph.text == "SUMÁRIO"
             )
             self.assertEqual(toc_title.style.name, "TOC Heading")
+            first_heading = next(
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.style is not None
+                and paragraph.style.name == "Heading 1"
+            )
+            self.assertIsNotNone(
+                first_heading._p.get_or_add_pPr().find(qn("w:pageBreakBefore"))
+            )
 
     def test_full_report_preserves_official_cover_and_back_cover_shell(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -119,7 +128,8 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 )
             self.assertGreaterEqual(document_xml.count("<wp:anchor"), 10)
             self.assertIn("www.itprotect.com.br", all_xml)
-            self.assertIn('TOC \\o "1-4" \\h \\z \\u', document_xml)
+            self.assertIn('TOC \\o "1-3" \\h \\z', document_xml)
+            self.assertNotIn('TOC \\o "1-4"', document_xml)
             self.assertRegex(settings_xml, r'<w:updateFields\b[^>]*w:val="true"')
             self.assertNotIn("{{CLIENT_NAME}}", all_xml)
             self.assertNotIn("TRT2", all_xml)

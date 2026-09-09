@@ -249,7 +249,7 @@ def _toc_field(document: DocxDocument) -> None:
     begin.set(qn("w:dirty"), "true")
     instruction = OxmlElement("w:instrText")
     instruction.set(qn("xml:space"), "preserve")
-    instruction.text = ' TOC \\o "1-4" \\h \\z \\u '
+    instruction.text = ' TOC \\o "1-3" \\h \\z '
     separate = OxmlElement("w:fldChar")
     separate.set(qn("w:fldCharType"), "separate")
     end = OxmlElement("w:fldChar")
@@ -277,6 +277,11 @@ def _heading(document: DocxDocument, text: str, level: int = 1) -> Any:
     paragraph = document.add_paragraph(text, style=f"Heading {level}")
     if level == 1:
         base._set_paragraph_bottom_border(paragraph, base.BLUE, size=8)
+    return paragraph
+
+
+def _page_break_before(paragraph: Any) -> Any:
+    paragraph.paragraph_format.page_break_before = True
     return paragraph
 
 
@@ -465,8 +470,8 @@ def _title_table(document: DocxDocument, title: str, headers: Sequence[str], row
     return table
 
 
-def _control_document(document: DocxDocument, generated_date: str) -> None:
-    _heading(document, "1. CONTROLE DE DOCUMENTO")
+def _control_document(document: DocxDocument, generated_date: str) -> Any:
+    first_heading = _heading(document, "1. CONTROLE DE DOCUMENTO")
     _title_table(document, "Preparação", ("Ação", "Nome", "Data"), (("Criação do Documento", "", generated_date),))
     document.add_paragraph()
     _title_table(
@@ -477,6 +482,7 @@ def _control_document(document: DocxDocument, generated_date: str) -> None:
     )
     document.add_paragraph()
     _title_table(document, "Lista de Distribuição", ("Nome", "Organização", "E-mail"), (("", "", ""), ("", "", "")))
+    return first_heading
 
 
 def _count(value: Any) -> str:
@@ -991,8 +997,8 @@ def _body(document: DocxDocument, dataset: Mapping[str, Any], profile: ClientPro
     generated = base._parse_utc(str(dataset.get("generated_at") or period["end_at"])).astimezone(ZoneInfo(str(period.get("timezone") or "UTC")))
     _toc_heading(document)
     _toc_field(document)
-    document.add_page_break()
-    _control_document(document, generated.strftime("%d/%m/%Y"))
+    first_heading = _control_document(document, generated.strftime("%d/%m/%Y"))
+    _page_break_before(first_heading)
     _heading(document, "2. OBJETIVO")
     _paragraph(document, copy.OBJECTIVE)
     _period_paragraph(document, start, end)

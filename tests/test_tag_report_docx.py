@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from docx import Document
+from docx.oxml.ns import qn
 
 from tenable_reports.config.profile import load_client_profile
 from tenable_reports.presentation.tag_report_docx import generate_tag_report
@@ -214,14 +215,14 @@ def test_tag_report_contains_only_approved_operational_sections(tmp_path: Path) 
     assert result.top_asset_rows == 10
     assert result.top_open_rows == 5
     assert "TAG Equipe - Infraestrutura" in text
-    assert "4.1. Vulnerabilidades Mitigadas" in text
+    assert "2.1. Vulnerabilidades Mitigadas" in text
     assert "Atualização de exemplo aplicada" in text
-    assert "4.2. Vulnerabilidades Não Mitigadas" in text
-    assert "4.3. Vulnerabilidades Ressurgidas" in text
+    assert "2.2. Vulnerabilidades Não Mitigadas" in text
+    assert "2.3. Vulnerabilidades Ressurgidas" in text
     assert "Vulnerabilidade de exemplo ressurgida" in text
-    assert text.index("4.1. Vulnerabilidades Mitigadas") < text.index(
-        "4.2. Vulnerabilidades Não Mitigadas"
-    ) < text.index("4.3. Vulnerabilidades Ressurgidas")
+    assert text.index("2.1. Vulnerabilidades Mitigadas") < text.index(
+        "2.2. Vulnerabilidades Não Mitigadas"
+    ) < text.index("2.3. Vulnerabilidades Ressurgidas")
     assert "Lembrando que para uma vulnerabilidade ser marcada como corrigida" in text
     assert "Principais Ativos Vulneráveis" in text
     assert "VULNERABILIDADES E SUAS CORREÇÕES" in text
@@ -249,6 +250,45 @@ def test_tag_report_uses_official_cover_and_back_cover_shell(tmp_path: Path) -> 
     assert "PORTUGAL" in text
     with zipfile.ZipFile(output) as package:
         assert package.read("word/document.xml").count(b"<wp:anchor") >= 10
+
+
+def test_tag_report_uses_standalone_numbered_heading_hierarchy(tmp_path: Path) -> None:
+    output = tmp_path / "tag-numbered.docx"
+    generate_tag_report(
+        template_path=TEMPLATE,
+        dataset_path=_tag_dataset(
+            tmp_path,
+            with_history=True,
+            include_comparison=True,
+        ),
+        profile=_profile(),
+        output_path=output,
+        mask_sensitive=True,
+    )
+
+    document = Document(output)
+    headings = [
+        (paragraph.style.name, paragraph.text)
+        for paragraph in document.paragraphs
+        if paragraph.style is not None
+        and paragraph.style.name.startswith("Heading ")
+    ]
+    assert [text for style, text in headings if style == "Heading 1"] == [
+        "1. TAG Equipe - Infraestrutura",
+        "2. VISÃO GERAL DAS PRINCIPAIS VULNERABILIDADES",
+        "3. VULNERABILIDADES E SUAS CORREÇÕES E/OU CONTRAMEDIDAS RECOMENDADAS",
+        "4. Comparativo Mensal da TAG",
+    ]
+    first_heading = next(
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.style is not None and paragraph.style.name == "Heading 1"
+    )
+    assert first_heading._p.get_or_add_pPr().find(qn("w:pageBreakBefore")) is not None
+    assert ("Heading 2", "1.1. Principais Ativos Vulneráveis") in headings
+    assert ("Heading 2", "2.1. Vulnerabilidades Mitigadas") in headings
+    assert ("Heading 2", "2.2. Vulnerabilidades Não Mitigadas") in headings
+    assert ("Heading 2", "2.3. Vulnerabilidades Ressurgidas") in headings
 
 
 

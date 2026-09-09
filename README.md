@@ -16,6 +16,11 @@ possam alimentar quatro tipos de documento:
 As TAGs nunca filtram os dois relatórios gerais. A coleta VM geral acontece uma vez
 e os relatórios por TAG são recortes locais por UUID dos ativos.
 
+Todos os quatro tipos usam o mesmo padrão editorial oficial: capa, sumário nativo
+do Word na segunda página, títulos numerados e contracapa. O sumário é reconstruído
+a partir de `Heading 1` a `Heading 3`; o corpo técnico continua independente por
+tipo de relatório.
+
 ## Começar
 
 No Windows, abra o PowerShell na raiz do projeto:

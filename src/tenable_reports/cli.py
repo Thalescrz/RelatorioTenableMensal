@@ -826,7 +826,7 @@ def _run_cloud_for_client(
                     getattr(
                         args,
                         "cloud_template",
-                        "templates/corporate/cloud-base-v1.docx",
+                        "templates/corporate/base-v1.docx",
                     )
                 ),
             ),
@@ -899,7 +899,7 @@ def _run_cloud_for_client(
                 getattr(
                     args,
                     "cloud_template",
-                    "templates/corporate/cloud-base-v1.docx",
+                    "templates/corporate/base-v1.docx",
                 )
             ),
             force_refresh=bool(
@@ -2940,7 +2940,7 @@ def _prepare_cloud_for_checkpoint(
                 getattr(
                     args,
                     "cloud_template",
-                    "templates/corporate/cloud-base-v1.docx",
+                    "templates/corporate/base-v1.docx",
                 )
             ),
             force_refresh=bool(getattr(args, "force_cloud_refresh", False)),
@@ -5676,7 +5676,7 @@ def _add_complete_collection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--template", default="templates/corporate/base-v1.docx")
     parser.add_argument(
         "--cloud-template",
-        default="templates/corporate/cloud-base-v1.docx",
+        default="templates/corporate/base-v1.docx",
     )
     parser.add_argument("--assets-dir", default="templates/corporate/assets")
     parser.add_argument("--base-output")
@@ -6124,7 +6124,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     build_client.add_argument(
         "--cloud-template",
-        default="templates/corporate/cloud-base-v1.docx",
+        default="templates/corporate/base-v1.docx",
     )
     build_client.add_argument("--assets-dir", default="templates/corporate/assets")
     build_client.add_argument("--base-output")
@@ -6175,7 +6175,7 @@ def build_parser() -> argparse.ArgumentParser:
     resume_was.add_argument("--was-num-assets", type=int, default=1000)
     resume_was.add_argument("--template", default="templates/corporate/base-v1.docx")
     resume_was.add_argument(
-        "--cloud-template", default="templates/corporate/cloud-base-v1.docx"
+        "--cloud-template", default="templates/corporate/base-v1.docx"
     )
     resume_was.add_argument("--assets-dir", default="templates/corporate/assets")
     resume_was.add_argument("--base-output")
@@ -6214,7 +6214,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     retry_cloud.add_argument(
         "--cloud-template",
-        default="templates/corporate/cloud-base-v1.docx",
+        default="templates/corporate/base-v1.docx",
     )
     retry_cloud.add_argument("--confirm-live-api", action="store_true")
     retry_cloud.add_argument("--resume-dataset")
@@ -6243,7 +6243,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     retry_components.add_argument(
         "--cloud-template",
-        default="templates/corporate/cloud-base-v1.docx",
+        default="templates/corporate/base-v1.docx",
     )
     retry_components.add_argument(
         "--assets-dir", default="templates/corporate/assets"

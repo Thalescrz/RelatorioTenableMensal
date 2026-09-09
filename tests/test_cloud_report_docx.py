@@ -27,7 +27,9 @@ from tenable_reports.presentation.cloud_report_sections import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CLOUD_TEMPLATE = ROOT / "templates/corporate/cloud-base-v1.docx"
+LEGACY_CLOUD_TEMPLATE = ROOT / "templates/corporate/cloud-base-v1.docx"
+OFFICIAL_TEMPLATE = ROOT / "templates/corporate/base-v1.docx"
+CLOUD_TEMPLATE = OFFICIAL_TEMPLATE
 PROFILE = ROOT / "clients/examples/client-profile.json"
 
 
@@ -82,7 +84,7 @@ def test_cloud_builder_uses_general_report_typography() -> None:
     assert paragraph.runs[0].font.size.pt == 9
     assert heading.runs[0].font.name == "Calibri"
     assert heading.runs[0].font.size.pt == 11
-    assert heading.style.name == "Normal"
+    assert heading.style.name == "Heading 2"
     assert table is not None
     assert table.rows[0].cells[0].paragraphs[0].runs[0].font.name == "Calibri"
     assert table.rows[1].cells[0].paragraphs[0].runs[0].font.name == "Calibri"
@@ -114,9 +116,21 @@ def test_generated_cloud_report_has_no_legacy_arial_or_times_runs(tmp_path: Path
             for run in paragraph.runs
             if run.text.strip() and run.font.name
         )
-    assert "Arial" not in font_names
     assert "Times New Roman" not in font_names
     assert "Calibri" in font_names
+    body_headings = [
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.style is not None
+        and paragraph.style.name.startswith("Heading ")
+    ]
+    assert body_headings
+    assert all(
+        run.font.name == "Calibri"
+        for paragraph in body_headings
+        for run in paragraph.runs
+        if run.text.strip()
+    )
 
 
 def _profile():
@@ -327,9 +341,9 @@ def _dataset(tmp_path: Path, *, populated: bool = True) -> Path:
 
 
 def test_sanitized_cloud_template_keeps_three_page_families() -> None:
-    assert CLOUD_TEMPLATE.is_file()
-    document = Document(CLOUD_TEMPLATE)
-    text = _all_text(CLOUD_TEMPLATE)
+    assert LEGACY_CLOUD_TEMPLATE.is_file()
+    document = Document(LEGACY_CLOUD_TEMPLATE)
+    text = _all_text(LEGACY_CLOUD_TEMPLATE)
 
     assert len(document.sections) == 3
     assert "{{CLIENT_NAME}}" in text
@@ -339,7 +353,7 @@ def test_sanitized_cloud_template_keeps_three_page_families() -> None:
     assert "TRT8" not in text.upper()
     assert len(document.inline_shapes) == 0
 
-    with zipfile.ZipFile(CLOUD_TEMPLATE) as package:
+    with zipfile.ZipFile(LEGACY_CLOUD_TEMPLATE) as package:
         all_xml = "\n".join(
             package.read(name).decode("utf-8", errors="ignore")
             for name in package.namelist()
@@ -367,6 +381,50 @@ def test_sanitized_cloud_template_keeps_three_page_families() -> None:
         re.IGNORECASE,
     )
     assert "dc:creator></dc:creator" in all_xml or "dc:creator/>" in all_xml
+
+
+def test_cloud_report_uses_shared_official_shell_and_native_heading_hierarchy(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "cloud-official-shell.docx"
+    generate_cloud_report(
+        template_path=OFFICIAL_TEMPLATE,
+        dataset_path=_expanded_dataset(tmp_path),
+        profile=_profile(),
+        output_path=output,
+        variant=CloudReportVariant.EXPANDED,
+    )
+
+    document = Document(output)
+    text = _all_text(output)
+    headings = [
+        (paragraph.style.name, paragraph.text)
+        for paragraph in document.paragraphs
+        if paragraph.style is not None
+        and paragraph.style.name.startswith("Heading ")
+    ]
+
+    assert len(document.sections) == 3
+    assert "FORTALEZA - CE" in text
+    assert "BELÉM" in text
+    assert "PORTUGAL" in text
+    assert ("Heading 1", "1. CONTROLE DE DOCUMENTO") in headings
+    assert ("Heading 1", "2. OBJETIVO") in headings
+    assert ("Heading 1", "3. TENABLE CLOUD SECURITY") in headings
+    assert ("Heading 2", "3.4. Principais Vulnerabilidades Críticas (TOP 5 CVEs)") in headings
+    assert ("Heading 1", "4. Conclusão") in headings
+    first_heading = next(
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.style is not None and paragraph.style.name == "Heading 1"
+    )
+    assert first_heading._p.get_or_add_pPr().find(qn("w:pageBreakBefore")) is not None
+    with zipfile.ZipFile(output) as package:
+        document_xml = package.read("word/document.xml").decode("utf-8")
+        settings_xml = package.read("word/settings.xml").decode("utf-8")
+    assert 'TOC \\o "1-3" \\h \\z' in document_xml
+    assert 'TOC \\o "1-4"' not in document_xml
+    assert re.search(r'<w:updateFields\b[^>]*w:val="true"', settings_xml)
 
 
 def test_standard_cloud_report_keeps_approved_sections_and_detailed_top_five(

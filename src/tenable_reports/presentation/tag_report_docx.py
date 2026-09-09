@@ -18,6 +18,7 @@ from tenable_reports.presentation.full_base_report_docx import (
     _configure_styles,
     _heading,
     _load_dataset,
+    _page_break_before,
     _paragraph,
     _period_dates,
     _period_paragraph,
@@ -95,11 +96,11 @@ def _tag_body(
 
     _toc_heading(document)
     _toc_field(document)
-    document.add_page_break()
-    _heading(document, tag_label)
+    first_heading = _heading(document, f"1. {tag_label}")
+    _page_break_before(first_heading)
     _period_paragraph(document, start, end)
 
-    _heading(document, "3.2. Principais Ativos Vulneráveis", 2)
+    _heading(document, "1.1. Principais Ativos Vulneráveis", 2)
     _paragraph(document, copy.TOP_ASSETS_INTRO)
     _paragraph(document, copy.TOP_ASSETS_PRIORITY)
     top_assets = dataset.get("top_assets") or []
@@ -118,24 +119,24 @@ def _tag_body(
             "Neste mês não foram identificados ativos vulneráveis para esta TAG.",
         )
 
-    _heading(document, "VISÃO GERAL DAS PRINCIPAIS VULNERABILIDADES")
+    _heading(document, "2. VISÃO GERAL DAS PRINCIPAIS VULNERABILIDADES")
     _paragraph(document, copy.PRINCIPAL_VULNERABILITIES_INTRO)
     _paragraph(document, copy.FIXED_REMINDER)
     headers = ("Plugin ID", "Nome", "Família OS", "Severidade", "Total", "VPR")
     widths = (900, 3000, 2050, 1050, 850, 850)
     overview_tables = (
         (
-            "4.1. Vulnerabilidades Mitigadas",
+            "2.1. Vulnerabilidades Mitigadas",
             "top_fixed_vulnerabilities",
             "vulnerabilidades mitigadas",
         ),
         (
-            "4.2. Vulnerabilidades Não Mitigadas",
+            "2.2. Vulnerabilidades Não Mitigadas",
             "top_open_vulnerabilities",
             "vulnerabilidades não mitigadas",
         ),
         (
-            "4.3. Vulnerabilidades Ressurgidas",
+            "2.3. Vulnerabilidades Ressurgidas",
             "top_resurfaced_vulnerabilities",
             "vulnerabilidades ressurgidas",
         ),
@@ -168,7 +169,7 @@ def _tag_body(
 
     _heading(
         document,
-        "VULNERABILIDADES E SUAS CORREÇÕES E/OU CONTRAMEDIDAS RECOMENDADAS",
+        "3. VULNERABILIDADES E SUAS CORREÇÕES E/OU CONTRAMEDIDAS RECOMENDADAS",
     )
     _paragraph(document, copy.TOP5_VM_INTRO)
     if not top_open:
@@ -185,7 +186,7 @@ def _tag_body(
         source_table_id="top_open_vulnerabilities",
         show_source_filters=profile.presentation.show_source_filters,
         heading_level=2,
-        number_prefix="5",
+        number_prefix="3",
         mask_sensitive=mask_sensitive,
         include_output=profile.presentation.vm_top5_include_output,
         translator=translator,
@@ -209,7 +210,7 @@ def _temporal_comparison(
         for item in dataset.get("tag_history") or ()
         if isinstance(item, Mapping)
     ]
-    _heading(document, "Comparativo Mensal da TAG")
+    _heading(document, "4. Comparativo Mensal da TAG")
     if status == "INCOMPATIBLE_PERIOD":
         _paragraph(
             document,
