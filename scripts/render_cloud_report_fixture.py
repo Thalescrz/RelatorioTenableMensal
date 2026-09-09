@@ -18,7 +18,7 @@ from tenable_reports.presentation.cloud_report_docx import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-TEMPLATE = ROOT / "templates" / "corporate" / "cloud-base-v1.docx"
+TEMPLATE = ROOT / "templates" / "corporate" / "base-v1.docx"
 PROFILE = ROOT / "clients" / "examples" / "client-profile.json"
 
 

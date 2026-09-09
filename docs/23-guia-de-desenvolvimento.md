@@ -272,10 +272,23 @@ rodapés, imagens e quebras de seção.
 O template `templates/corporate/base-v1.docx` preserva a capa e a contracapa do
 documento oficial, mas substitui cliente, período, cabeçalho interno e metadados por
 valores controlados. Não reconstrua essas páginas com elementos aproximados. O
-conteúdo gerado deve ser inserido entre as duas páginas oficiais. A página 2 contém
-um campo nativo `TOC` do Word com atualização automática habilitada. `SUMÁRIO` usa
-`TOC Heading`, fica fora da própria lista, e as oito seções principais do relatório
-geral usam `Heading 1` com números explícitos de `1` a `8`.
+conteúdo geral, customizado, por TAG ou Cloud deve ser inserido entre as duas páginas
+oficiais. A página 2 contém um campo nativo `TOC \\o "1-3" \\h \\z` com atualização
+automática habilitada. `SUMÁRIO` usa `TOC Heading`, fica fora da própria lista, e
+seções/subseções usam `Heading 1` a `Heading 3` com números explícitos. `Heading 4`
+pode estruturar detalhes internos, mas não participa do sumário.
+
+`cloud-base-v1.docx` é somente referência histórica. O gerador Cloud atual usa o
+mesmo shell `base-v1.docx` e publica um único modelo completo.
+
+Para atualizar documentos antigos, mantenha separadas composição e publicação. O
+planejador deve cruzar os manifestos `READY_FOR_CONTROLLED_DISTRIBUTION` com as
+referências `MAIN` do PostgreSQL, rejeitar caminhos externos, duplicados ou
+inexistentes e nunca percorrer DOCX soltos ou conjuntos não-MAIN. Antes da troca,
+valide pacote, seções, conteúdo técnico, tabelas, gráficos e imagens. A
+substituição usa `refresh_publication_documents_atomically`, atualiza hashes no
+manifesto e no PostgreSQL no mesmo commit lógico, registra
+`OFFICIAL_REPORT_SHELL_V3` e preserva flags de negócio como `MAIN`.
 
 Rótulos integrais de severidade/faixa em tabelas destacadas usam a paleta aprovada:
 `CRITICAL`, `HIGH`, `MEDIUM` e `LOW`. A classificação deve ser estrita;

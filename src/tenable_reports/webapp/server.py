@@ -477,7 +477,7 @@ class DashboardConfigStore:
                     self.config_path.parent,
                 ),
                 "cloud_template": _relative_path(
-                    self.project_root / "templates" / "corporate" / "cloud-base-v1.docx",
+                    self.project_root / "templates" / "corporate" / "base-v1.docx",
                     self.config_path.parent,
                 ),
                 "database_env_file": _relative_path(
@@ -2045,7 +2045,7 @@ class JobQueue:
                         self.project_root
                         / "templates"
                         / "corporate"
-                        / "cloud-base-v1.docx"
+                        / "base-v1.docx"
                     ),
                     "--assets-dir",
                     str(config.assets_dir),
@@ -2110,7 +2110,7 @@ class JobQueue:
                         self.project_root
                         / "templates"
                         / "corporate"
-                        / "cloud-base-v1.docx"
+                        / "base-v1.docx"
                     ),
                     "--assets-dir",
                     str(config.assets_dir),
@@ -4109,7 +4109,7 @@ class DashboardApplication:
         defaults = self.config.raw().get("defaults") or {}
         raw_template = str(
             defaults.get("cloud_template")
-            or "../templates/corporate/cloud-base-v1.docx"
+            or "../templates/corporate/base-v1.docx"
         )
         cloud_template = (
             self.config.config_path.parent / raw_template

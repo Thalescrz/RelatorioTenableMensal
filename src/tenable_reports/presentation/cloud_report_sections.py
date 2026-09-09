@@ -92,23 +92,26 @@ class CloudDocumentBuilder:
 
     def heading(self, text: str, level: int = 1) -> Any:
         sizes = {1: 14, 2: 11, 3: 10, 4: 9}
-        paragraph = self.paragraph(
-            text,
-            bold=True,
-            size=sizes.get(level, 9),
-            color=base.NAVY,
-            align=WD_ALIGN_PARAGRAPH.LEFT,
-            keep_with_next=True,
-            space_before=8,
-            space_after=4,
-            font_name="Calibri",
+        paragraph = self.document.add_paragraph(
+            str(text),
+            style=f"Heading {level}",
         )
-        properties = paragraph._p.get_or_add_pPr()
-        outline = OxmlElement("w:outlineLvl")
-        outline.set(qn("w:val"), str(max(0, min(level, 9) - 1)))
-        properties.append(outline)
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        paragraph.paragraph_format.space_before = Pt(8)
+        paragraph.paragraph_format.space_after = Pt(4)
+        paragraph.paragraph_format.keep_with_next = True
+        for run in paragraph.runs:
+            base._set_run_font(
+                run,
+                size=sizes.get(level, 9),
+                color=base.NAVY,
+                bold=True,
+                name="Calibri",
+            )
+            base._set_language(run)
         if level == 1:
             base._set_paragraph_bottom_border(paragraph, base.BLUE, size=8)
+        self._move(paragraph._p)
         return paragraph
 
     def standard_paragraph(
