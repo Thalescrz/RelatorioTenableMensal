@@ -1,13 +1,19 @@
 # Template corporativo do relatório-base
 
-`base-v1.docx` é um template controlado e sanitizado, reconstruído a partir dos elementos comuns observados nos relatórios de referência. Nenhum dos DOCX de cliente foi copiado integralmente.
+`base-v1.docx` é um template controlado e sanitizado, derivado do documento oficial
+fornecido para preservar com fidelidade a capa, a identidade das páginas internas e
+a contracapa. O cliente, o contrato, o período e os metadados do arquivo de origem
+não permanecem no template.
 
 ## Contrato
 
 - página A4 retrato;
-- capa editorial com identidade Tenable/ITProtect;
-- cabeçalho e rodapé próprios, sem endereços, QR code, nomes ou e-mails;
+- capa e contracapa oficiais, com imagens, fontes, endereços corporativos públicos,
+  QR code e identidade Tenable/ITProtect preservados;
+- cabeçalho e rodapé internos oficiais, com cliente dinâmico;
 - estilos semânticos de título;
+- sumário nativo do Word na página 2, atualizado a partir dos níveis de título;
+- oito seções principais do relatório-base numeradas explicitamente de `1` a `8`;
 - tabela “Principais Ativos Vulneráveis” com cabeçalho repetível;
 - `Exploitable` como última coluna e subconjunto de `Total`;
 - `Output` ausente por padrão;
@@ -18,16 +24,24 @@ Os PNG em `assets/` foram extraídos dos materiais fornecidos pelo usuário e s�
 ## Reconstrução
 
 ```powershell
-python -m tenable_reports build-base-template `
-  --assets-dir .\templates\corporate\assets `
+.\.venv\Scripts\python.exe tools\build_official_word_template.py `
+  --source <arquivo-oficial.docx> `
+  --source-client <identificador-no-arquivo> `
   --output .\templates\corporate\base-v1.docx
 ```
 
-Não edite o binário como fonte primária. Mudanças controladas devem ser feitas no gerador `tenable_reports.presentation.base_report_docx`, seguidas de reconstrução, testes e renderização integral.
+Não edite o binário manualmente. Mudanças controladas no shell devem ser feitas em
+`tools/build_official_word_template.py`, seguidas de reconstrução, testes e
+renderização integral. O arquivo oficial de origem permanece fora do Git.
 
 ## Uso no relatório completo
 
-O gerador da Fase 6 está em `tenable_reports.presentation.full_base_report_docx`. Ele abre `base-v1.docx`, preserva capa, cabeçalho, rodapé, assets e geometria e materializa o conteúdo completo a partir do dataset versionado. O template de referência permanece imutável; a validação da Fase 6 confirmou o SHA-256 `42E06953133EE8AB1BE6CF33768803FEF5327FB0809F3DC70791DF794FF22CBD`.
+O gerador da Fase 6 está em
+`tenable_reports.presentation.full_base_report_docx`. Ele abre `base-v1.docx`,
+preserva a capa, separa a contracapa, materializa o conteúdo a partir do dataset e
+recoloca a contracapa como última página. O sumário usa o campo Word
+`TOC \\o "1-4" \\h \\z \\u`; `w:updateFields` permanece habilitado para que o Word
+recalcule números de página e entradas ao abrir o documento.
 
 ## Template Cloud Security
 

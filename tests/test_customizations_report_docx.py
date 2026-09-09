@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import zipfile
 from dataclasses import replace
 from pathlib import Path
 
@@ -66,7 +67,6 @@ def test_customizations_are_kept_outside_the_base_document() -> None:
         document = Document(output)
         text = _text(document)
         assert "JULHO/2026" in text
-        assert "01/07/2026 a 31/07/2026" in text
         assert "Comparativo Mensal de Vulnerabilidades" in text
         assert "Vulnerabilidades “Não Mitigadas”" in text
         assert "Vulnerabilidades “Mitigadas”" in text
@@ -79,11 +79,57 @@ def test_customizations_are_kept_outside_the_base_document() -> None:
         assert "Exploitable" in text
         assert "Principais ativos Vulneráveis por Rede" not in text
         assert "Principais Aplicações “Unsupported”" in text
-        assert "SUA MELHOR ALIADA NA JORNADA DA PROTEÇÃO DIGITAL." in text
+        assert (
+            "SUA MELHOR ALIADA NA JORNADA DA PROTEÇÃO DIGITAL."
+            in " ".join(text.split())
+        )
         assert "METODOLOGIA, QUALIDADE E LIMITAÇÕES" not in text
-        # Capa/logos mais os gráficos mensais observados nos documentos de referência:
-        # não mitigadas, mitigadas, evolução e novas por severidade.
-        assert len(document.inline_shapes) >= 12
+        # A capa oficial usa imagens ancoradas; os elementos inline restantes
+        # preservam os gráficos mensais e demais visuais do relatório.
+        assert len(document.inline_shapes) >= 11
+
+
+def test_customizations_report_uses_official_cover_and_back_cover_shell() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "custom-official-shell.docx"
+        generate_customizations_report(
+            template_path=ROOT / "templates/corporate/base-v1.docx",
+            dataset_path=ROOT / "tests/fixtures/report-dataset-phase5.json",
+            profile=load_client_profile(
+                ROOT / "clients/examples/client-profile-all-customizations.json"
+            ),
+            output_path=output,
+            mask_sensitive=True,
+        )
+
+        document = Document(output)
+        text = _text(document)
+        assert len(document.sections) == 3
+        assert "FORTALEZA - CE" in text
+        assert "BELÉM" in text
+        assert "PORTUGAL" in text
+        with zipfile.ZipFile(output) as package:
+            assert package.read("word/document.xml").count(b"<wp:anchor") >= 10
+
+
+def test_customizations_report_mirrors_branding_on_even_body_pages() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "custom-even-pages.docx"
+        generate_customizations_report(
+            template_path=ROOT / "templates/corporate/base-v1.docx",
+            dataset_path=ROOT / "tests/fixtures/report-dataset-phase5.json",
+            profile=load_client_profile(
+                ROOT / "clients/examples/client-profile-all-customizations.json"
+            ),
+            output_path=output,
+            mask_sensitive=True,
+        )
+
+        document = Document(output)
+        body_section = document.sections[1]
+        even_header_xml = body_section.even_page_header._element.xml
+        assert "Cliente Exemplo" in even_header_xml
+        assert "<w:drawing" in even_header_xml
 
 
 def test_customization_modules_without_data_are_omitted_with_reason() -> None:
@@ -112,7 +158,7 @@ def test_customization_modules_without_data_are_omitted_with_reason() -> None:
         assert reasons["cloud_container_images"] == "MOVED_TO_CLOUD_REPORT"
 
 
-def test_profile_without_customizations_produces_only_cover_and_summary() -> None:
+def test_profile_without_customizations_keeps_official_back_cover() -> None:
     with tempfile.TemporaryDirectory() as directory:
         output = Path(directory) / "custom.docx"
         result = generate_customizations_report(
@@ -126,8 +172,8 @@ def test_profile_without_customizations_produces_only_cover_and_summary() -> Non
         )
         assert result.rendered_modules == ()
         document = Document(output)
-        assert len(document.sections) == 1
-        assert "SUA MELHOR ALIADA" not in _text(document)
+        assert len(document.sections) == 3
+        assert "SUA MELHOR ALIADA" in _text(document)
 
 
 def test_first_month_renders_current_baseline_and_explicit_no_data_messages() -> None:

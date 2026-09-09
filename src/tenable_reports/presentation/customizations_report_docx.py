@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from docx import Document
-from docx.enum.section import WD_SECTION
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
@@ -447,7 +446,7 @@ def _new_report_section(document: Any) -> None:
 
 
 def _mirror_default_header_footer_on_even_pages(document: Any) -> None:
-    section = document.sections[0]
+    section = document.sections[1] if len(document.sections) > 1 else document.sections[0]
     for source, target in (
         (section.header, section.even_page_header),
         (section.footer, section.even_page_footer),
@@ -470,25 +469,6 @@ def _mirror_default_header_footer_on_even_pages(document: Any) -> None:
                 relationship_id,
                 relationship.is_external,
             )
-
-
-def _back_cover(document: Any) -> None:
-    first_section = document.sections[0]
-    blank_first_references = [
-        deepcopy(reference)
-        for reference_tag in ("w:headerReference", "w:footerReference")
-        for reference in first_section._sectPr.findall(qn(reference_tag))
-        if reference.get(qn("w:type")) == "first"
-    ]
-    section = document.add_section(WD_SECTION.NEW_PAGE)
-    section.different_first_page_header_footer = True
-    for reference in reversed(blank_first_references):
-        section._sectPr.insert(0, reference)
-    paragraph = document.add_paragraph()
-    paragraph.paragraph_format.space_before = Cm(9)
-    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = paragraph.add_run(editorial.BACK_COVER)
-    base._set_run_font(run, size=20, color=base.NAVY, bold=True)
 
 
 def _monthly_modules(document: Any, data: Mapping[str, Any], temp: Path, rendered: list[str]) -> None:
@@ -1057,7 +1037,7 @@ def generate_customizations_report(
     faithful._validate_dataset(dataset, profile)
     document = Document(template)
     document.settings.odd_and_even_pages_header_footer = True
-    faithful._clear_body_after_cover_break(document)
+    report_shell = faithful._clear_body_after_cover_break(document)
     faithful._configure_styles(document)
     period_label, period_range = base._period_labels(dataset["period"])
     base._replace_tokens(document, {"{{CLIENT_NAME}}": profile.display_name, "{{PERIOD_LABEL}}": period_label, "{{PERIOD_RANGE}}": period_range, "{{TEMPLATE_VERSION}}": CUSTOM_TEMPLATE_VERSION})
@@ -1065,7 +1045,7 @@ def generate_customizations_report(
     faithful._sanitize_header_footer(document, profile.display_name)
     _mirror_default_header_footer_on_even_pages(document)
     faithful._sanitize_properties(document, title="INTELIGÊNCIA E CUSTOMIZAÇÕES TENABLE")
-    faithful._heading(document, "SUMÁRIO")
+    faithful._toc_heading(document)
     faithful._toc_field(document)
     document.add_page_break()
     data = _custom_data(dataset)
@@ -1099,8 +1079,7 @@ def generate_customizations_report(
             _attack_vector(document, data, dataset, profile, rendered)
         if _module_enabled(profile, "was_unsupported_tech"):
             _was_unsupported(document, data, dataset, profile, rendered)
-    if rendered:
-        _back_cover(document)
+    faithful._append_official_back_cover(document, report_shell)
     base._enable_field_updates(document)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)

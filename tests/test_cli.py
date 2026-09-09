@@ -2439,7 +2439,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             payload = json.loads(stdout.getvalue())
             self.assertTrue(output.is_file())
-            self.assertEqual(payload["template_version"], "base-fiel-v2.0")
+            self.assertEqual(payload["template_version"], "base-fiel-v2.1")
             self.assertEqual(payload["top_open_rows"], 5)
 
     def test_customizations_history_requires_normalized_findings(self) -> None:

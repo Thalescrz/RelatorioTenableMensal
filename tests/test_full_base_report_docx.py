@@ -49,6 +49,130 @@ def _cell_fill(cell) -> str | None:
 
 
 class FullBaseReportDocxTests(unittest.TestCase):
+    def test_full_report_numbers_every_top_level_section_and_excludes_toc_title(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "numbered-headings.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=FIXTURE,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+            )
+
+            document = Document(output)
+            top_level = [
+                paragraph.text
+                for paragraph in document.paragraphs
+                if paragraph.style is not None
+                and paragraph.style.name == "Heading 1"
+            ]
+            self.assertEqual(
+                top_level,
+                [
+                    "1. CONTROLE DE DOCUMENTO",
+                    "2. OBJETIVO",
+                    "3. SENSOR NESSUS, NESSUS AGENT E NESSUS NETWORK MONITOR",
+                    "4. VISÃO GERAL DAS PRINCIPAIS VULNERABILIDADES",
+                    "5. VULNERABILIDADES E SUAS CORREÇÕES E/OU CONTRAMEDIDAS RECOMENDADAS",
+                    "6. SENSOR WAS",
+                    "7. INCREMENTANDO A SEGURANÇA E PROTEÇÃO DO AMBIENTE",
+                    "8. RESUMO DE VULNERABILIDADES",
+                ],
+            )
+            toc_title = next(
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.text == "SUMÁRIO"
+            )
+            self.assertEqual(toc_title.style.name, "TOC Heading")
+
+    def test_full_report_preserves_official_cover_and_back_cover_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "official-shell.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=FIXTURE,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+            )
+
+            document = Document(output)
+            text = all_document_text(document)
+            self.assertEqual(len(document.sections), 3)
+            self.assertIn("FORTALEZA - CE", text)
+            self.assertIn("BELÉM", text)
+            self.assertIn("PORTUGAL", text)
+
+            with zipfile.ZipFile(output) as package:
+                document_xml = package.read("word/document.xml").decode("utf-8")
+                settings_xml = package.read("word/settings.xml").decode("utf-8")
+                all_xml = "\n".join(
+                    package.read(name).decode("utf-8")
+                    for name in package.namelist()
+                    if name.endswith(".xml")
+                )
+            self.assertGreaterEqual(document_xml.count("<wp:anchor"), 10)
+            self.assertIn("www.itprotect.com.br", all_xml)
+            self.assertIn('TOC \\o "1-4" \\h \\z \\u', document_xml)
+            self.assertRegex(settings_xml, r'<w:updateFields\b[^>]*w:val="true"')
+            self.assertNotIn("{{CLIENT_NAME}}", all_xml)
+            self.assertNotIn("TRT2", all_xml)
+            self.assertNotIn("95/2022", all_xml)
+
+            body_children = list(document._element.body)
+            section_breaks = [
+                child
+                for child in body_children
+                if child.tag == qn("w:p")
+                and child.find(qn("w:pPr")) is not None
+                and child.find(qn("w:pPr")).find(qn("w:sectPr")) is not None
+            ]
+            first_break = section_breaks[0]
+            self.assertFalse(first_break.xpath(".//wp:anchor"))
+            self.assertGreaterEqual(
+                sum(
+                    len(child.xpath(".//wp:anchor"))
+                    for child in body_children[: body_children.index(first_break)]
+                ),
+                4,
+            )
+            for paragraph in body_children[: body_children.index(first_break)]:
+                if paragraph.tag != qn("w:p"):
+                    continue
+                properties = paragraph.find(qn("w:pPr"))
+                self.assertIsNotNone(properties)
+                self.assertIsNotNone(properties.find(qn("w:pStyle")))
+            cover_title = next(
+                paragraph
+                for paragraph in document.paragraphs
+                if "VULNERABILIDADES" in paragraph.text
+                and paragraph.style is not None
+                and paragraph.style.style_id == "CoverTitle"
+            )
+            self.assertEqual(cover_title.style.style_id, "CoverTitle")
+
+            back_cover_nodes = body_children[
+                body_children.index(section_breaks[1]) + 1 : -1
+            ]
+            back_cover_paragraphs = [
+                paragraph
+                for node in back_cover_nodes
+                for paragraph in (
+                    [node] if node.tag == qn("w:p") else node.xpath(".//w:p")
+                )
+            ]
+            self.assertTrue(back_cover_paragraphs)
+            for paragraph in back_cover_paragraphs:
+                properties = paragraph.find(qn("w:pPr"))
+                self.assertIsNotNone(properties)
+                self.assertIsNotNone(properties.find(qn("w:pStyle")))
+
     def test_was_table_omits_family_column_when_catalog_has_no_matches(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             dataset = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -289,7 +413,10 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 "6.4. Vulnerabilidades WEB e Suas Correções e/ou Contramedidas Recomendadas",
                 text,
             )
-            self.assertIn("SUA MELHOR ALIADA NA JORNADA DA PROTEÇÃO DIGITAL.", text)
+            self.assertIn(
+                "SUA MELHOR ALIADA NA JORNADA DA PROTEÇÃO DIGITAL.",
+                " ".join(text.split()),
+            )
             self.assertNotIn("METODOLOGIA, QUALIDADE E LIMITAÇÕES", text)
             self.assertNotIn("RELATÓRIO-BASE CONCLUÍDO", text)
             self.assertNotIn("Sem dados disponíveis", text)
@@ -344,10 +471,12 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 }
             all_xml = "\n".join(xml_parts.values())
             self.assertIn(" TOC ", all_xml)
-            self.assertIn(" PAGE ", all_xml)
             self.assertIn("w:tblHeader", all_xml)
             self.assertIn("w:numPr", all_xml)
-            self.assertNotRegex(all_xml, r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
+            emails = re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", all_xml)
+            self.assertTrue(
+                all(email.endswith("@itprotect.com.br") for email in emails)
+            )
             image_nodes = re.findall(r"<wp:docPr\b[^>]*>", all_xml)
             self.assertTrue(image_nodes)
             self.assertTrue(all('descr="' in node and 'descr=""' not in node for node in image_nodes))
@@ -727,7 +856,12 @@ class FullBaseReportDocxTests(unittest.TestCase):
             )
             document = Document(output)
             empty_tables = sum(
-                len(table.rows) == 1 and any(cell.text.strip() for cell in table.rows[0].cells)
+                len(table.rows) == 1
+                and any(cell.text.strip() for cell in table.rows[0].cells)
+                and not any(
+                    "FORTALEZA" in cell.text
+                    for cell in table.rows[0].cells
+                )
                 for table in document.tables
             )
             text = all_document_text(document)

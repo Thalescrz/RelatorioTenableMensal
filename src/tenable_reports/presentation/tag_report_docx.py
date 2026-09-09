@@ -1,22 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from copy import deepcopy
 from pathlib import Path
 import tempfile
 from typing import Any, Mapping
 
 from docx import Document
-from docx.enum.section import WD_SECTION
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
-from docx.shared import Cm
 
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation import base_report_docx as base
 from tenable_reports.presentation import editorial_catalog as copy
 from tenable_reports.presentation.full_base_report_docx import (
     FULL_TEMPLATE_VERSION,
+    _append_official_back_cover,
     _clear_body_after_cover_break,
     _compact_rows,
     _configure_styles,
@@ -29,6 +25,7 @@ from tenable_reports.presentation.full_base_report_docx import (
     _sanitize_properties,
     _simple_table,
     _toc_field,
+    _toc_heading,
     _top_assets_table,
     _vulnerability_details,
 )
@@ -53,25 +50,6 @@ class TagReportRenderResult:
     top_open_rows: int
     comparison_rendered: bool
     masked_sensitive_fields: bool
-
-
-def _tag_back_cover(document: Any) -> None:
-    first_section = document.sections[0]
-    blank_first_references = [
-        deepcopy(reference)
-        for reference_tag in ("w:headerReference", "w:footerReference")
-        for reference in first_section._sectPr.findall(qn(reference_tag))
-        if reference.get(qn("w:type")) == "first"
-    ]
-    section = document.add_section(WD_SECTION.NEW_PAGE)
-    section.different_first_page_header_footer = True
-    for reference in reversed(blank_first_references):
-        section._sectPr.insert(0, reference)
-    paragraph = document.add_paragraph()
-    paragraph.paragraph_format.space_before = Cm(9)
-    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = paragraph.add_run(copy.BACK_COVER)
-    base._set_run_font(run, size=20, color=base.NAVY, bold=True)
 
 
 def _validate_tag_dataset(
@@ -115,7 +93,7 @@ def _tag_body(
     tag_label = f"TAG {tag['category_name']} - {tag['value']}"
     filters = _tag_filters(tag)
 
-    _heading(document, "SUMÁRIO")
+    _toc_heading(document)
     _toc_field(document)
     document.add_page_break()
     _heading(document, tag_label)
@@ -282,7 +260,7 @@ def generate_tag_report(
     # default header on both sides is also more reliable in LibreOffice when a
     # large table or chart is carried to the next page.
     document.settings.odd_and_even_pages_header_footer = False
-    _clear_body_after_cover_break(document)
+    report_shell = _clear_body_after_cover_break(document)
     _configure_styles(document)
     period_label, period_range = base._period_labels(dataset["period"])
     tag_label = f"TAG {tag['category_name']} - {tag['value']}"
@@ -311,7 +289,7 @@ def generate_tag_report(
         tag,
         mask_sensitive=mask_sensitive,
     )
-    _tag_back_cover(document)
+    _append_official_back_cover(document, report_shell)
     base._enable_field_updates(document)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,11 @@
 # Template Word mínimo — Fase 5
 
+> **Estado atual:** este documento preserva o histórico da Fase 5. O template
+> vigente é o shell oficial sanitizado descrito em
+> `templates/corporate/README.md`. O comando `generate-base-docx` permanece apenas
+> como alias compatível e usa o renderizador completo atual; não reconstrua o
+> template vigente com o antigo comando `build-base-template`.
+
 **Concluída em:** 2026-08-13  
 **Template:** `base-docx-v0.1`  
 **Escopo:** capa, identificação do período, visão geral compacta e seção de prova “Principais Ativos Vulneráveis”

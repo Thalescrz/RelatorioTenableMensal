@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -13,7 +14,7 @@ from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Cm, Pt, RGBColor
+from docx.shared import Pt, RGBColor
 
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation import base_report_docx as base
@@ -25,7 +26,7 @@ from tenable_reports.presentation.translation import (
 )
 
 
-FULL_TEMPLATE_VERSION = "base-fiel-v2.0"
+FULL_TEMPLATE_VERSION = "base-fiel-v2.1"
 FULL_REPORT_TITLE = "RELATÓRIO DE VULNERABILIDADES TENABLE"
 
 
@@ -38,6 +39,12 @@ class FullBaseReportRenderResult:
     top_asset_rows: int
     top_open_rows: int
     masked_sensitive_fields: bool
+
+
+@dataclass(frozen=True, slots=True)
+class OfficialReportShell:
+    back_cover_nodes: tuple[Any, ...]
+    back_cover_section: Any
 
 
 def _load_dataset(path: Path) -> dict[str, Any]:
@@ -82,19 +89,93 @@ def _validate_dataset(dataset: Mapping[str, Any], profile: ClientProfile) -> Non
         )
 
 
-def _clear_body_after_cover_break(document: DocxDocument) -> None:
+def _paragraph_section_properties(paragraph: Any) -> Any | None:
+    properties = paragraph.find(qn("w:pPr"))
+    return None if properties is None else properties.find(qn("w:sectPr"))
+
+
+def _clear_body_after_cover_break(
+    document: DocxDocument,
+) -> OfficialReportShell:
+    """Keep the official cover and reserve the official back cover for later."""
+
     body = document._element.body
-    found_cover_break = False
-    for child in list(body):
-        if child.tag == qn("w:sectPr"):
-            continue
-        if found_cover_break:
-            body.remove(child)
-            continue
-        if child.tag == qn("w:p") and child.xpath('.//w:br[@w:type="page"]'):
-            found_cover_break = True
-    if not found_cover_break:
-        raise ValueError("O template não contém a quebra de página contratual da capa.")
+    children = list(body)
+    section_paragraphs = [
+        child
+        for child in children
+        if child.tag == qn("w:p")
+        and _paragraph_section_properties(child) is not None
+    ]
+    final_section = body.find(qn("w:sectPr"))
+    if len(section_paragraphs) < 2 or final_section is None:
+        raise ValueError(
+            "O template oficial deve conter seções distintas para capa, "
+            "páginas internas e contracapa."
+        )
+
+    cover_end = section_paragraphs[0]
+    body_end = section_paragraphs[1]
+    body_section = _paragraph_section_properties(body_end)
+    if body_section is None:
+        raise ValueError("A seção interna do template oficial é inválida.")
+
+    # No arquivo oficial, os dois logotipos inferiores da capa estão ancorados
+    # no mesmo parágrafo que contém a quebra de seção. Ao acrescentar conteúdo
+    # à seção seguinte, o LibreOffice pode empurrar esse parágrafo inteiro para
+    # a página 2. Separar apenas a quebra mantém os anchors na capa sem alterar
+    # sua posição ou aparência.
+    if cover_end.xpath(".//wp:anchor"):
+        cover_properties = cover_end.find(qn("w:pPr"))
+        cover_section = _paragraph_section_properties(cover_end)
+        if cover_properties is None or cover_section is None:
+            raise ValueError("A quebra de seção da capa oficial é inválida.")
+        cover_properties.remove(cover_section)
+        section_break = OxmlElement("w:p")
+        section_properties = OxmlElement("w:pPr")
+        section_properties.append(cover_section)
+        section_break.append(section_properties)
+        cover_end.addnext(section_break)
+        cover_end = section_break
+
+    children = list(body)
+    body_end_index = children.index(body_end)
+    back_cover_nodes = tuple(
+        deepcopy(child)
+        for child in children[body_end_index + 1 :]
+        if child is not final_section
+    )
+    if not back_cover_nodes:
+        raise ValueError("A contracapa oficial não foi localizada no template.")
+
+    cover_end_index = children.index(cover_end)
+    for child in children[cover_end_index + 1 :]:
+        body.remove(child)
+    body.append(deepcopy(body_section))
+    return OfficialReportShell(
+        back_cover_nodes=back_cover_nodes,
+        back_cover_section=deepcopy(final_section),
+    )
+
+
+def _append_official_back_cover(
+    document: DocxDocument,
+    shell: OfficialReportShell,
+) -> None:
+    body = document._element.body
+    body_section = body.find(qn("w:sectPr"))
+    if body_section is None:
+        raise ValueError("A seção interna do relatório não foi preservada.")
+    body.remove(body_section)
+
+    section_break = OxmlElement("w:p")
+    properties = OxmlElement("w:pPr")
+    properties.append(deepcopy(body_section))
+    section_break.append(properties)
+    body.append(section_break)
+    for node in shell.back_cover_nodes:
+        body.append(deepcopy(node))
+    body.append(deepcopy(shell.back_cover_section))
 
 
 def _configure_styles(document: DocxDocument) -> None:
@@ -109,15 +190,37 @@ def _configure_styles(document: DocxDocument) -> None:
         style.paragraph_format.space_before = Pt(8)
         style.paragraph_format.space_after = Pt(4)
         style.paragraph_format.keep_with_next = True
+        if name == "Heading 1":
+            paragraph_properties = style._element.get_or_add_pPr()
+            numbering = paragraph_properties.find(qn("w:numPr"))
+            if numbering is not None:
+                paragraph_properties.remove(numbering)
     document.styles["Normal"].paragraph_format.space_after = Pt(6)
     document.styles["Normal"].paragraph_format.line_spacing = 1.08
 
 
 def _sanitize_header_footer(document: DocxDocument, client_name: str) -> None:
     for section in document.sections:
-        for table in section.header.tables:
-            if len(table.columns) >= 2:
-                table.cell(0, 1).text = f"RELATÓRIO DE VULNERABILIDADES\n{client_name}"
+        header_parts: set[str] = set()
+        for header in (
+            section.header,
+            section.first_page_header,
+            section.even_page_header,
+        ):
+            part_name = str(header.part.partname)
+            if part_name in header_parts:
+                continue
+            header_parts.add(part_name)
+            for text_node in header._element.xpath(".//w:t"):
+                if text_node.text:
+                    text_node.text = text_node.text.replace(
+                        "{{CLIENT_NAME}}", client_name
+                    )
+            for table in header.tables:
+                if len(table.columns) >= 2:
+                    table.cell(0, 1).text = (
+                        f"RELATÓRIO DE VULNERABILIDADES\n{client_name}"
+                    )
         for table in section.footer.tables:
             if table.rows:
                 table.cell(0, 0).text = ""
@@ -143,6 +246,7 @@ def _toc_field(document: DocxDocument) -> None:
     run = paragraph.add_run()
     begin = OxmlElement("w:fldChar")
     begin.set(qn("w:fldCharType"), "begin")
+    begin.set(qn("w:dirty"), "true")
     instruction = OxmlElement("w:instrText")
     instruction.set(qn("xml:space"), "preserve")
     instruction.text = ' TOC \\o "1-4" \\h \\z \\u '
@@ -151,6 +255,22 @@ def _toc_field(document: DocxDocument) -> None:
     end = OxmlElement("w:fldChar")
     end.set(qn("w:fldCharType"), "end")
     run._r.extend((begin, instruction, separate, end))
+
+
+def _toc_heading(document: DocxDocument) -> Any:
+    paragraph = document.add_paragraph("SUMÁRIO", style="TOC Heading")
+    properties = paragraph._p.get_or_add_pPr()
+    numbering = properties.find(qn("w:numPr"))
+    if numbering is None:
+        numbering = OxmlElement("w:numPr")
+        properties.append(numbering)
+    else:
+        for child in list(numbering):
+            numbering.remove(child)
+    number_id = OxmlElement("w:numId")
+    number_id.set(qn("w:val"), "0")
+    numbering.append(number_id)
+    return paragraph
 
 
 def _heading(document: DocxDocument, text: str, level: int = 1) -> Any:
@@ -346,7 +466,7 @@ def _title_table(document: DocxDocument, title: str, headers: Sequence[str], row
 
 
 def _control_document(document: DocxDocument, generated_date: str) -> None:
-    _heading(document, "CONTROLE DE DOCUMENTO")
+    _heading(document, "1. CONTROLE DE DOCUMENTO")
     _title_table(document, "Preparação", ("Ação", "Nome", "Data"), (("Criação do Documento", "", generated_date),))
     document.add_paragraph()
     _title_table(
@@ -484,7 +604,7 @@ def _was_compact_table(items: Any) -> tuple[
 def _principal_vulnerabilities(
     document: DocxDocument, dataset: Mapping[str, Any], *, show_source_filters: bool
 ) -> None:
-    _heading(document, "VISÃO GERAL DAS PRINCIPAIS VULNERABILIDADES")
+    _heading(document, "4. VISÃO GERAL DAS PRINCIPAIS VULNERABILIDADES")
     _paragraph(document, copy.PRINCIPAL_VULNERABILITIES_INTRO)
     _paragraph(document, copy.FIXED_REMINDER)
     headers = ("Plugin ID", "Nome", "Família OS", "Severidade", "Total", "VPR")
@@ -650,7 +770,7 @@ def _was_section(document: DocxDocument, dataset: Mapping[str, Any], profile: Cl
     # Datasets legados anteriores ao campo tipado representam coleta concluída.
     # Somente o valor explícito NOT_COLLECTED autoriza o alerta de indisponibilidade.
     was_available = str(was.get("availability") or "AVAILABLE") != "NOT_COLLECTED"
-    _heading(document, "SENSOR WAS")
+    _heading(document, "6. SENSOR WAS")
     _paragraph(document, copy.WAS_SENSOR)
     if not was_available:
         _paragraph(document, copy.WAS_COLLECTION_UNAVAILABLE, bold=True)
@@ -758,7 +878,7 @@ def _security_section(
     *,
     show_source_filters: bool,
 ) -> None:
-    _heading(document, "INCREMENTANDO A SEGURANÇA E PROTEÇÃO DO AMBIENTE")
+    _heading(document, "7. INCREMENTANDO A SEGURANÇA E PROTEÇÃO DO AMBIENTE")
     _paragraph(document, copy.SECURITY_INCREMENT)
     _paragraph(document, copy.OS_COLUMNS)
     os_rows = _matrix_rows(
@@ -817,7 +937,7 @@ def _summary_section(
     *,
     show_source_filters: bool,
 ) -> None:
-    _heading(document, "RESUMO DE VULNERABILIDADES")
+    _heading(document, "8. RESUMO DE VULNERABILIDADES")
     _paragraph(document, copy.SUMMARY_LIFECYCLE)
     _paragraph(document, copy.SUMMARY_COLUMNS)
     _heading(document, "8.1. Estado das Vulnerabilidades", 2)
@@ -865,27 +985,18 @@ def _summary_section(
         )
 
 
-def _back_cover(document: DocxDocument) -> None:
-    document.add_page_break()
-    paragraph = document.add_paragraph()
-    paragraph.paragraph_format.space_before = Cm(9)
-    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = paragraph.add_run(copy.BACK_COVER)
-    base._set_run_font(run, size=20, color=base.NAVY, bold=True)
-
-
 def _body(document: DocxDocument, dataset: Mapping[str, Any], profile: ClientProfile, mask_sensitive: bool, translator: TextTranslator | None = None) -> int:
     period = dataset["period"]
     start, end = _period_dates(period)
     generated = base._parse_utc(str(dataset.get("generated_at") or period["end_at"])).astimezone(ZoneInfo(str(period.get("timezone") or "UTC")))
-    _heading(document, "SUMÁRIO")
+    _toc_heading(document)
     _toc_field(document)
     document.add_page_break()
     _control_document(document, generated.strftime("%d/%m/%Y"))
-    _heading(document, "OBJETIVO")
+    _heading(document, "2. OBJETIVO")
     _paragraph(document, copy.OBJECTIVE)
     _period_paragraph(document, start, end)
-    _heading(document, "SENSOR NESSUS, NESSUS AGENT E NESSUS NETWORK MONITOR")
+    _heading(document, "3. SENSOR NESSUS, NESSUS AGENT E NESSUS NETWORK MONITOR")
     _paragraph(document, copy.NESSUS_SENSOR)
     _paragraph(document, copy.VULNERABLE_ENVIRONMENT)
     _overview_paragraph(document, start, end)
@@ -910,7 +1021,7 @@ def _body(document: DocxDocument, dataset: Mapping[str, Any], profile: ClientPro
         document, dataset,
         show_source_filters=profile.presentation.show_source_filters,
     )
-    _heading(document, "VULNERABILIDADES E SUAS CORREÇÕES E/OU CONTRAMEDIDAS RECOMENDADAS")
+    _heading(document, "5. VULNERABILIDADES E SUAS CORREÇÕES E/OU CONTRAMEDIDAS RECOMENDADAS")
     _paragraph(document, copy.TOP5_VM_INTRO)
     top_open_count = _vulnerability_details(
         document,
@@ -937,7 +1048,6 @@ def _body(document: DocxDocument, dataset: Mapping[str, Any], profile: ClientPro
         dataset,
         show_source_filters=profile.presentation.show_source_filters,
     )
-    _back_cover(document)
     return top_open_count
 
 
@@ -962,7 +1072,7 @@ def generate_full_base_report(
     dataset = _load_dataset(dataset_file)
     _validate_dataset(dataset, profile)
     document = Document(template)
-    _clear_body_after_cover_break(document)
+    report_shell = _clear_body_after_cover_break(document)
     _configure_styles(document)
     period_label, period_range = base._period_labels(dataset["period"])
     base._replace_tokens(document, {
@@ -974,6 +1084,7 @@ def generate_full_base_report(
     _sanitize_header_footer(document, profile.display_name)
     _sanitize_properties(document, title=FULL_REPORT_TITLE)
     top_open_count = _body(document, dataset, profile, mask_sensitive, translator)
+    _append_official_back_cover(document, report_shell)
     base._enable_field_updates(document)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)
