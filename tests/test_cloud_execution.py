@@ -312,6 +312,24 @@ def test_cloud_render_receives_configured_text_translator(tmp_path: Path) -> Non
     assert result.cleanup_ready is True
 
 
+def test_cloud_render_receives_sensitive_field_masking_policy(tmp_path: Path) -> None:
+    dependencies, _ = _dependencies(tmp_path)
+    received: list[bool] = []
+    original_render = dependencies.render_report
+
+    def render(**kwargs):
+        received.append(kwargs["mask_sensitive"])
+        return original_render(**kwargs)
+
+    result = execute_cloud_component(
+        replace(_request(tmp_path), mask_sensitive=True),
+        dependencies=replace(dependencies, render_report=render),
+    )
+
+    assert result.status is CloudExecutionStatus.COMPLETE
+    assert received == [True]
+
+
 def test_exact_snapshot_is_replayed_without_live_collection(tmp_path: Path) -> None:
     repository = MemoryCloudSnapshotRepository()
     dependencies, calls = _dependencies(tmp_path, repository)

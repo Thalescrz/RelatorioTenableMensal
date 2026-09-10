@@ -38,7 +38,10 @@ from tenable_reports.application.was_recovery import (
     WasRecoveryStatus,
     write_was_recovery_checkpoint,
 )
-from tenable_reports.config.profile import load_client_profile
+from tenable_reports.config.profile import (
+    load_client_profile,
+    load_operational_client_profile,
+)
 from tenable_reports.domain.report_components import (
     ComponentAttempt,
     ComponentStage,
@@ -692,6 +695,28 @@ class WebDashboardTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("javascript", headers.get("Content-Type", "").lower())
         self.assertIn("TenableBatchRetryability", source)
+
+    def test_document_distribution_static_asset_is_served_as_javascript(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+            )
+            client = LocalClient(app)
+            try:
+                status, headers, body = client.download(
+                    "/static/document_distribution.js"
+                )
+            finally:
+                client.close()
+                app.jobs.close()
+
+        source = body.decode("utf-8")
+        self.assertEqual(status, 200)
+        self.assertIn("javascript", headers.get("Content-Type", "").lower())
+        self.assertIn("TenableDocumentDistribution", source)
 
     def test_state_exposes_sanitized_analysts_and_responsible_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2719,6 +2744,102 @@ class WebDashboardTests(unittest.TestCase):
             })
 
             self.assertEqual(created["vm_num_assets_per_chunk"], 1000)
+
+    def test_document_distribution_round_trips_global_and_client_recipients(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "pyproject.toml").write_text(
+                "[project]\nname='fixture'\n",
+                encoding="utf-8",
+            )
+            store = DashboardConfigStore(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+            standard = {
+                "name": "Contato Padrao",
+                "organization": "Organizacao Padrao",
+                "email": "padrao@empresa.example",
+            }
+            additional = {
+                "name": "Contato Cliente",
+                "organization": "Organizacao Cliente",
+                "email": "cliente@empresa.example",
+            }
+
+            saved = store.save_document_control({
+                "distribution_recipients": [standard]
+            })
+            created = store.add_client({
+                "client_id": "cliente-distribuicao",
+                "display_name": "Cliente Distribuicao",
+                "additional_distribution_recipients": [additional],
+            })
+
+            self.assertEqual(saved["distribution_recipients"], [standard])
+            self.assertEqual(
+                created["additional_distribution_recipients"],
+                [additional],
+            )
+            profile = load_operational_client_profile(
+                root / "clients" / "managed" / "cliente-distribuicao.json"
+            )
+            self.assertEqual(
+                [recipient.email for recipient in profile.document_control.distribution_recipients],
+                ["padrao@empresa.example", "cliente@empresa.example"],
+            )
+
+    def test_document_distribution_api_updates_standard_recipients(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=InMemoryReportRegistry(),
+            )
+            client = LocalClient(app)
+            standard = {
+                "name": "Contato Padrao",
+                "organization": "Organizacao Padrao",
+                "email": "padrao@empresa.example",
+            }
+            try:
+                status, saved = client.request(
+                    "POST",
+                    "/api/document-control",
+                    {"distribution_recipients": [standard]},
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(saved["distribution_recipients"], [standard])
+
+                status, state = client.request("GET", "/api/state")
+                self.assertEqual(status, 200)
+                self.assertEqual(
+                    state["document_control"]["distribution_recipients"],
+                    [standard],
+                )
+            finally:
+                client.close()
+
+    def test_document_distribution_api_rejects_missing_recipient_list(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                report_registry=InMemoryReportRegistry(),
+            )
+            client = LocalClient(app)
+            try:
+                status, payload = client.request(
+                    "POST",
+                    "/api/document-control",
+                    {},
+                )
+                self.assertEqual(status, 400)
+                self.assertIn("distribution_recipients", payload["error"])
+            finally:
+                client.close()
 
     def test_vm_export_validation_route_enqueues_explicit_ab_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

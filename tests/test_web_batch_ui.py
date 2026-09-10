@@ -161,6 +161,67 @@ def _run_batch_retryability_script(source: str) -> object:
     return json.loads(completed.stdout)
 
 
+def _run_document_distribution_script(source: str) -> object:
+    script_path = STATIC / "document_distribution.js"
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            (
+                f"const helpers = require({json.dumps(str(script_path))});"
+                f"const result = (() => {{ {source} }})();"
+                "process.stdout.write(JSON.stringify(result));"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    return json.loads(completed.stdout)
+
+
+def test_document_distribution_draft_adds_trims_deduplicates_and_removes() -> None:
+    result = _run_document_distribution_script(
+        "const first = helpers.addRecipient([], {"
+        "name: '  Tenable ITP  ', organization: ' ITPROTECT ', "
+        "email: ' documentos@example.invalid '"
+        "});"
+        "const second = helpers.addRecipient(first, {"
+        "name: 'Cliente X', organization: 'Organização X', "
+        "email: 'cliente-x@example.invalid'"
+        "});"
+        "let duplicate = '';"
+        "try { helpers.addRecipient(second, {"
+        "name: 'Duplicado', organization: 'Outra', "
+        "email: 'DOCUMENTOS@example.invalid'"
+        "}); } catch (error) { duplicate = error.message; }"
+        "return { second, removed: helpers.removeRecipient(second, 0), duplicate };"
+    )
+
+    assert result == {
+        "second": [
+            {
+                "name": "Tenable ITP",
+                "organization": "ITPROTECT",
+                "email": "documentos@example.invalid",
+            },
+            {
+                "name": "Cliente X",
+                "organization": "Organização X",
+                "email": "cliente-x@example.invalid",
+            },
+        ],
+        "removed": [
+            {
+                "name": "Cliente X",
+                "organization": "Organização X",
+                "email": "cliente-x@example.invalid",
+            }
+        ],
+        "duplicate": "Já existe um destinatário com este e-mail.",
+    }
+
+
 def test_retryability_view_distinguishes_effective_and_recorded_classification() -> None:
     result = _run_batch_retryability_script(
         "return ["
@@ -552,6 +613,24 @@ def test_frontend_exposes_analyst_filters_selection_modal_and_management() -> No
     assert "selection_filter_snapshot" in javascript
     assert "responsible_analyst_id" in javascript
     assert "openRunSelection" in javascript
+
+
+def test_frontend_exposes_standard_and_client_document_distribution_controls() -> None:
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+
+    for element_id in (
+        "standard-distribution-form",
+        "standard-distribution-list",
+        "save-standard-distribution",
+        "client-distribution-fields",
+        "client-distribution-list",
+        "add-client-distribution",
+    ):
+        assert f'id="{element_id}"' in html
+    assert html.index("document_distribution.js") < html.index("app.js")
+    assert "/api/document-control" in javascript
+    assert "additional_distribution_recipients" in javascript
 
 
 def test_frontend_exposes_partial_status_and_status_filters() -> None:

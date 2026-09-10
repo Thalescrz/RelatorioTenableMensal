@@ -18,6 +18,7 @@ from docx.shared import Pt, RGBColor
 
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation import base_report_docx as base
+from tenable_reports.presentation.document_control import append_document_control
 from tenable_reports.presentation import editorial_catalog as copy
 from tenable_reports.presentation.source_filters import add_source_filter_note
 from tenable_reports.presentation.translation import (
@@ -439,50 +440,6 @@ def _simple_table(
     if not rows and empty_message:
         _paragraph(document, empty_message)
     return table
-
-
-def _title_table(document: DocxDocument, title: str, headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> Any:
-    table = document.add_table(rows=2, cols=len(headers))
-    table.style = "Table Grid"
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    merged = table.cell(0, 0)
-    for cell in table.rows[0].cells[1:]:
-        merged = merged.merge(cell)
-    merged.text = title
-    base._set_cell_shading(merged, base.BLUE)
-    for run in merged.paragraphs[0].runs:
-        base._set_run_font(run, size=8, color=base.WHITE, bold=True)
-    merged.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-    for index, header in enumerate(headers):
-        cell = table.cell(1, index)
-        cell.text = header
-        base._set_cell_shading(cell, base.LIGHT_BLUE)
-        cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
-        for run in cell.paragraphs[0].runs:
-            base._set_run_font(run, size=7.2, color=base.NAVY, bold=True)
-    for values in rows:
-        row = table.add_row()
-        for index, value in enumerate(values):
-            row.cells[index].text = "" if value is None else str(value)
-            for run in row.cells[index].paragraphs[0].runs:
-                base._set_run_font(run, size=7.2, color=base.NAVY)
-        base._prevent_row_split(row)
-    return table
-
-
-def _control_document(document: DocxDocument, generated_date: str) -> Any:
-    first_heading = _heading(document, "1. CONTROLE DE DOCUMENTO")
-    _title_table(document, "Preparação", ("Ação", "Nome", "Data"), (("Criação do Documento", "", generated_date),))
-    document.add_paragraph()
-    _title_table(
-        document,
-        "Controle de Versionamento",
-        ("Versão", "Data da Versão", "Seções Afetadas", "Alteração", "Alterado por"),
-        (("1.0", generated_date, "Todas", "Elaboração do conteúdo", ""),),
-    )
-    document.add_paragraph()
-    _title_table(document, "Lista de Distribuição", ("Nome", "Organização", "E-mail"), (("", "", ""), ("", "", "")))
-    return first_heading
 
 
 def _count(value: Any) -> str:
@@ -997,7 +954,12 @@ def _body(document: DocxDocument, dataset: Mapping[str, Any], profile: ClientPro
     generated = base._parse_utc(str(dataset.get("generated_at") or period["end_at"])).astimezone(ZoneInfo(str(period.get("timezone") or "UTC")))
     _toc_heading(document)
     _toc_field(document)
-    first_heading = _control_document(document, generated.strftime("%d/%m/%Y"))
+    first_heading = append_document_control(
+        document,
+        generated_date=generated.strftime("%d/%m/%Y"),
+        recipients=profile.document_control.distribution_recipients,
+        mask_sensitive=mask_sensitive,
+    )
     _page_break_before(first_heading)
     _heading(document, "2. OBJETIVO")
     _paragraph(document, copy.OBJECTIVE)

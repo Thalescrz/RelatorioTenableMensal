@@ -178,6 +178,20 @@
       <section>
         <h3>Clientes cadastrados</h3>
         <div id="manage-client-list" class="manage-list"></div>
+        <section class="distribution-config standard-distribution-config" aria-labelledby="standard-distribution-title">
+          <div class="distribution-config-head">
+            <div><span>CONTROLE DE DOCUMENTO</span><strong id="standard-distribution-title">Distribuição padrão</strong></div>
+          </div>
+          <p>Estas entidades entram primeiro na lista de distribuição de todos os clientes.</p>
+          <form id="standard-distribution-form" class="distribution-entry-form">
+            <label>Nome<input id="standard-recipient-name" required maxlength="160" placeholder="Ex.: Tenable ITP"></label>
+            <label>Organização<input id="standard-recipient-organization" required maxlength="160" placeholder="Ex.: ITPROTECT"></label>
+            <label>E-mail<input id="standard-recipient-email" required type="email" maxlength="254" placeholder="documentos@example.invalid"></label>
+            <button class="mini-button" type="submit">Incluir</button>
+          </form>
+          <div id="standard-distribution-list" class="distribution-list"></div>
+          <button class="button ghost full" id="save-standard-distribution" type="button">Salvar distribuição padrão</button>
+        </section>
         <section class="analyst-manager">
           <div><span>RESPONSÁVEIS</span><strong>Analistas</strong></div>
           <form id="analyst-form" class="analyst-form">
@@ -199,6 +213,19 @@
             <option value="">Sem responsável</option>
           </select>
         </label>
+        <section class="distribution-config client-distribution-config" aria-labelledby="client-distribution-title">
+          <div class="distribution-config-head">
+            <div><span>LISTA DE DISTRIBUIÇÃO</span><strong id="client-distribution-title">Destinatários adicionais do cliente</strong></div>
+          </div>
+          <p>Os destinatários padrão serão incluídos automaticamente antes destes registros.</p>
+          <div id="client-distribution-fields" class="distribution-entry-form">
+            <label>Nome<input id="client-recipient-name" maxlength="160" placeholder="Nome do destinatário"></label>
+            <label>Organização<input id="client-recipient-organization" maxlength="160" placeholder="Organização"></label>
+            <label>E-mail<input id="client-recipient-email" type="email" maxlength="254" placeholder="email@example.invalid"></label>
+            <button class="mini-button" id="add-client-distribution" type="button">Incluir</button>
+          </div>
+          <div id="client-distribution-list" class="distribution-list"></div>
+        </section>
         <div class="field-row">
           <label>Access Key<input name="access_key" type="password" autocomplete="off" placeholder="Opcional agora"></label>
           <label>Secret Key<input name="secret_key" type="password" autocomplete="off" placeholder="Opcional agora"></label>
@@ -409,6 +436,7 @@
   <script src="/static/report_request_guard.js" defer></script>
   <script src="/static/dashboard_refresh.js" defer></script>
   <script src="/static/batch_retryability.js" defer></script>
+  <script src="/static/document_distribution.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

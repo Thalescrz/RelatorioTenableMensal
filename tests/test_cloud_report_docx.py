@@ -12,7 +12,7 @@ from docx.oxml.ns import qn
 import pytest
 
 
-from tenable_reports.config.profile import load_client_profile
+from tenable_reports.config.profile import DistributionRecipient, load_client_profile
 from tenable_reports.presentation.cloud_editorial_catalog import (
     approved_cloud_editorial_paragraphs,
 )
@@ -24,6 +24,7 @@ from tenable_reports.presentation.cloud_report_sections import (
     CloudDocumentBuilder,
     SEVERITY_FILLS,
 )
+from tenable_reports.presentation.full_base_report_docx import generate_full_base_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -31,6 +32,7 @@ LEGACY_CLOUD_TEMPLATE = ROOT / "templates/corporate/cloud-base-v1.docx"
 OFFICIAL_TEMPLATE = ROOT / "templates/corporate/base-v1.docx"
 CLOUD_TEMPLATE = OFFICIAL_TEMPLATE
 PROFILE = ROOT / "clients/examples/client-profile.json"
+BASE_DATASET = ROOT / "tests/fixtures/report-dataset-phase5.json"
 
 
 def _all_text(path: Path) -> str:
@@ -51,6 +53,133 @@ def _all_text(path: Path) -> str:
 def _cell_fill(cell) -> str | None:
     shading = cell._tc.get_or_add_tcPr().find(qn("w:shd"))
     return None if shading is None else shading.get(qn("w:fill"))
+
+
+def _control_tables(path: Path) -> list[dict[str, object]]:
+    document = Document(path)
+    result = []
+    for table in document.tables[:3]:
+        result.append({
+            "title": table.cell(0, 0).text,
+            "headers": [cell.text for cell in table.rows[1].cells],
+            "rows": [
+                [cell.text for cell in row.cells]
+                for row in table.rows[2:]
+            ],
+        })
+    return result
+
+
+def test_general_and_cloud_reports_share_document_control_tables(tmp_path: Path) -> None:
+    profile = _profile()
+    profile = replace(
+        profile,
+        document_control=replace(
+            profile.document_control,
+            standard_distribution_recipients=(
+                DistributionRecipient(
+                    name="Contato Padrao",
+                    organization="Organizacao Padrao",
+                    email="padrao@empresa.example",
+                ),
+            ),
+            additional_distribution_recipients=(
+                DistributionRecipient(
+                    name="Contato Cliente",
+                    organization="Organizacao Cliente",
+                    email="cliente@empresa.example",
+                ),
+            ),
+        ),
+    )
+    general_output = tmp_path / "general-control.docx"
+    cloud_output = tmp_path / "cloud-control.docx"
+
+    generate_full_base_report(
+        template_path=OFFICIAL_TEMPLATE,
+        dataset_path=BASE_DATASET,
+        profile=profile,
+        output_path=general_output,
+        mask_sensitive=False,
+    )
+    generate_cloud_report(
+        template_path=OFFICIAL_TEMPLATE,
+        dataset_path=_dataset(tmp_path),
+        profile=profile,
+        output_path=cloud_output,
+        variant=CloudReportVariant.EXPANDED,
+    )
+
+    general = _control_tables(general_output)
+    cloud = _control_tables(cloud_output)
+    assert [table["title"] for table in general] == [
+        "Preparação",
+        "Controle de Versionamento",
+        "Lista de Distribuição",
+    ]
+    assert [table["headers"] for table in cloud] == [
+        ["Ação", "Nome", "Data"],
+        ["Versão", "Data da Versão", "Seções Afetadas", "Alteração", "Alterado por"],
+        ["Nome", "Organização", "E-mail"],
+    ]
+    assert [table["title"] for table in cloud] == [
+        table["title"] for table in general
+    ]
+    assert cloud[2]["rows"] == general[2]["rows"] == [
+        ["Contato Padrao", "Organizacao Padrao", "padrao@empresa.example"],
+        ["Contato Cliente", "Organizacao Cliente", "cliente@empresa.example"],
+    ]
+
+
+def test_general_and_cloud_mask_distribution_recipient_fields(tmp_path: Path) -> None:
+    profile = _profile()
+    profile = replace(
+        profile,
+        document_control=replace(
+            profile.document_control,
+            standard_distribution_recipients=(
+                DistributionRecipient(
+                    name="Contato Padrao",
+                    organization="Organizacao Padrao",
+                    email="padrao@empresa.example",
+                ),
+            ),
+            additional_distribution_recipients=(
+                DistributionRecipient(
+                    name="Contato Cliente",
+                    organization="Organizacao Cliente",
+                    email="cliente@empresa.example",
+                ),
+            ),
+        ),
+    )
+    general_output = tmp_path / "general-control-masked.docx"
+    cloud_output = tmp_path / "cloud-control-masked.docx"
+
+    generate_full_base_report(
+        template_path=OFFICIAL_TEMPLATE,
+        dataset_path=BASE_DATASET,
+        profile=profile,
+        output_path=general_output,
+        mask_sensitive=True,
+    )
+    generate_cloud_report(
+        template_path=OFFICIAL_TEMPLATE,
+        dataset_path=_dataset(tmp_path),
+        profile=profile,
+        output_path=cloud_output,
+        variant=CloudReportVariant.EXPANDED,
+        mask_sensitive=True,
+    )
+
+    assert _control_tables(general_output)[2]["rows"] == [
+        ["", "", ""],
+        ["", "", ""],
+    ]
+    assert _control_tables(cloud_output)[2]["rows"] == [
+        ["", "", ""],
+        ["", "", ""],
+    ]
 
 
 def test_cloud_table_uses_its_existing_palette_for_semantic_risk_labels() -> None:

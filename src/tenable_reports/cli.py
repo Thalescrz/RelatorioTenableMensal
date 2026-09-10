@@ -176,7 +176,11 @@ from tenable_reports.config.environment import (
     load_dotenv_file,
 )
 from tenable_reports.config.database import DatabaseAdminConfig, DatabaseConfig
-from tenable_reports.config.profile import ClientProfile, ProfileError, load_client_profile
+from tenable_reports.config.profile import (
+    ClientProfile,
+    ProfileError,
+    load_operational_client_profile as load_client_profile,
+)
 from tenable_reports.domain.normalization import (
     normalize_and_link,
     normalize_assets,
@@ -829,6 +833,7 @@ def _run_cloud_for_client(
                         "templates/corporate/base-v1.docx",
                     )
                 ),
+                mask_sensitive=bool(getattr(args, "mask_sensitive", False)),
             ),
             dependencies=CloudExecutionDependencies(
                 repository=repository,
@@ -905,6 +910,7 @@ def _run_cloud_for_client(
             force_refresh=bool(
                 getattr(args, "force_cloud_refresh", False)
             ),
+            mask_sensitive=bool(getattr(args, "mask_sensitive", False)),
         ),
         dependencies=CloudExecutionDependencies(
             repository=repository,
@@ -2945,6 +2951,7 @@ def _prepare_cloud_for_checkpoint(
             ),
             force_refresh=bool(getattr(args, "force_cloud_refresh", False)),
             render_documents=False,
+            mask_sensitive=bool(getattr(args, "mask_sensitive", False)),
         ),
         dependencies=CloudExecutionDependencies(
             repository=repository,
@@ -3492,6 +3499,7 @@ def _cloud_component_checkpoint(
         template_path=Path(args.cloud_template),
         force_refresh=bool(getattr(args, "force_cloud_refresh", False)),
         render_documents=False,
+        mask_sensitive=bool(getattr(args, "mask_sensitive", False)),
     )
     resume = _cloud_component_resume_context(
         args,
@@ -5126,6 +5134,7 @@ def command_retry_cloud(args: argparse.Namespace) -> int:
             output_root=_retry_output_root(manifest),
             report_directory=manifest.parent,
             template_path=Path(args.cloud_template),
+            mask_sensitive=bool(getattr(args, "mask_sensitive", False)),
         ),
         dependencies=CloudExecutionDependencies(
             repository=repository,
@@ -6219,6 +6228,7 @@ def build_parser() -> argparse.ArgumentParser:
     retry_cloud.add_argument("--confirm-live-api", action="store_true")
     retry_cloud.add_argument("--resume-dataset")
     retry_cloud.add_argument("--resume-dataset-sha256")
+    retry_cloud.add_argument("--mask-sensitive", action="store_true")
     retry_cloud.set_defaults(handler=command_retry_cloud)
 
     retry_components = subparsers.add_parser(

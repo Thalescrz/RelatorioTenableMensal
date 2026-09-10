@@ -26,7 +26,9 @@ from tenable_reports.application.retention import (
 )
 from tenable_reports.application.failures import classify_failure
 from tenable_reports.application.storage_guard import storage_preflight
-from tenable_reports.config.profile import load_client_profile
+from tenable_reports.config.profile import (
+    load_operational_client_profile as load_client_profile,
+)
 
 
 SECRET_KEY_PARTS = (

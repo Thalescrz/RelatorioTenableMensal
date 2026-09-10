@@ -40,6 +40,12 @@ ou montar o ZIP mensal da carteira usando somente o `MAIN` de cada cliente. A
 preparação do ZIP exibe etapa, percentual e contagem de itens; o download começa
 automaticamente quando o pacote fica pronto.
 
+Em **Gerenciar clientes**, a seção **Distribuição padrão** mantém os destinatários
+comuns a toda a carteira. Cada perfil pode acrescentar destinatários próprios; no
+DOCX, os comuns aparecem primeiro e os adicionais vêm nas linhas seguintes. Os
+relatórios Geral e Cloud usam as mesmas tabelas de Preparação, Controle de
+Versionamento e Lista de Distribuição.
+
 As credenciais ficam somente em `credentials/*.env`, arquivos ignorados pelo Git.
 Use os exemplos em [credentials](credentials) como referência; nunca grave chaves
 nos perfis JSON, documentação, logs, testes ou commits.

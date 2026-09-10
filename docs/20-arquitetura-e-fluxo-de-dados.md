@@ -158,6 +158,20 @@ cabeçalhos e cores de severidade compartilhadas. Runs herdados do corpo técnic
 também são normalizados antes da publicação para evitar mistura de Arial, Times e
 Calibri. `cloud-base-v1.docx` permanece somente como referência histórica.
 
+O bloco **Controle de Documento** também é compartilhado pelo relatório geral e
+pelo Cloud. Um único componente monta, na mesma ordem, as tabelas **Preparação**
+(`Ação`, `Nome`, `Data`), **Controle de Versionamento** (`Versão`, `Data da Versão`,
+`Seções Afetadas`, `Alteração`, `Alterado por`) e **Lista de Distribuição** (`Nome`,
+`Organização`, `E-mail`). Os destinatários de `orchestration/document-control.json`
+são globais; os itens de `document_control.additional_distribution_recipients` do
+perfil são acrescentados depois. A composição elimina e-mails repetidos sem
+diferenciar maiúsculas de minúsculas e mantém o registro global quando houver
+conflito. Perfis legados e instalações sem o arquivo global continuam válidos.
+O parser `load_client_profile` lê apenas o arquivo solicitado, mantendo fixtures e
+validações determinísticas; a CLI e a orquestração usam
+`load_operational_client_profile` para enriquecer explicitamente o perfil com a
+configuração global local.
+
 O projeto legado `RelatorioCloudTenable` permanece documentado como base técnica
 histórica do conector GraphQL: ajuda a localizar operações e campos já usados, mas
 não é fonte de verdade para paginação, ausência, histórico, retry, segurança de

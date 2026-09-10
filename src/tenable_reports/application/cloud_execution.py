@@ -172,6 +172,7 @@ class CloudExecutionRequest:
     bypass_recent_guard: bool = False
     recent_collection_hours: int = 24
     render_documents: bool = True
+    mask_sensitive: bool = False
 
     def compatibility(self) -> CloudSnapshotCompatibility:
         return CloudSnapshotCompatibility(
@@ -444,6 +445,8 @@ def _write_and_render(
             }
             if dependencies.translator is not None:
                 render_arguments["translator"] = dependencies.translator
+            if request.mask_sensitive:
+                render_arguments["mask_sensitive"] = True
             rendered = dependencies.render_report(
                 **render_arguments,
             )
@@ -762,6 +765,8 @@ def _render_resumed_dataset(
         }
         if dependencies.translator is not None:
             render_arguments["translator"] = dependencies.translator
+        if request.mask_sensitive:
+            render_arguments["mask_sensitive"] = True
         rendered = dependencies.render_report(**render_arguments)
         documents.append(
             CloudGeneratedDocument(

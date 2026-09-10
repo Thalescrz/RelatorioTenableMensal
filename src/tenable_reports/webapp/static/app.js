@@ -1,7 +1,8 @@
 const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue, mergeSavedClient, conflictingJobsByClient } = window.TenableClientSelection;
 const { filterPortfolioByFamily, toggleFamilyFilter } = window.TenableBatchFamilyFilters;
 const { scheduleView } = window.TenableMonthlySchedule;
-const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, monthlySchedule: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: null, batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
+const { copyRecipients, addRecipient, removeRecipient } = window.TenableDocumentDistribution;
+const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, standardDistributionDraft: undefined, clientDistributionDraft: [], connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, monthlySchedule: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: null, batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
 const { createLatestRequestGuard, reportExecutionCopy } = window.TenableReportRequestGuard;
 const reportRequestGuard = createLatestRequestGuard();
 const { createRefreshCoordinator } = window.TenableDashboardRefresh;
@@ -616,7 +617,7 @@ function render() {
     const open = () => openClient(card.dataset.client);
     card.addEventListener("click", open); card.addEventListener("keydown", e => { if (["Enter", " "].includes(e.key)) open(); });
   });
-  renderManageList(); renderAlerts();
+  renderManageList(); renderDistributionLists(); renderAlerts();
 }
 
 function refresh(silent = true, options = {}) {
@@ -1012,6 +1013,79 @@ function renderManageList() {
   document.querySelectorAll("[data-check-client]").forEach(button => button.addEventListener("click", event => { event.stopPropagation(); testConnections([button.dataset.checkClient], button); }));
 }
 
+function distributionRows(records, scope, emptyCopy) {
+  if (!records.length) return `<div class="loading">${escapeHtml(emptyCopy)}</div>`;
+  return records.map((recipient, index) => `
+    <div class="distribution-recipient">
+      <div><strong>${escapeHtml(recipient.name)}</strong><small>${escapeHtml(recipient.organization)} · ${escapeHtml(recipient.email)}</small></div>
+      <button class="mini-button danger" type="button" data-remove-distribution="${scope}" data-distribution-index="${index}">Remover</button>
+    </div>`).join("");
+}
+
+function renderDistributionLists() {
+  const standardList = $("#standard-distribution-list");
+  const clientList = $("#client-distribution-list");
+  if (!standardList || !clientList) return;
+  const persisted = state.data?.document_control?.distribution_recipients || [];
+  const standard = state.standardDistributionDraft === undefined
+    ? copyRecipients(persisted)
+    : state.standardDistributionDraft;
+  standardList.innerHTML = distributionRows(standard, "standard", "Nenhum destinatário padrão cadastrado.");
+  clientList.innerHTML = distributionRows(state.clientDistributionDraft, "client", "Nenhum destinatário adicional para este cliente.");
+}
+
+function distributionRecipientFromFields(scope) {
+  return {
+    name: $(`#${scope}-recipient-name`).value,
+    organization: $(`#${scope}-recipient-organization`).value,
+    email: $(`#${scope}-recipient-email`).value,
+  };
+}
+
+function clearDistributionRecipientFields(scope) {
+  ["name", "organization", "email"].forEach(field => {
+    $(`#${scope}-recipient-${field}`).value = "";
+  });
+  $(`#${scope}-recipient-name`).focus();
+}
+
+function addDistributionDraft(scope) {
+  try {
+    if (scope === "standard") {
+      state.standardDistributionDraft = addRecipient(
+        state.standardDistributionDraft || [],
+        distributionRecipientFromFields("standard")
+      );
+    } else {
+      state.clientDistributionDraft = addRecipient(
+        state.clientDistributionDraft,
+        distributionRecipientFromFields("client")
+      );
+    }
+    clearDistributionRecipientFields(scope);
+    renderDistributionLists();
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
+function removeDistributionDraft(scope, index) {
+  if (scope === "standard") {
+    state.standardDistributionDraft = removeRecipient(state.standardDistributionDraft || [], index);
+  } else {
+    state.clientDistributionDraft = removeRecipient(state.clientDistributionDraft, index);
+  }
+  renderDistributionLists();
+}
+
+function openManageDialog() {
+  state.standardDistributionDraft = copyRecipients(
+    state.data?.document_control?.distribution_recipients || []
+  );
+  renderDistributionLists();
+  $("#manage-dialog").showModal();
+}
+
 async function testConnections(clientIds, button) {
   const original = button?.textContent; if (button) { button.disabled = true; button.textContent = "Testando…"; }
   try {
@@ -1027,7 +1101,7 @@ async function testConnections(clientIds, button) {
     toast(`VM ${vmOk} OK${vmFailed ? ` / ${vmFailed} falha(s)` : ""}${cloudCopy}`, vmFailed || cloudFailed ? "error" : "success");
     if (payload.results.length === 1 && vmFailed) toast(payload.results[0].message, "error");
     if (payload.results.length === 1 && cloudFailed) toast(payload.results[0].cloud.message, "error");
-    if (payload.results.length > 1 && !$("#manage-dialog").open) $("#manage-dialog").showModal();
+    if (payload.results.length > 1 && !$("#manage-dialog").open) openManageDialog();
   } catch (error) { toast(error.message, "error"); }
   finally { if (button?.isConnected) { button.disabled = false; button.textContent = original; } }
 }
@@ -1279,7 +1353,36 @@ function toast(message, type = "success") {
 
 document.querySelectorAll(".close-dialog").forEach(button => button.addEventListener("click", () => button.closest("dialog").close()));
 $("#client-dialog").addEventListener("close", () => reportRequestGuard.invalidate());
-$("#manage-button").addEventListener("click", () => $("#manage-dialog").showModal());
+$("#manage-button").addEventListener("click", openManageDialog);
+$("#standard-distribution-form").addEventListener("submit", event => {
+  event.preventDefault();
+  addDistributionDraft("standard");
+});
+$("#add-client-distribution").addEventListener("click", () => addDistributionDraft("client"));
+[$("#standard-distribution-list"), $("#client-distribution-list")].forEach(list => {
+  list.addEventListener("click", event => {
+    const button = event.target.closest("[data-remove-distribution]");
+    if (!button) return;
+    removeDistributionDraft(button.dataset.removeDistribution, button.dataset.distributionIndex);
+  });
+});
+$("#save-standard-distribution").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  button.disabled = true;
+  const original = button.textContent;
+  button.textContent = "Salvando...";
+  try {
+    const saved = await api("/api/document-control", {
+      method: "POST",
+      body: { distribution_recipients: state.standardDistributionDraft || [] },
+    });
+    if (state.data) state.data.document_control = saved;
+    state.standardDistributionDraft = copyRecipients(saved.distribution_recipients || []);
+    renderDistributionLists();
+    toast("Distribuição padrão salva.");
+  } catch (error) { toast(error.message, "error"); }
+  finally { button.disabled = false; button.textContent = original; }
+});
 $("#analyst-form").addEventListener("submit", async event => {
   event.preventDefault();
   const input = event.currentTarget.elements.display_name;
@@ -1395,7 +1498,7 @@ $("#archive-form").addEventListener("submit", async event => {
     button.textContent = originalButtonLabel;
   }
 });
-$("#empty-add-button").addEventListener("click", () => { resetClientForm(); $("#manage-dialog").showModal(); });
+$("#empty-add-button").addEventListener("click", () => { resetClientForm(); openManageDialog(); });
 $("#open-alerts-button").addEventListener("click", () => $("#alerts-dialog").showModal());
 $("#cleanup-button").addEventListener("click", async event => {
   event.currentTarget.disabled = true;
@@ -1433,7 +1536,7 @@ $("#rerun-all-button").addEventListener("click", () => {
 });
 $("#detail-run-button").addEventListener("click", () => { $("#client-dialog").close(); openRun([state.selectedClient]); });
 $("#detail-check-button").addEventListener("click", event => testConnections([state.selectedClient], event.currentTarget));
-$("#detail-edit-button").addEventListener("click", () => { const clientId = state.selectedClient; $("#client-dialog").close(); $("#manage-dialog").showModal(); editClient(clientId); });
+$("#detail-edit-button").addEventListener("click", () => { const clientId = state.selectedClient; $("#client-dialog").close(); openManageDialog(); editClient(clientId); });
 $("#search-input").addEventListener("input", event => { state.filter = event.target.value.trim().toLowerCase(); render(); });
 $("#dashboard-analyst-filter").addEventListener("change", event => { state.analystFilter = event.target.value; render(); });
 $("#dashboard-status-filter").addEventListener("change", event => { state.statusFilter = event.target.value; render(); });
@@ -1533,6 +1636,7 @@ function syncCloudConfig() {
 function resetClientForm() {
   state.editingClientId = null;
   state.responsibleAnalystDraft = "";
+  state.clientDistributionDraft = [];
   clientForm.reset();
   clientForm.elements.responsible_analyst_id.value = "";
   clientForm.classList.remove("editing");
@@ -1565,6 +1669,7 @@ function resetClientForm() {
   $("#save-client-button").textContent = "Salvar cliente";
   $("#cancel-edit-button").classList.add("hidden");
   renderManageList();
+  renderDistributionLists();
 }
 
 function editClient(clientId) {
@@ -1572,6 +1677,9 @@ function editClient(clientId) {
   if (!client) return;
   state.editingClientId = clientId;
   state.responsibleAnalystDraft = client.responsible_analyst_id || "";
+  state.clientDistributionDraft = copyRecipients(
+    client.additional_distribution_recipients || []
+  );
   populateAnalystControls();
   clientForm.classList.add("editing");
   clientForm.elements.display_name.value = client.display_name || "";
@@ -1611,6 +1719,7 @@ function editClient(clientId) {
   $("#save-client-button").textContent = "Salvar alterações";
   $("#cancel-edit-button").classList.remove("hidden");
   renderManageList();
+  renderDistributionLists();
   clientForm.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 nameField.addEventListener("input", () => {
@@ -1680,6 +1789,7 @@ clientForm.addEventListener("submit", async event => {
   button.textContent = "Salvando...";
   const payload = Object.fromEntries(form.entries()); ["intelligence_enabled","was_enabled","cloud_enabled","include_output","show_source_filters","tag_reports_enabled"].forEach(name => payload[name] = form.has(name));
   payload.responsible_analyst_id = String(payload.responsible_analyst_id || "").trim() || null;
+  payload.additional_distribution_recipients = copyRecipients(state.clientDistributionDraft);
   payload.tag_reports = state.availableTags.filter(tag => tag.generate_report).map(tag => ({
     tag_uuid: tag.tag_uuid,
     category_uuid: tag.category_uuid || "",

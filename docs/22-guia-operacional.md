@@ -53,6 +53,28 @@ aparecer, encerre todas as instâncias antigas e inicie novamente pela raiz corr
 
 As chaves ficam no arquivo local ignorado pelo Git e não retornam para a tela.
 
+### Controle de documento e lista de distribuição
+
+Em **Gerenciar clientes → Distribuição padrão**, cadastre as entidades que devem
+constar em todos os documentos, sempre com nome, organização e e-mail. Clique em
+**Incluir** para montar a lista e em **Salvar distribuição padrão** para gravá-la.
+O arquivo operacional `orchestration/document-control.json` é local e ignorado pelo
+Git; `orchestration/document-control.example.json` mostra somente dados
+sanitizados.
+
+No formulário de cada cliente, use **Destinatários adicionais do cliente** apenas
+para entidades específicas daquele cliente. A ordem final da tabela é:
+
+1. destinatários da distribuição padrão;
+2. destinatários adicionais do cliente.
+
+E-mails iguais são emitidos uma única vez e o cadastro padrão prevalece. As mesmas
+linhas e os mesmos cabeçalhos são usados nos relatórios Geral e Cloud. As tabelas
+de Preparação e Controle de Versionamento não têm configuração por cliente e são
+sempre produzidas pelo componente editorial compartilhado. Quando a execução usa
+`--mask-sensitive`, nome, organização e e-mail permanecem vazios também no Cloud e
+nas retentativas que reconstroem o documento.
+
 ### Analistas responsáveis
 
 O catálogo em **Gerenciar clientes** é apenas metadado operacional: não cria conta,

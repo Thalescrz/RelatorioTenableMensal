@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -11,13 +12,168 @@ from tenable_reports.config.environment import (
     EnvironmentError,
     load_dotenv_file,
 )
-from tenable_reports.config.profile import ClientProfile, ProfileError, load_client_profile
+from tenable_reports.config.profile import (
+    ClientProfile,
+    ProfileError,
+    load_client_profile,
+    load_operational_client_profile,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_loaded_profile_merges_standard_and_additional_distribution_recipients(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='fixture'\n", encoding="utf-8")
+    orchestration = tmp_path / "orchestration"
+    orchestration.mkdir()
+    (orchestration / "document-control.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "distribution_recipients": [
+                {
+                    "name": "Contato Padrao",
+                    "organization": "Organizacao Padrao",
+                    "email": "padrao@empresa.example",
+                }
+            ],
+        }),
+        encoding="utf-8",
+    )
+    profiles = tmp_path / "clients" / "managed"
+    profiles.mkdir(parents=True)
+    profile_path = profiles / "cliente.json"
+    profile_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "client_id": "cliente-distribuicao",
+            "display_name": "Cliente Distribuicao",
+            "tenant_id": "tenant-distribuicao",
+            "document_control": {
+                "additional_distribution_recipients": [
+                    {
+                        "name": "Copia do Padrao",
+                        "organization": "Outra Organizacao",
+                        "email": "PADRAO@EMPRESA.EXAMPLE",
+                    },
+                    {
+                        "name": "Contato Cliente",
+                        "organization": "Organizacao Cliente",
+                        "email": "cliente@empresa.example",
+                    },
+                ]
+            },
+        }),
+        encoding="utf-8",
+    )
+
+    plain_profile = load_client_profile(profile_path)
+    assert [
+        recipient.name
+        for recipient in plain_profile.document_control.distribution_recipients
+    ] == ["Copia do Padrao", "Contato Cliente"]
+
+    profile = load_operational_client_profile(profile_path)
+
+    assert [
+        (recipient.name, recipient.organization, recipient.email)
+        for recipient in profile.document_control.distribution_recipients
+    ] == [
+        (
+            "Contato Padrao",
+            "Organizacao Padrao",
+            "padrao@empresa.example",
+        ),
+        (
+            "Contato Cliente",
+            "Organizacao Cliente",
+            "cliente@empresa.example",
+        ),
+    ]
+
+
 class ProfileTests(unittest.TestCase):
+    def test_profile_exposes_additional_document_distribution_recipients(self) -> None:
+        profile = ClientProfile.from_dict({
+            "schema_version": 1,
+            "client_id": "cliente-distribuicao",
+            "display_name": "Cliente Distribuicao",
+            "tenant_id": "tenant-distribuicao",
+            "document_control": {
+                "additional_distribution_recipients": [
+                    {
+                        "name": "Contato Cliente",
+                        "organization": "Organizacao Cliente",
+                        "email": "contato@cliente.example",
+                    }
+                ]
+            },
+        })
+
+        self.assertEqual(
+            [
+                (recipient.name, recipient.organization, recipient.email)
+                for recipient in profile.document_control.additional_distribution_recipients
+            ],
+            [
+                (
+                    "Contato Cliente",
+                    "Organizacao Cliente",
+                    "contato@cliente.example",
+                )
+            ],
+        )
+
+    def test_profile_rejects_incomplete_document_distribution_recipients(self) -> None:
+        base_recipient = {
+            "name": "Contato Cliente",
+            "organization": "Organizacao Cliente",
+            "email": "contato@cliente.example",
+        }
+        cases = (
+            ({**base_recipient, "name": ""}, "name"),
+            ({**base_recipient, "organization": ""}, "organization"),
+            ({**base_recipient, "email": "endereco-invalido"}, "email"),
+        )
+
+        for recipient, field in cases:
+            with self.subTest(field=field):
+                with self.assertRaisesRegex(ProfileError, field):
+                    ClientProfile.from_dict({
+                        "schema_version": 1,
+                        "client_id": "cliente-distribuicao",
+                        "display_name": "Cliente Distribuicao",
+                        "tenant_id": "tenant-distribuicao",
+                        "document_control": {
+                            "additional_distribution_recipients": [recipient]
+                        },
+                    })
+
+    def test_profile_rejects_duplicate_distribution_recipient_email(self) -> None:
+        with self.assertRaisesRegex(ProfileError, "email.*duplicado"):
+            ClientProfile.from_dict({
+                "schema_version": 1,
+                "client_id": "cliente-distribuicao",
+                "display_name": "Cliente Distribuicao",
+                "tenant_id": "tenant-distribuicao",
+                "document_control": {
+                    "additional_distribution_recipients": [
+                        {
+                            "name": "Contato Um",
+                            "organization": "Organizacao Um",
+                            "email": "contato@cliente.example",
+                        },
+                        {
+                            "name": "Contato Dois",
+                            "organization": "Organizacao Dois",
+                            "email": "CONTATO@CLIENTE.EXAMPLE",
+                        },
+                    ]
+                },
+            })
+
     def test_profile_accepts_optional_responsible_analyst_id(self) -> None:
         profile = ClientProfile.from_dict({
             "schema_version": 1,
