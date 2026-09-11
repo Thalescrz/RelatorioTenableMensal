@@ -718,6 +718,54 @@ class WebDashboardTests(unittest.TestCase):
         self.assertIn("javascript", headers.get("Content-Type", "").lower())
         self.assertIn("TenableClientCard", source)
 
+    def test_dashboard_alert_static_asset_is_served_before_the_application(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+            )
+            client = LocalClient(app)
+            try:
+                asset_status, headers, asset_body = client.download(
+                    "/static/dashboard_alerts.js"
+                )
+                page_status, _, page_body = client.download("/")
+            finally:
+                client.close()
+                app.jobs.close()
+
+        source = asset_body.decode("utf-8")
+        html = page_body.decode("utf-8")
+        self.assertEqual(asset_status, 200)
+        self.assertIn("javascript", headers.get("Content-Type", "").lower())
+        self.assertIn("TenableDashboardAlerts", source)
+        self.assertEqual(page_status, 200)
+        self.assertLess(
+            html.index('/static/dashboard_alerts.js'),
+            html.index('/static/app.js'),
+        )
+
+    def test_alerts_dialog_exposes_mark_all_as_read_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+            )
+            client = LocalClient(app)
+            try:
+                status, _, body = client.download("/")
+            finally:
+                client.close()
+                app.jobs.close()
+
+        html = body.decode("utf-8")
+        self.assertEqual(status, 200)
+        self.assertIn('id="mark-alerts-read-button"', html)
+
     def test_batch_retryability_static_asset_is_served_as_javascript(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2912,6 +2960,52 @@ class WebDashboardTests(unittest.TestCase):
                 self.assertIn("distribution_recipients", payload["error"])
             finally:
                 client.close()
+
+    def test_marking_dashboard_alerts_read_persists_the_server_cutoff(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "orchestration" / "clients.json"
+            app = DashboardApplication(
+                project_root=root,
+                config_path=config_path,
+                batch_repository=InMemoryWebBatchRepository(),
+            )
+            client = LocalClient(app)
+            try:
+                with patch(
+                    "tenable_reports.webapp.server._utc_now",
+                    return_value="2026-09-11T20:15:00+00:00",
+                ):
+                    status, payload = client.request(
+                        "POST",
+                        "/api/alerts/mark-read",
+                        {},
+                    )
+                state_status, state = client.request("GET", "/api/state")
+            finally:
+                client.close()
+                app.jobs.close()
+
+            reloaded = DashboardConfigStore(
+                project_root=root,
+                config_path=config_path,
+            )
+            persisted_read_before = reloaded.alerts_read_before()
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            payload,
+            {"alerts_read_before": "2026-09-11T20:15:00+00:00"},
+        )
+        self.assertEqual(state_status, 200)
+        self.assertEqual(
+            state["alerts_read_before"],
+            "2026-09-11T20:15:00+00:00",
+        )
+        self.assertEqual(
+            persisted_read_before,
+            "2026-09-11T20:15:00+00:00",
+        )
 
     def test_vm_export_validation_route_enqueues_explicit_ab_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

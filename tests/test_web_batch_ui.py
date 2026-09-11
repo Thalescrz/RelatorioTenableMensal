@@ -161,6 +161,25 @@ def _run_client_card_script(source: str) -> object:
     return json.loads(completed.stdout)
 
 
+def _run_dashboard_alerts_script(source: str) -> object:
+    script_path = STATIC / "dashboard_alerts.js"
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            (
+                f"const helpers = require({json.dumps(str(script_path))});"
+                f"const result = (() => {{ {source} }})();"
+                "process.stdout.write(JSON.stringify(result));"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    return json.loads(completed.stdout)
+
+
 def _run_batch_retryability_script(source: str) -> object:
     script_path = STATIC / "batch_retryability.js"
     completed = subprocess.run(
@@ -432,6 +451,84 @@ def test_client_card_reconciliation_reuses_existing_cards_and_updates_content() 
         "order": ["cliente-a", "cliente-b"],
         "firstUpdates": [2],
         "obsoleteRemoved": True,
+    }
+
+
+def test_dashboard_alert_cutoff_hides_existing_items_but_keeps_new_ones() -> None:
+    result = _run_dashboard_alerts_script(
+        "if (typeof helpers.unreadAlertItems !== 'function') return {available: false};"
+        "const cutoff = '2026-09-11T20:15:00Z';"
+        "const items = ["
+        "{code: 'before', at: '2026-09-11T20:14:59Z'},"
+        "{code: 'equal', at: '2026-09-11T20:15:00Z'},"
+        "{code: 'after', at: '2026-09-11T20:15:01Z'},"
+        "{code: 'undated', at: null}"
+        "];"
+        "return {available: true, visible: helpers.unreadAlertItems(items, cutoff)"
+        ".map(item => item.code)};"
+    )
+
+    assert result == {
+        "available": True,
+        "visible": ["after", "undated"],
+    }
+
+
+def test_acknowledged_terminal_failure_is_completed_only_with_a_report() -> None:
+    result = _run_dashboard_alerts_script(
+        "if (typeof helpers.shouldPresentClientAsCompleted !== 'function') "
+        "return {available: false};"
+        "const cutoff = '2026-09-11T20:15:00Z';"
+        "const client = (status, endedAt, hasReport) => ({"
+        "latest_report: hasReport ? {period_id: '2026-08'} : null,"
+        "job: {status, ended_at: endedAt}"
+        "});"
+        "return {available: true,"
+        "warningWithReport: helpers.shouldPresentClientAsCompleted("
+        "client('COMPLETE_WITH_WARNINGS', '2026-09-11T20:14:00Z', true), cutoff),"
+        "failureWithReport: helpers.shouldPresentClientAsCompleted("
+        "client('FAILED', '2026-09-11T20:14:00Z', true), cutoff),"
+        "failureWithoutReport: helpers.shouldPresentClientAsCompleted("
+        "client('FAILED', '2026-09-11T20:14:00Z', false), cutoff),"
+        "newFailureWithReport: helpers.shouldPresentClientAsCompleted("
+        "client('FAILED', '2026-09-11T20:16:00Z', true), cutoff)"
+        "};"
+    )
+
+    assert result == {
+        "available": True,
+        "warningWithReport": True,
+        "failureWithReport": True,
+        "failureWithoutReport": False,
+        "newFailureWithReport": False,
+    }
+
+
+def test_acknowledged_client_progress_reaches_one_hundred_without_masking_new_failure() -> None:
+    result = _run_dashboard_alerts_script(
+        "if (typeof helpers.presentedClientProgress !== 'function') "
+        "return {available: false};"
+        "const cutoff = '2026-09-11T20:15:00Z';"
+        "const client = endedAt => ({latest_report: {period_id: '2026-08'},"
+        "job: {status: 'FAILED', ended_at: endedAt, progress: 63}});"
+        "return {available: true,"
+        "acknowledged: helpers.presentedClientProgress("
+        "client('2026-09-11T20:14:00Z'), cutoff),"
+        "newFailure: helpers.presentedClientProgress("
+        "client('2026-09-11T20:16:00Z'), cutoff),"
+        "publishedWithoutJob: helpers.presentedClientProgress("
+        "{latest_report: {period_id: '2026-08'}, job: null}, cutoff),"
+        "notGenerated: helpers.presentedClientProgress("
+        "{latest_report: null, job: null}, cutoff)"
+        "};"
+    )
+
+    assert result == {
+        "available": True,
+        "acknowledged": 100,
+        "newFailure": 63,
+        "publishedWithoutJob": 100,
+        "notGenerated": 0,
     }
 
 

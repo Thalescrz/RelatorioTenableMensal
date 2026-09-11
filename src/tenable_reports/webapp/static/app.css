@@ -120,6 +120,7 @@ h1 em { color: var(--muted); font-style: normal; font-weight: 350; }
 .dialog > * { margin-left: 28px; margin-right: 28px; }
 .dialog-head { min-height: 104px; padding: 27px 0 22px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; gap: 20px; }
 .dialog-head p:last-child { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+.dialog-head-actions { display: flex; align-items: center; gap: 10px; }
 .icon-button { flex: 0 0 auto; width: 36px; height: 36px; border: 1px solid var(--line); background: var(--panel); border-radius: 10px; cursor: pointer; font-size: 23px; color: var(--muted); }
 .dialog-actions { display: flex; gap: 10px; margin-top: 20px; }
 .detail-status { margin-top: 20px; border: 1px solid var(--line); border-radius: 12px; padding: 14px; color: var(--muted); font-size: 12px; }

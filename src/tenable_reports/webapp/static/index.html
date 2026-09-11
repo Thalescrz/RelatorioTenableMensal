@@ -363,7 +363,10 @@
   <dialog id="alerts-dialog" class="dialog alerts-dialog">
     <div class="dialog-head">
       <div><p class="eyebrow">LOG OPERACIONAL</p><h2>Alertas e erros</h2></div>
-      <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
+      <div class="dialog-head-actions">
+        <button class="mini-button" id="mark-alerts-read-button" type="button">Marcar todos como lidos</button>
+        <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
+      </div>
     </div>
     <div id="alerts-list" class="alerts-list"></div>
   </dialog>
@@ -467,6 +470,7 @@
   <script src="/static/report_request_guard.js" defer></script>
   <script src="/static/dashboard_refresh.js" defer></script>
   <script src="/static/client_card.js" defer></script>
+  <script src="/static/dashboard_alerts.js" defer></script>
   <script src="/static/batch_retryability.js" defer></script>
   <script src="/static/document_distribution.js" defer></script>
   <script src="/static/app.js" defer></script>
