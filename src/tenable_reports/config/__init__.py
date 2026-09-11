@@ -2,12 +2,20 @@ from .environment import CloudCredentialConfig, CredentialConfig, load_dotenv_fi
 from .profile import (
     ClientProfile,
     CloudSecurityScope,
+    DistributionRecipient,
+    DocumentControlConfig,
+    DocumentPreparationConfig,
+    DocumentVersionControlConfig,
     INTELLIGENCE_MODULE_CAPABILITIES,
     ProfileError,
     REQUIRED_BASE_MODULES,
     ReportingConfig,
     SUPPORTED_INTELLIGENCE_MODULES,
     load_client_profile,
+    load_operational_client_profile,
+    parse_document_preparation,
+    parse_document_version_control,
+    parse_distribution_recipients,
 )
 
 __all__ = [
@@ -15,6 +23,10 @@ __all__ = [
     "CloudSecurityScope",
     "CloudCredentialConfig",
     "CredentialConfig",
+    "DistributionRecipient",
+    "DocumentControlConfig",
+    "DocumentPreparationConfig",
+    "DocumentVersionControlConfig",
     "INTELLIGENCE_MODULE_CAPABILITIES",
     "ProfileError",
     "REQUIRED_BASE_MODULES",
@@ -22,4 +34,8 @@ __all__ = [
     "SUPPORTED_INTELLIGENCE_MODULES",
     "load_client_profile",
     "load_dotenv_file",
+    "load_operational_client_profile",
+    "parse_document_preparation",
+    "parse_document_version_control",
+    "parse_distribution_recipients",
 ]

@@ -53,6 +53,33 @@ aparecer, encerre todas as instâncias antigas e inicie novamente pela raiz corr
 
 As chaves ficam no arquivo local ignorado pelo Git e não retornam para a tela.
 
+### Controle de documento e lista de distribuição
+
+Em **Admin → Controle de documento**, configure o padrão global das tabelas
+**Preparação** e **Controle de Versionamento**. As datas permanecem dinâmicas e são
+preenchidas automaticamente na geração. Na mesma área, cadastre as entidades que
+devem constar na **Lista de Distribuição** de todos os documentos, sempre com nome,
+organização e e-mail. Clique em **Incluir** para montar a lista e em **Salvar
+Controle de Documento padrão** para gravar as três tabelas.
+O arquivo operacional `orchestration/document-control.json` é local e ignorado pelo
+Git; `orchestration/document-control.example.json` mostra somente dados
+sanitizados.
+
+Em **Gerenciar clientes**, a única personalização do Controle de Documento é
+**Destinatários adicionais do cliente**. Use-a apenas para entidades específicas
+daquele cliente. A ordem final da tabela é:
+
+1. destinatários da distribuição padrão;
+2. destinatários adicionais do cliente.
+
+E-mails iguais são emitidos uma única vez e o cadastro padrão prevalece. As mesmas
+linhas e os mesmos cabeçalhos são usados nos relatórios Geral e Cloud. As tabelas
+de Preparação e Controle de Versionamento não têm configuração por cliente: elas
+sempre usam o padrão global produzido pelo componente editorial compartilhado.
+Quando a execução usa
+`--mask-sensitive`, nome, organização e e-mail permanecem vazios também no Cloud e
+nas retentativas que reconstroem o documento.
+
 ### Analistas responsáveis
 
 O catálogo em **Gerenciar clientes** é apenas metadado operacional: não cria conta,

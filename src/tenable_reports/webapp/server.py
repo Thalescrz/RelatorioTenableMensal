@@ -107,7 +107,12 @@ from tenable_reports.config.environment import (
     CredentialConfig,
     load_dotenv_file,
 )
-from tenable_reports.config.profile import ClientProfile
+from tenable_reports.config.profile import (
+    ClientProfile,
+    parse_document_preparation,
+    parse_document_version_control,
+    parse_distribution_recipients,
+)
 from tenable_reports.config.monthly_schedule import MonthlyScheduleConfig
 from tenable_reports.infrastructure.cloud_snapshots_postgresql import (
     PostgresCloudSnapshotRepository,
@@ -457,6 +462,9 @@ class DashboardConfigStore:
         self.analysts = AnalystCatalog(
             self.project_root / "orchestration" / "analysts.json"
         )
+        self.document_control_path = (
+            self.project_root / "orchestration" / "document-control.json"
+        )
         self.ensure_exists()
 
     def ensure_exists(self) -> None:
@@ -509,6 +517,82 @@ class DashboardConfigStore:
     def raw(self) -> dict[str, Any]:
         with self._lock:
             return _read_json(self.config_path)
+
+    def document_control(self) -> dict[str, Any]:
+        with self._lock:
+            if not self.document_control_path.is_file():
+                payload: dict[str, Any] = {"schema_version": 1}
+            else:
+                payload = _read_json(self.document_control_path)
+            if payload.get("schema_version") != 1:
+                raise ValueError(
+                    "schema_version do controle de documento deve ser 1."
+                )
+            preparation = parse_document_preparation(payload.get("preparation"))
+            version_control = parse_document_version_control(
+                payload.get("version_control")
+            )
+            recipients = parse_distribution_recipients(
+                payload.get("distribution_recipients"),
+                "distribution_recipients",
+            )
+            return {
+                "schema_version": 1,
+                "preparation": {
+                    "action": preparation.action,
+                    "name": preparation.name,
+                },
+                "version_control": {
+                    "version": version_control.version,
+                    "affected_sections": version_control.affected_sections,
+                    "change": version_control.change,
+                    "changed_by": version_control.changed_by,
+                },
+                "distribution_recipients": [
+                    {
+                        "name": recipient.name,
+                        "organization": recipient.organization,
+                        "email": recipient.email,
+                    }
+                    for recipient in recipients
+                ],
+            }
+
+    def save_document_control(self, values: Mapping[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            if "distribution_recipients" not in values:
+                raise ValueError("distribution_recipients e obrigatorio.")
+            preparation = parse_document_preparation(values.get("preparation"))
+            version_control = parse_document_version_control(
+                values.get("version_control")
+            )
+            recipients = parse_distribution_recipients(
+                values.get("distribution_recipients"),
+                "distribution_recipients",
+            )
+            payload = {
+                "schema_version": 1,
+                "preparation": {
+                    "action": preparation.action,
+                    "name": preparation.name,
+                },
+                "version_control": {
+                    "version": version_control.version,
+                    "affected_sections": version_control.affected_sections,
+                    "change": version_control.change,
+                    "changed_by": version_control.changed_by,
+                },
+                "distribution_recipients": [
+                    {
+                        "name": recipient.name,
+                        "organization": recipient.organization,
+                        "email": recipient.email,
+                    }
+                    for recipient in recipients
+                ],
+            }
+            write_json_atomic(self.document_control_path, payload)
+            return payload
 
     def monthly_schedule(self) -> MonthlyScheduleConfig:
         return MonthlyScheduleConfig.from_mapping(
@@ -673,6 +757,11 @@ class DashboardConfigStore:
                 profile.get("presentation")
                 if isinstance(profile.get("presentation"), Mapping) else {}
             )
+            document_control = (
+                profile.get("document_control")
+                if isinstance(profile.get("document_control"), Mapping)
+                else {}
+            )
             reporting = (
                 profile.get("reporting")
                 if isinstance(profile.get("reporting"), Mapping) else {}
@@ -721,6 +810,10 @@ class DashboardConfigStore:
                 "intelligence_enabled": bool(report.get("intelligence_modules") or []),
                 "include_output": bool(raw.get("include_output", False)),
                 "show_source_filters": bool(presentation.get("show_source_filters", False)),
+                "mask_sensitive": bool(raw.get("mask_sensitive", False)),
+                "additional_distribution_recipients": list(
+                    document_control.get("additional_distribution_recipients") or []
+                ),
                 "vm_export_strategy": str(vm_export.get("strategy") or "combined"),
                 "vm_num_assets_per_chunk": int(
                     vm_export.get("num_assets_per_chunk") or 1000
@@ -788,6 +881,11 @@ class DashboardConfigStore:
                 "display_name": display_name,
                 "tenant_id": tenant_id,
                 "responsible_analyst_id": responsible_analyst_id,
+                "document_control": {
+                    "additional_distribution_recipients": list(
+                        values.get("additional_distribution_recipients") or []
+                    ),
+                },
                 "report": {
                     "type": "vulnerabilities",
                     "base_modules": ["summary", "infrastructure", "vm_top5", "was", "was_top5"],
@@ -920,6 +1018,13 @@ class DashboardConfigStore:
                 profile.setdefault("presentation", {})["show_source_filters"] = bool(
                     values["show_source_filters"]
                 )
+                profile_changed = True
+            if "additional_distribution_recipients" in values:
+                profile["document_control"] = {
+                    "additional_distribution_recipients": list(
+                        values.get("additional_distribution_recipients") or []
+                    ),
+                }
                 profile_changed = True
             vm_fields = {
                 "vm_export_strategy",
@@ -1742,6 +1847,7 @@ class JobQueue:
         env_path: Path,
         database_env_path: Path,
         cloud_template_path: Path,
+        mask_sensitive: bool = False,
     ) -> dict[str, Any]:
         with self._lock:
             if any(
@@ -1786,6 +1892,7 @@ class JobQueue:
                 "_env_path": str(env_path),
                 "_database_env_path": str(database_env_path),
                 "_cloud_template_path": str(cloud_template_path),
+                "_mask_sensitive": bool(mask_sensitive),
             }
             self._jobs[job_id] = job
             self._pending.put(job_id)
@@ -2003,6 +2110,8 @@ class JobQueue:
                     str(job["_cloud_template_path"]),
                     "--confirm-live-api",
                 ]
+                if job.get("_mask_sensitive"):
+                    command.append("--mask-sensitive")
             elif job.get("operation") == "component_retry":
                 config = load_orchestration_config(self.config_path)
                 client = next(
@@ -2053,6 +2162,8 @@ class JobQueue:
                 ]
                 for component in components:
                     command.extend(("--component", component))
+                if client.mask_sensitive:
+                    command.append("--mask-sensitive")
             elif job.get("operation") == "staged_component":
                 config = load_orchestration_config(self.config_path)
                 client = next(
@@ -4121,6 +4232,7 @@ class DashboardApplication:
             env_path=self.config.client_env_path(client_id),
             database_env_path=self.config.database_env_path(),
             cloud_template_path=cloud_template,
+            mask_sensitive=bool(client.get("mask_sensitive", False)),
         )
 
     def recover_was_report(
@@ -4315,6 +4427,7 @@ class DashboardApplication:
         return {
             "clients": clients,
             "analysts": self.config.list_analysts(),
+            "document_control": self.config.document_control(),
             "jobs": jobs,
             "batches": batches,
             "alerts": alerts,
@@ -4354,6 +4467,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "report_request_guard.js",
                 "dashboard_refresh.js",
                 "batch_retryability.js",
+                "document_distribution.js",
             }:
                 self._json_error(HTTPStatus.NOT_FOUND, "Arquivo nao encontrado.")
                 return
@@ -4701,6 +4815,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/analysts":
                 analyst = self.app.config.create_analyst(payload)
                 self._json(HTTPStatus.CREATED, {"analyst": analyst})
+                return
+            if parsed.path == "/api/document-control":
+                document_control = self.app.config.save_document_control(payload)
+                self._json(HTTPStatus.OK, document_control)
                 return
             if parsed.path == "/api/clients":
                 client = self.app.config.add_client(payload)

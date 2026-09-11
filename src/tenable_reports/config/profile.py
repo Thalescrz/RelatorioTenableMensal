@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 
 CLIENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{2,63}$")
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 REQUIRED_BASE_MODULES = (
     "summary",
     "infrastructure",
@@ -74,6 +75,132 @@ def _as_bool(value: Any, field_name: str, *, default: bool = False) -> bool:
     if not isinstance(value, bool):
         raise ProfileError(f"{field_name} deve ser booleano.")
     return value
+
+
+@dataclass(frozen=True, slots=True)
+class DistributionRecipient:
+    name: str
+    organization: str
+    email: str
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentPreparationConfig:
+    action: str = "Criação do Documento"
+    name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentVersionControlConfig:
+    version: str = "1.0"
+    affected_sections: str = "Todas"
+    change: str = "Elaboração do conteúdo"
+    changed_by: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentControlConfig:
+    preparation: DocumentPreparationConfig = field(
+        default_factory=DocumentPreparationConfig
+    )
+    version_control: DocumentVersionControlConfig = field(
+        default_factory=DocumentVersionControlConfig
+    )
+    standard_distribution_recipients: tuple[DistributionRecipient, ...] = ()
+    additional_distribution_recipients: tuple[DistributionRecipient, ...] = ()
+
+    @property
+    def distribution_recipients(self) -> tuple[DistributionRecipient, ...]:
+        recipients: list[DistributionRecipient] = []
+        seen_emails: set[str] = set()
+        for recipient in (
+            *self.standard_distribution_recipients,
+            *self.additional_distribution_recipients,
+        ):
+            normalized_email = recipient.email.casefold()
+            if normalized_email in seen_emails:
+                continue
+            seen_emails.add(normalized_email)
+            recipients.append(recipient)
+        return tuple(recipients)
+
+
+def parse_document_preparation(
+    value: Any,
+    field_name: str = "preparation",
+) -> DocumentPreparationConfig:
+    if value is None:
+        return DocumentPreparationConfig()
+    if not isinstance(value, dict):
+        raise ProfileError(f"{field_name} deve ser um objeto.")
+    action = str(value.get("action", "Criação do Documento")).strip()
+    name = str(value.get("name") or "").strip()
+    if not action:
+        raise ProfileError(f"{field_name}.action e obrigatorio.")
+    return DocumentPreparationConfig(action=action, name=name)
+
+
+def parse_document_version_control(
+    value: Any,
+    field_name: str = "version_control",
+) -> DocumentVersionControlConfig:
+    if value is None:
+        return DocumentVersionControlConfig()
+    if not isinstance(value, dict):
+        raise ProfileError(f"{field_name} deve ser um objeto.")
+    version = str(value.get("version", "1.0")).strip()
+    affected_sections = str(value.get("affected_sections", "Todas")).strip()
+    change = str(value.get("change", "Elaboração do conteúdo")).strip()
+    changed_by = str(value.get("changed_by") or "").strip()
+    for item_name, item_value in (
+        ("version", version),
+        ("affected_sections", affected_sections),
+        ("change", change),
+    ):
+        if not item_value:
+            raise ProfileError(f"{field_name}.{item_name} e obrigatorio.")
+    return DocumentVersionControlConfig(
+        version=version,
+        affected_sections=affected_sections,
+        change=change,
+        changed_by=changed_by,
+    )
+
+
+def parse_distribution_recipients(
+    value: Any,
+    field_name: str,
+) -> tuple[DistributionRecipient, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise ProfileError(f"{field_name} deve ser uma lista de objetos.")
+    recipients: list[DistributionRecipient] = []
+    seen_emails: set[str] = set()
+    for index, item in enumerate(value):
+        name = str(item.get("name") or "").strip()
+        organization = str(item.get("organization") or "").strip()
+        email = str(item.get("email") or "").strip()
+        if not name:
+            raise ProfileError(f"{field_name}[{index}].name e obrigatorio.")
+        if not organization:
+            raise ProfileError(
+                f"{field_name}[{index}].organization e obrigatorio."
+            )
+        if not EMAIL_PATTERN.fullmatch(email):
+            raise ProfileError(f"{field_name}[{index}].email e invalido.")
+        normalized_email = email.casefold()
+        if normalized_email in seen_emails:
+            raise ProfileError(f"{field_name}[{index}].email duplicado.")
+        seen_emails.add(normalized_email)
+        recipients.append(
+            DistributionRecipient(
+                name=name,
+                organization=organization,
+                email=email,
+            )
+        )
+    return tuple(recipients)
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +289,9 @@ class ClientProfile:
     display_name: str
     tenant_id: str
     responsible_analyst_id: str | None = None
+    document_control: DocumentControlConfig = field(
+        default_factory=DocumentControlConfig
+    )
     report: ReportConfig = field(default_factory=ReportConfig)
     vm_scope: VmScope = field(default_factory=VmScope)
     was_scope: WasScope = field(default_factory=WasScope)
@@ -245,6 +375,7 @@ class ClientProfile:
         )
 
         report_data = data.get("report") or {}
+        document_control_data = data.get("document_control") or {}
         scope_data = data.get("scope") or {}
         vm_data = scope_data.get("vm") or {}
         was_data = scope_data.get("was") or {}
@@ -258,6 +389,7 @@ class ClientProfile:
             raise ProfileError("reporting.vm_export deve ser um objeto JSON.")
         if not all(isinstance(item, dict) for item in (
             report_data,
+            document_control_data,
             scope_data,
             vm_data,
             was_data,
@@ -448,6 +580,14 @@ class ClientProfile:
             display_name=display_name,
             tenant_id=tenant_id,
             responsible_analyst_id=responsible_analyst_id,
+            document_control=DocumentControlConfig(
+                additional_distribution_recipients=parse_distribution_recipients(
+                    document_control_data.get(
+                        "additional_distribution_recipients"
+                    ),
+                    "document_control.additional_distribution_recipients",
+                )
+            ),
             report=ReportConfig(
                 type=report_type,
                 base_modules=REQUIRED_BASE_MODULES,
@@ -518,3 +658,50 @@ def load_client_profile(path: str | Path) -> ClientProfile:
     if not isinstance(data, dict):
         raise ProfileError("O perfil deve conter um objeto JSON na raiz.")
     return ClientProfile.from_dict(data)
+
+
+def load_operational_client_profile(path: str | Path) -> ClientProfile:
+    profile_path = Path(path)
+    profile = load_client_profile(profile_path)
+    project_root = next(
+        (
+            directory
+            for directory in profile_path.resolve().parents
+            if (directory / "pyproject.toml").is_file()
+        ),
+        None,
+    )
+    if project_root is None:
+        return profile
+    standard_path = project_root / "orchestration" / "document-control.json"
+    if not standard_path.is_file():
+        return profile
+    try:
+        standard_data = json.loads(standard_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ProfileError(
+            f"Nao foi possivel ler o controle de documento: {standard_path}"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ProfileError(
+            f"Controle de documento JSON invalido na linha {exc.lineno}."
+        ) from exc
+    if not isinstance(standard_data, dict) or standard_data.get("schema_version") != 1:
+        raise ProfileError("schema_version do controle de documento deve ser 1.")
+    standard_recipients = parse_distribution_recipients(
+        standard_data.get("distribution_recipients"),
+        "distribution_recipients",
+    )
+    preparation = parse_document_preparation(standard_data.get("preparation"))
+    version_control = parse_document_version_control(
+        standard_data.get("version_control")
+    )
+    return replace(
+        profile,
+        document_control=replace(
+            profile.document_control,
+            preparation=preparation,
+            version_control=version_control,
+            standard_distribution_recipients=standard_recipients,
+        ),
+    )

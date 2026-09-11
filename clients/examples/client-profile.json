@@ -3,6 +3,9 @@
   "client_id": "cliente-exemplo",
   "display_name": "Cliente Exemplo",
   "tenant_id": "tenable-cloud-global",
+  "document_control": {
+    "additional_distribution_recipients": []
+  },
   "report": {
     "type": "vulnerabilities",
     "base_modules": [

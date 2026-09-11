@@ -3,6 +3,9 @@
   "client_id": "cliente-b-exemplo",
   "display_name": "Cliente B Exemplo",
   "tenant_id": "tenant-cliente-b",
+  "document_control": {
+    "additional_distribution_recipients": []
+  },
   "report": {
     "type": "vulnerabilities",
     "base_modules": ["summary", "infrastructure", "vm_top5", "was", "was_top5"],

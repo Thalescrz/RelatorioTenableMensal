@@ -13,6 +13,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
+from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation import base_report_docx as base
 from tenable_reports.presentation import cloud_editorial_catalog as copy
 from tenable_reports.presentation.cloud_visuals import (
@@ -21,6 +22,7 @@ from tenable_reports.presentation.cloud_visuals import (
     render_monthly_history_chart,
     render_severity_chart,
 )
+from tenable_reports.presentation.document_control import append_document_control
 from tenable_reports.presentation.source_filters import format_source_filter_note
 from tenable_reports.presentation.translation import (
     TextTranslator,
@@ -294,26 +296,27 @@ def _asset_identity(row: Mapping[str, Any]) -> str:
 def render_document_control(
     builder: CloudDocumentBuilder,
     dataset: Mapping[str, Any],
+    profile: ClientProfile,
+    *,
+    mask_sensitive: bool = False,
 ) -> None:
     start, end, _ = _period_labels(dataset)
-    builder.heading("1. CONTROLE DE DOCUMENTO", 1)
-    builder.table(
-        ("Preparação", "Nome", "Data"),
-        (("Preparação", "", ""),),
-        widths=(2600, 4200, 2400),
-        left_columns=frozenset({0, 1}),
-    )
-    builder.table(
-        ("Controle de Versionamento", "Versão", "Data"),
-        (("Relatório mensal", "1.0", end),),
-        widths=(4600, 2200, 2400),
-        left_columns=frozenset({0}),
-    )
-    builder.table(
-        ("Lista de Distribuição", "Nome", "Organização"),
-        (("Distribuição", "", ""),),
-        widths=(3200, 3000, 3000),
-        left_columns=frozenset({0, 1, 2}),
+    period = dataset.get("period") or {}
+    timezone = ZoneInfo(str(period.get("timezone") or "UTC"))
+    generated_at = str(
+        dataset.get("generated_at")
+        or dataset.get("collected_at")
+        or period.get("end_at")
+    ).replace("Z", "+00:00")
+    generated_date = datetime.fromisoformat(generated_at).astimezone(timezone)
+    append_document_control(
+        builder.document,
+        generated_date=generated_date.strftime("%d/%m/%Y"),
+        preparation=profile.document_control.preparation,
+        version_control=profile.document_control.version_control,
+        recipients=profile.document_control.distribution_recipients,
+        mask_sensitive=mask_sensitive,
+        mover=builder._move,
     )
     builder.heading("2. OBJETIVO", 1)
     builder.paragraph(copy.OBJECTIVE)

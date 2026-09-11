@@ -311,6 +311,7 @@ def generate_cloud_report(
     output_path: str | Path,
     variant: CloudReportVariant | str = CloudReportVariant.EXPANDED,
     translator: TextTranslator | None = None,
+    mask_sensitive: bool = False,
 ) -> CloudReportRenderResult:
     template = Path(template_path)
     dataset_source = Path(dataset_path)
@@ -345,7 +346,12 @@ def generate_cloud_report(
 
     with tempfile.TemporaryDirectory(prefix="cloud-report-visuals-") as chart_directory:
         chart_dir = Path(chart_directory)
-        render_document_control(builder, dataset)
+        render_document_control(
+            builder,
+            dataset,
+            profile,
+            mask_sensitive=mask_sensitive,
+        )
         first_heading = next(
             paragraph
             for paragraph in document.paragraphs

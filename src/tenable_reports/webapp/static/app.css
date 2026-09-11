@@ -168,6 +168,22 @@ h1 em { color: var(--muted); font-style: normal; font-weight: 350; }
 .analyst-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: #11171b; }
 .analyst-row strong, .analyst-row small { display: block; }.analyst-row strong { font-size: 13px; }.analyst-row small { margin-top: 2px; color: var(--muted); font-size: 11px; line-height: 1.35; }
 .analyst-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.distribution-config { margin-top: 18px; padding: 14px; border: 1px solid var(--line); border-radius: 13px; background: linear-gradient(145deg, rgba(109,169,255,.045), rgba(255,255,255,.012)); }
+.standard-distribution-config { margin-top: 24px; padding-top: 16px; }
+.distribution-config-head > div span, .distribution-config-head > div strong { display: block; }
+.distribution-config-head > div span { color: var(--blue); font: 700 8px var(--display); letter-spacing: .13em; }
+.distribution-config-head > div strong { margin-top: 3px; font: 600 13px var(--display); }
+.distribution-config > p { margin: 8px 0 12px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.distribution-entry-form { display: grid; gap: 8px; }
+.distribution-entry-form input { height: 36px; margin-top: 5px; }
+.client-distribution-config .distribution-entry-form { grid-template-columns: 1fr 1fr; align-items: end; }
+.client-distribution-config .distribution-entry-form label:last-of-type { grid-column: 1 / -1; }
+.client-distribution-config .distribution-entry-form .mini-button { justify-self: start; }
+.distribution-list { display: grid; gap: 7px; margin: 12px 0; }
+.distribution-recipient { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: #11171b; }
+.distribution-recipient strong, .distribution-recipient small { display: block; overflow-wrap: anywhere; }
+.distribution-recipient strong { font-size: 12px; }
+.distribution-recipient small { margin-top: 2px; color: var(--muted); font-size: 10px; line-height: 1.35; }
 .archive-download { display: inline-flex; align-items: center; text-decoration: none; }
 .mini-button:disabled { opacity: .5; cursor: wait; }
 .api-result { font: 700 9px var(--display); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
@@ -238,10 +254,17 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
 .alerts-list { padding: 20px 0 30px; }.alert-row { display: grid; grid-template-columns: auto 1fr; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line); }.alert-row .alert-sign { width: 25px; height: 25px; font-size: 12px; }.alert-row strong { font-size: 12px; }.alert-row p { margin: 4px 0; color: #d1a0a0; font: 11px/1.5 monospace; white-space: pre-wrap; }.alert-row small { color: var(--dim); }
 
 .admin-dialog { width: min(920px, calc(100vw - 28px)); }
-.admin-tabs { display: flex; gap: 8px; margin-top: 22px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.admin-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
 .admin-tab { padding: 9px 12px; border: 1px solid transparent; border-radius: 9px; color: var(--muted); background: transparent; cursor: pointer; }
 .admin-tab.active { color: var(--ink); border-color: var(--blue); background: rgba(109,169,255,.08); }
 .admin-tab-panel { padding-top: 16px; }
+.document-control-intro { margin-bottom: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.018); }
+.document-control-intro strong, .document-control-intro p { display: block; }
+.document-control-intro p { margin: 5px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.document-control-form { display: grid; gap: 12px; }
+.document-control-table-config { padding: 14px; border: 1px solid var(--line); border-radius: 13px; background: linear-gradient(145deg, rgba(109,169,255,.045), rgba(255,255,255,.012)); }
+.document-control-table-config .field-row { margin-top: 12px; }
+.admin-dialog .standard-distribution-config .distribution-entry-form { grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; }
 .monthly-schedule-form { display: grid; gap: 18px; padding-bottom: 24px; }
 .monthly-status-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .monthly-status-grid div { padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.018); }
@@ -334,7 +357,7 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
   .topbar { padding: 0 14px; }.connection, #check-all-button { display: none; }.top-actions { gap: 6px; }.top-actions .button { padding: 0 10px; font-size: 11px; }.brand { gap: 8px; }.brand strong { font-size: 12px; }.brand small, .desktop-label { display: none; }
   main { width: min(100% - 28px, 1420px); }.hero { min-height: 260px; padding-top: 45px; flex-direction: column; align-items: stretch; }.summary { width: 100%; }.summary div { min-width: 0; flex: 1; padding: 13px; }
   .section-head { align-items: stretch; flex-direction: column; gap: 15px; }.search { width: 100%; }.client-filter-bar { align-items: stretch; flex-direction: column; }.compact-select { width: 100%; }.client-grid { grid-template-columns: 1fr; }
-  .manager-layout { grid-template-columns: 1fr; }.client-form { border-left: 0; border-top: 1px solid var(--line); padding: 25px 0 0; }.period-options { grid-template-columns: 1fr; }.field-row { grid-template-columns: 1fr; }.check-grid { grid-template-columns: 1fr; }
+  .manager-layout { grid-template-columns: 1fr; }.client-form { border-left: 0; border-top: 1px solid var(--line); padding: 25px 0 0; }.period-options { grid-template-columns: 1fr; }.field-row { grid-template-columns: 1fr; }.check-grid { grid-template-columns: 1fr; }.client-distribution-config .distribution-entry-form, .admin-dialog .standard-distribution-config .distribution-entry-form { grid-template-columns: 1fr; }.client-distribution-config .distribution-entry-form label:last-of-type { grid-column: auto; }
   .tag-toolbar { grid-template-columns: 1fr; }.tag-row { grid-template-columns: 1fr 1fr; }.cloud-config-head, .vm-export-head { align-items: flex-start; flex-direction: column; }.cloud-config-grid, .vm-export-grid { grid-template-columns: 1fr; }.tag-row > div { grid-column: 1 / -1; }.report-document { align-items: flex-start; flex-direction: column; }
   .dialog > * { margin-left: 18px; margin-right: 18px; }
   .selection-toolbar { grid-template-columns: 1fr; }.selection-row { grid-template-columns: 1fr; }.selection-conflict { align-items: flex-start; flex-direction: column; }.selection-conflict span { white-space: normal; }.selection-footer { align-items: stretch; flex-direction: column; }.selection-footer .button { width: 100%; }.analyst-row { align-items: stretch; flex-direction: column; }.analyst-actions { justify-content: flex-start; }

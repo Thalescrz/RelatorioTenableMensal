@@ -326,6 +326,19 @@ Depois de alterar apresentação:
    também os blocos por imagem e as colunas `Software` e `Fixed by` da seção 3.5;
 5. mantenha a prova fora do Git quando contiver dados reais.
 
+O controle de documento é renderizado exclusivamente por
+`presentation/document_control.py`; os renderizadores Geral e Cloud não devem
+recriar essas tabelas localmente. A fonte global é o arquivo local ignorado
+`orchestration/document-control.json`; ele guarda `preparation`, `version_control`
+e `distribution_recipients`. O perfil do cliente guarda apenas
+`document_control.additional_distribution_recipients`. Ao alterar esse contrato,
+teste parser, API, composição global + adicional, deduplicação por e-mail, ordem
+das linhas e igualdade estrutural entre os dois DOCX. Use `load_client_profile`
+quando precisar apenas analisar um JSON de forma determinística e
+`load_operational_client_profile` nos fluxos de produção que devem incorporar a
+lista global local. O modo `mask_sensitive` deve esvaziar os três campos da lista
+de distribuição em todos os renderizadores e retentativas.
+
 Para o relatório Cloud padrão sanitizado:
 
 ```powershell
