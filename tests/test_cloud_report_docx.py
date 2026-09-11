@@ -12,7 +12,12 @@ from docx.oxml.ns import qn
 import pytest
 
 
-from tenable_reports.config.profile import DistributionRecipient, load_client_profile
+from tenable_reports.config.profile import (
+    DistributionRecipient,
+    DocumentPreparationConfig,
+    DocumentVersionControlConfig,
+    load_client_profile,
+)
 from tenable_reports.presentation.cloud_editorial_catalog import (
     approved_cloud_editorial_paragraphs,
 )
@@ -76,6 +81,16 @@ def test_general_and_cloud_reports_share_document_control_tables(tmp_path: Path)
         profile,
         document_control=replace(
             profile.document_control,
+            preparation=DocumentPreparationConfig(
+                action="Elaboracao do Documento",
+                name="Equipe Tecnica",
+            ),
+            version_control=DocumentVersionControlConfig(
+                version="2.0",
+                affected_sections="Todas",
+                change="Revisao mensal",
+                changed_by="Equipe Tecnica",
+            ),
             standard_distribution_recipients=(
                 DistributionRecipient(
                     name="Contato Padrao",
@@ -125,6 +140,17 @@ def test_general_and_cloud_reports_share_document_control_tables(tmp_path: Path)
     assert [table["title"] for table in cloud] == [
         table["title"] for table in general
     ]
+    for control_tables in (general, cloud):
+        assert control_tables[0]["rows"][0][:2] == [
+            "Elaboracao do Documento",
+            "Equipe Tecnica",
+        ]
+        assert control_tables[1]["rows"][0][0] == "2.0"
+        assert control_tables[1]["rows"][0][2:] == [
+            "Todas",
+            "Revisao mensal",
+            "Equipe Tecnica",
+        ]
     assert cloud[2]["rows"] == general[2]["rows"] == [
         ["Contato Padrao", "Organizacao Padrao", "padrao@empresa.example"],
         ["Contato Cliente", "Organizacao Cliente", "cliente@empresa.example"],

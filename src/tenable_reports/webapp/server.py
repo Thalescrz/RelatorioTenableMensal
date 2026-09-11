@@ -109,6 +109,8 @@ from tenable_reports.config.environment import (
 )
 from tenable_reports.config.profile import (
     ClientProfile,
+    parse_document_preparation,
+    parse_document_version_control,
     parse_distribution_recipients,
 )
 from tenable_reports.config.monthly_schedule import MonthlyScheduleConfig
@@ -519,21 +521,33 @@ class DashboardConfigStore:
     def document_control(self) -> dict[str, Any]:
         with self._lock:
             if not self.document_control_path.is_file():
-                return {
-                    "schema_version": 1,
-                    "distribution_recipients": [],
-                }
-            payload = _read_json(self.document_control_path)
+                payload: dict[str, Any] = {"schema_version": 1}
+            else:
+                payload = _read_json(self.document_control_path)
             if payload.get("schema_version") != 1:
                 raise ValueError(
                     "schema_version do controle de documento deve ser 1."
                 )
+            preparation = parse_document_preparation(payload.get("preparation"))
+            version_control = parse_document_version_control(
+                payload.get("version_control")
+            )
             recipients = parse_distribution_recipients(
                 payload.get("distribution_recipients"),
                 "distribution_recipients",
             )
             return {
                 "schema_version": 1,
+                "preparation": {
+                    "action": preparation.action,
+                    "name": preparation.name,
+                },
+                "version_control": {
+                    "version": version_control.version,
+                    "affected_sections": version_control.affected_sections,
+                    "change": version_control.change,
+                    "changed_by": version_control.changed_by,
+                },
                 "distribution_recipients": [
                     {
                         "name": recipient.name,
@@ -548,12 +562,26 @@ class DashboardConfigStore:
         with self._lock:
             if "distribution_recipients" not in values:
                 raise ValueError("distribution_recipients e obrigatorio.")
+            preparation = parse_document_preparation(values.get("preparation"))
+            version_control = parse_document_version_control(
+                values.get("version_control")
+            )
             recipients = parse_distribution_recipients(
                 values.get("distribution_recipients"),
                 "distribution_recipients",
             )
             payload = {
                 "schema_version": 1,
+                "preparation": {
+                    "action": preparation.action,
+                    "name": preparation.name,
+                },
+                "version_control": {
+                    "version": version_control.version,
+                    "affected_sections": version_control.affected_sections,
+                    "change": version_control.change,
+                    "changed_by": version_control.changed_by,
+                },
                 "distribution_recipients": [
                     {
                         "name": recipient.name,

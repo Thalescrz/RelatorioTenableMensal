@@ -4,6 +4,8 @@ from .profile import (
     CloudSecurityScope,
     DistributionRecipient,
     DocumentControlConfig,
+    DocumentPreparationConfig,
+    DocumentVersionControlConfig,
     INTELLIGENCE_MODULE_CAPABILITIES,
     ProfileError,
     REQUIRED_BASE_MODULES,
@@ -11,6 +13,8 @@ from .profile import (
     SUPPORTED_INTELLIGENCE_MODULES,
     load_client_profile,
     load_operational_client_profile,
+    parse_document_preparation,
+    parse_document_version_control,
     parse_distribution_recipients,
 )
 
@@ -21,6 +25,8 @@ __all__ = [
     "CredentialConfig",
     "DistributionRecipient",
     "DocumentControlConfig",
+    "DocumentPreparationConfig",
+    "DocumentVersionControlConfig",
     "INTELLIGENCE_MODULE_CAPABILITIES",
     "ProfileError",
     "REQUIRED_BASE_MODULES",
@@ -29,5 +35,7 @@ __all__ = [
     "load_client_profile",
     "load_dotenv_file",
     "load_operational_client_profile",
+    "parse_document_preparation",
+    "parse_document_version_control",
     "parse_distribution_recipients",
 ]

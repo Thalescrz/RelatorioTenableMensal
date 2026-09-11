@@ -85,7 +85,27 @@ class DistributionRecipient:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentPreparationConfig:
+    action: str = "Criação do Documento"
+    name: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentVersionControlConfig:
+    version: str = "1.0"
+    affected_sections: str = "Todas"
+    change: str = "Elaboração do conteúdo"
+    changed_by: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentControlConfig:
+    preparation: DocumentPreparationConfig = field(
+        default_factory=DocumentPreparationConfig
+    )
+    version_control: DocumentVersionControlConfig = field(
+        default_factory=DocumentVersionControlConfig
+    )
     standard_distribution_recipients: tuple[DistributionRecipient, ...] = ()
     additional_distribution_recipients: tuple[DistributionRecipient, ...] = ()
 
@@ -103,6 +123,48 @@ class DocumentControlConfig:
             seen_emails.add(normalized_email)
             recipients.append(recipient)
         return tuple(recipients)
+
+
+def parse_document_preparation(
+    value: Any,
+    field_name: str = "preparation",
+) -> DocumentPreparationConfig:
+    if value is None:
+        return DocumentPreparationConfig()
+    if not isinstance(value, dict):
+        raise ProfileError(f"{field_name} deve ser um objeto.")
+    action = str(value.get("action", "Criação do Documento")).strip()
+    name = str(value.get("name") or "").strip()
+    if not action:
+        raise ProfileError(f"{field_name}.action e obrigatorio.")
+    return DocumentPreparationConfig(action=action, name=name)
+
+
+def parse_document_version_control(
+    value: Any,
+    field_name: str = "version_control",
+) -> DocumentVersionControlConfig:
+    if value is None:
+        return DocumentVersionControlConfig()
+    if not isinstance(value, dict):
+        raise ProfileError(f"{field_name} deve ser um objeto.")
+    version = str(value.get("version", "1.0")).strip()
+    affected_sections = str(value.get("affected_sections", "Todas")).strip()
+    change = str(value.get("change", "Elaboração do conteúdo")).strip()
+    changed_by = str(value.get("changed_by") or "").strip()
+    for item_name, item_value in (
+        ("version", version),
+        ("affected_sections", affected_sections),
+        ("change", change),
+    ):
+        if not item_value:
+            raise ProfileError(f"{field_name}.{item_name} e obrigatorio.")
+    return DocumentVersionControlConfig(
+        version=version,
+        affected_sections=affected_sections,
+        change=change,
+        changed_by=changed_by,
+    )
 
 
 def parse_distribution_recipients(
@@ -630,10 +692,16 @@ def load_operational_client_profile(path: str | Path) -> ClientProfile:
         standard_data.get("distribution_recipients"),
         "distribution_recipients",
     )
+    preparation = parse_document_preparation(standard_data.get("preparation"))
+    version_control = parse_document_version_control(
+        standard_data.get("version_control")
+    )
     return replace(
         profile,
         document_control=replace(
             profile.document_control,
+            preparation=preparation,
+            version_control=version_control,
             standard_distribution_recipients=standard_recipients,
         ),
     )

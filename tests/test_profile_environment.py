@@ -94,6 +94,53 @@ def test_loaded_profile_merges_standard_and_additional_distribution_recipients(
     ]
 
 
+def test_loaded_profile_uses_global_preparation_and_version_control(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        "[project]\nname='fixture'\n",
+        encoding="utf-8",
+    )
+    orchestration = tmp_path / "orchestration"
+    orchestration.mkdir()
+    (orchestration / "document-control.json").write_text(
+        json.dumps({
+            "schema_version": 1,
+            "preparation": {
+                "action": "Elaboracao do Documento",
+                "name": "Equipe Tecnica",
+            },
+            "version_control": {
+                "version": "2.0",
+                "affected_sections": "Todas",
+                "change": "Revisao mensal",
+                "changed_by": "Equipe Tecnica",
+            },
+            "distribution_recipients": [],
+        }),
+        encoding="utf-8",
+    )
+    profiles = tmp_path / "clients" / "managed"
+    profiles.mkdir(parents=True)
+    profile_path = profiles / "cliente.json"
+    profile_path.write_text(
+        json.dumps({
+            "schema_version": 1,
+            "client_id": "cliente-controle",
+            "display_name": "Cliente Controle",
+            "tenant_id": "tenant-controle",
+        }),
+        encoding="utf-8",
+    )
+
+    profile = load_operational_client_profile(profile_path)
+
+    assert profile.document_control.preparation.action == "Elaboracao do Documento"
+    assert profile.document_control.preparation.name == "Equipe Tecnica"
+    assert profile.document_control.version_control.version == "2.0"
+    assert profile.document_control.version_control.affected_sections == "Todas"
+    assert profile.document_control.version_control.change == "Revisao mensal"
+    assert profile.document_control.version_control.changed_by == "Equipe Tecnica"
+
+
 class ProfileTests(unittest.TestCase):
     def test_profile_exposes_additional_document_distribution_recipients(self) -> None:
         profile = ClientProfile.from_dict({

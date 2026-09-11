@@ -7,7 +7,11 @@ from docx.document import Document as DocxDocument
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-from tenable_reports.config.profile import DistributionRecipient
+from tenable_reports.config.profile import (
+    DistributionRecipient,
+    DocumentPreparationConfig,
+    DocumentVersionControlConfig,
+)
 from tenable_reports.presentation import base_report_docx as base
 
 
@@ -86,6 +90,8 @@ def append_document_control(
     document: DocxDocument,
     *,
     generated_date: str,
+    preparation: DocumentPreparationConfig,
+    version_control: DocumentVersionControlConfig,
     recipients: Sequence[DistributionRecipient],
     mask_sensitive: bool = False,
     mover: ElementMover | None = None,
@@ -99,7 +105,7 @@ def append_document_control(
         document,
         "Preparação",
         ("Ação", "Nome", "Data"),
-        (("Criação do Documento", "", generated_date),),
+        ((preparation.action, preparation.name, generated_date),),
         mover=mover,
     )
     _spacer(document, mover)
@@ -107,7 +113,13 @@ def append_document_control(
         document,
         "Controle de Versionamento",
         ("Versão", "Data da Versão", "Seções Afetadas", "Alteração", "Alterado por"),
-        (("1.0", generated_date, "Todas", "Elaboração do conteúdo", ""),),
+        ((
+            version_control.version,
+            generated_date,
+            version_control.affected_sections,
+            version_control.change,
+            version_control.changed_by,
+        ),),
         mover=mover,
     )
     _spacer(document, mover)

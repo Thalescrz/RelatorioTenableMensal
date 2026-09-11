@@ -615,21 +615,43 @@ def test_frontend_exposes_analyst_filters_selection_modal_and_management() -> No
     assert "openRunSelection" in javascript
 
 
-def test_frontend_exposes_standard_and_client_document_distribution_controls() -> None:
+def test_frontend_separates_global_document_control_from_client_recipients() -> None:
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     javascript = (STATIC / "app.js").read_text(encoding="utf-8")
+    manage_dialog = html[
+        html.index('<dialog id="manage-dialog"'):
+        html.index("</dialog>", html.index('<dialog id="manage-dialog"'))
+    ]
+    admin_dialog = html[
+        html.index('<dialog id="admin-dialog"'):
+        html.index("</dialog>", html.index('<dialog id="admin-dialog"'))
+    ]
 
     for element_id in (
+        "admin-document-control-tab",
+        "admin-document-control-panel",
+        "document-control-form",
+        "document-preparation-action",
+        "document-preparation-name",
+        "document-version",
+        "document-affected-sections",
+        "document-change",
+        "document-changed-by",
         "standard-distribution-form",
         "standard-distribution-list",
-        "save-standard-distribution",
+        "save-document-control",
+    ):
+        assert f'id="{element_id}"' in admin_dialog
+        assert f'id="{element_id}"' not in manage_dialog
+    for element_id in (
         "client-distribution-fields",
         "client-distribution-list",
         "add-client-distribution",
     ):
-        assert f'id="{element_id}"' in html
+        assert f'id="{element_id}"' in manage_dialog
     assert html.index("document_distribution.js") < html.index("app.js")
     assert "/api/document-control" in javascript
+    assert 'name !== "document-control"' in javascript
     assert "additional_distribution_recipients" in javascript
 
 

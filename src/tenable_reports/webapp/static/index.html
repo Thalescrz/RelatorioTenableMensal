@@ -178,20 +178,6 @@
       <section>
         <h3>Clientes cadastrados</h3>
         <div id="manage-client-list" class="manage-list"></div>
-        <section class="distribution-config standard-distribution-config" aria-labelledby="standard-distribution-title">
-          <div class="distribution-config-head">
-            <div><span>CONTROLE DE DOCUMENTO</span><strong id="standard-distribution-title">Distribuição padrão</strong></div>
-          </div>
-          <p>Estas entidades entram primeiro na lista de distribuição de todos os clientes.</p>
-          <form id="standard-distribution-form" class="distribution-entry-form">
-            <label>Nome<input id="standard-recipient-name" required maxlength="160" placeholder="Ex.: Tenable ITP"></label>
-            <label>Organização<input id="standard-recipient-organization" required maxlength="160" placeholder="Ex.: ITPROTECT"></label>
-            <label>E-mail<input id="standard-recipient-email" required type="email" maxlength="254" placeholder="documentos@example.invalid"></label>
-            <button class="mini-button" type="submit">Incluir</button>
-          </form>
-          <div id="standard-distribution-list" class="distribution-list"></div>
-          <button class="button ghost full" id="save-standard-distribution" type="button">Salvar distribuição padrão</button>
-        </section>
         <section class="analyst-manager">
           <div><span>RESPONSÁVEIS</span><strong>Analistas</strong></div>
           <form id="analyst-form" class="analyst-form">
@@ -384,12 +370,13 @@
 
   <dialog id="admin-dialog" class="dialog admin-dialog">
     <div class="dialog-head">
-      <div><p class="eyebrow">ADMINISTRAÇÃO</p><h2>Configuração operacional</h2><p>Gerencie a automação mensal e as referências históricas.</p></div>
+      <div><p class="eyebrow">ADMINISTRAÇÃO</p><h2>Configuração operacional</h2><p>Gerencie padrões globais, automação mensal e referências históricas.</p></div>
       <button class="icon-button close-dialog" type="button" aria-label="Fechar">×</button>
     </div>
     <div class="admin-tabs" role="tablist">
       <button id="admin-monthly-tab" class="admin-tab active" data-admin-tab="monthly" role="tab" aria-selected="true" type="button">Automação mensal</button>
       <button id="admin-backfill-tab" class="admin-tab" data-admin-tab="backfill" role="tab" aria-selected="false" type="button">Referências históricas</button>
+      <button id="admin-document-control-tab" class="admin-tab" data-admin-tab="document-control" role="tab" aria-selected="false" type="button">Controle de documento</button>
     </div>
     <section id="admin-monthly-panel" class="admin-tab-panel" role="tabpanel">
       <div id="monthly-loading" class="loading">Carregando configuração mensal…</div>
@@ -427,6 +414,50 @@
         <p id="backfill-action-note">Nenhuma alteração foi realizada.</p>
         <button class="button primary" id="apply-backfill-button" type="button" disabled>Aplicar promoções seguras</button>
       </div>
+    </section>
+    <section id="admin-document-control-panel" class="admin-tab-panel hidden" role="tabpanel">
+      <div class="document-control-intro">
+        <strong>Padrão global do Controle de Documento</strong>
+        <p>Preparação e Controle de Versionamento são iguais para todos os clientes. A data é preenchida automaticamente na geração.</p>
+      </div>
+      <form id="document-control-form" class="document-control-form">
+        <section class="document-control-table-config" aria-labelledby="document-preparation-title">
+          <div class="distribution-config-head">
+            <div><span>TABELA 1</span><strong id="document-preparation-title">Preparação</strong></div>
+          </div>
+          <div class="field-row">
+            <label>Ação<input id="document-preparation-action" required maxlength="160"></label>
+            <label>Nome<input id="document-preparation-name" maxlength="160" placeholder="Opcional"></label>
+          </div>
+        </section>
+        <section class="document-control-table-config" aria-labelledby="document-version-title">
+          <div class="distribution-config-head">
+            <div><span>TABELA 2</span><strong id="document-version-title">Controle de Versionamento</strong></div>
+          </div>
+          <div class="field-row">
+            <label>Versão<input id="document-version" required maxlength="40"></label>
+            <label>Seções afetadas<input id="document-affected-sections" required maxlength="160"></label>
+          </div>
+          <div class="field-row">
+            <label>Alteração<input id="document-change" required maxlength="240"></label>
+            <label>Alterado por<input id="document-changed-by" maxlength="160" placeholder="Opcional"></label>
+          </div>
+        </section>
+      </form>
+      <section class="distribution-config standard-distribution-config" aria-labelledby="standard-distribution-title">
+        <div class="distribution-config-head">
+          <div><span>TABELA 3</span><strong id="standard-distribution-title">Lista de Distribuição padrão</strong></div>
+        </div>
+        <p>Estas entidades entram primeiro na lista de distribuição de todos os clientes.</p>
+        <form id="standard-distribution-form" class="distribution-entry-form">
+          <label>Nome<input id="standard-recipient-name" required maxlength="160" placeholder="Ex.: Tenable ITP"></label>
+          <label>Organização<input id="standard-recipient-organization" required maxlength="160" placeholder="Ex.: ITPROTECT"></label>
+          <label>E-mail<input id="standard-recipient-email" required type="email" maxlength="254" placeholder="documentos@example.invalid"></label>
+          <button class="mini-button" type="submit">Incluir</button>
+        </form>
+        <div id="standard-distribution-list" class="distribution-list"></div>
+      </section>
+      <button class="button primary full" id="save-document-control" type="button">Salvar Controle de Documento padrão</button>
     </section>
   </dialog>
 

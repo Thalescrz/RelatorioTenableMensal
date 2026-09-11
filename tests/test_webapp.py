@@ -2789,6 +2789,34 @@ class WebDashboardTests(unittest.TestCase):
                 ["padrao@empresa.example", "cliente@empresa.example"],
             )
 
+    def test_document_control_store_round_trips_global_table_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DashboardConfigStore(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+            preparation = {
+                "action": "Elaboracao do Documento",
+                "name": "Equipe Tecnica",
+            }
+            version_control = {
+                "version": "2.0",
+                "affected_sections": "Todas",
+                "change": "Revisao mensal",
+                "changed_by": "Equipe Tecnica",
+            }
+
+            saved = store.save_document_control({
+                "preparation": preparation,
+                "version_control": version_control,
+                "distribution_recipients": [],
+            })
+
+            self.assertEqual(saved["preparation"], preparation)
+            self.assertEqual(saved["version_control"], version_control)
+            self.assertEqual(store.document_control(), saved)
+
     def test_document_distribution_api_updates_standard_recipients(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

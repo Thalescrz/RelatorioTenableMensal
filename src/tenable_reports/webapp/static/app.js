@@ -1079,9 +1079,6 @@ function removeDistributionDraft(scope, index) {
 }
 
 function openManageDialog() {
-  state.standardDistributionDraft = copyRecipients(
-    state.data?.document_control?.distribution_recipients || []
-  );
   renderDistributionLists();
   $("#manage-dialog").showModal();
 }
@@ -1304,8 +1301,24 @@ function selectAdminTab(name) {
   });
   $("#admin-monthly-panel").classList.toggle("hidden", name !== "monthly");
   $("#admin-backfill-panel").classList.toggle("hidden", name !== "backfill");
+  $("#admin-document-control-panel").classList.toggle("hidden", name !== "document-control");
   if (name === "monthly") void loadMonthlySchedule();
-  else void analyzeBackfill();
+  else if (name === "backfill") void analyzeBackfill();
+  else loadDocumentControlAdmin();
+}
+
+function loadDocumentControlAdmin() {
+  const config = state.data?.document_control || {};
+  const preparation = config.preparation || {};
+  const versionControl = config.version_control || {};
+  $("#document-preparation-action").value = preparation.action || "Criação do Documento";
+  $("#document-preparation-name").value = preparation.name || "";
+  $("#document-version").value = versionControl.version || "1.0";
+  $("#document-affected-sections").value = versionControl.affected_sections || "Todas";
+  $("#document-change").value = versionControl.change || "Elaboração do conteúdo";
+  $("#document-changed-by").value = versionControl.changed_by || "";
+  state.standardDistributionDraft = copyRecipients(config.distribution_recipients || []);
+  renderDistributionLists();
 }
 
 async function runMonthlyScheduleAction(button, action) {
@@ -1366,7 +1379,8 @@ $("#add-client-distribution").addEventListener("click", () => addDistributionDra
     removeDistributionDraft(button.dataset.removeDistribution, button.dataset.distributionIndex);
   });
 });
-$("#save-standard-distribution").addEventListener("click", async event => {
+$("#save-document-control").addEventListener("click", async event => {
+  if (!$("#document-control-form").reportValidity()) return;
   const button = event.currentTarget;
   button.disabled = true;
   const original = button.textContent;
@@ -1374,12 +1388,24 @@ $("#save-standard-distribution").addEventListener("click", async event => {
   try {
     const saved = await api("/api/document-control", {
       method: "POST",
-      body: { distribution_recipients: state.standardDistributionDraft || [] },
+      body: {
+        preparation: {
+          action: $("#document-preparation-action").value,
+          name: $("#document-preparation-name").value,
+        },
+        version_control: {
+          version: $("#document-version").value,
+          affected_sections: $("#document-affected-sections").value,
+          change: $("#document-change").value,
+          changed_by: $("#document-changed-by").value,
+        },
+        distribution_recipients: state.standardDistributionDraft || [],
+      },
     });
     if (state.data) state.data.document_control = saved;
     state.standardDistributionDraft = copyRecipients(saved.distribution_recipients || []);
     renderDistributionLists();
-    toast("Distribuição padrão salva.");
+    toast("Controle de Documento padrão salvo.");
   } catch (error) { toast(error.message, "error"); }
   finally { button.disabled = false; button.textContent = original; }
 });

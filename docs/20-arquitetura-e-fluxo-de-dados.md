@@ -162,9 +162,12 @@ O bloco **Controle de Documento** também é compartilhado pelo relatório geral
 pelo Cloud. Um único componente monta, na mesma ordem, as tabelas **Preparação**
 (`Ação`, `Nome`, `Data`), **Controle de Versionamento** (`Versão`, `Data da Versão`,
 `Seções Afetadas`, `Alteração`, `Alterado por`) e **Lista de Distribuição** (`Nome`,
-`Organização`, `E-mail`). Os destinatários de `orchestration/document-control.json`
-são globais; os itens de `document_control.additional_distribution_recipients` do
-perfil são acrescentados depois. A composição elimina e-mails repetidos sem
+`Organização`, `E-mail`). Os valores de Preparação, Controle de Versionamento e os
+destinatários de `orchestration/document-control.json` são globais e administrados
+em **Admin → Controle de documento**. Os itens de
+`document_control.additional_distribution_recipients` do perfil são acrescentados
+depois e são a única personalização disponível em **Gerenciar clientes**. A
+composição elimina e-mails repetidos sem
 diferenciar maiúsculas de minúsculas e mantém o registro global quando houver
 conflito. Perfis legados e instalações sem o arquivo global continuam válidos.
 O parser `load_client_profile` lê apenas o arquivo solicitado, mantendo fixtures e

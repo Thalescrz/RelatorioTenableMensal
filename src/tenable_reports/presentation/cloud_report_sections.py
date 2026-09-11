@@ -312,6 +312,8 @@ def render_document_control(
     append_document_control(
         builder.document,
         generated_date=generated_date.strftime("%d/%m/%Y"),
+        preparation=profile.document_control.preparation,
+        version_control=profile.document_control.version_control,
         recipients=profile.document_control.distribution_recipients,
         mask_sensitive=mask_sensitive,
         mover=builder._move,

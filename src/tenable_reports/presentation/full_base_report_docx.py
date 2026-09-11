@@ -957,6 +957,8 @@ def _body(document: DocxDocument, dataset: Mapping[str, Any], profile: ClientPro
     first_heading = append_document_control(
         document,
         generated_date=generated.strftime("%d/%m/%Y"),
+        preparation=profile.document_control.preparation,
+        version_control=profile.document_control.version_control,
         recipients=profile.document_control.distribution_recipients,
         mask_sensitive=mask_sensitive,
     )

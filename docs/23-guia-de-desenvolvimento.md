@@ -329,7 +329,8 @@ Depois de alterar apresentação:
 O controle de documento é renderizado exclusivamente por
 `presentation/document_control.py`; os renderizadores Geral e Cloud não devem
 recriar essas tabelas localmente. A fonte global é o arquivo local ignorado
-`orchestration/document-control.json`, enquanto o perfil do cliente guarda apenas
+`orchestration/document-control.json`; ele guarda `preparation`, `version_control`
+e `distribution_recipients`. O perfil do cliente guarda apenas
 `document_control.additional_distribution_recipients`. Ao alterar esse contrato,
 teste parser, API, composição global + adicional, deduplicação por e-mail, ordem
 das linhas e igualdade estrutural entre os dois DOCX. Use `load_client_profile`
