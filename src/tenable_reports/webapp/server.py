@@ -4466,6 +4466,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "monthly_schedule.js",
                 "report_request_guard.js",
                 "dashboard_refresh.js",
+                "client_card.js",
                 "batch_retryability.js",
                 "document_distribution.js",
             }:

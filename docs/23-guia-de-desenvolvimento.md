@@ -369,6 +369,13 @@ controle depois da confirmação do POST e agenda, sem aguardar, uma única atua
 posterior. O estado usa consultas em massa de jobs/eventos e cache curto somente
 para a varredura transitória de disco. O resumo não inclui o histórico detalhado:
 `GET /api/batches/<id>` carrega os clientes do lote sob demanda.
+O polling do dashboard usa 3 segundos com jobs ativos e 15 segundos em repouso,
+fica suspenso com a aba oculta e consulta imediatamente no retorno. Antes de
+renderizar, compare o payload ignorando apenas `server_time`. Os cards de clientes
+devem ser reconciliados por `client_id`: preserve o elemento existente, atualize
+somente seu conteúdo quando necessário e reserve a animação de entrada para novos
+elementos. IDs técnicos não aparecem no card; o resumo exibe `VM`, `WAS` e `CLOUD`
+conforme o perfil operacional.
 
 Downloads agregados devem ser montados sob `data/.downloads`, aceitar somente
 documentos registrados dentro da raiz `data`, usar nomes de componentes

@@ -90,6 +90,15 @@ Exclusão é bloqueada enquanto existir vínculo; a operação normal é desativ
 
 O filtro por analista no painel combina com a busca textual e altera somente os
 cards exibidos. Ele não muda vulnerabilidades, relatórios nem lotes já confirmados.
+Nos cards da carteira, os identificadores técnicos ficam ocultos e o bloco
+**Módulos ativos** mostra `VM` para todos os clientes, além de `WAS` e `CLOUD`
+quando habilitados. `client_id` e `tenant_id` continuam disponíveis somente ao
+abrir **Gerenciar clientes → Editar**.
+
+O painel atualiza o estado sem reconstruir cards que não mudaram: durante trabalho
+ativo a consulta ocorre a cada 3 segundos e, quando a fila está ociosa, a cada 15
+segundos. A atualização pausa enquanto a aba está oculta e é retomada imediatamente
+ao voltar. Mudanças apenas no relógio do servidor não redesenham a interface.
 
 ## Cloud Security
 

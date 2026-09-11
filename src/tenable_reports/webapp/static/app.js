@@ -5,20 +5,26 @@ const { copyRecipients, addRecipient, removeRecipient } = window.TenableDocument
 const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, standardDistributionDraft: undefined, clientDistributionDraft: [], connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, monthlySchedule: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: null, batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
 const { createLatestRequestGuard, reportExecutionCopy } = window.TenableReportRequestGuard;
 const reportRequestGuard = createLatestRequestGuard();
-const { createRefreshCoordinator } = window.TenableDashboardRefresh;
+const { createRefreshCoordinator, hasDashboardStateChanged, createAdaptivePoller } = window.TenableDashboardRefresh;
+const { clientModuleSummary, reconcileClientCards } = window.TenableClientCard;
 const { retryabilityView } = window.TenableBatchRetryability;
 let refreshErrorShouldToast = false;
+let lastRenderedDashboardState = null;
+let dashboardPoller = null;
 const refreshCoordinator = createRefreshCoordinator({
   load: () => api("/api/state"),
   apply: payload => {
+    const shouldRender = hasDashboardStateChanged(lastRenderedDashboardState, payload);
     state.data = payload;
-    render();
+    if (shouldRender) render();
+    lastRenderedDashboardState = payload;
     refreshErrorShouldToast = false;
   },
   onError: error => {
     if (refreshErrorShouldToast) toast(error.message, "error");
     $("#connection-label").textContent = "servidor indisponível";
     refreshErrorShouldToast = false;
+    lastRenderedDashboardState = null;
   },
 });
 const CLOUD_PROGRESS_EVENT = "TENABLE_CLOUD_PROGRESS";
@@ -109,6 +115,14 @@ function warningForClient(client) {
   if (client.cloud_enabled && !client.cloud_token_saved) return "Cloud Security está ativo, mas o token Cloud ainda não foi salvo. Os relatórios VM continuam disponíveis.";
   const currentJobIsSuccessful = ["COMPLETE", "COMPLETE_WITH_WARNINGS", "PARTIALLY_COMPLETE"].includes(job?.status);
   return currentJobIsSuccessful ? "" : (client.alert?.message || "");
+}
+
+function clientModulesMarkup(client) {
+  const summary = clientModuleSummary(client);
+  return `<div class="client-modules" aria-label="${escapeHtml(summary.label)}">
+    <span class="client-modules-label">${escapeHtml(summary.label)}</span>
+    <div class="client-module-list">${summary.modules.map(module => `<span class="client-module-badge">${escapeHtml(module)}</span>`).join("")}</div>
+  </div>`;
 }
 
 function tagProgressCopy(job) {
@@ -585,44 +599,71 @@ function render() {
   )
     .filter(matchesStatusFilter);
   $("#empty-state").classList.toggle("hidden", clients.length > 0);
-  $("#client-grid").innerHTML = filtered.map(client => {
-    const status = statusFor(client); const job = client.job;
-    const progress = job?.progress ?? (client.latest_report ? 100 : 0);
-    const report = client.latest_report;
-    const connectionCheck = state.connectionChecks[client.client_id];
-    const warning = warningForClient(client) || job?.status === "WAITING_WAS_DECISION" || client.was_recoveries?.length || job?.export_progress?.stalled || job?.was_export_progress?.stalled || connectionCheck?.ok === false || connectionCheck?.cloud?.ok === false;
-    const phaseCopy = jobPhaseCopy(job);
-    const runningCopy = job?.vm_selective_mode === "validation"
-      ? "Validando export completo x otimizado"
-      : phaseCopy || cloudProgressCopy(job) || tagProgressCopy(job) || wasExportProgressCopy(job) || exportProgressCopy(job) || "Coletando e gerando documentos";
-    const displayRunningCopy = job?.force_live_collection ? `API ao vivo · ${runningCopy}` : runningCopy;
-    const queuedCopy = job?.force_live_collection ? "Aguardando execução · API ao vivo" : "Aguardando execução";
-    const componentProgress = [
-      exportProgressCopy(job),
-      wasExportProgressCopy(job),
-      cloudProgressCopy(job),
-    ].filter(Boolean);
-    const validation = job?.vm_export_validation;
-    const completedCopy = validation
-      ? `Validação do export: ${validation.outcome === "PASSED" ? "aprovada" : "revisar"}`
-      : collectionOutcomeCopy(job) || (report ? `${report.document_count} documento(s)` : "Aguardando primeira execução");
-    return `<article class="client-card" data-client="${escapeHtml(client.client_id)}" tabindex="0">
-      <div class="card-top"><span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? '<span class="warning-badge" title="Há um alerta">!</span>' : ""}</div>
-      <h3>${escapeHtml(client.display_name)}</h3><span class="analyst-chip">${escapeHtml(client.responsible_analyst_name || "Sem responsável")}</span><p class="client-meta">${escapeHtml(client.client_id)}<br>${escapeHtml(client.tenant_id || "tenant não informado")}</p>
-      <div class="card-report"><span>Último relatório</span><strong>${report ? escapeHtml(report.period_id || formatDate(report.ended_at)) : "Ainda não gerado"}</strong></div>
-      <div class="progress-wrap"><div class="progress-copy"><span>${phaseCopy ? escapeHtml(job?.force_live_collection ? `API ao vivo · ${phaseCopy}` : phaseCopy) : job?.status === "RUNNING" ? escapeHtml(displayRunningCopy) : job?.status === "QUEUED" ? queuedCopy : job?.status === "FAILED" ? "Execução interrompida" : job?.status === "WAITING_WAS_DECISION" ? "VM concluído · escolha como tratar o WEB" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div>${componentProgress.length ? `<div class="component-progress">${componentProgress.map(item => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}</div>
-    </article>`;
-  }).join("");
-  document.querySelectorAll(".client-card").forEach(card => {
-    const open = () => openClient(card.dataset.client);
-    card.addEventListener("click", open); card.addEventListener("keydown", e => { if (["Enter", " "].includes(e.key)) open(); });
+  reconcileClientCards($("#client-grid"), filtered, {
+    createCard: client => {
+      const card = document.createElement("article");
+      card.className = "client-card";
+      card.dataset.client = client.client_id;
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      const open = () => openClient(card.dataset.client);
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", event => {
+        if (!["Enter", " "].includes(event.key)) return;
+        event.preventDefault();
+        open();
+      });
+      updateClientCard(card, client);
+      return card;
+    },
+    updateCard: updateClientCard,
   });
   renderManageList(); renderDistributionLists(); renderAlerts();
 }
 
+function updateClientCard(card, client) {
+  const status = statusFor(client); const job = client.job;
+  const progress = job?.progress ?? (client.latest_report ? 100 : 0);
+  const report = client.latest_report;
+  const connectionCheck = state.connectionChecks[client.client_id];
+  const warning = warningForClient(client) || job?.status === "WAITING_WAS_DECISION" || client.was_recoveries?.length || job?.export_progress?.stalled || job?.was_export_progress?.stalled || connectionCheck?.ok === false || connectionCheck?.cloud?.ok === false;
+  const phaseCopy = jobPhaseCopy(job);
+  const runningCopy = job?.vm_selective_mode === "validation"
+    ? "Validando export completo x otimizado"
+    : phaseCopy || cloudProgressCopy(job) || tagProgressCopy(job) || wasExportProgressCopy(job) || exportProgressCopy(job) || "Coletando e gerando documentos";
+  const displayRunningCopy = job?.force_live_collection ? `API ao vivo · ${runningCopy}` : runningCopy;
+  const queuedCopy = job?.force_live_collection ? "Aguardando execução · API ao vivo" : "Aguardando execução";
+  const componentProgress = [
+    exportProgressCopy(job),
+    wasExportProgressCopy(job),
+    cloudProgressCopy(job),
+  ].filter(Boolean);
+  const validation = job?.vm_export_validation;
+  const completedCopy = validation
+    ? `Validação do export: ${validation.outcome === "PASSED" ? "aprovada" : "revisar"}`
+    : collectionOutcomeCopy(job) || (report ? `${report.document_count} documento(s)` : "Aguardando primeira execução");
+  const markup = `
+    <div class="card-top"><span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? '<span class="warning-badge" title="Há um alerta">!</span>' : ""}</div>
+    <h3>${escapeHtml(client.display_name)}</h3><span class="analyst-chip">${escapeHtml(client.responsible_analyst_name || "Sem responsável")}</span>${clientModulesMarkup(client)}
+    <div class="card-report"><span>Último relatório</span><strong>${report ? escapeHtml(report.period_id || formatDate(report.ended_at)) : "Ainda não gerado"}</strong></div>
+    <div class="progress-wrap"><div class="progress-copy"><span>${phaseCopy ? escapeHtml(job?.force_live_collection ? `API ao vivo · ${phaseCopy}` : phaseCopy) : job?.status === "RUNNING" ? escapeHtml(displayRunningCopy) : job?.status === "QUEUED" ? queuedCopy : job?.status === "FAILED" ? "Execução interrompida" : job?.status === "WAITING_WAS_DECISION" ? "VM concluído · escolha como tratar o WEB" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div>${componentProgress.length ? `<div class="component-progress">${componentProgress.map(item => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}</div>`;
+  if (card.__tenableMarkup === markup) return;
+  card.innerHTML = markup;
+  card.__tenableMarkup = markup;
+}
+
+function hasActiveDashboardWork() {
+  return (state.data?.jobs || []).some(job =>
+    ["QUEUED", "RUNNING", "INTERRUPT_REQUESTED"].includes(job.status)
+  );
+}
+
 function refresh(silent = true, options = {}) {
   if (!silent) refreshErrorShouldToast = true;
-  return refreshCoordinator.refresh(options);
+  const { fromPoller = false, ...coordinatorOptions } = options;
+  const pending = refreshCoordinator.refresh(coordinatorOptions);
+  if (!fromPoller) pending.finally(() => dashboardPoller?.reschedule());
+  return pending;
 }
 
 function startBrowserDownload(url) {
@@ -1895,4 +1936,14 @@ $("#confirm-component-retry").addEventListener("click", async event => {
   }
 });
 
-refresh(false); setInterval(() => refresh(true), 3000);
+dashboardPoller = createAdaptivePoller({
+  refresh: () => refresh(true, { fromPoller: true }),
+  hasActiveWork: hasActiveDashboardWork,
+  isHidden: () => document.hidden,
+  activeIntervalMs: 3000,
+  idleIntervalMs: 15000,
+});
+document.addEventListener("visibilitychange", () => {
+  void dashboardPoller.handleVisibilityChange();
+});
+refresh(false).finally(() => dashboardPoller.start());
