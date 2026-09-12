@@ -142,6 +142,44 @@ def _run_dashboard_refresh_script(source: str) -> object:
     return json.loads(completed.stdout)
 
 
+def _run_client_card_script(source: str) -> object:
+    script_path = STATIC / "client_card.js"
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            (
+                f"const helpers = require({json.dumps(str(script_path))});"
+                f"const result = (() => {{ {source} }})();"
+                "process.stdout.write(JSON.stringify(result));"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    return json.loads(completed.stdout)
+
+
+def _run_dashboard_alerts_script(source: str) -> object:
+    script_path = STATIC / "dashboard_alerts.js"
+    completed = subprocess.run(
+        [
+            "node",
+            "-e",
+            (
+                f"const helpers = require({json.dumps(str(script_path))});"
+                f"const result = (() => {{ {source} }})();"
+                "process.stdout.write(JSON.stringify(result));"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    return json.loads(completed.stdout)
+
+
 def _run_batch_retryability_script(source: str) -> object:
     script_path = STATIC / "batch_retryability.js"
     completed = subprocess.run(
@@ -323,6 +361,175 @@ def test_refresh_coordinator_reports_error_and_releases_running_state() -> None:
     )
 
     assert result == {"calls": ["error:indisponivel"], "running": False}
+
+
+def test_dashboard_state_change_ignores_only_the_volatile_server_clock() -> None:
+    result = _run_dashboard_refresh_script(
+        "const previous = {server_time: '2026-09-11T10:00:00Z', clients: ["
+        "{client_id: 'cliente-a', job: {status: 'RUNNING', progress: 10}}]};"
+        "const clockOnly = {server_time: '2026-09-11T10:00:03Z', clients: ["
+        "{client_id: 'cliente-a', job: {status: 'RUNNING', progress: 10}}]};"
+        "const progressChanged = {server_time: '2026-09-11T10:00:06Z', clients: ["
+        "{client_id: 'cliente-a', job: {status: 'RUNNING', progress: 11}}]};"
+        "return {"
+        "clockOnly: helpers.hasDashboardStateChanged(previous, clockOnly),"
+        "progressChanged: helpers.hasDashboardStateChanged(clockOnly, progressChanged)"
+        "};"
+    )
+
+    assert result == {"clockOnly": False, "progressChanged": True}
+
+
+def test_adaptive_dashboard_poller_pauses_hidden_tabs_and_resumes_immediately() -> None:
+    result = _run_dashboard_refresh_script(
+        "const scheduled = []; const cancelled = [];"
+        "let hidden = false; let active = false; let refreshes = 0;"
+        "const poller = helpers.createAdaptivePoller({"
+        "refresh: async () => { refreshes += 1; },"
+        "hasActiveWork: () => active, isHidden: () => hidden,"
+        "schedule: (callback, delay) => { const token = {callback, delay}; "
+        "scheduled.push(token); return token; },"
+        "cancel: token => cancelled.push(token.delay),"
+        "activeIntervalMs: 3000, idleIntervalMs: 15000"
+        "});"
+        "const idleDelay = poller.start();"
+        "active = true; const activeDelay = poller.reschedule();"
+        "hidden = true; await poller.handleVisibilityChange();"
+        "const scheduledWhileHidden = poller.isScheduled();"
+        "hidden = false; await poller.handleVisibilityChange();"
+        "return {idleDelay, activeDelay, scheduledWhileHidden, refreshes, "
+        "resumedDelay: scheduled.at(-1).delay, cancelled};"
+    )
+
+    assert result == {
+        "idleDelay": 15000,
+        "activeDelay": 3000,
+        "scheduledWhileHidden": False,
+        "refreshes": 1,
+        "resumedDelay": 3000,
+        "cancelled": [15000, 3000],
+    }
+
+
+def test_client_card_summary_exposes_active_modules_without_internal_ids() -> None:
+    result = _run_client_card_script(
+        "const client = {client_id: 'cliente-interno', tenant_id: 'tenant-interno', "
+        "was_enabled: true, cloud_enabled: false};"
+        "const summary = helpers.clientModuleSummary(client);"
+        "return {summary, serialized: JSON.stringify(summary)};"
+    )
+
+    assert result == {
+        "summary": {"label": "Módulos ativos", "modules": ["VM", "WAS"]},
+        "serialized": '{"label":"Módulos ativos","modules":["VM","WAS"]}',
+    }
+
+
+def test_client_card_reconciliation_reuses_existing_cards_and_updates_content() -> None:
+    result = _run_client_card_script(
+        "const makeNode = key => ({dataset: {client: key}, updates: [], remove() { "
+        "this.removed = true; const at = container.children.indexOf(this); "
+        "if (at >= 0) container.children.splice(at, 1); }});"
+        "const first = makeNode('cliente-a'); const obsolete = makeNode('cliente-antigo');"
+        "const container = {children: [first, obsolete], insertBefore(node, before) {"
+        "const current = this.children.indexOf(node); if (current >= 0) this.children.splice(current, 1);"
+        "const target = before ? this.children.indexOf(before) : this.children.length;"
+        "this.children.splice(target < 0 ? this.children.length : target, 0, node);"
+        "}, appendChild(node) { this.insertBefore(node, null); }};"
+        "helpers.reconcileClientCards(container, ["
+        "{client_id: 'cliente-a', revision: 2}, {client_id: 'cliente-b', revision: 1}"
+        "], {"
+        "createCard: client => makeNode(client.client_id),"
+        "updateCard: (node, client) => node.updates.push(client.revision)"
+        "});"
+        "return {sameFirst: container.children[0] === first, order: container.children.map("
+        "node => node.dataset.client), firstUpdates: first.updates, obsoleteRemoved: obsolete.removed};"
+    )
+
+    assert result == {
+        "sameFirst": True,
+        "order": ["cliente-a", "cliente-b"],
+        "firstUpdates": [2],
+        "obsoleteRemoved": True,
+    }
+
+
+def test_dashboard_alert_cutoff_hides_existing_items_but_keeps_new_ones() -> None:
+    result = _run_dashboard_alerts_script(
+        "if (typeof helpers.unreadAlertItems !== 'function') return {available: false};"
+        "const cutoff = '2026-09-11T20:15:00Z';"
+        "const items = ["
+        "{code: 'before', at: '2026-09-11T20:14:59Z'},"
+        "{code: 'equal', at: '2026-09-11T20:15:00Z'},"
+        "{code: 'after', at: '2026-09-11T20:15:01Z'},"
+        "{code: 'undated', at: null}"
+        "];"
+        "return {available: true, visible: helpers.unreadAlertItems(items, cutoff)"
+        ".map(item => item.code)};"
+    )
+
+    assert result == {
+        "available": True,
+        "visible": ["after", "undated"],
+    }
+
+
+def test_acknowledged_terminal_failure_is_completed_only_with_a_report() -> None:
+    result = _run_dashboard_alerts_script(
+        "if (typeof helpers.shouldPresentClientAsCompleted !== 'function') "
+        "return {available: false};"
+        "const cutoff = '2026-09-11T20:15:00Z';"
+        "const client = (status, endedAt, hasReport) => ({"
+        "latest_report: hasReport ? {period_id: '2026-08'} : null,"
+        "job: {status, ended_at: endedAt}"
+        "});"
+        "return {available: true,"
+        "warningWithReport: helpers.shouldPresentClientAsCompleted("
+        "client('COMPLETE_WITH_WARNINGS', '2026-09-11T20:14:00Z', true), cutoff),"
+        "failureWithReport: helpers.shouldPresentClientAsCompleted("
+        "client('FAILED', '2026-09-11T20:14:00Z', true), cutoff),"
+        "failureWithoutReport: helpers.shouldPresentClientAsCompleted("
+        "client('FAILED', '2026-09-11T20:14:00Z', false), cutoff),"
+        "newFailureWithReport: helpers.shouldPresentClientAsCompleted("
+        "client('FAILED', '2026-09-11T20:16:00Z', true), cutoff)"
+        "};"
+    )
+
+    assert result == {
+        "available": True,
+        "warningWithReport": True,
+        "failureWithReport": True,
+        "failureWithoutReport": False,
+        "newFailureWithReport": False,
+    }
+
+
+def test_acknowledged_client_progress_reaches_one_hundred_without_masking_new_failure() -> None:
+    result = _run_dashboard_alerts_script(
+        "if (typeof helpers.presentedClientProgress !== 'function') "
+        "return {available: false};"
+        "const cutoff = '2026-09-11T20:15:00Z';"
+        "const client = endedAt => ({latest_report: {period_id: '2026-08'},"
+        "job: {status: 'FAILED', ended_at: endedAt, progress: 63}});"
+        "return {available: true,"
+        "acknowledged: helpers.presentedClientProgress("
+        "client('2026-09-11T20:14:00Z'), cutoff),"
+        "newFailure: helpers.presentedClientProgress("
+        "client('2026-09-11T20:16:00Z'), cutoff),"
+        "publishedWithoutJob: helpers.presentedClientProgress("
+        "{latest_report: {period_id: '2026-08'}, job: null}, cutoff),"
+        "notGenerated: helpers.presentedClientProgress("
+        "{latest_report: null, job: null}, cutoff)"
+        "};"
+    )
+
+    assert result == {
+        "available": True,
+        "acknowledged": 100,
+        "newFailure": 63,
+        "publishedWithoutJob": 100,
+        "notGenerated": 0,
+    }
 
 
 def test_client_selection_helpers_filter_by_query_analyst_and_unassigned() -> None:

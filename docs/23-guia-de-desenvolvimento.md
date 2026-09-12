@@ -369,6 +369,21 @@ controle depois da confirmação do POST e agenda, sem aguardar, uma única atua
 posterior. O estado usa consultas em massa de jobs/eventos e cache curto somente
 para a varredura transitória de disco. O resumo não inclui o histórico detalhado:
 `GET /api/batches/<id>` carrega os clientes do lote sob demanda.
+O polling do dashboard usa 3 segundos com jobs ativos e 15 segundos em repouso,
+fica suspenso com a aba oculta e consulta imediatamente no retorno. Antes de
+renderizar, compare o payload ignorando apenas `server_time`. Os cards de clientes
+devem ser reconciliados por `client_id`: preserve o elemento existente, atualize
+somente seu conteúdo quando necessário e reserve a animação de entrada para novos
+elementos. IDs técnicos não aparecem no card; o resumo exibe `VM`, `WAS` e `CLOUD`
+conforme o perfil operacional.
+O reconhecimento de alertas usa `POST /api/alerts/mark-read` e persiste somente
+`alerts_read_before` no arquivo local ignorado
+`orchestration/dashboard-alerts.json`. A interface filtra ocorrências com timestamp
+anterior ou igual ao corte, mas preserva eventos sem timestamp e qualquer evento
+novo. O histórico PostgreSQL e os estados dos jobs não são alterados. Para a
+apresentação do cliente, um estado terminal reconhecido só pode aparecer como
+**Concluído** quando `latest_report` existe; uma falha sem publicação continua
+falha.
 
 Downloads agregados devem ser montados sob `data/.downloads`, aceitar somente
 documentos registrados dentro da raiz `data`, usar nomes de componentes

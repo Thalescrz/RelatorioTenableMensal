@@ -34,3 +34,4 @@ clients/managed/
 orchestration/clients.json
 orchestration/analysts.json
 orchestration/document-control.json
+orchestration/dashboard-alerts.json

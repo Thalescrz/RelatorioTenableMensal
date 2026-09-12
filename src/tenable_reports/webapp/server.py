@@ -465,6 +465,9 @@ class DashboardConfigStore:
         self.document_control_path = (
             self.project_root / "orchestration" / "document-control.json"
         )
+        self.dashboard_alerts_path = (
+            self.project_root / "orchestration" / "dashboard-alerts.json"
+        )
         self.ensure_exists()
 
     def ensure_exists(self) -> None:
@@ -517,6 +520,30 @@ class DashboardConfigStore:
     def raw(self) -> dict[str, Any]:
         with self._lock:
             return _read_json(self.config_path)
+
+    def alerts_read_before(self) -> str | None:
+        with self._lock:
+            if not self.dashboard_alerts_path.is_file():
+                return None
+            payload = _read_json(self.dashboard_alerts_path)
+            if payload.get("schema_version") != 1:
+                raise ValueError(
+                    "schema_version do estado de alertas deve ser 1."
+                )
+            value = str(payload.get("alerts_read_before") or "").strip()
+            return value or None
+
+    def mark_alerts_read(self) -> str:
+        with self._lock:
+            read_before = _utc_now()
+            write_json_atomic(
+                self.dashboard_alerts_path,
+                {
+                    "schema_version": 1,
+                    "alerts_read_before": read_before,
+                },
+            )
+            return read_before
 
     def document_control(self) -> dict[str, Any]:
         with self._lock:
@@ -4428,6 +4455,7 @@ class DashboardApplication:
             "clients": clients,
             "analysts": self.config.list_analysts(),
             "document_control": self.config.document_control(),
+            "alerts_read_before": self.config.alerts_read_before(),
             "jobs": jobs,
             "batches": batches,
             "alerts": alerts,
@@ -4466,6 +4494,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "monthly_schedule.js",
                 "report_request_guard.js",
                 "dashboard_refresh.js",
+                "client_card.js",
+                "dashboard_alerts.js",
                 "batch_retryability.js",
                 "document_distribution.js",
             }:
@@ -4815,6 +4845,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/analysts":
                 analyst = self.app.config.create_analyst(payload)
                 self._json(HTTPStatus.CREATED, {"analyst": analyst})
+                return
+            if parsed.path == "/api/alerts/mark-read":
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "alerts_read_before": (
+                            self.app.config.mark_alerts_read()
+                        )
+                    },
+                )
                 return
             if parsed.path == "/api/document-control":
                 document_control = self.app.config.save_document_control(payload)

@@ -5,20 +5,27 @@ const { copyRecipients, addRecipient, removeRecipient } = window.TenableDocument
 const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, standardDistributionDraft: undefined, clientDistributionDraft: [], connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, monthlySchedule: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: null, batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
 const { createLatestRequestGuard, reportExecutionCopy } = window.TenableReportRequestGuard;
 const reportRequestGuard = createLatestRequestGuard();
-const { createRefreshCoordinator } = window.TenableDashboardRefresh;
+const { createRefreshCoordinator, hasDashboardStateChanged, createAdaptivePoller } = window.TenableDashboardRefresh;
+const { clientModuleSummary, reconcileClientCards } = window.TenableClientCard;
+const { isAlertUnread, unreadAlertItems, shouldPresentClientAsCompleted, presentedClientProgress } = window.TenableDashboardAlerts;
 const { retryabilityView } = window.TenableBatchRetryability;
 let refreshErrorShouldToast = false;
+let lastRenderedDashboardState = null;
+let dashboardPoller = null;
 const refreshCoordinator = createRefreshCoordinator({
   load: () => api("/api/state"),
   apply: payload => {
+    const shouldRender = hasDashboardStateChanged(lastRenderedDashboardState, payload);
     state.data = payload;
-    render();
+    if (shouldRender) render();
+    lastRenderedDashboardState = payload;
     refreshErrorShouldToast = false;
   },
   onError: error => {
     if (refreshErrorShouldToast) toast(error.message, "error");
     $("#connection-label").textContent = "servidor indisponível";
     refreshErrorShouldToast = false;
+    lastRenderedDashboardState = null;
   },
 });
 const CLOUD_PROGRESS_EVENT = "TENABLE_CLOUD_PROGRESS";
@@ -75,6 +82,7 @@ function jobPhaseCopy(job) {
 function statusFor(client) {
   const job = client.job;
   if (!client.enabled) return { key: "disabled", label: "Desabilitado" };
+  if (shouldPresentClientAsCompleted(client, state.data?.alerts_read_before)) return { key: "completed", label: "Concluído" };
   if (job?.status === "PARTIALLY_COMPLETE") return { key: "partial", label: "Parcialmente concluído" };
   if (job?.status === "FAILED") return { key: "failed", label: "Falhou" };
   if (["INTERRUPTED", "CANCELLED_BY_USER"].includes(job?.status)) return { key: "interrupted", label: "Interrompido" };
@@ -102,13 +110,29 @@ function matchesStatusFilter(client) {
 
 function warningForClient(client) {
   const job = client.job;
-  const currentJobMessage = job?.error || job?.warnings?.[0]?.message;
+  const currentJobUnread = isAlertUnread(
+    { at: job?.ended_at || job?.created_at },
+    state.data?.alerts_read_before,
+  );
+  const currentJobMessage = currentJobUnread
+    ? job?.error || job?.warnings?.[0]?.message
+    : "";
   if (currentJobMessage) return currentJobMessage;
   if (client.profile_error) return client.profile_error;
   if (!client.credentials_ready) return "As credenciais Tenable ainda não foram preenchidas.";
   if (client.cloud_enabled && !client.cloud_token_saved) return "Cloud Security está ativo, mas o token Cloud ainda não foi salvo. Os relatórios VM continuam disponíveis.";
   const currentJobIsSuccessful = ["COMPLETE", "COMPLETE_WITH_WARNINGS", "PARTIALLY_COMPLETE"].includes(job?.status);
-  return currentJobIsSuccessful ? "" : (client.alert?.message || "");
+  return currentJobIsSuccessful || !isAlertUnread(client.alert, state.data?.alerts_read_before)
+    ? ""
+    : (client.alert?.message || "");
+}
+
+function clientModulesMarkup(client) {
+  const summary = clientModuleSummary(client);
+  return `<div class="client-modules" aria-label="${escapeHtml(summary.label)}">
+    <span class="client-modules-label">${escapeHtml(summary.label)}</span>
+    <div class="client-module-list">${summary.modules.map(module => `<span class="client-module-badge">${escapeHtml(module)}</span>`).join("")}</div>
+  </div>`;
 }
 
 function tagProgressCopy(job) {
@@ -538,27 +562,11 @@ function render() {
   const activeJobs = (state.data.jobs || []).filter(j => ["QUEUED", "RUNNING"].includes(j.status));
   $("#metric-clients").textContent = clients.filter(c => c.enabled).length;
   $("#metric-running").textContent = activeJobs.length;
-  const jobWarningCount = (state.data.jobs || []).reduce((total, job) => total + (job.warnings || []).length, 0);
-  const stalledExportCount = (state.data.jobs || []).filter(
-    job => job.export_progress?.stalled || job.was_export_progress?.stalled
-  ).length;
-  const wasRecoveryCount = (state.data.was_recoveries || []).length;
-  $("#metric-alerts").textContent = (state.data.alerts || []).length + jobWarningCount + stalledExportCount + wasRecoveryCount + (state.data.database_error ? 1 : 0);
+  const unreadAlerts = unreadDashboardAlertItems();
+  $("#metric-alerts").textContent = unreadAlerts.length;
   $("#connection-label").textContent = state.data.database_error ? "banco indisponível" : "PostgreSQL online";
   $(".connection").classList.toggle("online", !state.data.database_error);
-  const firstJobWarning = (state.data.jobs || []).find(job => job.warnings?.length)?.warnings?.[0];
-  const stalledExport = (state.data.jobs || []).find(
-    job => job.was_export_progress?.stalled || job.export_progress?.stalled
-  );
-  const stalledExportAlert = stalledExport
-    ? stalledExport.client_id + ": " + (
-        wasExportProgressCopy(stalledExport) || exportProgressCopy(stalledExport)
-      )
-    : null;
-  const wasRecoveryAlert = state.data.was_recoveries?.[0]
-    ? `${state.data.was_recoveries[0].client_id}: decisão necessária sobre a coleta WEB.`
-    : null;
-  const alert = state.data.database_error || state.data.alerts?.[0]?.message || firstJobWarning?.message || stalledExportAlert || wasRecoveryAlert;
+  const alert = unreadAlerts[0]?.message || "";
   $("#global-alert").classList.toggle("hidden", !alert);
   $("#global-alert-text").textContent = alert || "";
   $("#run-all-button").disabled = !clients.some(c => c.enabled && c.credentials_ready);
@@ -585,44 +593,78 @@ function render() {
   )
     .filter(matchesStatusFilter);
   $("#empty-state").classList.toggle("hidden", clients.length > 0);
-  $("#client-grid").innerHTML = filtered.map(client => {
-    const status = statusFor(client); const job = client.job;
-    const progress = job?.progress ?? (client.latest_report ? 100 : 0);
-    const report = client.latest_report;
-    const connectionCheck = state.connectionChecks[client.client_id];
-    const warning = warningForClient(client) || job?.status === "WAITING_WAS_DECISION" || client.was_recoveries?.length || job?.export_progress?.stalled || job?.was_export_progress?.stalled || connectionCheck?.ok === false || connectionCheck?.cloud?.ok === false;
-    const phaseCopy = jobPhaseCopy(job);
-    const runningCopy = job?.vm_selective_mode === "validation"
-      ? "Validando export completo x otimizado"
-      : phaseCopy || cloudProgressCopy(job) || tagProgressCopy(job) || wasExportProgressCopy(job) || exportProgressCopy(job) || "Coletando e gerando documentos";
-    const displayRunningCopy = job?.force_live_collection ? `API ao vivo · ${runningCopy}` : runningCopy;
-    const queuedCopy = job?.force_live_collection ? "Aguardando execução · API ao vivo" : "Aguardando execução";
-    const componentProgress = [
-      exportProgressCopy(job),
-      wasExportProgressCopy(job),
-      cloudProgressCopy(job),
-    ].filter(Boolean);
-    const validation = job?.vm_export_validation;
-    const completedCopy = validation
-      ? `Validação do export: ${validation.outcome === "PASSED" ? "aprovada" : "revisar"}`
-      : collectionOutcomeCopy(job) || (report ? `${report.document_count} documento(s)` : "Aguardando primeira execução");
-    return `<article class="client-card" data-client="${escapeHtml(client.client_id)}" tabindex="0">
-      <div class="card-top"><span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? '<span class="warning-badge" title="Há um alerta">!</span>' : ""}</div>
-      <h3>${escapeHtml(client.display_name)}</h3><span class="analyst-chip">${escapeHtml(client.responsible_analyst_name || "Sem responsável")}</span><p class="client-meta">${escapeHtml(client.client_id)}<br>${escapeHtml(client.tenant_id || "tenant não informado")}</p>
-      <div class="card-report"><span>Último relatório</span><strong>${report ? escapeHtml(report.period_id || formatDate(report.ended_at)) : "Ainda não gerado"}</strong></div>
-      <div class="progress-wrap"><div class="progress-copy"><span>${phaseCopy ? escapeHtml(job?.force_live_collection ? `API ao vivo · ${phaseCopy}` : phaseCopy) : job?.status === "RUNNING" ? escapeHtml(displayRunningCopy) : job?.status === "QUEUED" ? queuedCopy : job?.status === "FAILED" ? "Execução interrompida" : job?.status === "WAITING_WAS_DECISION" ? "VM concluído · escolha como tratar o WEB" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div>${componentProgress.length ? `<div class="component-progress">${componentProgress.map(item => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}</div>
-    </article>`;
-  }).join("");
-  document.querySelectorAll(".client-card").forEach(card => {
-    const open = () => openClient(card.dataset.client);
-    card.addEventListener("click", open); card.addEventListener("keydown", e => { if (["Enter", " "].includes(e.key)) open(); });
+  reconcileClientCards($("#client-grid"), filtered, {
+    createCard: client => {
+      const card = document.createElement("article");
+      card.className = "client-card";
+      card.dataset.client = client.client_id;
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+      const open = () => openClient(card.dataset.client);
+      card.addEventListener("click", open);
+      card.addEventListener("keydown", event => {
+        if (!["Enter", " "].includes(event.key)) return;
+        event.preventDefault();
+        open();
+      });
+      updateClientCard(card, client);
+      return card;
+    },
+    updateCard: updateClientCard,
   });
   renderManageList(); renderDistributionLists(); renderAlerts();
 }
 
+function updateClientCard(card, client) {
+  const status = statusFor(client); const job = client.job;
+  const acknowledgedAsCompleted = shouldPresentClientAsCompleted(
+    client,
+    state.data?.alerts_read_before,
+  );
+  const progress = presentedClientProgress(
+    client,
+    state.data?.alerts_read_before,
+  );
+  const report = client.latest_report;
+  const connectionCheck = state.connectionChecks[client.client_id];
+  const warning = warningForClient(client) || job?.status === "WAITING_WAS_DECISION" || client.was_recoveries?.length || job?.export_progress?.stalled || job?.was_export_progress?.stalled || connectionCheck?.ok === false || connectionCheck?.cloud?.ok === false;
+  const phaseCopy = acknowledgedAsCompleted ? null : jobPhaseCopy(job);
+  const runningCopy = job?.vm_selective_mode === "validation"
+    ? "Validando export completo x otimizado"
+    : phaseCopy || cloudProgressCopy(job) || tagProgressCopy(job) || wasExportProgressCopy(job) || exportProgressCopy(job) || "Coletando e gerando documentos";
+  const displayRunningCopy = job?.force_live_collection ? `API ao vivo · ${runningCopy}` : runningCopy;
+  const queuedCopy = job?.force_live_collection ? "Aguardando execução · API ao vivo" : "Aguardando execução";
+  const componentProgress = [
+    exportProgressCopy(job),
+    wasExportProgressCopy(job),
+    cloudProgressCopy(job),
+  ].filter(Boolean);
+  const validation = job?.vm_export_validation;
+  const completedCopy = validation
+    ? `Validação do export: ${validation.outcome === "PASSED" ? "aprovada" : "revisar"}`
+    : collectionOutcomeCopy(job) || (report ? `${report.document_count} documento(s)` : "Aguardando primeira execução");
+  const markup = `
+    <div class="card-top"><span class="status-pill ${status.key}"><i></i>${escapeHtml(status.label)}</span>${warning ? '<span class="warning-badge" title="Há um alerta">!</span>' : ""}</div>
+    <h3>${escapeHtml(client.display_name)}</h3><span class="analyst-chip">${escapeHtml(client.responsible_analyst_name || "Sem responsável")}</span>${clientModulesMarkup(client)}
+    <div class="card-report"><span>Último relatório</span><strong>${report ? escapeHtml(report.period_id || formatDate(report.ended_at)) : "Ainda não gerado"}</strong></div>
+    <div class="progress-wrap"><div class="progress-copy"><span>${acknowledgedAsCompleted ? completedCopy : phaseCopy ? escapeHtml(job?.force_live_collection ? `API ao vivo · ${phaseCopy}` : phaseCopy) : job?.status === "RUNNING" ? escapeHtml(displayRunningCopy) : job?.status === "QUEUED" ? queuedCopy : job?.status === "FAILED" ? "Execução interrompida" : job?.status === "WAITING_WAS_DECISION" ? "VM concluído · escolha como tratar o WEB" : completedCopy}</span><span>${progress}%</span></div><div class="progress-track"><progress class="progress-bar" max="100" value="${progress}" aria-label="Progresso: ${progress}%"></progress></div>${componentProgress.length ? `<div class="component-progress">${componentProgress.map(item => `<span>${escapeHtml(item)}</span>`).join("")}</div>` : ""}</div>`;
+  if (card.__tenableMarkup === markup) return;
+  card.innerHTML = markup;
+  card.__tenableMarkup = markup;
+}
+
+function hasActiveDashboardWork() {
+  return (state.data?.jobs || []).some(job =>
+    ["QUEUED", "RUNNING", "INTERRUPT_REQUESTED"].includes(job.status)
+  );
+}
+
 function refresh(silent = true, options = {}) {
   if (!silent) refreshErrorShouldToast = true;
-  return refreshCoordinator.refresh(options);
+  const { fromPoller = false, ...coordinatorOptions } = options;
+  const pending = refreshCoordinator.refresh(coordinatorOptions);
+  if (!fromPoller) pending.finally(() => dashboardPoller?.reschedule());
+  return pending;
 }
 
 function startBrowserDownload(url) {
@@ -1103,8 +1145,9 @@ async function testConnections(clientIds, button) {
   finally { if (button?.isConnected) { button.disabled = false; button.textContent = original; } }
 }
 
-function renderAlerts() {
-  if (!state.data) return; const alerts = [...(state.data.alerts || [])];
+function dashboardAlertItems() {
+  if (!state.data) return [];
+  const alerts = [...(state.data.alerts || [])];
   const failedJobs = (state.data.jobs || []).filter(j => j.status === "FAILED").map(j => ({client_id:j.client_id, message:j.error, at:j.ended_at, run_id:j.run_id, job_id:j.job_id, export:j.export_progress}));
   const partialJobs = (state.data.jobs || []).filter(j => j.status === "PARTIALLY_COMPLETE").map(j => ({
     client_id: j.client_id,
@@ -1142,8 +1185,22 @@ function renderAlerts() {
     };
   }));
   if (state.data.database_error) alerts.unshift({client_id:"Sistema", message:state.data.database_error, at:state.data.server_time});
-  const items = [...waitingWasJobs, ...durableWasRecoveries, ...partialJobs, ...failedJobs, ...componentWarnings, ...alerts]
+  return [...waitingWasJobs, ...durableWasRecoveries, ...partialJobs, ...failedJobs, ...componentWarnings, ...alerts]
     .sort((left, right) => new Date(right.at || 0) - new Date(left.at || 0));
+}
+
+function unreadDashboardAlertItems() {
+  return unreadAlertItems(
+    dashboardAlertItems(),
+    state.data?.alerts_read_before,
+  );
+}
+
+function renderAlerts() {
+  if (!state.data) return;
+  const items = unreadDashboardAlertItems();
+  const markReadButton = $("#mark-alerts-read-button");
+  if (markReadButton) markReadButton.disabled = items.length === 0;
   $("#alerts-list").innerHTML = items.length ? items.map(a => {
     const stuck = a.export?.status === "TIMED_OUT" && !a.export?.auto_cancelled;
     const segmentCopy = a.export?.segment ? ` · segmento ${a.export.segment === "fixed" ? "corrigidas / last_fixed" : "ativas e reabertas / last_found"}` : "";
@@ -1169,7 +1226,7 @@ function renderAlerts() {
         ? `<p><button class="mini-button danger" data-cancel-export-job="${escapeHtml(a.job_id)}" data-export-uuid="${escapeHtml(a.export.export_uuid)}" type="button">Cancelar export e tentar novamente</button></p>`
         : `<p><button class="mini-button" data-retry-job="${escapeHtml(a.job_id)}" type="button">Tentar novamente</button></p>`;
     return `<div class="alert-row"><span class="alert-sign">!</span><div><strong>${escapeHtml(a.client_id || "Sistema")}</strong><p>${escapeHtml(a.message || "Falha sem detalhes.")}</p>${exportCopy}${wasCopy}<small>${formatDate(a.at)}${a.run_id ? ` · ${escapeHtml(a.run_id)}` : ""}</small>${reportSetAction}${action}</div></div>`;
-  }).join("") : '<div class="loading">Nenhum alerta registrado.</div>';
+  }).join("") : '<div class="loading">Nenhum alerta não lido.</div>';
   document.querySelectorAll("[data-open-alert-report]").forEach(button => button.addEventListener("click", () => {
     $("#alerts-dialog").close();
     openClient(button.dataset.openAlertReport, button.dataset.openAlertRun || "");
@@ -1526,6 +1583,21 @@ $("#archive-form").addEventListener("submit", async event => {
 });
 $("#empty-add-button").addEventListener("click", () => { resetClientForm(); openManageDialog(); });
 $("#open-alerts-button").addEventListener("click", () => $("#alerts-dialog").showModal());
+$("#mark-alerts-read-button").addEventListener("click", async event => {
+  const button = event.currentTarget;
+  const count = unreadDashboardAlertItems().length;
+  if (!count) return;
+  button.disabled = true;
+  try {
+    const result = await api("/api/alerts/mark-read", { method: "POST", body: {} });
+    state.data.alerts_read_before = result.alerts_read_before;
+    render();
+    toast(`${count} alerta(s) marcado(s) como lido(s).`);
+  } catch (error) {
+    button.disabled = false;
+    toast(error.message, "error");
+  }
+});
 $("#cleanup-button").addEventListener("click", async event => {
   event.currentTarget.disabled = true;
   try {
@@ -1895,4 +1967,14 @@ $("#confirm-component-retry").addEventListener("click", async event => {
   }
 });
 
-refresh(false); setInterval(() => refresh(true), 3000);
+dashboardPoller = createAdaptivePoller({
+  refresh: () => refresh(true, { fromPoller: true }),
+  hasActiveWork: hasActiveDashboardWork,
+  isHidden: () => document.hidden,
+  activeIntervalMs: 3000,
+  idleIntervalMs: 15000,
+});
+document.addEventListener("visibilitychange", () => {
+  void dashboardPoller.handleVisibilityChange();
+});
+refresh(false).finally(() => dashboardPoller.start());
