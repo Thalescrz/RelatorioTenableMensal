@@ -383,7 +383,9 @@ anterior ou igual ao corte, mas preserva eventos sem timestamp e qualquer evento
 novo. O histórico PostgreSQL e os estados dos jobs não são alterados. Para a
 apresentação do cliente, um estado terminal reconhecido só pode aparecer como
 **Concluído** quando `latest_report` existe; uma falha sem publicação continua
-falha.
+falha. O ícone do cartão aplica o mesmo corte a `was_recoveries.updated_at`, sem
+remover o checkpoint persistido; registros novos ou sem timestamp continuam
+visíveis.
 
 Downloads agregados devem ser montados sob `data/.downloads`, aceitar somente
 documentos registrados dentro da raiz `data`, usar nomes de componentes
