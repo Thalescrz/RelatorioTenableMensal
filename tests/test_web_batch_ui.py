@@ -474,6 +474,31 @@ def test_dashboard_alert_cutoff_hides_existing_items_but_keeps_new_ones() -> Non
     }
 
 
+def test_dashboard_recovery_warning_respects_alert_read_cutoff() -> None:
+    result = _run_dashboard_alerts_script(
+        "if (typeof helpers.hasUnreadWasRecovery !== 'function') "
+        "return {available: false};"
+        "const cutoff = '2026-09-11T20:15:00Z';"
+        "const client = updatedAt => ({was_recoveries: [{updated_at: updatedAt}]});"
+        "return {available: true,"
+        "acknowledged: helpers.hasUnreadWasRecovery("
+        "client('2026-09-11T20:14:00Z'), cutoff),"
+        "newRecovery: helpers.hasUnreadWasRecovery("
+        "client('2026-09-11T20:16:00Z'), cutoff),"
+        "undated: helpers.hasUnreadWasRecovery(client(null), cutoff),"
+        "withoutRecovery: helpers.hasUnreadWasRecovery({was_recoveries: []}, cutoff)"
+        "};"
+    )
+
+    assert result == {
+        "available": True,
+        "acknowledged": False,
+        "newRecovery": True,
+        "undated": True,
+        "withoutRecovery": False,
+    }
+
+
 def test_acknowledged_terminal_failure_is_completed_only_with_a_report() -> None:
     result = _run_dashboard_alerts_script(
         "if (typeof helpers.shouldPresentClientAsCompleted !== 'function') "

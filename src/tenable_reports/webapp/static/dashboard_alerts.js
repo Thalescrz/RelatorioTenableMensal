@@ -20,6 +20,13 @@
     return items.filter(item => isAlertUnread(item, alertsReadBefore));
   }
 
+  function hasUnreadWasRecovery(client, alertsReadBefore) {
+    return (client?.was_recoveries || []).some(recovery => isAlertUnread(
+      { at: recovery?.updated_at },
+      alertsReadBefore,
+    ));
+  }
+
   function shouldPresentClientAsCompleted(client, alertsReadBefore) {
     const job = client?.job;
     if (!client?.latest_report || !job) return false;
@@ -43,6 +50,7 @@
   return {
     isAlertUnread,
     unreadAlertItems,
+    hasUnreadWasRecovery,
     shouldPresentClientAsCompleted,
     presentedClientProgress,
   };

@@ -7,7 +7,7 @@ const { createLatestRequestGuard, reportExecutionCopy } = window.TenableReportRe
 const reportRequestGuard = createLatestRequestGuard();
 const { createRefreshCoordinator, hasDashboardStateChanged, createAdaptivePoller } = window.TenableDashboardRefresh;
 const { clientModuleSummary, reconcileClientCards } = window.TenableClientCard;
-const { isAlertUnread, unreadAlertItems, shouldPresentClientAsCompleted, presentedClientProgress } = window.TenableDashboardAlerts;
+const { isAlertUnread, unreadAlertItems, hasUnreadWasRecovery, shouldPresentClientAsCompleted, presentedClientProgress } = window.TenableDashboardAlerts;
 const { retryabilityView } = window.TenableBatchRetryability;
 let refreshErrorShouldToast = false;
 let lastRenderedDashboardState = null;
@@ -627,7 +627,7 @@ function updateClientCard(card, client) {
   );
   const report = client.latest_report;
   const connectionCheck = state.connectionChecks[client.client_id];
-  const warning = warningForClient(client) || job?.status === "WAITING_WAS_DECISION" || client.was_recoveries?.length || job?.export_progress?.stalled || job?.was_export_progress?.stalled || connectionCheck?.ok === false || connectionCheck?.cloud?.ok === false;
+  const warning = warningForClient(client) || job?.status === "WAITING_WAS_DECISION" || hasUnreadWasRecovery(client, state.data?.alerts_read_before) || job?.export_progress?.stalled || job?.was_export_progress?.stalled || connectionCheck?.ok === false || connectionCheck?.cloud?.ok === false;
   const phaseCopy = acknowledgedAsCompleted ? null : jobPhaseCopy(job);
   const runningCopy = job?.vm_selective_mode === "validation"
     ? "Validando export completo x otimizado"

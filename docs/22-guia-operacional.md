@@ -106,8 +106,9 @@ ela grava apenas um corte temporal local em
 `orchestration/dashboard-alerts.json`. O contador, o banner e a lista passam a
 mostrar somente ocorrências posteriores. Um cliente com relatório já publicado e
 falha ou aviso reconhecido aparece como **Concluído**; sem relatório publicado, o
-estado de falha permanece visível. Uma nova execução sempre volta a usar seu
-resultado real.
+estado de falha permanece visível. Recuperações WAS anteriores ao corte também
+deixam de exibir o ícone vermelho no cartão, mas uma recuperação nova volta a
+sinalizá-lo. Uma nova execução sempre volta a usar seu resultado real.
 
 ## Cloud Security
 
