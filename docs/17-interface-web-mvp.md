@@ -1,5 +1,10 @@
 # Interface web local — MVP
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 ## Estado atual — 2026-08-24
 
 Além da fila e dos downloads, o painel permite editar clientes, testar uma API ou

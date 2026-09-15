@@ -1,5 +1,10 @@
 # Fase 1 - Análise e arquitetura
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 **Status:** concluída em 2026-08-12  
 **Escopo desta versão:** scripts, documentação oficial e quatro relatórios DOCX representativos  
 **Resultado:** contrato funcional e arquitetural fechado; implementação do produto ainda não iniciada

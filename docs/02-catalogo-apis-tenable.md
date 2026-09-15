@@ -1,5 +1,10 @@
 # Catálogo preliminar das APIs Tenable
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 ## Estado atual — 2026-08-23
 
 O export VM combinado é o padrão, com 1000 ativos por chunk, persistência imediata

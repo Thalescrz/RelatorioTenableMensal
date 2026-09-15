@@ -1,5 +1,10 @@
 # Fase 10 - Orquestração e distribuição controlada
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 ## Estado atual — 2026-08-23
 
 Uma execução pode publicar os dois DOCX gerais e documentos operacionais por TAG a

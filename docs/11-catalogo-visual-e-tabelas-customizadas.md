@@ -1,5 +1,10 @@
 # Catálogo visual e de tabelas customizadas
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 **Data da revisão:** 2026-08-13  
 **Amostra:** quatro relatórios Word de referência, identificados apenas como Y, X, Z e A  
 **Escopo:** elementos adicionais destinados ao segundo DOCX (`inteligência e customizações`)

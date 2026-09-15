@@ -1,5 +1,10 @@
 # Relatório-base fiel e documento de customizações
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 **Revisado em:** 2026-08-13  
 **Versão do relatório-base:** `base-fiel-v2.1`  
 **Entrada:** perfil validado + `report-dataset.json`

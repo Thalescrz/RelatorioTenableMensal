@@ -1,5 +1,10 @@
 # Histórico, regras críticas e tradução
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 ## Estado atual — 2026-08-23
 
 PostgreSQL é o backend operacional do histórico, documentos, tentativas e referência

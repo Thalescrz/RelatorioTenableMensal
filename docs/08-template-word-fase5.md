@@ -1,5 +1,10 @@
 # Template Word mínimo — Fase 5
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 > **Estado atual:** este documento preserva o histórico da Fase 5. O template
 > vigente é o shell oficial sanitizado descrito em
 > `templates/corporate/README.md`. O comando `generate-base-docx` permanece apenas

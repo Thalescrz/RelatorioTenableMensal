@@ -1,5 +1,10 @@
 # Matriz comparativa e contrato dos dois relatórios
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 **Data da análise:** 2026-08-12  
 **Amostra:** Cliente Y, Cliente X, Cliente Z e Cliente A  
 **Escopo:** estrutura, conteúdo, semântica, identidade visual, recorrência e possibilidade de automação

@@ -1,5 +1,10 @@
 # Protocolo de análise dos relatórios DOCX
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 Este protocolo foi aplicado aos quatro relatórios Word de referência em 2026-08-12 e deve ser repetido quando novos modelos forem incorporados.
 
 ## 1. Intake
