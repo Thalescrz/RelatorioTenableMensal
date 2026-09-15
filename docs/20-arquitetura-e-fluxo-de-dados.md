@@ -175,6 +175,11 @@ validações determinísticas; a CLI e a orquestração usam
 `load_operational_client_profile` para enriquecer explicitamente o perfil com a
 configuração global local.
 
+```text
+Admin -> padrão global de documento -> renderizadores Geral/Cloud
+Cliente -> destinatários adicionais -> linhas posteriores da Lista de Distribuição
+```
+
 O projeto legado `RelatorioCloudTenable` permanece documentado como base técnica
 histórica do conector GraphQL: ajuda a localizar operações e campos já usados, mas
 não é fonte de verdade para paginação, ausência, histórico, retry, segurança de
@@ -399,6 +404,35 @@ Um snapshot anterior à fila durável pode ser validado por
 `INTERRUPTED`, cria o lote `RECOVERED` em `PAUSED` e usa o hash do arquivo como
 identidade. `--apply` grava lote, trabalhos e evento na mesma transação. Reaplicar é
 idempotente; erro faz rollback e nunca deixa importação parcial.
+
+## Fluxo de atualização do dashboard
+
+O navegador mantém um único coordenador de atualização em voo. Quando há trabalho
+ativo, o intervalo é curto; em repouso, ele aumenta. A resposta de `/api/state` é
+comparada com a projeção existente e somente os cartões modificados são
+reconciliados, preservando foco, seleção e rolagem dos demais elementos.
+
+```text
+/api/state -> coordenador single-flight -> reconciliação dos cartões
+                              \-> polling rápido com trabalho / lento em repouso
+```
+
+O cartão projeta o status operacional e as capacidades habilitadas `VM`, `WAS` e
+`CLOUD`, mas não altera o perfil ou o resultado persistido. IDs técnicos ficam fora
+do resumo visual e permanecem disponíveis apenas na edição individual.
+
+O reconhecimento de alertas segue um fluxo local separado:
+
+```text
+Marcar alertas como lidos -> alerts_read_before local
+                          -> filtra apresentação
+                          -> não altera PostgreSQL, job ou checkpoint
+```
+
+`POST /api/alerts/mark-read` grava o corte em
+`orchestration/dashboard-alerts.json`. Alertas e recuperações WAS com timestamp
+anterior ou igual deixam de ser apresentados; um evento posterior reaparece. Jobs,
+checkpoints, eventos de lote e histórico no PostgreSQL permanecem intactos.
 
 ## Histórico e referência `MAIN`
 

@@ -12,6 +12,28 @@ inventário, postura e ciclo de vida quando habilitado. Consulte o
 O PostgreSQL não substitui a Tenable como origem dos findings. Ele mantém estado
 operacional, histórico compacto, tentativas, documentos e a referência `MAIN`.
 
+## Dados de configuração e apresentação
+
+Esses dados orientam composição e interface, mas não fazem parte das métricas de
+vulnerabilidade:
+
+- **Controle documental global:** `orchestration/document-control.json` guarda
+  Preparação, Controle de Versionamento e destinatários comuns. Os renderizadores
+  Geral e Cloud consomem o mesmo padrão.
+- **Distribuição adicional do cliente:** o perfil guarda somente
+  `document_control.additional_distribution_recipients`. Ao carregar o perfil
+  operacional, os destinatários globais são antepostos e e-mails repetidos são
+  reconciliados sem substituir a linha global.
+- **Leitura de alertas:** `alerts_read_before` é uma preferência temporal local da
+  interface, persistida fora do PostgreSQL. Ela filtra a apresentação e não é
+  métrica, evento de domínio ou comando sobre um job.
+- **Módulos ativos:** `VM`, `WAS` e `CLOUD` representam capacidades configuradas no
+  perfil. A presença do selo no cartão não prova que houve coleta ou que existam
+  findings no período.
+- **Status apresentado:** o cartão é uma projeção reconciliada do perfil, do job
+  atual e dos alertas ainda não reconhecidos. Essa projeção não reescreve o status
+  persistido do lote, da tentativa ou do documento.
+
 ## Ativo normalizado
 
 Um ativo é identificado internamente por `asset_key`, derivada da origem e do UUID.
