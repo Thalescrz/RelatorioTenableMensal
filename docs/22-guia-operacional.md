@@ -12,6 +12,9 @@
 Não é necessário usar a linha de comando para a rotina diária. Os comandos abaixo
 servem para instalação e recuperação administrativa.
 
+Consulte [CONTEXTO.md](../CONTEXTO.md) antes de retomar uma operação iniciada em
+outro ciclo ou de interpretar um documento histórico.
+
 ## Instalação inicial
 
 Na raiz do projeto:
@@ -36,6 +39,8 @@ powershell.exe -ExecutionPolicy Bypass -File ".\scripts\run_web.ps1"
 
 O painel local fica em `http://127.0.0.1:8765`. Se uma alteração recente não
 aparecer, encerre todas as instâncias antigas e inicie novamente pela raiz correta.
+Encerre o servidor com `Ctrl+C` no mesmo PowerShell que o iniciou. A interface não
+possui proteção para exposição pública e deve permanecer no ambiente local.
 
 ## Cadastrar um cliente
 
@@ -721,6 +726,8 @@ Para intervenção controlada, consulte a ajuda atual:
 .\.venv\Scripts\python.exe -m tenable_reports orchestrate --help
 .\.venv\Scripts\python.exe -m tenable_reports resume-was --help
 .\.venv\Scripts\python.exe -m tenable_reports retry-cloud --help
+.\.venv\Scripts\python.exe -m tenable_reports run-monthly-batch --help
+.\.venv\Scripts\python.exe -m tenable_reports import-web-batch-recovery --help
 ```
 
 Não execute coleta real ou cancelamento fora da interface sem identificar cliente,

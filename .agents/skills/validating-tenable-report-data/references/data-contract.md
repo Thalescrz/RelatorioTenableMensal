@@ -1,5 +1,8 @@
 # Contrato para validação de dados
 
+Use este contrato junto ao [contexto vigente](../../../../CONTEXTO.md). O código, os
+testes e os guias `docs/19` a `docs/23` prevalecem sobre registros históricos.
+
 ## Identidade da conferência
 
 Registre antes de comparar:
@@ -79,6 +82,23 @@ O documento detalha descrição, solução, referências e hosts segundo o padr�
 projeto. `Output` só aparece quando habilitado e coletado.
 
 WAS usa população e ranking próprios. Não misture instâncias/URIs WEB com hosts VM.
+
+## Fotografia Cloud
+
+Cloud usa uma população GraphQL independente de VM e WAS. A competência identifica
+o relatório, mas os valores representam a fotografia preservada no instante da
+coleta. Não reconstrua um período anterior sem snapshot Cloud compatível.
+
+Diferencie sempre:
+
+- zero calculado em uma fonte disponível;
+- campo opcional ausente, apresentado como `N/D` quando aplicável;
+- capacidade não licenciada ou não suportada;
+- falha de coleta ou publicação.
+
+Rankings de vulnerabilidade consolidam ocorrências pelo contrato Cloud, e tabelas
+de correção preservam combinações CVE/software. Uma fotografia sem referência
+anterior exibe somente o ponto real atual e declara a ausência de comparação.
 
 ## OWASP e frameworks
 

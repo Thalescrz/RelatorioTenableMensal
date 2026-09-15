@@ -12,11 +12,13 @@ editado complementa ou restringe estas regras.
 
 Preservar o padrão editorial aprovado e gerar relatórios Tenable reproduzíveis para
 múltiplos clientes. A aplicação publica dois DOCX gerais e, quando configurado,
-relatórios VM compactos por TAG. O relatório geral nunca é filtrado pelas TAGs.
+relatórios VM compactos por TAG e um relatório Cloud padrão. O relatório geral
+nunca é filtrado pelas TAGs.
 
 ## Fontes de verdade
 
 - Código e testes definem o comportamento executável.
+- `CONTEXTO.md` mantém o mapa consolidado do estado e dos limites vigentes.
 - `docs/19` a `docs/23` descrevem o estado atual.
 - `docs/01` a `docs/18` registram contratos e evolução histórica.
 - PostgreSQL é a fonte operacional de histórico, documentos, tentativas e `MAIN`.
@@ -70,4 +72,5 @@ visual das páginas afetadas.
 Use branches `codex/*` e commits pequenos. Não misture alterações não relacionadas,
 não reescreva histórico e não descarte mudanças do usuário. Atualize os guias
 vigentes quando mudar comportamento; preserve documentos históricos com uma nota
-de estado atual em vez de apagar decisões anteriores.
+de estado atual em vez de apagar decisões anteriores. Reconcilie também
+`CONTEXTO.md` e o guia detalhado afetado no mesmo ciclo.

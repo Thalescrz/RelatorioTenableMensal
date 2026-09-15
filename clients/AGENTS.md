@@ -1,5 +1,8 @@
 # Instruções para perfis de clientes
 
+Consulte [CONTEXTO.md](../CONTEXTO.md) para os contratos vigentes antes de alterar
+um perfil.
+
 ## Separação de configuração e segredo
 
 Perfis JSON descrevem comportamento; nunca contêm Access Key, Secret Key, senha do
@@ -17,8 +20,11 @@ campos editoriais são metadados separados e podem ser sensíveis.
 
 - Relatório-base é obrigatório; customizado e módulos adicionais seguem o perfil.
 - WAS pode ficar habilitado por padrão porque sua ausência é tolerada.
-- Cloud Security não deve ser apresentado como funcional enquanto a coleta não
-  existir.
+- Cloud Security é opcional, usa fotografia própria e não bloqueia VM ou WAS já
+  concluídos.
+- O perfil guarda somente destinatários adicionais da Lista de Distribuição; nunca
+  copie ou substitua nele o padrão global de Preparação, Versionamento e
+  distribuição.
 - `Plugin Output` permanece desligado salvo necessidade explícita.
 - Filtros de validação são opcionais e devem permanecer discretos.
 - Estratégia VM segura: combinada, 1000 ativos por chunk e propriedades seletivas

@@ -10,9 +10,11 @@ Use esta skill para explicar ou investigar divergências sem ajustar números pa
 
 ## Procedimento
 
-1. Identifique cliente, execução, período `[início, fim)`, documento e tabela.
+1. Leia [CONTEXTO.md](../../../CONTEXTO.md) e identifique cliente, execução, período
+   `[início, fim)`, documento e tabela.
 2. Leia o [contrato de dados](references/data-contract.md) da população envolvida.
-3. Confirme escopo: geral, WAS ou uma TAG específica. TAG não pode afetar o geral.
+3. Confirme escopo: geral, WAS, Cloud ou uma TAG específica. TAG não pode afetar o
+   geral.
 4. Confirme estados, severidades e o campo temporal correto antes de comparar.
 5. Reconcile em camadas: raw/manifesto, normalizado, dataset, histórico e DOCX.
 6. Para rankings, valide primeiro a população; depois empate, VPR, severidade e
@@ -30,6 +32,8 @@ Use esta skill para explicar ou investigar divergências sem ajustar números pa
 - IP e hostname não conciliam identidade; use UUID.
 - Top 5 é ranking local e pode não coincidir com uma ordenação padrão da interface.
 - WAS vazio não invalida VM.
+- Cloud é uma fotografia do instante da coleta; não trate a competência como
+  reconstrução histórica sem snapshot compatível preservado.
 - Sem `MAIN` compatível, valide o mês corrente e trate o comparativo como ausente.
 
 Não faça coleta real apenas para conferir documentação; reutilize dataset e
