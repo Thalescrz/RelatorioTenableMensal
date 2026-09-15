@@ -6,6 +6,9 @@ internas e a contracapa. Ele é compartilhado pelos relatórios geral, customiza
 por TAG e Cloud Security. O cliente, o contrato, o período e os metadados do arquivo
 de origem não permanecem no template.
 
+Consulte [CONTEXTO.md](../../CONTEXTO.md) para o estado vigente dos relatórios e do
+controle documental.
+
 ## Contrato
 
 - página A4 retrato;
@@ -43,6 +46,11 @@ as páginas oficiais e recolocam a contracapa como última página. Os quatro ti
 usam títulos numerados e estilos semânticos. O sumário usa o campo Word
 `TOC \\o "1-3" \\h \\z`; `w:updateFields` permanece habilitado para que o Word
 recalcule números de página e entradas ao abrir o documento.
+
+Nos relatórios Geral e Cloud, um componente compartilhado materializa as tabelas
+globais de Preparação e Controle de Versionamento. A Lista de Distribuição recebe
+primeiro as entidades globais e depois os destinatários adicionais do cliente; o
+perfil individual não substitui o padrão administrativo.
 
 ## Referência Cloud legada
 

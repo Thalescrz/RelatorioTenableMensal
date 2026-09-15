@@ -1,5 +1,10 @@
 # Coleta mensal durável com retentativa automática em três janelas
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 **Status:** desenho aprovado em conversa e consolidado para revisão em
 04/09/2026.
 

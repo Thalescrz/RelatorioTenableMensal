@@ -1,5 +1,10 @@
 # Controle durável de lotes, pausa, parada e retentativa — Especificação de design
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 **Data:** 2026-08-31  
 **Status:** aprovado para revisão e planejamento  
 **Projeto:** RelatorioTenableMensalv2

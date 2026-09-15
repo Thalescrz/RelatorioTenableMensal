@@ -1,5 +1,10 @@
 # Relatórios operacionais e comparativo temporal por TAG
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 ## Conceito
 
 “Rede” não é um escopo técnico separado no gerador. É apenas um possível nome de

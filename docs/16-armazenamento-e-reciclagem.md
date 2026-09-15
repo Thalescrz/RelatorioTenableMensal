@@ -1,5 +1,10 @@
 # Armazenamento e reciclagem
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 ## O que permanece
 
 - Os relatórios DOCX publicados permanecem na pasta `reports` até exclusão explícita pelo analista.

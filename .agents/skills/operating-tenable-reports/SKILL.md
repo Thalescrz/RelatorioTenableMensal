@@ -10,7 +10,8 @@ de conhecimento implícito do projeto.
 
 ## Procedimento
 
-1. Leia as instruções `AGENTS.md` aplicáveis e identifique a raiz ativa do projeto.
+1. Leia `CONTEXTO.md`, as instruções `AGENTS.md` aplicáveis e identifique a raiz
+   ativa do projeto.
 2. Classifique a ação: preparar ambiente, iniciar interface, configurar cliente,
    testar API, buscar TAGs, gerar, acompanhar, recuperar falha, gerenciar `MAIN` ou
    armazenamento.
@@ -34,4 +35,5 @@ de conhecimento implícito do projeto.
 - WAS é opcional; sua indisponibilidade não deve interromper VM.
 - Não exclua documentos ou staging sem resolver alvos absolutos e confirmar que não
   há execução ativa.
-- Não apresente Cloud Security como implementado.
+- Não apresente o Cloud como reconstrução histórica do período: ele representa a
+  fotografia preservada no instante da coleta.

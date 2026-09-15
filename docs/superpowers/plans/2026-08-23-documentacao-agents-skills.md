@@ -1,5 +1,10 @@
 # Documentação, AGENTS e Skills do Projeto — Implementation Plan
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Criar uma camada documental atual e verificável para analistas, desenvolvedores e agentes, corrigindo documentos legados e adicionando instruções e skills específicas do projeto.

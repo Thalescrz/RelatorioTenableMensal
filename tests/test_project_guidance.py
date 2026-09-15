@@ -8,6 +8,7 @@ from tools.validate_project_guidance import validate_guidance
 
 
 REQUIRED_FILES = (
+    "CONTEXTO.md",
     "README.md",
     "DESIGN.md",
     "docs/README.md",
@@ -62,6 +63,17 @@ class ProjectGuidanceTests(unittest.TestCase):
 
         self.assertIn("MISSING_REQUIRED_FILE", {item.code for item in issues})
 
+    def test_requires_project_context_document(self) -> None:
+        self.write_minimum_valid_tree()
+        (self.root / "CONTEXTO.md").unlink()
+
+        issues = validate_guidance(self.root)
+
+        self.assertIn(
+            ("MISSING_REQUIRED_FILE", "CONTEXTO.md"),
+            {(item.code, item.path) for item in issues},
+        )
+
     def test_reports_broken_local_markdown_link(self) -> None:
         self.write_minimum_valid_tree()
         (self.root / "README.md").write_text(
@@ -72,6 +84,49 @@ class ProjectGuidanceTests(unittest.TestCase):
         issues = validate_guidance(self.root)
 
         self.assertIn("BROKEN_LOCAL_LINK", {item.code for item in issues})
+
+    def test_reports_broken_link_in_historical_markdown(self) -> None:
+        self.write_minimum_valid_tree()
+        historical = self.root / "docs/01-historico.md"
+        historical.write_text(
+            "[Ausente](referencia-ausente.md)\n",
+            encoding="utf-8",
+        )
+
+        issues = validate_guidance(self.root)
+
+        self.assertIn(
+            ("BROKEN_LOCAL_LINK", "docs/01-historico.md"),
+            {(item.code, item.path) for item in issues},
+        )
+
+    def test_ignores_runtime_markdown_directories(self) -> None:
+        self.write_minimum_valid_tree()
+        runtime = self.root / ".tmp/session/nota.md"
+        runtime.parent.mkdir(parents=True)
+        runtime.write_text("[Ausente](arquivo.md)\n", encoding="utf-8")
+
+        self.assertEqual(validate_guidance(self.root), ())
+
+    def test_ignores_links_inside_fenced_code_blocks(self) -> None:
+        self.write_minimum_valid_tree()
+        historical = self.root / "docs/01-historico.md"
+        historical.write_text(
+            "```markdown\n[Exemplo](arquivo-ausente.md)\n```\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(validate_guidance(self.root), ())
+
+    def test_ignores_links_inside_inline_code_spans(self) -> None:
+        self.write_minimum_valid_tree()
+        historical = self.root / "docs/01-historico.md"
+        historical.write_text(
+            "Exemplo: `[Documento](arquivo-ausente.md)`.\n",
+            encoding="utf-8",
+        )
+
+        self.assertEqual(validate_guidance(self.root), ())
 
     def test_reports_invalid_skill_frontmatter(self) -> None:
         self.write_minimum_valid_tree()

@@ -4,6 +4,17 @@ Este índice separa a documentação vigente dos registros históricos de evolu�
 Quando houver divergência, os guias vigentes e o código testado prevalecem sobre
 uma descrição de fase antiga.
 
+## Ordem de leitura
+
+1. [Contexto do projeto](../CONTEXTO.md): retomada, estado consolidado, limites e
+   mapa das fontes de verdade.
+2. [README](../README.md): início rápido e resumo de uso.
+3. [Design da solução](../DESIGN.md): arquitetura e invariantes estruturais.
+4. Guias `19` a `23`: contratos vigentes de produto, dados, operação e
+   desenvolvimento.
+5. Documentos `01` a `18` e registros em `superpowers`: evolução histórica e
+   decisões de cada ciclo.
+
 ## Guias vigentes
 
 - [Design da solução](../DESIGN.md): decisões estruturais e invariantes.
@@ -18,7 +29,7 @@ uma descrição de fase antiga.
 - [Guia de desenvolvimento](23-guia-de-desenvolvimento.md): organização do código,
   testes, alterações seguras e validação dos documentos.
 
-## Contratos técnicos de referência
+## Referências históricas
 
 - [Análise e arquitetura original](01-analise-e-arquitetura.md)
 - [Catálogo das APIs Tenable](02-catalogo-apis-tenable.md)
@@ -45,6 +56,17 @@ uma descrição de fase antiga.
 Os desenhos e planos aprovados ficam em `docs/superpowers/specs` e
 `docs/superpowers/plans`. Eles explicam por que uma mudança foi criada, mas não
 substituem os guias operacionais atuais.
+
+## Instruções especializadas
+
+- [AGENTS.md da raiz](../AGENTS.md): regras globais do repositório;
+- [clientes](../clients/AGENTS.md), [código-fonte](../src/tenable_reports/AGENTS.md)
+  e [testes](../tests/AGENTS.md): complementos por diretório;
+- [skill de operação](../.agents/skills/operating-tenable-reports/SKILL.md) e seu
+  [runbook](../.agents/skills/operating-tenable-reports/references/runbook.md);
+- [skill de validação](../.agents/skills/validating-tenable-report-data/SKILL.md) e
+  seu [contrato de dados](../.agents/skills/validating-tenable-report-data/references/data-contract.md);
+- [template corporativo](../templates/corporate/README.md): contrato do shell DOCX.
 
 ## Segurança da documentação
 

@@ -1,5 +1,10 @@
 # Estabilização do Export VM e Propriedades Seletivas Implementation Plan
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Tornar a coleta VM resiliente a exports lentos e reduzir payload com propriedades seletivas validadas, configuráveis por cliente e operáveis pela interface web.

@@ -3,6 +3,9 @@
 Aplicação local para coletar dados da Tenable, normalizá-los, manter histórico
 compacto e gerar relatórios mensais em Word para uma carteira de clientes.
 
+Para retomar o trabalho com o estado, os limites e o mapa de fontes vigentes,
+comece por [CONTEXTO.md](CONTEXTO.md).
+
 O projeto separa coleta, regras de negócio e apresentação para que os mesmos dados
 possam alimentar quatro tipos de documento:
 
@@ -40,11 +43,16 @@ ou montar o ZIP mensal da carteira usando somente o `MAIN` de cada cliente. A
 preparação do ZIP exibe etapa, percentual e contagem de itens; o download começa
 automaticamente quando o pacote fica pronto.
 
-Em **Gerenciar clientes**, a seção **Distribuição padrão** mantém os destinatários
-comuns a toda a carteira. Cada perfil pode acrescentar destinatários próprios; no
-DOCX, os comuns aparecem primeiro e os adicionais vêm nas linhas seguintes. Os
-relatórios Geral e Cloud usam as mesmas tabelas de Preparação, Controle de
-Versionamento e Lista de Distribuição.
+Em **Admin → Controle de documento** ficam os padrões globais de Preparação,
+Controle de Versionamento e Lista de Distribuição. Em **Gerenciar clientes**, cada
+perfil acrescenta somente seus destinatários próprios; no DOCX, os destinatários
+globais aparecem primeiro e os adicionais vêm nas linhas seguintes. Os relatórios
+Geral e Cloud usam o mesmo contrato.
+
+Os cartões da carteira exibem os módulos ativos `VM`, `WAS` e `CLOUD`, sem mostrar
+IDs técnicos. A atualização automática reconcilia somente o que mudou, preservando
+foco e rolagem. Em **Ver alertas**, o operador pode marcar as ocorrências atuais
+como lidas; isso limpa a apresentação sem apagar jobs ou histórico.
 
 As credenciais ficam somente em `credentials/*.env`, arquivos ignorados pelo Git.
 Use os exemplos em [credentials](credentials) como referência; nunca grave chaves
@@ -221,7 +229,9 @@ e com a confirmação explícita exigida pelo comando.
 
 ## Documentação
 
-Comece pelo [índice da documentação](docs/README.md) e pelo [design da solução](DESIGN.md). Os guias principais são:
+Comece pelo [contexto consolidado](CONTEXTO.md), siga o
+[índice da documentação](docs/README.md) e consulte o
+[design da solução](DESIGN.md) para as invariantes. Os guias principais são:
 
 - [visão geral e objetivos](docs/19-visao-geral-e-objetivos.md);
 - [arquitetura e fluxo de dados](docs/20-arquitetura-e-fluxo-de-dados.md);

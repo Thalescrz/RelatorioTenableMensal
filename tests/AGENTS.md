@@ -1,11 +1,16 @@
 # Instruções para testes
 
+Consulte [CONTEXTO.md](../CONTEXTO.md) para manter os testes alinhados aos contratos
+vigentes sem importar dados operacionais reais.
+
 ## Isolamento
 
 Testes automatizados não acessam Tenable, PostgreSQL real, navegador externo ou
 servidor já existente. Use diretórios temporários, relógios controlados, transportes
 falsos e repositórios em memória. Testes de integração PostgreSQL só rodam quando o
 ambiente de teste foi explicitamente preparado.
+Quando a ferramenta permitir, configure `--basetemp` sob `.tmp` no próprio workspace
+para manter todos os artefatos de teste dentro da raiz controlada.
 
 ## Fixtures
 

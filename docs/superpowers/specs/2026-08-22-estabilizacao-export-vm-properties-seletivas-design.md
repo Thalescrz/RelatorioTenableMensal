@@ -1,5 +1,10 @@
 # Estabilização do Export VM e Propriedades Seletivas — Design
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 ## Contexto
 
 As execuções recentes do TRT8 passaram a dividir a coleta de vulnerabilidades em dois exports: `OPEN/REOPENED` e `FIXED`. O primeiro segmento permaneceu em `PROCESSING` por 30 minutos, apesar de já disponibilizar um dos dois chunks. Antes dessa alteração, exports equivalentes com os três estados combinados concluíram com o mesmo período e `num_assets=1000`.

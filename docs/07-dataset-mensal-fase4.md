@@ -1,5 +1,10 @@
 # Contrato e validação do dataset mensal da Fase 4
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 > Nota de compatibilidade: `report-definition-v1.2` acrescenta a matriz
 > `metrics.by_exploit_framework`. Ela combina `Exploit Available`, o indicador
 > direto `Exploited By Malware` e os cinco flags individuais de framework da

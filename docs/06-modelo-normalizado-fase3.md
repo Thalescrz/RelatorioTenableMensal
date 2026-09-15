@@ -1,5 +1,10 @@
 # Contrato do modelo normalizado da Fase 3
 
+> **Referência histórica:** este documento registra uma etapa da evolução do projeto
+> e pode conter decisões posteriormente ampliadas ou substituídas. Consulte o
+> [contexto atual](../CONTEXTO.md) e o [índice da documentação](README.md) antes de
+> usá-lo como orientação vigente.
+
 **Versão:** 1  
 **Validação:** fixtures offline e execução autenticada em 2026-08-12
 

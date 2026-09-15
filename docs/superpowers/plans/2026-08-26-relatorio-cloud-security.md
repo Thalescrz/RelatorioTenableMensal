@@ -1,5 +1,10 @@
 # Relatório Tenable Cloud Security Implementation Plan
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 > **Estado atual (2026-08-27):** plano histórico da fase de homologação. A
 > implementação vigente publica um único relatório Cloud padrão, derivado do
 > antigo modelo ampliado. Consulte `docs/19` a `docs/23` antes de executar tarefas.
@@ -1501,4 +1506,3 @@ git branch -d codex/relatorio-cloud-security
 ```
 
 Antes do merge, confirmar que não há segunda branch `codex/*` ativa ou worktree paralelo desta entrega. A remoção da branch ocorre somente depois do push bem-sucedido da `main`.
-

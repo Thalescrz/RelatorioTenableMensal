@@ -1,5 +1,10 @@
 # Coleta Efêmera e Histórico Compacto — Especificação de Design
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 **Data:** 20/08/2026  
 **Status:** desenho aprovado em conversa; aguardando revisão deste documento  
 **Escopo:** coleta Tenable VM/WAS, normalização, histórico mensal, retenção e interface web
@@ -298,4 +303,3 @@ resíduos de QA sem interferir nos relatórios dos clientes.
 5. painel e ações de armazenamento na interface web;
 6. migração assistida e limpeza dos dados existentes;
 7. validação completa com dois períodos consecutivos e relatório `main`.
-

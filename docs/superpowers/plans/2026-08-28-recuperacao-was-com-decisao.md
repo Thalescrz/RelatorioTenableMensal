@@ -1,5 +1,10 @@
 # Recuperação do WAS com decisão do analista — Implementation Plan
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Permitir que uma execução manual aguarde a decisão do analista após falha WAS e que execuções automáticas continuem sem WAS, oferecendo retentativa isolada sem repetir VM.
@@ -476,4 +481,3 @@ git commit -m "docs: documenta recuperacao e retentativa WAS"
 - Sem placeholders: não há `TBD`, `TODO` ou etapas genéricas sem contrato.
 - Tipos: `WasFailureDetails`, `WasRecoveryCheckpoint` e `WasRecoveryDecision` são definidos na Task 1 e reutilizados com os mesmos nomes.
 - Escopo: nenhuma métrica VM, TAG ou Cloud é alterada.
-

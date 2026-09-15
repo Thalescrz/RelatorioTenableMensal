@@ -22,6 +22,8 @@ enquanto módulos adicionais são ativados pelo perfil de cada cliente.
 - manter histórico compacto suficiente para comparações futuras;
 - permitir validação dos números na Tenable por meio de filtros curtos;
 - operar múltiplos clientes com progresso, alertas e retentativas controladas;
+- centralizar Preparação, Versionamento e distribuição comum e permitir somente
+  destinatários adicionais por cliente;
 - executar o mensal pelo mesmo coordenador durável e impedir duplicidade por competência;
 - proteger credenciais e dados sensíveis durante desenvolvimento e publicação.
 
@@ -84,6 +86,7 @@ a captura da plataforma. Sem histórico anterior, 3.11 apresenta tabela e gráfi
 com somente a fotografia atual; não cria comparação fictícia. Fontes não
 licenciadas ou indisponíveis são omitidas ou sinalizadas, e ausência de dado não é
 convertida em zero.
+
 ## Princípios de negócio
 
 1. O relatório geral sempre representa o ambiente geral do cliente no período.
@@ -97,6 +100,11 @@ convertida em zero.
 9. Falha Cloud preserva os demais documentos e permite retentativa somente do componente Cloud.
 10. VM, WAS e Cloud concluídos não são recolhidos durante a recuperação de outro componente.
 11. Um conjunto parcial permanece fora de `MAIN` até que os componentes obrigatórios estejam resolvidos.
+12. Preparação, Versionamento e distribuição comum são globais; cada cliente apenas
+    acrescenta seus destinatários nas linhas posteriores da Lista de Distribuição.
+13. Os cartões mostram capacidades `VM`, `WAS` e `CLOUD`, não IDs técnicos.
+14. Marcar alertas como lidos oculta ocorrências anteriores na interface sem apagar
+    jobs, checkpoints ou histórico.
 
 ## Limites atuais
 
@@ -109,6 +117,8 @@ convertida em zero.
   bloqueia a entrega VM.
 - A interface é local e simples; autenticação multiusuário e publicação remota não
   fazem parte do escopo atual.
+- A aplicação publica os documentos no armazenamento controlado, mas não faz
+  distribuição remota automática por e-mail ou outro serviço.
 
 ## Critério de sucesso
 
@@ -116,3 +126,6 @@ Uma execução bem-sucedida apresenta período e cliente corretos, reconcilia
 contagens do dataset, gera apenas os módulos habilitados e suportados, registra os
 documentos no PostgreSQL, define a referência automática quando aplicável e remove
 os dados intermediários pesados sem eliminar o histórico compacto VM, TAG ou Cloud.
+Na operação da carteira, o painel identifica os módulos ativos, atualiza cartões
+sem perda desnecessária de foco ou rolagem e permite reconhecer alertas sem alterar
+o registro durável que lhes deu origem.

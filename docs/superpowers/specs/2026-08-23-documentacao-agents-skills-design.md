@@ -1,5 +1,10 @@
 # Documentação, instruções de agentes e skills — Especificação de design
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 **Data:** 2026-08-23  
 **Status:** aprovado para planejamento  
 **Escopo:** documentação consolidada, atualização de documentos existentes, arquivos `AGENTS.md` e skills versionadas do projeto

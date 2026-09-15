@@ -1,5 +1,10 @@
 # Design: coleta histórica delimitada e resiliência dos exports Tenable VM
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 **Data:** 2026-08-23  
 **Status:** aprovado em conversa; pronto para implementação  
 **Escopo:** coleta Tenable VM, histórico compacto, recuperação de relatórios e experiência operacional na interface web.

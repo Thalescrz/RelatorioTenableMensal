@@ -1,5 +1,8 @@
 # Runbook operacional
 
+Comece pelo [contexto vigente](../../../../CONTEXTO.md) quando retomar uma operação
+ou quando houver divergência com um registro histórico.
+
 ## Preparar uma instalação
 
 Na raiz do projeto:
@@ -40,6 +43,21 @@ Cadastre analistas em **Gerenciar clientes** e associe no máximo um responsáve
 principal a cada cliente. O catálogo não cria conta nem permissão. Desative em vez
 de excluir quando houver vínculo; use **Sem responsável** para clientes não
 atribuídos.
+
+## Controle de documento
+
+Em **Admin → Controle de documento**, mantenha o padrão global de Preparação,
+Controle de Versionamento e Lista de Distribuição. Em **Gerenciar clientes**, inclua
+somente destinatários adicionais. O DOCX Geral e o Cloud listam primeiro o padrão
+global e depois os adicionais; e-mails repetidos preservam a linha global.
+
+## Cartões e alertas
+
+Os cartões mostram `VM`, `WAS` e `CLOUD` conforme o perfil e ocultam IDs técnicos.
+O polling é mais rápido com trabalho ativo, mais lento em repouso e preserva
+cartões inalterados. Em **Ver alertas**, **Marcar todos como lidos** grava apenas um
+corte temporal local: limpa ocorrências anteriores da tela sem excluir jobs,
+checkpoints, recuperações WAS ou histórico. Um evento novo volta a ser sinalizado.
 
 ## TAGs
 
@@ -288,6 +306,8 @@ Use a ajuda da versão ativa:
 .\.venv\Scripts\python.exe -m tenable_reports build-client --help
 .\.venv\Scripts\python.exe -m tenable_reports orchestrate --help
 .\.venv\Scripts\python.exe -m tenable_reports database-status --help
+.\.venv\Scripts\python.exe -m tenable_reports run-monthly-batch --help
+.\.venv\Scripts\python.exe -m tenable_reports import-web-batch-recovery --help
 ```
 
 Evite copiar comandos antigos sem conferir `--help`. Comandos que chamam APIs reais

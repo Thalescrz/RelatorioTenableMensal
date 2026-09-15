@@ -1,5 +1,8 @@
 # Instruções para o código da aplicação
 
+Leia [CONTEXTO.md](../../CONTEXTO.md) e o guia vigente do assunto antes de mudar um
+contrato executável.
+
 ## Arquitetura
 
 - `domain` contém modelos e regras puras; não importa HTTP, PostgreSQL, DOCX ou UI.
@@ -16,6 +19,8 @@ consumidor, defina-a no dataset ou domínio e reutilize o resultado.
 Cubra primeiro por teste qualquer mudança em período, estado, identidade, ranking,
 exploração, TAG, histórico, retenção, publicação, export ou fallback. Clientes HTTP
 devem aceitar transportes simulados; testes unitários nunca acessam a rede.
+Quando a mudança alterar comportamento documentado, atualize também `CONTEXTO.md`
+e o guia vigente correspondente.
 
 ## Tenable
 

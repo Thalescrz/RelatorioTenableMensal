@@ -1,5 +1,9 @@
 # Guia de desenvolvimento
 
+Antes de alterar o projeto, leia [CONTEXTO.md](../CONTEXTO.md) para identificar as
+fontes vigentes, os limites confirmados e os guias que precisam acompanhar a
+mudança.
+
 ## Preparação
 
 ```powershell
@@ -44,11 +48,17 @@ $env:PYTHONPATH = (Join-Path $PWD 'src')
 .\.venv\Scripts\python.exe tools\validate_project_guidance.py --root .
 .\.venv\Scripts\python.exe tools\audit_secret_leaks.py
 node --check src\tenable_reports\webapp\static\app.js
+node --check src\tenable_reports\webapp\static\dashboard_refresh.js
+node --check src\tenable_reports\webapp\static\client_card.js
+node --check src\tenable_reports\webapp\static\dashboard_alerts.js
 git diff --check
 ```
 
-O validador de orientação verifica a presença dos guias, `AGENTS.md`, skills,
-frontmatter e links locais. Ele valida estrutura, não redação exata.
+O validador de orientação exige `CONTEXTO.md` e as demais fontes vigentes, verifica
+frontmatter das skills e percorre todos os Markdown documentais em busca de links
+locais quebrados. Diretórios técnicos ou transitórios são ignorados; marcadores de
+rascunho continuam proibidos somente nas fontes vigentes obrigatórias. Ele valida
+estrutura, não redação exata.
 
 ## Regras de domínio que exigem regressão
 
@@ -364,6 +374,15 @@ prévia, frase digitada, substituição obrigatória de `MAIN`, bloqueio por job
 validação da raiz `data`, rollback do estágio físico e remoção transacional dos
 registros PostgreSQL.
 
+Os módulos auxiliares do dashboard têm responsabilidades separadas:
+
+- `dashboard_refresh.js` coordena uma única atualização em voo, compara estados e
+  agenda o polling adaptativo;
+- `client_card.js` calcula os módulos visíveis e reconcilia os elementos dos
+  clientes sem recriar cartões estáveis;
+- `dashboard_alerts.js` aplica o corte de leitura, incluindo alertas de jobs e
+  recuperações WAS, sem alterar o estado persistido.
+
 O navegador mantém no máximo uma chamada `/api/state` ativa. Uma mutação libera o
 controle depois da confirmação do POST e agenda, sem aguardar, uma única atualização
 posterior. O estado usa consultas em massa de jobs/eventos e cache curto somente
@@ -411,8 +430,18 @@ bytes já entregues ao gerenciador de downloads do navegador.
 
 ## Documentação e instruções
 
-Atualize os guias vigentes quando o comportamento mudar. Registros de fase podem
-receber uma nota de estado atual, mas decisões históricas não devem ser apagadas.
+`CONTEXTO.md` é um artefato obrigatório e deve continuar sendo um mapa curto do
+estado atual, sem dados operacionais transitórios. Quando o comportamento mudar:
+
+1. atualize o código e os testes;
+2. atualize o guia vigente do assunto;
+3. reconcilie o resumo e os limites em `CONTEXTO.md`;
+4. valide links, instruções especializadas e exemplos afetados;
+5. preserve registros históricos, acrescentando apenas a nota de classificação
+   quando necessário.
+
+Registros de fase podem receber uma nota de estado atual, mas decisões históricas
+não devem ser apagadas.
 
 As regras gerais para agentes ficam em [AGENTS.md](../AGENTS.md); pastas com riscos
 específicos possuem um arquivo próprio. Skills do projeto vivem em `.agents/skills`
