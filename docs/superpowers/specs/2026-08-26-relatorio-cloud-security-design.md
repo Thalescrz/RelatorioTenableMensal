@@ -1,5 +1,10 @@
 # Relatório Tenable Cloud Security — Especificação de design
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 **Data:** 2026-08-26  
 **Status:** aprovado para planejamento e implementação  
 **Projeto:** RelatorioTenableMensalv2
@@ -737,4 +742,3 @@ Nenhuma coleta completa é iniciada apenas para validar código ou documentaçã
   <https://docs.tenable.com/quick-reference/scoring-explained/Content/cloud-security.htm>.
 - Cloud Resources scoring — categorias de exposição e configuração:
   <https://docs.tenable.com/quick-reference/scoring-explained/Content/CloudResources.htm>.
-

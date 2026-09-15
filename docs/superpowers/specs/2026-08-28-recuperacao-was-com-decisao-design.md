@@ -1,5 +1,10 @@
 # Recuperação do WAS com decisão do analista — Especificação de design
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 **Data:** 2026-08-28  
 **Status:** aprovado para planejamento  
 **Projeto:** RelatorioTenableMensalv2
@@ -294,4 +299,3 @@ erro ou auditoria.
 - `docs/22-guia-operacional.md`;
 - `docs/23-guia-de-desenvolvimento.md`;
 - runbook da skill `operating-tenable-reports`.
-

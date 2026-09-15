@@ -1,5 +1,10 @@
 # Timeout Faseado e Checkpoint Cloud Implementation Plan
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fazer o pipeline `STAGED_V1` aguardar exports VM por até 10 horas sem transformar o aviso de 15 minutos em falha e garantir que o componente Cloud chegue ao build local em um checkpoint terminal, permitindo publicação parcial e retentativa quando a coleta Cloud falhar.

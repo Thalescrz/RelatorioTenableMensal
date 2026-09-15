@@ -1,5 +1,10 @@
 # Relatórios Tenable: Referência Main, Retentativas e Inteligência Customizada
 
+> **Registro de decisão:** este arquivo preserva o desenho ou plano considerado no
+> momento da entrega. Ele não comprova sozinho o estado atual nem a conclusão de
+> cada etapa. Consulte o [contexto atual](../../../CONTEXTO.md) e o
+> [índice da documentação](../../README.md).
+
 **Data:** 15/08/2026  
 **Status:** desenho aprovado pelo usuário  
 **Projeto:** RelatorioTenableMensalv2
@@ -323,4 +328,3 @@ Um cliente sem histórico deve conseguir:
 6. Excluir e restaurar relatórios logicamente.
 7. Sobreviver a uma falha automática com uma retentativa.
 8. Operar com retenção e compactação sem crescimento descontrolado do disco.
-
