@@ -1,6 +1,6 @@
 # Design da solução
 
-**Status:** arquitetura vigente em 2026-09-04  
+**Status:** arquitetura vigente em 2026-09-15  
 **Escopo:** decisões estruturais que devem permanecer estáveis enquanto o produto
 evolui. Detalhes operacionais ficam nos guias em `docs`.
 
@@ -50,6 +50,10 @@ sendo a origem dos achados.
 12. Texto editorial aprovado não é reescrito sem decisão explícita de produto.
 13. Geral, customizado, TAG e Cloud compartilham o mesmo shell oficial de capa,
     sumário e contracapa; somente o corpo técnico varia.
+14. Preparação, Controle de Versionamento e a distribuição comum são globais; a
+    distribuição por cliente acrescenta linhas sem substituir esse padrão.
+15. Atualizações do dashboard preservam os cartões inalterados, e reconhecer um
+    alerta muda somente sua apresentação local, nunca o histórico operacional.
 
 ## Contrato editorial comum
 
@@ -142,6 +146,24 @@ Word e garante que relatórios diferentes expliquem a mesma população.
 Não são criados exports completos adicionais para cada TAG. Ativos e findings são
 coletados uma vez; os UUIDs associados às TAGs recortam localmente o dataset. Isso
 reduz tempo, chamadas, risco de rate limit e inconsistência entre documentos.
+
+### Controle documental compartilhado
+
+Um único contrato global alimenta as tabelas de Preparação, Controle de
+Versionamento e as linhas comuns da Lista de Distribuição nos relatórios Geral e
+Cloud. A área administrativa mantém esse padrão. O perfil do cliente guarda apenas
+destinatários adicionais, renderizados depois das linhas globais; personalização
+individual não substitui a configuração comum.
+
+### Dashboard reconciliado e alertas por corte
+
+O polling do painel alterna entre intervalo rápido com trabalho ativo e intervalo
+mais lento em repouso. Cada resposta é reconciliada com a interface existente:
+cartões sem mudança preservam nó, foco, seleção e rolagem em vez de serem recriados.
+
+Reconhecer alertas persiste somente um corte temporal local. Ocorrências anteriores
+deixam de ser mostradas e eventos posteriores voltam a aparecer, sem alterar jobs,
+checkpoints, eventos ou estados duráveis no PostgreSQL.
 
 ### Corte temporal local
 
@@ -350,6 +372,7 @@ Uma mudança estrutural deve declarar:
 6. testes automatizados e prova visual necessária;
 7. atualização deste arquivo e dos guias vigentes.
 
-Para detalhes complementares, consulte [arquitetura e fluxo de dados](docs/20-arquitetura-e-fluxo-de-dados.md),
+Para a retomada consolidada, consulte [CONTEXTO.md](CONTEXTO.md). Para detalhes
+complementares, consulte [arquitetura e fluxo de dados](docs/20-arquitetura-e-fluxo-de-dados.md),
 [catálogo de dados e métricas](docs/21-catalogo-de-dados-e-metricas.md) e
 [guia de desenvolvimento](docs/23-guia-de-desenvolvimento.md).
