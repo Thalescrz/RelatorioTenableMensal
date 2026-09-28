@@ -97,6 +97,15 @@ Cloud representa a fotografia preservada no instante da coleta. A competência d
 relatório não transforma essa fotografia em reconstrução histórica; reprodução
 exata de período anterior exige snapshot Cloud compatível já preservado.
 
+O dataset `cloud-metrics-v3` acrescenta, logo após as principais vulnerabilidades
+com correção disponível, dois rankings de recursos corrigíveis: Top 10 de máquinas
+virtuais e Top 10 de containers. O conector representa containers por imagens de
+container. Cada total conta combinações distintas de CVE e software que possuam
+`FixedBy` ou remediação correlacionada ao mesmo recurso e CVE; duplicidades brutas
+não aumentam a contagem. O dataset registra separadamente a cobertura dessas
+fontes de correção; o DOCX informa resultado parcial ou fonte indisponível em vez
+de apresentar ausência de achados como se fosse um zero confirmado.
+
 ## Controle de documento
 
 O controle documental tem um padrão global, administrado na área administrativa,

@@ -82,6 +82,25 @@ def _image(index: int, *, total: int) -> dict[str, Any]:
     }
 
 
+def _correctable_asset_row(
+    asset: Mapping[str, Any],
+    *,
+    reduction: int,
+) -> dict[str, Any]:
+    total = max(1, int(asset["vulnerabilities"]) - reduction)
+    remaining = total
+    counts: dict[str, int] = {}
+    for severity in ("critical", "high", "medium", "low"):
+        count = min(int(asset[severity]), remaining)
+        counts[severity] = count
+        remaining -= count
+    return {
+        **asset,
+        **counts,
+        "correctable_vulnerabilities": total,
+    }
+
+
 def _asset_reference(asset: Mapping[str, Any]) -> dict[str, Any]:
     return {
         key: asset.get(key)
@@ -220,7 +239,7 @@ def sanitized_cloud_dataset() -> dict[str, Any]:
     return {
         "schema_version": 1,
         "document_kind": "cloud",
-        "metric_definition_version": "cloud-metrics-v2",
+        "metric_definition_version": "cloud-metrics-v3",
         "connector_version": "cloud-graphql-v1",
         "period": {
             "start_at": "2026-07-01T03:00:00+00:00",
@@ -309,6 +328,29 @@ def sanitized_cloud_dataset() -> dict[str, Any]:
             },
         ],
         "top_correctable_vulnerabilities": _correctable(critical, hosts),
+        "top_correctable_virtual_machines": [
+            _correctable_asset_row(row, reduction=5)
+            for row in hosts
+        ],
+        "top_correctable_container_images": [
+            _correctable_asset_row(row, reduction=4)
+            for row in images
+        ],
+        "correctable_asset_coverage": {
+            "virtual_machines": {
+                "status": "COMPLETE",
+                "source_status": {
+                    "virtual_machine_fix_versions": "COMPLETE",
+                    "vulnerability_remediations": "COMPLETE",
+                },
+            },
+            "container_images": {
+                "status": "COMPLETE",
+                "source_status": {
+                    "container_image_fix_versions": "COMPLETE",
+                },
+            },
+        },
         "aging": {
             "0-30": 74,
             "31-60": 48,
@@ -337,6 +379,9 @@ def sanitized_cloud_dataset() -> dict[str, Any]:
         "source_status": {
             "virtual_machines": "COMPLETE",
             "container_images": "COMPLETE",
+            "virtual_machine_fix_versions": "COMPLETE",
+            "container_image_fix_versions": "COMPLETE",
+            "vulnerability_remediations": "COMPLETE",
             "findings": "COMPLETE",
             "inventory": "COMPLETE",
             "lifecycle": "COMPLETE",

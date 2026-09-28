@@ -118,7 +118,7 @@ paralela preserva tipo de ativo, UUID, CVE, `Software.Name` e `FixedBy` para tab
 em que a versão corrigida depende do pacote. A mesma CVE pode aparecer novamente
 quando o software for diferente, sem inflar os totais gerais.
 
-O dataset `cloud-metrics-v2` conserva:
+O dataset `cloud-metrics-v3` conserva:
 
 - contexto da fotografia, horário de coleta, competência e aviso histórico;
 - totais de ativos, workloads, imagens, CVEs e ocorrências por severidade;
@@ -126,6 +126,12 @@ O dataset `cloud-metrics-v2` conserva:
 - overview das cinco imagens mais vulneráveis, com até cinco combinações
   CVE/software e versão `Fixed by` por imagem;
 - Top 10 com correção agrupado por CVE/software, incluindo `Fixed by` quando houver;
+- Top 10 de máquinas virtuais e Top 10 de containers corrigíveis. Containers são
+  representados por imagens de container; cada recurso conta combinações distintas
+  de CVE/software com `FixedBy` ou remediação correlacionada ao mesmo recurso e CVE;
+- cobertura `COMPLETE`, `PARTIAL` ou `UNAVAILABLE` para os rankings corrigíveis,
+  derivada do estado das fontes opcionais de `FixedBy` e remediação. Cobertura
+  parcial recebe aviso explícito; indisponibilidade nunca é apresentada como zero;
 - aging, resolvidas e tempo médio de remediação quando o ciclo de vida existe;
 - inventário por provedor e região;
 - findings de postura e capacidades observadas no tenant;

@@ -387,7 +387,7 @@ def _dataset(tmp_path: Path, *, populated: bool = True) -> Path:
     payload = {
         "schema_version": 1,
         "document_kind": "cloud",
-        "metric_definition_version": "cloud-metrics-v2",
+        "metric_definition_version": "cloud-metrics-v3",
         "connector_version": "cloud-graphql-v1",
         "period": {
             "start_at": "2026-07-01T00:00:00+00:00",
@@ -461,6 +461,31 @@ def _dataset(tmp_path: Path, *, populated: bool = True) -> Path:
                 },
             ] if populated else []
         ),
+        "top_correctable_virtual_machines": (
+            [{**hosts[0], "correctable_vulnerabilities": 2}]
+            if populated
+            else []
+        ),
+        "top_correctable_container_images": (
+            [{**images[0], "correctable_vulnerabilities": 2}]
+            if populated
+            else []
+        ),
+        "correctable_asset_coverage": {
+            "virtual_machines": {
+                "status": "COMPLETE",
+                "source_status": {
+                    "virtual_machine_fix_versions": "COMPLETE",
+                    "vulnerability_remediations": "COMPLETE",
+                },
+            },
+            "container_images": {
+                "status": "COMPLETE",
+                "source_status": {
+                    "container_image_fix_versions": "COMPLETE",
+                },
+            },
+        },
         "aging": {
             "0-30": 1 if populated else 0,
             "31-60": 0,
@@ -482,6 +507,9 @@ def _dataset(tmp_path: Path, *, populated: bool = True) -> Path:
         "source_status": {
             "virtual_machines": "COMPLETE",
             "container_images": "COMPLETE",
+            "virtual_machine_fix_versions": "COMPLETE",
+            "container_image_fix_versions": "COMPLETE",
+            "vulnerability_remediations": "COMPLETE",
             "findings": "UNAVAILABLE",
             "lifecycle": "COMPLETE",
         },
@@ -614,6 +642,8 @@ def test_standard_cloud_report_keeps_approved_sections_and_detailed_top_five(
     assert "cloud_inventory" not in result.rendered_sections
     assert "Principais Vulnerabilidades Críticas" in text
     assert "Principais Vulnerabilidades com Correção Disponível" in text
+    assert "Top 10 Máquinas Virtuais com Vulnerabilidades Corrigíveis" in text
+    assert "Top 10 Containers com Vulnerabilidades Corrigíveis" in text
     assert "CVE-2099-1000" in text
     assert "Tipo de correção" in text
     assert "3.3.1. Overview das Vulnerabilidades das Imagens de Contêiner" in text
@@ -628,6 +658,24 @@ def test_standard_cloud_report_keeps_approved_sections_and_detailed_top_five(
         "VPR",
         "Software",
         "Fixed by",
+    ] in table_headers
+    assert [
+        "Máquina virtual",
+        "IP Address",
+        "Crítica",
+        "Alta",
+        "Média",
+        "Baixa",
+        "Total corrigível",
+    ] in table_headers
+    assert [
+        "Container (imagem)",
+        "Repositório / Digest",
+        "Crítica",
+        "Alta",
+        "Média",
+        "Baixa",
+        "Total corrigível",
     ] in table_headers
     assert [
         "CVE",
@@ -646,6 +694,61 @@ def test_standard_cloud_report_keeps_approved_sections_and_detailed_top_five(
     assert "{{" not in text
     for paragraph in approved_cloud_editorial_paragraphs():
         assert paragraph in text
+
+
+def test_correctable_asset_rankings_distinguish_partial_and_unavailable_sources(
+    tmp_path: Path,
+) -> None:
+    dataset_path = _dataset(tmp_path, populated=False)
+    payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+    payload["correctable_asset_coverage"] = {
+        "virtual_machines": {
+            "status": "PARTIAL",
+            "source_status": {
+                "virtual_machine_fix_versions": "COMPLETE",
+                "vulnerability_remediations": "UNAVAILABLE",
+            },
+        },
+        "container_images": {
+            "status": "UNAVAILABLE",
+            "source_status": {
+                "container_image_fix_versions": "UNAVAILABLE",
+            },
+        },
+    }
+    dataset_path.write_text(json.dumps(payload), encoding="utf-8")
+    output = tmp_path / "cloud-correctable-coverage.docx"
+
+    generate_cloud_report(
+        template_path=CLOUD_TEMPLATE,
+        dataset_path=dataset_path,
+        profile=_profile(),
+        output_path=output,
+        variant=CloudReportVariant.EXPANDED,
+    )
+
+    paragraphs = [paragraph.text for paragraph in Document(output).paragraphs]
+    vm_start = paragraphs.index(
+        "3.5.1. Top 10 Máquinas Virtuais com Vulnerabilidades Corrigíveis"
+    )
+    container_start = paragraphs.index(
+        "3.5.2. Top 10 Containers com Vulnerabilidades Corrigíveis"
+    )
+    dashboard_start = paragraphs.index(
+        "3.6. Painel de Controle (Dashboards) – Informações Rápidas"
+    )
+    vm_section = "\n".join(paragraphs[vm_start:container_start])
+    container_section = "\n".join(
+        paragraphs[container_start:dashboard_start]
+    )
+
+    assert "Resultado parcial:" in vm_section
+    assert (
+        "Neste mês esta informação não pôde ser obtida pela API "
+        "Tenable Cloud Security."
+    ) in container_section
+    assert "não foram identificadas vulnerabilidades" not in container_section
+
 
 def test_empty_cloud_table_has_monthly_message_not_blank_page(
     tmp_path: Path,

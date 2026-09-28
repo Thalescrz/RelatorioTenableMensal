@@ -76,7 +76,10 @@ execução publica um único DOCX padrão; perfis legados com `base`, `expanded`
 O conteúdo inclui resumo executivo, principais hosts e imagens, Top 5 de CVEs
 críticas com detalhamento, scores, correção e ativos afetados, overview das cinco
 imagens mais vulneráveis com até cinco linhas por combinação CVE/software e Top 10
-com correção disponível também agrupado por CVE/software. As tabelas exibem
+com correção disponível também agrupado por CVE/software. Logo após esse item, o
+documento apresenta o Top 10 de máquinas virtuais e o Top 10 de containers —
+representados pelas imagens de container disponíveis no conector — com mais
+combinações distintas de CVE/software corrigíveis. As tabelas exibem
 `Software` e `Fixed by`; versão ausente ou fonte opcional não suportada aparece como
 `N/D`, sem impedir o restante do documento. A coluna extensa de ação recomendada
 permanece removida. O relatório segue com dashboard, componentes,

@@ -91,6 +91,65 @@ def test_vpr_zero_and_missing_remain_distinct() -> None:
     assert by_id["CVE-2026-0002"].vpr is None
 
 
+def test_vulnerability_details_build_occurrence_index_only_once() -> None:
+    module = _normalization_module()
+    domain = _domain_module()
+
+    class ScanCountingOccurrences(dict):
+        scans = 0
+
+        def __iter__(self):
+            self.scans += 1
+            return super().__iter__()
+
+    key = (
+        domain.CloudAssetKind.VIRTUAL_MACHINE,
+        "vm-fixture",
+        "CVE-2026-0500",
+    )
+    occurrences = ScanCountingOccurrences(
+        {
+            key: domain.CloudVulnerabilityOccurrence(
+                asset=domain.CloudAssetKey(
+                    kind=domain.CloudAssetKind.VIRTUAL_MACHINE,
+                    asset_id="vm-fixture",
+                ),
+                vulnerability_id="CVE-2026-0500",
+                severity="HIGH",
+                vpr=7.0,
+                cvss=8.0,
+                software="fixture-library",
+                description=None,
+            )
+        }
+    )
+    details = (
+        {
+            "Resource": {"Id": "vm-fixture"},
+            "Vulnerability": {
+                "Id": "CVE-2026-0500",
+                "Description": "First description.",
+            },
+        },
+        {
+            "Resource": {"Id": "vm-fixture"},
+            "Vulnerability": {
+                "Id": "CVE-2026-0500",
+                "Description": "Repeated description.",
+            },
+        },
+    )
+
+    module._enrich_descriptions(
+        occurrences=occurrences,
+        records=details,
+        issues=[],
+    )
+
+    assert occurrences.scans == 1
+    assert occurrences[key].description == "First description."
+
+
 def test_posture_finding_is_not_a_cve_occurrence() -> None:
     snapshot = _snapshot(findings=_fixture("findings-page-1.json"))
 

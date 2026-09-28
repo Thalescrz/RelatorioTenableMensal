@@ -651,6 +651,104 @@ def render_top_correctable(
         "cloud_top_correctable",
         enabled=show_source_filters,
     )
+    builder.heading(
+        "3.5.1. Top 10 Máquinas Virtuais com Vulnerabilidades Corrigíveis",
+        3,
+    )
+    builder.paragraph(copy.TOP_CORRECTABLE_VIRTUAL_MACHINES)
+    virtual_machine_rows = [
+        (
+            row.get("name") or "",
+            ", ".join(row.get("ip_addresses") or ()),
+            row.get("critical", 0),
+            row.get("high", 0),
+            row.get("medium", 0),
+            row.get("low", 0),
+            row.get("correctable_vulnerabilities", 0),
+        )
+        for row in dataset.get("top_correctable_virtual_machines") or ()
+    ]
+    virtual_machine_coverage = _correctable_asset_coverage_status(
+        dataset,
+        "virtual_machines",
+    )
+    if virtual_machine_coverage == "UNAVAILABLE":
+        builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+    else:
+        if virtual_machine_coverage == "PARTIAL" and virtual_machine_rows:
+            builder.paragraph(
+                copy.PARTIAL_CORRECTABLE_COVERAGE,
+                color=MID_GRAY,
+            )
+        builder.table(
+            (
+                "Máquina virtual",
+                "IP Address",
+                "Crítica",
+                "Alta",
+                "Média",
+                "Baixa",
+                "Total corrigível",
+            ),
+            virtual_machine_rows,
+            widths=(2100, 1600, 1050, 1050, 1050, 1050, 1300),
+            left_columns=frozenset({0, 1}),
+            empty_message=(
+                copy.PARTIAL_CORRECTABLE_COVERAGE
+                if virtual_machine_coverage == "PARTIAL"
+                else copy.EMPTY_CORRECTABLE_MONTH
+            ),
+        )
+    builder.source_note(
+        dataset,
+        "cloud_top_correctable_virtual_machines",
+        enabled=show_source_filters,
+    )
+    builder.heading(
+        "3.5.2. Top 10 Containers com Vulnerabilidades Corrigíveis",
+        3,
+    )
+    builder.paragraph(copy.TOP_CORRECTABLE_CONTAINERS)
+    container_rows = [
+        (
+            row.get("name") or "",
+            row.get("repository_uri") or row.get("digest") or "",
+            row.get("critical", 0),
+            row.get("high", 0),
+            row.get("medium", 0),
+            row.get("low", 0),
+            row.get("correctable_vulnerabilities", 0),
+        )
+        for row in dataset.get("top_correctable_container_images") or ()
+    ]
+    container_coverage = _correctable_asset_coverage_status(
+        dataset,
+        "container_images",
+    )
+    if container_coverage == "UNAVAILABLE":
+        builder.paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
+    else:
+        builder.table(
+            (
+                "Container (imagem)",
+                "Repositório / Digest",
+                "Crítica",
+                "Alta",
+                "Média",
+                "Baixa",
+                "Total corrigível",
+            ),
+            container_rows,
+            widths=(1500, 2700, 950, 950, 950, 950, 1200),
+            left_columns=frozenset({0, 1}),
+            empty_message=copy.EMPTY_CORRECTABLE_MONTH,
+        )
+    builder.source_note(
+        dataset,
+        "cloud_top_correctable_container_images",
+        enabled=show_source_filters,
+    )
+
 
 def render_dashboard(builder: CloudDocumentBuilder, dataset: Mapping[str, Any]) -> None:
     builder.heading("3.6. Painel de Controle (Dashboards) – Informações Rápidas", 2)
@@ -694,6 +792,18 @@ def _source_status(
         if value is not None:
             return str(value).upper()
     return "UNKNOWN"
+
+
+def _correctable_asset_coverage_status(
+    dataset: Mapping[str, Any],
+    asset_group: str,
+) -> str:
+    coverage = dataset.get("correctable_asset_coverage")
+    coverage = coverage if isinstance(coverage, Mapping) else {}
+    value = coverage.get(asset_group)
+    value = value if isinstance(value, Mapping) else {}
+    status = str(value.get("status") or "UNAVAILABLE").upper()
+    return status if status in {"COMPLETE", "PARTIAL"} else "UNAVAILABLE"
 
 
 def _capability_available(
