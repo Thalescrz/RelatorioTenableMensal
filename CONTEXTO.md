@@ -102,7 +102,9 @@ com correção disponível, dois rankings de recursos corrigíveis: Top 10 de m�
 virtuais e Top 10 de containers. O conector representa containers por imagens de
 container. Cada total conta combinações distintas de CVE e software que possuam
 `FixedBy` ou remediação correlacionada ao mesmo recurso e CVE; duplicidades brutas
-não aumentam a contagem.
+não aumentam a contagem. O dataset registra separadamente a cobertura dessas
+fontes de correção; o DOCX informa resultado parcial ou fonte indisponível em vez
+de apresentar ausência de achados como se fosse um zero confirmado.
 
 ## Controle de documento
 

@@ -643,10 +643,42 @@ def _top_correctable_assets(
     )[:10]
 
 
+def _correctable_asset_coverage(
+    snapshot: NormalizedCloudSnapshot,
+) -> dict[str, dict[str, Any]]:
+    source_groups = {
+        "virtual_machines": (
+            "virtual_machine_fix_versions",
+            "vulnerability_remediations",
+        ),
+        "container_images": ("container_image_fix_versions",),
+    }
+    coverage: dict[str, dict[str, Any]] = {}
+    for asset_group, sources in source_groups.items():
+        statuses = {
+            source: str(snapshot.source_status.get(source) or "UNKNOWN").upper()
+            for source in sources
+        }
+        completed = sum(status == "COMPLETE" for status in statuses.values())
+        status = (
+            "COMPLETE"
+            if completed == len(statuses)
+            else "PARTIAL"
+            if completed
+            else "UNAVAILABLE"
+        )
+        coverage[asset_group] = {
+            "status": status,
+            "source_status": statuses,
+        }
+    return coverage
+
+
 def _provenance(
     *,
     snapshot: NormalizedCloudSnapshot,
     period: ReportingPeriod,
+    correctable_asset_coverage: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     snapshot_base = {
         "source": "Tenable Cloud Security GraphQL",
@@ -756,6 +788,12 @@ def _provenance(
             },
             "cloud_top_correctable_virtual_machines": {
                 **vulnerability_base,
+                "coverage_status": correctable_asset_coverage[
+                    "virtual_machines"
+                ]["status"],
+                "source_status": correctable_asset_coverage[
+                    "virtual_machines"
+                ]["source_status"],
                 "platform_filters": {
                     **vulnerability_base["platform_filters"],
                     "Asset type": "Virtual Machine",
@@ -770,6 +808,12 @@ def _provenance(
             },
             "cloud_top_correctable_container_images": {
                 **vulnerability_base,
+                "coverage_status": correctable_asset_coverage[
+                    "container_images"
+                ]["status"],
+                "source_status": correctable_asset_coverage[
+                    "container_images"
+                ]["source_status"],
                 "platform_filters": {
                     **vulnerability_base["platform_filters"],
                     "Asset type": "Container Image",
@@ -826,6 +870,7 @@ def build_cloud_dataset(
         snapshot,
         CloudAssetKind.CONTAINER_IMAGE,
     )
+    correctable_asset_coverage = _correctable_asset_coverage(snapshot)
     return {
         "schema_version": CLOUD_DATASET_SCHEMA_VERSION,
         "document_kind": "cloud",
@@ -887,6 +932,7 @@ def build_cloud_dataset(
             enrichments=enrichments,
             kind=CloudAssetKind.CONTAINER_IMAGE,
         ),
+        "correctable_asset_coverage": correctable_asset_coverage,
         "aging": _aging(snapshot),
         "remediation_performance": _remediation_performance(
             snapshot,
@@ -908,6 +954,7 @@ def build_cloud_dataset(
         "table_provenance": _provenance(
             snapshot=snapshot,
             period=period,
+            correctable_asset_coverage=correctable_asset_coverage,
         ),
     }
 

@@ -129,6 +129,9 @@ O dataset `cloud-metrics-v3` conserva:
 - Top 10 de máquinas virtuais e Top 10 de containers corrigíveis. Containers são
   representados por imagens de container; cada recurso conta combinações distintas
   de CVE/software com `FixedBy` ou remediação correlacionada ao mesmo recurso e CVE;
+- cobertura `COMPLETE`, `PARTIAL` ou `UNAVAILABLE` para os rankings corrigíveis,
+  derivada do estado das fontes opcionais de `FixedBy` e remediação. Cobertura
+  parcial recebe aviso explícito; indisponibilidade nunca é apresentada como zero;
 - aging, resolvidas e tempo médio de remediação quando o ciclo de vida existe;
 - inventário por provedor e região;
 - findings de postura e capacidades observadas no tenant;

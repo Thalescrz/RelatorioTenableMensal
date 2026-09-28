@@ -318,6 +318,44 @@ def test_top_correctable_assets_count_distinct_cve_software_pairs() -> None:
     assert "cloud_top_correctable_container_images" in provenance
 
 
+def test_correctable_asset_coverage_distinguishes_partial_and_unavailable() -> None:
+    dataset = _dataset_module().build_cloud_dataset(
+        snapshot=_snapshot(
+            source_status={
+                "virtual_machine_fix_versions": "COMPLETE",
+                "vulnerability_remediations": "UNAVAILABLE",
+                "container_image_fix_versions": "UNAVAILABLE",
+            },
+        ),
+        period=_period(),
+    )
+
+    assert dataset["correctable_asset_coverage"] == {
+        "virtual_machines": {
+            "status": "PARTIAL",
+            "source_status": {
+                "virtual_machine_fix_versions": "COMPLETE",
+                "vulnerability_remediations": "UNAVAILABLE",
+            },
+        },
+        "container_images": {
+            "status": "UNAVAILABLE",
+            "source_status": {
+                "container_image_fix_versions": "UNAVAILABLE",
+            },
+        },
+    }
+    provenance = dataset["table_provenance"]["tables"]
+    assert (
+        provenance["cloud_top_correctable_virtual_machines"]["coverage_status"]
+        == "PARTIAL"
+    )
+    assert (
+        provenance["cloud_top_correctable_container_images"]["coverage_status"]
+        == "UNAVAILABLE"
+    )
+
+
 def test_container_image_overview_keeps_cve_per_software_and_missing_fix() -> None:
     image = _asset("image-overview", image=True)
     occurrence = _occurrence(image, "CVE-2026-0300", vpr=8.5)

@@ -179,6 +179,25 @@ class ProjectGuidanceTests(unittest.TestCase):
         self.assertTrue(callable(toolkit.inventory_docx))
         self.assertTrue(callable(toolkit.render_pdf))
 
+    def test_cloud_fixture_correctable_rankings_have_consistent_totals(self) -> None:
+        from scripts.render_cloud_report_fixture import sanitized_cloud_dataset
+
+        dataset = sanitized_cloud_dataset()
+
+        for key in (
+            "top_correctable_virtual_machines",
+            "top_correctable_container_images",
+        ):
+            for row in dataset[key]:
+                severity_total = sum(
+                    int(row[severity])
+                    for severity in ("critical", "high", "medium", "low")
+                )
+                self.assertEqual(
+                    severity_total,
+                    row["correctable_vulnerabilities"],
+                )
+
     def test_current_guidance_documents_complete_cloud_workflow(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         documentation = "\n".join(

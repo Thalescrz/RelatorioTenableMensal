@@ -200,6 +200,11 @@ TOP_CORRECTABLE_CONTAINERS = (
     "A tabela apresenta as imagens com mais combinações distintas de CVE e software "
     "para as quais há correção disponível."
 )
+PARTIAL_CORRECTABLE_COVERAGE = (
+    "Resultado parcial: nem todas as fontes de evidência de correção estavam "
+    "disponíveis. A tabela apresenta somente os dados confirmados pelas fontes "
+    "coletadas."
+)
 SOURCE_UNAVAILABLE = (
     "Neste mês esta informação não pôde ser obtida pela API Tenable Cloud Security."
 )
@@ -248,6 +253,7 @@ __all__ = [
     "HISTORY_UNAVAILABLE",
     "MONTHLY_EVOLUTION",
     "REMEDIATION_PERFORMANCE",
+    "PARTIAL_CORRECTABLE_COVERAGE",
     "SOURCE_UNAVAILABLE",
     "TRANSLATION_UNAVAILABLE",
     "TOP_CORRECTABLE_CONTAINERS",
