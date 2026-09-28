@@ -387,7 +387,7 @@ def _dataset(tmp_path: Path, *, populated: bool = True) -> Path:
     payload = {
         "schema_version": 1,
         "document_kind": "cloud",
-        "metric_definition_version": "cloud-metrics-v2",
+        "metric_definition_version": "cloud-metrics-v3",
         "connector_version": "cloud-graphql-v1",
         "period": {
             "start_at": "2026-07-01T00:00:00+00:00",
@@ -460,6 +460,16 @@ def _dataset(tmp_path: Path, *, populated: bool = True) -> Path:
                     "remediation_steps": [],
                 },
             ] if populated else []
+        ),
+        "top_correctable_virtual_machines": (
+            [{**hosts[0], "correctable_vulnerabilities": 2}]
+            if populated
+            else []
+        ),
+        "top_correctable_container_images": (
+            [{**images[0], "correctable_vulnerabilities": 2}]
+            if populated
+            else []
         ),
         "aging": {
             "0-30": 1 if populated else 0,
@@ -614,6 +624,8 @@ def test_standard_cloud_report_keeps_approved_sections_and_detailed_top_five(
     assert "cloud_inventory" not in result.rendered_sections
     assert "Principais Vulnerabilidades Críticas" in text
     assert "Principais Vulnerabilidades com Correção Disponível" in text
+    assert "Top 10 Máquinas Virtuais com Vulnerabilidades Corrigíveis" in text
+    assert "Top 10 Containers com Vulnerabilidades Corrigíveis" in text
     assert "CVE-2099-1000" in text
     assert "Tipo de correção" in text
     assert "3.3.1. Overview das Vulnerabilidades das Imagens de Contêiner" in text
@@ -628,6 +640,24 @@ def test_standard_cloud_report_keeps_approved_sections_and_detailed_top_five(
         "VPR",
         "Software",
         "Fixed by",
+    ] in table_headers
+    assert [
+        "Máquina virtual",
+        "IP Address",
+        "Crítica",
+        "Alta",
+        "Média",
+        "Baixa",
+        "Total corrigível",
+    ] in table_headers
+    assert [
+        "Container (imagem)",
+        "Repositório / Digest",
+        "Crítica",
+        "Alta",
+        "Média",
+        "Baixa",
+        "Total corrigível",
     ] in table_headers
     assert [
         "CVE",

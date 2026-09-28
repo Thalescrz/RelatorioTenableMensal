@@ -191,6 +191,15 @@ EMPTY_CRITICAL_MONTH = (
 EMPTY_CORRECTABLE_MONTH = (
     "Neste mês não foram identificadas vulnerabilidades com correção disponível."
 )
+TOP_CORRECTABLE_VIRTUAL_MACHINES = (
+    "A tabela apresenta as máquinas virtuais com mais combinações distintas de "
+    "CVE e software para as quais há versão de correção ou remediação correlacionada."
+)
+TOP_CORRECTABLE_CONTAINERS = (
+    "No conector Cloud, os containers são representados pelas imagens de container. "
+    "A tabela apresenta as imagens com mais combinações distintas de CVE e software "
+    "para as quais há correção disponível."
+)
 SOURCE_UNAVAILABLE = (
     "Neste mês esta informação não pôde ser obtida pela API Tenable Cloud Security."
 )
@@ -214,6 +223,8 @@ def approved_cloud_editorial_paragraphs() -> tuple[str, ...]:
         TOP_HOSTS_DETAILS,
         TOP_IMAGES_INTRO,
         TOP_IMAGES_TABLE_INTRO,
+        TOP_CORRECTABLE_VIRTUAL_MACHINES,
+        TOP_CORRECTABLE_CONTAINERS,
         TOP_CRITICAL_INTRO,
         TOP_CRITICAL_PRIORITY,
         DASHBOARD_INTRO,
@@ -239,6 +250,8 @@ __all__ = [
     "REMEDIATION_PERFORMANCE",
     "SOURCE_UNAVAILABLE",
     "TRANSLATION_UNAVAILABLE",
+    "TOP_CORRECTABLE_CONTAINERS",
+    "TOP_CORRECTABLE_VIRTUAL_MACHINES",
     "VULNERABILITY_AGING",
     "approved_cloud_editorial_paragraphs",
 ]

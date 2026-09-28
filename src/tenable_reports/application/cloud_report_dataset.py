@@ -24,7 +24,7 @@ from tenable_reports.domain.reporting import ReportingPeriod, parse_utc
 
 
 CLOUD_DATASET_SCHEMA_VERSION = 1
-CLOUD_METRIC_DEFINITION_VERSION = "cloud-metrics-v2"
+CLOUD_METRIC_DEFINITION_VERSION = "cloud-metrics-v3"
 
 _CORRECTION_LABELS = {
     "patch_update": "Patch/Atualização",
@@ -584,6 +584,65 @@ def _correctable(
         key=lambda row: (*_cve_rank(row), row["software"]),
     )[:10]
 
+
+def _top_correctable_assets(
+    *,
+    snapshot: NormalizedCloudSnapshot,
+    enrichments: Sequence[CloudVulnerabilityEnrichment],
+    kind: CloudAssetKind,
+) -> list[dict[str, Any]]:
+    assets = {asset.key: asset for asset in snapshot.assets}
+    remediated_occurrences = {
+        (enrichment.asset, enrichment.cve)
+        for enrichment in enrichments
+        if enrichment.remediation_steps
+    }
+    grouped: dict[CloudAssetKey, dict[tuple[str, str], str]] = {}
+    for item in _software_vulnerabilities(snapshot):
+        if item.asset.kind is not kind:
+            continue
+        if not item.fixed_by and (
+            item.asset,
+            item.vulnerability_id,
+        ) not in remediated_occurrences:
+            continue
+        vulnerability_key = (item.vulnerability_id, item.software or "")
+        by_vulnerability = grouped.setdefault(item.asset, {})
+        previous = by_vulnerability.get(vulnerability_key)
+        by_vulnerability[vulnerability_key] = (
+            item.severity
+            if previous is None
+            else _worst_severity(previous, item.severity)
+        )
+
+    rows: list[dict[str, Any]] = []
+    for key, vulnerabilities in grouped.items():
+        asset = assets.get(key)
+        if asset is None:
+            continue
+        counts = Counter(vulnerabilities.values())
+        rows.append(
+            {
+                **_asset_row(asset),
+                "correctable_vulnerabilities": len(vulnerabilities),
+                "critical": counts.get("CRITICAL", 0),
+                "high": counts.get("HIGH", 0),
+                "medium": counts.get("MEDIUM", 0),
+                "low": counts.get("LOW", 0),
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda row: (
+            -row["correctable_vulnerabilities"],
+            -row["critical"],
+            -row["high"],
+            row["name"],
+            row["asset_id"],
+        ),
+    )[:10]
+
+
 def _provenance(
     *,
     snapshot: NormalizedCloudSnapshot,
@@ -695,6 +754,34 @@ def _provenance(
                     "correlacionada ao recurso e à CVE"
                 ),
             },
+            "cloud_top_correctable_virtual_machines": {
+                **vulnerability_base,
+                "platform_filters": {
+                    **vulnerability_base["platform_filters"],
+                    "Asset type": "Virtual Machine",
+                    "Correction": "FixedBy ou remediação correlacionada",
+                },
+                "group_by": "Resource Id",
+                "limit": 10,
+                "rule": (
+                    "combinação CVE/software corrigível deduplicada por máquina "
+                    "virtual; total desc, crítica desc, alta desc"
+                ),
+            },
+            "cloud_top_correctable_container_images": {
+                **vulnerability_base,
+                "platform_filters": {
+                    **vulnerability_base["platform_filters"],
+                    "Asset type": "Container Image",
+                    "Correction": "FixedBy ou remediação correlacionada",
+                },
+                "group_by": "Resource Id",
+                "limit": 10,
+                "rule": (
+                    "combinação CVE/software corrigível deduplicada por imagem de "
+                    "container; total desc, crítica desc, alta desc"
+                ),
+            },
             "cloud_inventory": {
                 **snapshot_base,
                 "view": "Cloud Security > Inventory",
@@ -789,6 +876,16 @@ def build_cloud_dataset(
         "top_correctable_vulnerabilities": _correctable(
             snapshot=snapshot,
             enrichments=enrichments,
+        ),
+        "top_correctable_virtual_machines": _top_correctable_assets(
+            snapshot=snapshot,
+            enrichments=enrichments,
+            kind=CloudAssetKind.VIRTUAL_MACHINE,
+        ),
+        "top_correctable_container_images": _top_correctable_assets(
+            snapshot=snapshot,
+            enrichments=enrichments,
+            kind=CloudAssetKind.CONTAINER_IMAGE,
         ),
         "aging": _aging(snapshot),
         "remediation_performance": _remediation_performance(

@@ -220,7 +220,7 @@ def sanitized_cloud_dataset() -> dict[str, Any]:
     return {
         "schema_version": 1,
         "document_kind": "cloud",
-        "metric_definition_version": "cloud-metrics-v2",
+        "metric_definition_version": "cloud-metrics-v3",
         "connector_version": "cloud-graphql-v1",
         "period": {
             "start_at": "2026-07-01T03:00:00+00:00",
@@ -309,6 +309,26 @@ def sanitized_cloud_dataset() -> dict[str, Any]:
             },
         ],
         "top_correctable_vulnerabilities": _correctable(critical, hosts),
+        "top_correctable_virtual_machines": [
+            {
+                **row,
+                "correctable_vulnerabilities": max(
+                    1,
+                    row["vulnerabilities"] - 5,
+                ),
+            }
+            for row in hosts
+        ],
+        "top_correctable_container_images": [
+            {
+                **row,
+                "correctable_vulnerabilities": max(
+                    1,
+                    row["vulnerabilities"] - 4,
+                ),
+            }
+            for row in images
+        ],
         "aging": {
             "0-30": 74,
             "31-60": 48,

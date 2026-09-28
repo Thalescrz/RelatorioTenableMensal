@@ -389,6 +389,12 @@ def _enrich_descriptions(
     records: Iterable[Mapping[str, Any]],
     issues: list[CloudQualityIssue],
 ) -> None:
+    occurrence_keys: dict[
+        tuple[str, str],
+        list[tuple[CloudAssetKind, str, str]],
+    ] = {}
+    for key in occurrences:
+        occurrence_keys.setdefault((key[1], key[2]), []).append(key)
     for raw in records:
         resource = _mapping(raw.get("Resource"))
         vulnerability = _mapping(raw.get("Vulnerability"))
@@ -397,11 +403,7 @@ def _enrich_descriptions(
         description = _optional_text(vulnerability.get("Description"))
         if not resource_id or not vulnerability_id or not description:
             continue
-        matching = [
-            key
-            for key in occurrences
-            if key[1] == resource_id and key[2] == vulnerability_id
-        ]
+        matching = occurrence_keys.get((resource_id, vulnerability_id), ())
         if len(matching) == 1:
             key = matching[0]
             occurrences[key] = replace(

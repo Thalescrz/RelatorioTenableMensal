@@ -54,7 +54,7 @@ def _snapshot(*, attempt_number: int = 1) -> Any:
         dataset={
             "schema_version": 1,
             "document_kind": "cloud",
-            "metric_definition_version": "cloud-metrics-v2",
+            "metric_definition_version": "cloud-metrics-v3",
             "overview": {"assets": 0},
         },
         client_id="cliente-fixture",
@@ -184,7 +184,7 @@ def test_main_history_query_qualifies_snapshot_columns() -> None:
         period_mode="EXPLICIT_RANGE",
         timezone="UTC",
         scope_hash="scope-cloud-v1",
-        metric_definition_version="cloud-metrics-v2",
+        metric_definition_version="cloud-metrics-v3",
         connector_version="cloud-graphql-v1",
         normalizer_version="cloud-normalizer-v1",
         schema_version=1,

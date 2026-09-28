@@ -234,6 +234,90 @@ def test_correctable_rows_are_software_specific_and_use_fixed_by() -> None:
     assert [row["fixed_by_display"] for row in rows] == ["2.0.1", "3.4.5"]
 
 
+def test_top_correctable_assets_count_distinct_cve_software_pairs() -> None:
+    vm_primary = _asset("vm-primary")
+    vm_secondary = _asset("vm-secondary")
+    image = _asset("image-primary", image=True)
+    correction = importlib.import_module(
+        "tenable_reports.application.cloud_corrections"
+    ).classify_cloud_correction("Apply the vendor security patch.")
+    enrichment = _enrichment_module().CloudVulnerabilityEnrichment(
+        cve="CVE-2026-0403",
+        asset=image.key,
+        description=None,
+        remediation_steps=("Apply the vendor security patch.",),
+        correction=correction,
+        source_finding_keys=("finding-image-remediation",),
+    )
+    dataset = _dataset_module().build_cloud_dataset(
+        snapshot=_snapshot(
+            assets=(vm_primary, vm_secondary, image),
+            software_vulnerabilities=(
+                _software_vulnerability(
+                    vm_primary,
+                    "CVE-2026-0400",
+                    software="fixture-library-a",
+                    fixed_by="2.0.0",
+                ),
+                _software_vulnerability(
+                    vm_primary,
+                    "CVE-2026-0400",
+                    software="fixture-library-a",
+                    fixed_by="2.0.0",
+                ),
+                _software_vulnerability(
+                    vm_primary,
+                    "CVE-2026-0401",
+                    software="fixture-library-b",
+                    fixed_by="3.0.0",
+                    severity="HIGH",
+                ),
+                _software_vulnerability(
+                    vm_primary,
+                    "CVE-2026-0499",
+                    software="fixture-library-without-fix",
+                    fixed_by=None,
+                    severity="MEDIUM",
+                ),
+                _software_vulnerability(
+                    vm_secondary,
+                    "CVE-2026-0402",
+                    software="fixture-library-c",
+                    fixed_by="4.0.0",
+                    severity="MEDIUM",
+                ),
+                _software_vulnerability(
+                    image,
+                    "CVE-2026-0403",
+                    software="fixture-image-library",
+                    fixed_by=None,
+                    severity="LOW",
+                ),
+            ),
+        ),
+        period=_period(),
+        enrichments=(enrichment,),
+    )
+
+    virtual_machines = dataset["top_correctable_virtual_machines"]
+    container_images = dataset["top_correctable_container_images"]
+
+    assert [row["asset_id"] for row in virtual_machines] == [
+        "vm-primary",
+        "vm-secondary",
+    ]
+    assert virtual_machines[0]["correctable_vulnerabilities"] == 2
+    assert virtual_machines[0]["critical"] == 1
+    assert virtual_machines[0]["high"] == 1
+    assert virtual_machines[0]["medium"] == 0
+    assert container_images[0]["asset_id"] == "image-primary"
+    assert container_images[0]["correctable_vulnerabilities"] == 1
+    assert container_images[0]["low"] == 1
+    provenance = dataset["table_provenance"]["tables"]
+    assert "cloud_top_correctable_virtual_machines" in provenance
+    assert "cloud_top_correctable_container_images" in provenance
+
+
 def test_container_image_overview_keeps_cve_per_software_and_missing_fix() -> None:
     image = _asset("image-overview", image=True)
     occurrence = _occurrence(image, "CVE-2026-0300", vpr=8.5)

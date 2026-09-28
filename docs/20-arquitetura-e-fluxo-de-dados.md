@@ -148,7 +148,10 @@ capacidade fica indisponível sem invalidar as fontes obrigatórias.
 
 A normalização mantém a ocorrência consolidada por tipo de ativo, UUID e CVE para
 os totais aprovados e, em paralelo, preserva combinações por CVE e software para as
-tabelas de correção. Uma fotografia normalizada alimenta o único DOCX Cloud padrão
+tabelas de correção. O ranking corrigível por recurso deduplica cada combinação
+`CVE + software` dentro do UUID do recurso, aceita somente `FixedBy` estruturado ou
+remediação correlacionada ao mesmo recurso e CVE e separa máquinas virtuais de
+imagens de container. Uma fotografia normalizada alimenta o único DOCX Cloud padrão
 e o snapshot compacto PostgreSQL. O valor técnico de variante continua `expanded`
 somente para compatibilidade com o histórico e com a restrição do banco.
 

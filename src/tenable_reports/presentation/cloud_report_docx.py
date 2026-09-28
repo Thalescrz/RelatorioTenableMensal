@@ -46,7 +46,7 @@ from tenable_reports.presentation import base_report_docx as base
 from tenable_reports.presentation import full_base_report_docx as faithful
 
 
-CLOUD_TEMPLATE_VERSION = "base-fiel-v2.1-cloud-v1.0"
+CLOUD_TEMPLATE_VERSION = "base-fiel-v2.1-cloud-v1.1"
 STANDARD_SECTION_IDS = (
     "cover",
     "table_of_contents",
@@ -200,6 +200,8 @@ def _toc_entries(*, include_posture: bool) -> tuple[str, ...]:
         "3.3.1. Overview das Vulnerabilidades das Imagens de Contêiner",
         "3.4. Principais Vulnerabilidades Críticas (TOP 5 CVEs)",
         "3.5. Principais Vulnerabilidades com Correção Disponível",
+        "3.5.1. Top 10 Máquinas Virtuais com Vulnerabilidades Corrigíveis",
+        "3.5.2. Top 10 Containers com Vulnerabilidades Corrigíveis",
         "3.6. Painel de Controle (Dashboards)",
         "3.7. Componentes e Produtos em Maior Risco",
     ]
