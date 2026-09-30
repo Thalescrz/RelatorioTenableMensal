@@ -169,6 +169,11 @@ UUIDs remotos, manifests parciais ou checkpoints reutilizáveis.
 Uma retentativa deve consultar primeiro o identificador ou snapshot preservado e
 nunca repetir componente já concluído sem causa validada. Publicação parcial não se
 torna `MAIN` enquanto os componentes obrigatórios não estiverem resolvidos.
+Checkpoints só seguem diretamente para consolidação local quando cliente, tenant,
+run, origem e período efetivo `[início, fim)` forem compatíveis entre todos os
+componentes. Um conjunto divergente é devolvido ao fluxo remoto de recuperação;
+assim o identificador válido pode ser consultado novamente sem promover dados de
+outra competência como se pertencessem ao período atual.
 
 ## PostgreSQL, MAIN e armazenamento
 
