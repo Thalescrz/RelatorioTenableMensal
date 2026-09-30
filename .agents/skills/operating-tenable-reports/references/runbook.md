@@ -90,6 +90,11 @@ converte a data final para o dia seguinte antes de enviar `--end-at`; confirme n
 job que 01/07 a 31/07 resultou em `start_at=01/07 00:00` e
 `end_at=01/08 00:00` no fuso do cliente.
 
+Se a data final for o dia corrente, o servidor preserva um único `reference_at`
+para o lote e o domínio corta `end_at` nesse instante. Confirme no detalhe que todos
+os clientes herdaram o mesmo corte; o restante do dia fica deliberadamente fora.
+Uma data final realmente futura continua inválida.
+
 Para validar a API no mesmo cliente e período de um snapshot existente, marque
 **Forçar nova coleta pela API**. Confirme o aviso: novos jobs de export serão
 criados, o snapshot anterior será preservado e a opção continuará ativa em uma

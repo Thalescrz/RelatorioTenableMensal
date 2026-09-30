@@ -123,6 +123,14 @@ política nunca invoca `schtasks.exe` nem cria lote. Aplicar, ativar e desativar
 exigem confirmação e devem ser testados com runner falso.
 Comandos reais devem exigir confirmação explícita.
 
+No período manual explícito, datas da interface são inclusivas e o domínio recebe
+o fim exclusivo. Se esse fim for exatamente a meia-noite posterior ao dia corrente,
+recorte-o para o `reference_at` persistido no recebimento da solicitação. Não aceite
+outros limites futuros. Um lote deve compartilhar o mesmo `reference_at` entre os
+clientes; uma derivação de lote legado sem esse campo o fixa uma vez no instante da
+derivação. Em uma geração manual nova, o relógio é sempre do servidor; descarte
+qualquer `reference_at` recebido do formulário ou da requisição HTTP.
+
 No Cloud, consultas GraphQL obrigatórias e opcionais são separadas por contrato. O
 probe mínimo deve ocorrer antes da coleta completa; token nunca entra em perfil,
 argumento, log, manifesto ou resposta HTTP. Enriquecimento de descrição e correção

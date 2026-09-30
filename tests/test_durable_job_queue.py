@@ -2741,20 +2741,32 @@ def test_dashboard_application_groups_generate_all_in_one_durable_batch(tmp_path
             }
         )
 
+    timestamps = iter((
+        "2026-09-30T23:59:59Z",
+        "2026-10-01T00:00:01Z",
+        "2026-10-01T00:00:02Z",
+        "2026-10-01T00:00:03Z",
+    ))
+
     try:
-        created = app.enqueue_jobs(
-            ["client-1", "client-2"],
-            {
-                "mode": "manual",
-                "days": 30,
-                "run_scope": "all",
-                "selection_filter_snapshot": {
-                    "analyst_id": None,
-                    "query": "",
-                    "unassigned": False,
+        with patch.object(
+            server_module,
+            "_utc_now",
+            side_effect=lambda: next(timestamps, "2026-10-01T00:00:04Z"),
+        ):
+            created = app.enqueue_jobs(
+                ["client-1", "client-2"],
+                {
+                    "mode": "manual",
+                    "days": 30,
+                    "run_scope": "all",
+                    "selection_filter_snapshot": {
+                        "analyst_id": None,
+                        "query": "",
+                        "unassigned": False,
+                    },
                 },
-            },
-        )
+            )
         assert len({row["batch_id"] for row in created}) == 1
         assert app.jobs.wait_until_idle(timeout=2)
     finally:
@@ -2762,7 +2774,12 @@ def test_dashboard_application_groups_generate_all_in_one_durable_batch(tmp_path
 
     assert len(repository.list_batches()) == 1
     batch = repository.list_batches()[0]
+    jobs = repository.list_batch_jobs(batch.id)
     assert batch.status is BatchStatus.COMPLETE
+    assert batch.options["reference_at"] == "2026-09-30T23:59:59Z"
+    assert {
+        job.payload["reference_at"] for job in jobs
+    } == {"2026-09-30T23:59:59Z"}
     assert batch.options["selected_client_ids"] == ["client-1", "client-2"]
     assert batch.options["excluded_client_ids"] == []
     assert batch.options["analyst_snapshot_by_client"] == {
@@ -2782,6 +2799,48 @@ def test_dashboard_application_groups_generate_all_in_one_durable_batch(tmp_path
         "query": "",
         "unassigned": False,
     }
+
+
+def test_dashboard_application_ignores_manual_reference_from_request(
+    tmp_path,
+) -> None:
+    def runner(command, cwd, progress_callback=None):
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"status": "COMPLETE", "run_id": "run-fixture"}),
+            stderr="",
+        )
+
+    app = DashboardApplication(
+        project_root=tmp_path,
+        config_path=tmp_path / "orchestration" / "clients.json",
+        runner=runner,
+    )
+    app.config.add_client({
+        "client_id": "client-1",
+        "display_name": "Client 1",
+        "access_key": "fixture-access",
+        "secret_key": "fixture-secret",
+    })
+
+    with patch.object(
+        server_module,
+        "_utc_now",
+        return_value="2026-09-30T19:36:04Z",
+    ):
+        created = app.enqueue_jobs(
+            ["client-1"],
+            {
+                "mode": "manual",
+                "days": 30,
+                "run_scope": "single",
+                "reference_at": "2099-01-01T00:00:00Z",
+            },
+        )
+    app.jobs._pending.join()
+
+    assert created[0]["reference_at"] == "2026-09-30T19:36:04Z"
 
 
 def test_production_server_requires_durable_batches(tmp_path) -> None:

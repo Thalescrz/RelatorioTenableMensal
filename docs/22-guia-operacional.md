@@ -175,6 +175,12 @@ transforma a data final no início do dia seguinte: selecionar 01/07 a 31/07 pro
 o intervalo técnico `[01/07 00:00, 01/08 00:00)`. Assim, nenhum minuto do último
 dia é perdido.
 
+Quando a data final é o dia corrente, o início do dia seguinte ainda seria futuro.
+Nesse caso, a aplicação encerra o intervalo no instante em que a solicitação é
+confirmada e usa esse mesmo corte para todos os clientes do lote. O restante do dia
+fica fora do relatório; datas finais posteriores ao dia corrente continuam
+rejeitadas.
+
 Quando existir um snapshot compacto exato, a execução padrão o reutiliza e não
 abre novos exports. Para testar a integração ou atualizar deliberadamente a coleta,
 marque **Forçar nova coleta pela API**. A opção vale somente para aquela execução,

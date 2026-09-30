@@ -169,12 +169,21 @@ def explicit_reporting_period(
     reference_at: str | datetime | date | None = None,
     timezone_name: str = "America/Fortaleza",
 ) -> ReportingPeriod:
-    """Intervalo manual explícito; o fim é exclusivo e não pode estar no futuro."""
+    """Intervalo manual explícito com corte seguro no dia corrente."""
     reference = parse_datetime(reference_at, timezone_name)
     start = parse_datetime(start_at, timezone_name)
     end = parse_datetime(end_at, timezone_name)
     if end > reference:
-        raise ValueError("end_at nao pode ser posterior ao instante da execucao.")
+        local_reference = reference.astimezone(ZoneInfo(timezone_name))
+        next_local_midnight = datetime(
+            local_reference.year,
+            local_reference.month,
+            local_reference.day,
+            tzinfo=ZoneInfo(timezone_name),
+        ) + timedelta(days=1)
+        if end != next_local_midnight:
+            raise ValueError("end_at nao pode ser posterior ao instante da execucao.")
+        end = reference
     return ReportingPeriod(
         start_at=start.astimezone(UTC),
         end_at=end.astimezone(UTC),

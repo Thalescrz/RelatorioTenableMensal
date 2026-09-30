@@ -1742,6 +1742,9 @@ class JobQueue:
         mode = str(request.get("mode") or "manual")
         if mode not in {"manual", "automatic"}:
             raise ValueError("Modo de execucao invalido.")
+        reference_at = str(request.get("reference_at") or "").strip() or None
+        if mode == "manual" and reference_at is None:
+            reference_at = _utc_now()
         vm_selective_mode = (
             str(request.get("vm_selective_mode") or "").strip().lower() or None
         )
@@ -1827,6 +1830,7 @@ class JobQueue:
                     "client_id": client_id,
                     "operation": "report",
                     "mode": mode,
+                    "reference_at": reference_at,
                     "days": days,
                     "start_at": start_at,
                     "end_at": end_at,
@@ -2048,6 +2052,7 @@ class JobQueue:
                 raise ValueError("Somente trabalhos com falha podem ser reenfileirados.")
             request = {
                 "mode": original["mode"],
+                "reference_at": original.get("reference_at"),
                 "days": original["days"],
                 "start_at": original["start_at"],
                 "end_at": original["end_at"],
@@ -2304,6 +2309,8 @@ class JobQueue:
                     command.extend(
                         ("--historical-source", str(job["historical_source"]))
                     )
+                if job.get("reference_at"):
+                    command.extend(("--reference-at", str(job["reference_at"])))
                 if job["days"] is not None:
                     command.extend(("--days", str(job["days"])))
                 if job["start_at"]:
@@ -2396,6 +2403,8 @@ class JobQueue:
                     command.extend(("--historical-source", job["historical_source"]))
                 if job.get("was_failure_policy"):
                     command.extend(("--was-failure-policy", job["was_failure_policy"]))
+                if job.get("reference_at"):
+                    command.extend(("--reference-at", str(job["reference_at"])))
                 if job["days"] is not None:
                     command.extend(("--days", str(job["days"])))
                 if job["start_at"]:
@@ -2529,6 +2538,10 @@ class JobQueue:
                 if job.get("was_failure_policy"):
                     command.extend((
                         "--was-failure-policy", job["was_failure_policy"]
+                    ))
+                if job.get("reference_at"):
+                    command.extend((
+                        "--reference-at", str(job["reference_at"])
                     ))
                 if job["days"] is not None:
                     command.extend(("--days", str(job["days"])))
@@ -3921,9 +3934,13 @@ class DashboardApplication:
         run_scope = str(request.get("run_scope") or "single").strip().lower()
         if run_scope not in {"single", "all"}:
             raise ValueError("Escopo de execucao invalido.")
+        request_mode = str(request.get("mode") or "manual").strip().lower()
+        manual_reference_at = _utc_now() if request_mode == "manual" else None
         client_rows = self.config.list_clients()
         clients = {item["client_id"]: item for item in client_rows}
         batch_options: dict[str, Any] = {"execution_model": "STAGED_V1"}
+        if manual_reference_at is not None:
+            batch_options["reference_at"] = manual_reference_at
         for request_key, option_key in (
             ("_batch_idempotency_key", "_idempotency_key"),
             ("_batch_origin", "_origin"),
@@ -3972,6 +3989,8 @@ class DashboardApplication:
             client_request = dict(request)
             client_request.pop("client_ids", None)
             client_request.pop("selection_filter_snapshot", None)
+            if manual_reference_at is not None:
+                client_request["reference_at"] = manual_reference_at
             for internal_key in (
                 "_batch_idempotency_key",
                 "_batch_origin",

@@ -68,6 +68,57 @@ class ReportingPeriodTests(unittest.TestCase):
         self.assertEqual(period.to_dict()["start_at"], "2026-06-01T03:00:00Z")
         self.assertEqual(period.to_dict()["end_at"], "2026-07-01T03:00:00Z")
 
+    def test_explicit_period_clips_current_inclusive_day_to_reference_instant(self) -> None:
+        period = explicit_reporting_period(
+            start_at="2026-09-01",
+            end_at="2026-10-01",
+            reference_at="2026-09-30T16:36:04-03:00",
+            timezone_name="America/Fortaleza",
+        )
+
+        self.assertEqual(period.mode, PeriodMode.EXPLICIT_RANGE)
+        self.assertEqual(period.to_dict()["start_at"], "2026-09-01T03:00:00Z")
+        self.assertEqual(period.to_dict()["end_at"], "2026-09-30T19:36:04Z")
+        self.assertEqual(period.to_dict()["reference_at"], "2026-09-30T19:36:04Z")
+
+    def test_explicit_period_rejects_future_boundary_beyond_current_day(self) -> None:
+        with self.assertRaisesRegex(ValueError, "posterior"):
+            explicit_reporting_period(
+                start_at="2026-09-01",
+                end_at="2026-10-02",
+                reference_at="2026-09-30T16:36:04-03:00",
+                timezone_name="America/Fortaleza",
+            )
+
+    def test_current_day_clip_uses_client_timezone_across_dst_and_utc_date(self) -> None:
+        cases = (
+            (
+                "America/New_York",
+                "2026-03-01",
+                "2026-03-08T12:00:00-04:00",
+                "2026-03-09",
+                "2026-03-08T16:00:00Z",
+            ),
+            (
+                "Asia/Tokyo",
+                "2026-09-01",
+                "2026-09-30T01:00:00+09:00",
+                "2026-10-01",
+                "2026-09-29T16:00:00Z",
+            ),
+        )
+
+        for timezone_name, start_at, reference_at, end_at, expected_end in cases:
+            with self.subTest(timezone_name=timezone_name):
+                period = explicit_reporting_period(
+                    start_at=start_at,
+                    end_at=end_at,
+                    reference_at=reference_at,
+                    timezone_name=timezone_name,
+                )
+
+                self.assertEqual(period.to_dict()["end_at"], expected_end)
+
     def test_manual_period_rejects_conflicting_or_incomplete_selection(self) -> None:
         with self.assertRaises(ValueError):
             resolve_manual_period(

@@ -130,6 +130,9 @@ versionados.
 - Intervalos internos usam `[início, fim)` no fuso configurado para o cliente.
 - Datas explícitas inclusivas da interface são convertidas para limite final
   exclusivo, preservando integralmente o último dia escolhido.
+- Quando o último dia escolhido é o dia corrente, o limite exclusivo é cortado no
+  instante único em que o lote foi solicitado. O restante do dia não é antecipado,
+  e todos os clientes da carteira compartilham o mesmo corte temporal.
 - Findings `OPEN` e `REOPENED` pertencem ao período por `last_found`.
 - Findings `FIXED` pertencem ao período por `last_fixed`.
 - Severidade `Informational` fica fora dos relatórios atuais.

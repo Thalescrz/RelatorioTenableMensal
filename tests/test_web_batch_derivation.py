@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -611,6 +612,42 @@ def test_rerun_all_requires_confirmation_and_copies_every_client(
     assert tuple(job.client_id for job in jobs) == ("client-1", "client-2")
     assert all(job.attempt_number == 1 for job in jobs)
     assert all(job.retry_of_batch_job_id is None for job in jobs)
+
+
+def test_rerun_of_legacy_manual_batch_anchors_missing_reference_at(
+    tmp_path: Path,
+) -> None:
+    repository = _source_repository((BatchJobStatus.FAILED,))
+    source_job = repository.list_batch_jobs(SOURCE_ID)[0]
+    repository._jobs[source_job.id] = replace(
+        source_job,
+        payload={
+            **dict(source_job.payload),
+            "days": None,
+            "start_at": "2026-09-01",
+            "end_at": "2026-10-01",
+        },
+    )
+    queue = _queue(tmp_path, repository)
+
+    try:
+        with patch(
+            "tenable_reports.webapp.durable_dashboard_queue._now",
+            return_value="2026-09-30T19:36:04Z",
+        ):
+            rerun = queue.derive_batch(
+                DerivedBatchRequest(
+                    source_batch_id=SOURCE_ID,
+                    kind=BatchAction.RERUN_ALL,
+                    idempotency_key="rerun-current-day:source:one",
+                    confirmation_token=f"GERAR NOVAMENTE {str(SOURCE_ID)[:8]}",
+                )
+            )
+    finally:
+        queue.close()
+
+    job = repository.list_batch_jobs(UUID(rerun["batch"]["id"]))[0]
+    assert job.payload["reference_at"] == "2026-09-30T19:36:04Z"
 
 
 def test_derived_batch_rejects_client_already_active_elsewhere(
