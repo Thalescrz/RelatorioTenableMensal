@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from html.parser import HTMLParser
 from pathlib import Path
+from unittest.mock import patch
 
 from tenable_reports.application.orchestration import (
     OrchestrationRequest,
@@ -79,6 +80,40 @@ class HistoricalWebUiTests(unittest.TestCase):
         end_index = observed[0].index("--end-at")
         self.assertEqual(observed[0][start_index + 1], "2026-07-01")
         self.assertEqual(observed[0][end_index + 1], "2026-08-01")
+
+    def test_current_inclusive_day_uses_one_stable_reference_instant(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            observed: list[list[str]] = []
+
+            def runner(command, cwd, progress_callback=None):
+                observed.append(list(command))
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=json.dumps({"status": "COMPLETE", "run_id": "run-ok"}) + "\n",
+                    stderr="",
+                )
+
+            jobs = JobQueue(
+                root, root / "orchestration" / "clients.json", runner
+            )
+            with patch(
+                "tenable_reports.webapp.server._utc_now",
+                return_value="2026-09-30T19:36:04Z",
+            ):
+                job = jobs.enqueue(["cliente-a"], {
+                    "mode": "manual",
+                    "start_date": "2026-09-01",
+                    "end_date": "2026-09-30",
+                })[0]
+            jobs._pending.join()
+
+        self.assertEqual(job["reference_at"], "2026-09-30T19:36:04Z")
+        reference_index = observed[0].index("--reference-at")
+        self.assertEqual(
+            observed[0][reference_index + 1], "2026-09-30T19:36:04Z"
+        )
 
     def test_recovery_uuid_is_forwarded_by_web_queue(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

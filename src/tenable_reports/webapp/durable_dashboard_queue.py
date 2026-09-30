@@ -1329,6 +1329,11 @@ class DurableDashboardJobQueue:
                     elif source_component.component is ReportComponent.WAS:
                         payload["was_export_uuid"] = identifier
             mode = str(payload.get("mode") or "manual")
+            if (
+                mode == "manual"
+                and not str(payload.get("reference_at") or "").strip()
+            ):
+                payload["reference_at"] = created_at
             control_file = self._control_file(
                 batch_id=batch_id,
                 job_id=job_id,

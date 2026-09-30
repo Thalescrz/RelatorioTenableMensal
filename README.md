@@ -85,6 +85,9 @@ coleta nova.
 No período explícito, a interface recebe datas de calendário inclusivas. Por
 exemplo, 01/07 a 31/07 é convertido internamente para
 `[01/07 00:00, 01/08 00:00)`, preservando o dia final inteiro.
+Se a data final for o dia corrente, o intervalo termina no instante em que a
+solicitação é confirmada; o restante do dia ainda não ocorrido fica fora da coleta.
+Esse instante é único para todos os clientes de um mesmo **Gerar todos**.
 
 Os intervalos internos são tratados como `[início, fim)`. Findings ativos usam a
 data de última identificação; findings mitigados usam a data da correção. A

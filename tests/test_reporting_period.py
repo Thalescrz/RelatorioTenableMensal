@@ -68,6 +68,28 @@ class ReportingPeriodTests(unittest.TestCase):
         self.assertEqual(period.to_dict()["start_at"], "2026-06-01T03:00:00Z")
         self.assertEqual(period.to_dict()["end_at"], "2026-07-01T03:00:00Z")
 
+    def test_explicit_period_clips_current_inclusive_day_to_reference_instant(self) -> None:
+        period = explicit_reporting_period(
+            start_at="2026-09-01",
+            end_at="2026-10-01",
+            reference_at="2026-09-30T16:36:04-03:00",
+            timezone_name="America/Fortaleza",
+        )
+
+        self.assertEqual(period.mode, PeriodMode.EXPLICIT_RANGE)
+        self.assertEqual(period.to_dict()["start_at"], "2026-09-01T03:00:00Z")
+        self.assertEqual(period.to_dict()["end_at"], "2026-09-30T19:36:04Z")
+        self.assertEqual(period.to_dict()["reference_at"], "2026-09-30T19:36:04Z")
+
+    def test_explicit_period_rejects_future_boundary_beyond_current_day(self) -> None:
+        with self.assertRaisesRegex(ValueError, "posterior"):
+            explicit_reporting_period(
+                start_at="2026-09-01",
+                end_at="2026-10-02",
+                reference_at="2026-09-30T16:36:04-03:00",
+                timezone_name="America/Fortaleza",
+            )
+
     def test_manual_period_rejects_conflicting_or_incomplete_selection(self) -> None:
         with self.assertRaises(ValueError):
             resolve_manual_period(
