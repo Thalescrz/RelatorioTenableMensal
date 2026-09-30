@@ -191,9 +191,12 @@ Mudanças na fila precisam preservar estes contratos:
 - a consulta de claim de componentes exige o job pai em `RUNNING/REMOTE_RUNNING`,
   impedindo componentes pendentes de lote pausado ou terminal de chamar a API;
 - ao derivar explicitamente uma retentativa cujos componentes já são publicáveis,
-  restaure os checkpoints no novo job e execute apenas a consolidação local; uma
-  exceção deve virar `CHECKPOINT_COMPONENT_INCOMPLETE`, nunca ser engolida deixando
-  o job em `REMOTE_RUNNING`;
+  restaure os checkpoints no novo job e execute apenas a consolidação local somente
+  depois de recarregar os arquivos, validar hashes e confirmar a mesma identidade e
+  o mesmo período estável (todos os campos de período exceto `reference_at`); um
+  conjunto incompatível deve voltar ao fluxo remoto de recuperação, e uma exceção
+  posterior deve virar `CHECKPOINT_COMPONENT_INCOMPLETE`, nunca ser engolida
+  deixando o job em `REMOTE_RUNNING`;
 - no mesmo `run_id`, reutilize coleta completa de assets/VM/TAG somente após validar
   identidade, consulta, configuração de TAG, chunks e hashes; divergência deve
   preservar a imutabilidade do artefato;

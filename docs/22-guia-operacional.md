@@ -257,7 +257,10 @@ ou montagem são classificados como `INTERRUPTED/TERMINAL`, e o lote fica pausad
 Selecionar o lote também não inicia nada: clique em **Tentar falhas/interrompidos**
 para autorizar a tentativa derivada. Se todos os componentes do cliente já têm
 checkpoint publicável, essa ação faz somente consolidação e montagem locais, sem
-nova chamada VM, WAS ou Cloud.
+nova chamada VM, WAS ou Cloud, desde que os checkpoints tenham a mesma identidade
+e o mesmo intervalo efetivo `[início, fim)`. Se os períodos divergirem, a aplicação
+não promove o conjunto local: volta ao fluxo remoto, preserva identificadores ainda
+válidos e produz checkpoints coerentes antes da montagem.
 
 Na recuperação da mesma execução, assets, VM e TAGs já completos são validados e
 reutilizados. Se o documento desse `run_id` já estiver publicado e íntegro, a
@@ -501,8 +504,11 @@ VM, WAS e Cloud podem terminar em horários diferentes. Assim que os componentes
 um cliente ficam terminais durante uma execução ativa, ele entra individualmente em
 `READY_FOR_BUILD`; não é necessário esperar o lote inteiro. Após reiniciar o
 servidor, o job abandonado fica interrompido até a retentativa explícita. Quando os
-checkpoints já estão completos, essa retentativa segue para montagem sem nova
-chamada à Tenable. A sequência esperada nos eventos é
+checkpoints já estão completos e compartilham a mesma identidade de período, essa
+retentativa segue para montagem sem nova chamada à Tenable. Antes de aceitar esse
+atalho, confira `start_at`, `end_at`, `period_id`, origem, hashes e data da coleta;
+uma competência anterior nunca pode ser tratada como a competência solicitada. A
+sequência esperada nos eventos é
 `REMOTE_COMPONENTS_CONSOLIDATING`, `COLLECTION_READY`, `BUILD_STARTED` e
 `JOB_FINISHED`.
 

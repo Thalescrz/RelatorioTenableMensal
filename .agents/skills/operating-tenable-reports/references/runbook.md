@@ -97,6 +97,13 @@ Uma data final realmente futura continua inválida. Em retentativa manual antiga
 sem `reference_at`, confirme que os comandos de componente herdaram o `created_at`
 persistido do job antes de investigar divergência entre checkpoints.
 
+Antes de aproveitar a consolidação local de uma retentativa, confirme que os
+checkpoints foram recarregados com hashes válidos e compartilham `start_at`,
+`end_at`, `period_id`, modo, origem e identidade do run. `reference_at` isolado é
+metadado de auditoria; divergência em qualquer outro campo do período exige retorno
+ao fluxo remoto. Verifique também o filtro `since` e a data de início das fontes
+para impedir que evidência de uma competência anterior seja publicada como atual.
+
 Para validar a API no mesmo cliente e período de um snapshot existente, marque
 **Forçar nova coleta pela API**. Confirme o aviso: novos jobs de export serão
 criados, o snapshot anterior será preservado e a opção continuará ativa em uma

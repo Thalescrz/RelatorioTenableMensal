@@ -1615,6 +1615,127 @@ def test_explicit_retry_consolidates_complete_components_without_remote_collecti
     assert "COLLECTION_READY" in event_types
 
 
+def test_explicit_retry_recollects_publishable_components_with_divergent_periods(
+    tmp_path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    source_batch = replace(
+        _batch(status=BatchStatus.COMPLETE_WITH_FAILURES),
+        options={"execution_model": "STAGED_V1"},
+    )
+    source_job = replace(
+        _job(1, status=BatchJobStatus.FAILED, phase=BatchJobPhase.TERMINAL),
+        logical_job_id="logical-divergent-period",
+        run_id="run-divergent-period",
+        error_code="CHECKPOINT_COMPONENT_INCOMPLETE",
+        payload={
+            "mode": "manual",
+            "run_id": "run-divergent-period",
+            "start_at": "2026-08-01T00:00:00Z",
+            "end_at": "2026-09-01T00:00:00Z",
+        },
+    )
+    repository.create_batch(source_batch, (source_job,))
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-divergent-period",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    source_request = queue._component_request(
+        source_job,
+        component=ReportComponent.VM_CORE,
+    )
+    rows = component_repository.create_for_job(
+        batch_job_id=source_job.id,
+        components=tuple(ReportComponent),
+        window_number=1,
+        deadline_at=datetime.now(UTC) + timedelta(hours=10),
+        origin="MANUAL",
+        attempt_number=1,
+    )
+    by_component = {row.component: row for row in rows}
+    for offset, component in enumerate(ReportComponent, start=1):
+        status = (
+            RemoteComponentState.NOT_APPLICABLE
+            if component is ReportComponent.CLOUD
+            else RemoteComponentState.COMPLETE
+        )
+        period = dict(source_request.period)
+        period.update(
+            {
+                "end_at": f"2026-09-0{offset}T00:00:00Z",
+                "reference_at": f"2026-09-0{offset}T00:00:00Z",
+                "period_id": f"manual-divergent-{offset}",
+            }
+        )
+        checkpoint = ComponentCollectionCheckpoint(
+            schema_version=1,
+            checkpoint_path=component_checkpoint_path(source_request, component),
+            component=component,
+            client_id=source_request.client_id,
+            tenant_id=source_request.tenant_id,
+            run_id=source_request.run_id,
+            logical_job_id=source_request.logical_job_id,
+            execution_type=source_request.execution_type,
+            mode=source_request.mode,
+            origin=source_request.origin,
+            attempt_number=source_request.attempt_number,
+            period=period,
+            status=status,
+            artifacts=(),
+            metadata=(
+                {"reason_code": "CLOUD_DISABLED"}
+                if component is ReportComponent.CLOUD
+                else {}
+            ),
+            query_fingerprint=str(offset) * 64,
+        )
+        persist_component_checkpoint(checkpoint, storage_root=tmp_path)
+        component_repository.transition(
+            by_component[component].id,
+            expected_state=RemoteComponentState.PENDING,
+            requested_state=status,
+            checkpoint_path=str(checkpoint.checkpoint_path),
+            query_fingerprint=checkpoint.query_fingerprint,
+            ended_at=datetime.now(UTC),
+        )
+
+    try:
+        detail = queue.derive_batch(
+            DerivedBatchRequest(
+                source_batch_id=source_batch.id,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key="retry-divergent-period",
+                actor="test",
+                reason="Recuperar componentes com periodos divergentes.",
+            )
+        )
+        retry_batch_id = UUID(detail["batch"]["id"])
+        retry_job = repository.list_batch_jobs(retry_batch_id)[0]
+        retry_rows = component_repository.list_for_jobs((retry_job.id,)).get(
+            retry_job.id,
+            (),
+        )
+    finally:
+        queue.close()
+
+    assert retry_job.phase is BatchJobPhase.REMOTE_QUEUED
+    assert retry_job.status is BatchJobStatus.QUEUED
+    assert retry_job.collection_checkpoint_path is None
+    assert retry_rows == ()
+
+
 def _seed_complete_component_jobs_for_retry(
     *,
     repository: InMemoryWebBatchRepository,

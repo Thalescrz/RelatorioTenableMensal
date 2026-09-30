@@ -262,22 +262,54 @@ def _checkpoint_ready_for_build(value: str | Path | None) -> bool:
 
 def _components_ready_for_local_consolidation(
     components: Mapping[ReportComponent, RemoteComponentWindow],
+    *,
+    storage_root: Path,
 ) -> bool:
-    """Return whether an explicit retry can skip every remote collector."""
+    """Return whether an explicit retry can safely reuse every checkpoint."""
 
     if set(components) != set(ReportComponent):
         return False
+    shared_identity: tuple[Any, ...] | None = None
     for component in ReportComponent:
         window = components[component]
         if window.state not in _REMOTE_COMPONENT_PUBLISHABLE_STATES:
             return False
         if window.checkpoint_path:
-            if not Path(window.checkpoint_path).is_file():
+            try:
+                checkpoint = load_component_checkpoint(
+                    window.checkpoint_path,
+                    storage_root=storage_root,
+                )
+            except (CheckpointValidationError, OSError, ValueError):
+                return False
+            stable_period = {
+                key: value
+                for key, value in dict(checkpoint.period).items()
+                if key != "reference_at"
+            }
+            identity = (
+                checkpoint.client_id,
+                checkpoint.tenant_id,
+                checkpoint.run_id,
+                checkpoint.logical_job_id,
+                checkpoint.execution_type,
+                checkpoint.mode,
+                checkpoint.origin,
+                json.dumps(
+                    stable_period,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+            if shared_identity is None:
+                shared_identity = identity
+            elif identity != shared_identity:
                 return False
         elif window.state is not RemoteComponentState.NOT_APPLICABLE:
             return False
     vm = components[ReportComponent.VM_CORE]
-    return bool(vm.checkpoint_path and Path(vm.checkpoint_path).is_file())
+    return bool(vm.checkpoint_path and shared_identity is not None)
 
 
 def _safe_dashboard_value(value: Any) -> Any:
@@ -1104,7 +1136,10 @@ class DurableDashboardJobQueue:
                             rows.get(candidate.id, ())
                         )
                         component_cache[candidate.id] = components
-                    if _components_ready_for_local_consolidation(components):
+                    if _components_ready_for_local_consolidation(
+                        components,
+                        storage_root=self._staged_output_root,
+                    ):
                         consolidation_sources_by_job[source_job.id] = (
                             candidate,
                             components,
@@ -1504,7 +1539,10 @@ class DurableDashboardJobQueue:
         repository = self._remote_component_repository
         if repository is None:
             raise RuntimeError("Repositório de componentes remotos ausente.")
-        if not _components_ready_for_local_consolidation(latest):
+        if not _components_ready_for_local_consolidation(
+            latest,
+            storage_root=self._staged_output_root,
+        ):
             raise ValueError(
                 "Os componentes preservados não estão prontos para montagem local."
             )
