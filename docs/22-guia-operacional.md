@@ -179,7 +179,9 @@ Quando a data final é o dia corrente, o início do dia seguinte ainda seria fut
 Nesse caso, a aplicação encerra o intervalo no instante em que a solicitação é
 confirmada e usa esse mesmo corte para todos os clientes do lote. O restante do dia
 fica fora do relatório; datas finais posteriores ao dia corrente continuam
-rejeitadas.
+rejeitadas. Se uma retentativa antiga não possuir esse instante no payload, VM,
+WAS e Cloud herdam o `created_at` persistido do job, evitando três cortes distintos
+e preservando a consolidação do checkpoint.
 
 Quando existir um snapshot compacto exato, a execução padrão o reutiliza e não
 abre novos exports. Para testar a integração ou atualizar deliberadamente a coleta,

@@ -132,7 +132,9 @@ versionados.
   exclusivo, preservando integralmente o último dia escolhido.
 - Quando o último dia escolhido é o dia corrente, o limite exclusivo é cortado no
   instante único em que o lote foi solicitado. O restante do dia não é antecipado,
-  e todos os clientes da carteira compartilham o mesmo corte temporal.
+  e todos os clientes da carteira compartilham o mesmo corte temporal. Em jobs
+  derivados antigos sem `reference_at`, os coletores isolados usam o `created_at`
+  persistido do job para manter VM, WAS e Cloud na mesma janela.
 - Findings `OPEN` e `REOPENED` pertencem ao período por `last_found`.
 - Findings `FIXED` pertencem ao período por `last_fixed`.
 - Severidade `Informational` fica fora dos relatórios atuais.
