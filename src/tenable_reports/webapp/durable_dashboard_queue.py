@@ -3314,6 +3314,12 @@ class DurableDashboardJobQueue:
         if operation in {"staged_component", "staged_build"}:
             for key in _STAGED_COMPONENT_STALE_RESULT_KEYS:
                 payload.pop(key, None)
+        if (
+            operation == "staged_component"
+            and str(payload.get("mode") or "manual").casefold() == "manual"
+            and not str(payload.get("reference_at") or "").strip()
+        ):
+            payload["reference_at"] = str(job.created_at or _now())
         payload.pop("vm_resume_budget_seconds", None)
         payload["remote_processing_timeout_seconds"] = (
             self._remote_processing_timeout_seconds

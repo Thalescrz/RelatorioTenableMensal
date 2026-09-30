@@ -239,6 +239,90 @@ def test_job_queue_builds_collect_component_command_and_keeps_terminal_payload(
     assert jobs._jobs[job_id]["_component_result"]["status"] == "COMPLETE"
 
 
+def test_staged_component_anchors_missing_manual_reference_to_job_creation(
+    tmp_path,
+) -> None:
+    config_path = tmp_path / "orchestration" / "clients.json"
+    store = DashboardConfigStore(project_root=tmp_path, config_path=config_path)
+    store.add_client(
+        {
+            "client_id": "client-1",
+            "display_name": "Client 1",
+            "access_key": "fixture-access",
+            "secret_key": "fixture-secret",
+        }
+    )
+    commands: list[list[str]] = []
+
+    def runner(command, cwd, progress_callback=None):
+        del cwd, progress_callback
+        commands.append(list(command))
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "event": "TENABLE_COMPONENT_CHECKPOINT",
+                    "status": "COMPLETE",
+                    "component": "VM_CORE",
+                    "checkpoint": str(tmp_path / "component.json"),
+                }
+            ),
+            stderr="",
+        )
+
+    repository = InMemoryWebBatchRepository()
+    executor = JobQueue(tmp_path, config_path, runner, start_worker=False)
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=executor,
+        worker_id="worker-current-day-reference",
+        start_worker=False,
+    )
+    job = replace(
+        _job(1),
+        logical_job_id="logical-current-day",
+        run_id="run-current-day",
+        created_at="2026-09-30T19:36:04Z",
+        payload={
+            "client_id": "client-1",
+            "mode": "manual",
+            "days": None,
+            "start_at": "2026-09-01",
+            "end_at": "2026-10-01",
+        },
+    )
+
+    try:
+        result = queue._run_executor_job(
+            job,
+            operation="staged_component",
+            executor_job_id="isolated-current-day",
+            payload_overrides={
+                "component": "VM_CORE",
+                "component_checkpoint": str(tmp_path / "component.json"),
+                "window_number": 1,
+                "deadline_at": "2026-10-01T05:36:04Z",
+                "run_id": "run-current-day",
+                "logical_job_id": "logical-current-day",
+                "attempt_number": 1,
+                "origin": "MANUAL",
+                "remote_identifier": None,
+                "identifier_kind": None,
+                "identifier_origin": None,
+                "previous_component_checkpoint": None,
+            },
+        )
+    finally:
+        queue.close()
+
+    assert result.status is BatchJobStatus.COMPLETE
+    command = commands[0]
+    assert command[command.index("--reference-at") + 1] == (
+        "2026-09-30T19:36:04Z"
+    )
+
+
 def test_staged_vm_asset_retry_forwards_uuid_to_asset_export_argument(tmp_path) -> None:
     config_path = tmp_path / "orchestration" / "clients.json"
     store = DashboardConfigStore(project_root=tmp_path, config_path=config_path)

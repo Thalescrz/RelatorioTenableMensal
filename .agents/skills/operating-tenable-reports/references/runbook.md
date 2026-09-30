@@ -93,7 +93,9 @@ job que 01/07 a 31/07 resultou em `start_at=01/07 00:00` e
 Se a data final for o dia corrente, o servidor preserva um único `reference_at`
 para o lote e o domínio corta `end_at` nesse instante. Confirme no detalhe que todos
 os clientes herdaram o mesmo corte; o restante do dia fica deliberadamente fora.
-Uma data final realmente futura continua inválida.
+Uma data final realmente futura continua inválida. Em retentativa manual antiga
+sem `reference_at`, confirme que os comandos de componente herdaram o `created_at`
+persistido do job antes de investigar divergência entre checkpoints.
 
 Para validar a API no mesmo cliente e período de um snapshot existente, marque
 **Forçar nova coleta pela API**. Confirme o aviso: novos jobs de export serão

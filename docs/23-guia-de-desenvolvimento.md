@@ -129,7 +129,9 @@ recorte-o para o `reference_at` persistido no recebimento da solicitação. Não
 outros limites futuros. Um lote deve compartilhar o mesmo `reference_at` entre os
 clientes; uma derivação de lote legado sem esse campo o fixa uma vez no instante da
 derivação. Em uma geração manual nova, o relógio é sempre do servidor; descarte
-qualquer `reference_at` recebido do formulário ou da requisição HTTP.
+qualquer `reference_at` recebido do formulário ou da requisição HTTP. Como defesa
+na fronteira dos subprocessos, `staged_component` usa o `created_at` persistido do
+job quando um payload manual legado ou derivado ainda chegar sem `reference_at`.
 
 No Cloud, consultas GraphQL obrigatórias e opcionais são separadas por contrato. O
 probe mínimo deve ocorrer antes da coleta completa; token nunca entra em perfil,
@@ -178,7 +180,8 @@ Mudanças na fila precisam preservar estes contratos:
   `REMOTE_RUNNING` para `READY_FOR_BUILD`;
 - a tentativa mais recente dos componentes é consolidada por job/cliente, sem
   barreira global do lote; `reference_at` é auditoria volátil e não participa da
-  identidade compartilhada da janela `[start_at, end_at)`;
+  identidade compartilhada da janela, mas todos os componentes precisam resolver
+  o mesmo `end_at` efetivo para formar o intervalo `[start_at, end_at)`;
 - `REMOTE_COMPONENTS_CONSOLIDATING` usa chave idempotente por job, e uma segunda
   chamada depois de `READY_FOR_BUILD`, `BUILD_RUNNING` ou `TERMINAL` não regrava
   checkpoint nem evento;
