@@ -90,6 +90,35 @@ class ReportingPeriodTests(unittest.TestCase):
                 timezone_name="America/Fortaleza",
             )
 
+    def test_current_day_clip_uses_client_timezone_across_dst_and_utc_date(self) -> None:
+        cases = (
+            (
+                "America/New_York",
+                "2026-03-01",
+                "2026-03-08T12:00:00-04:00",
+                "2026-03-09",
+                "2026-03-08T16:00:00Z",
+            ),
+            (
+                "Asia/Tokyo",
+                "2026-09-01",
+                "2026-09-30T01:00:00+09:00",
+                "2026-10-01",
+                "2026-09-29T16:00:00Z",
+            ),
+        )
+
+        for timezone_name, start_at, reference_at, end_at, expected_end in cases:
+            with self.subTest(timezone_name=timezone_name):
+                period = explicit_reporting_period(
+                    start_at=start_at,
+                    end_at=end_at,
+                    reference_at=reference_at,
+                    timezone_name=timezone_name,
+                )
+
+                self.assertEqual(period.to_dict()["end_at"], expected_end)
+
     def test_manual_period_rejects_conflicting_or_incomplete_selection(self) -> None:
         with self.assertRaises(ValueError):
             resolve_manual_period(

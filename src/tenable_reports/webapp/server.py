@@ -3934,9 +3934,13 @@ class DashboardApplication:
         run_scope = str(request.get("run_scope") or "single").strip().lower()
         if run_scope not in {"single", "all"}:
             raise ValueError("Escopo de execucao invalido.")
+        request_mode = str(request.get("mode") or "manual").strip().lower()
+        manual_reference_at = _utc_now() if request_mode == "manual" else None
         client_rows = self.config.list_clients()
         clients = {item["client_id"]: item for item in client_rows}
         batch_options: dict[str, Any] = {"execution_model": "STAGED_V1"}
+        if manual_reference_at is not None:
+            batch_options["reference_at"] = manual_reference_at
         for request_key, option_key in (
             ("_batch_idempotency_key", "_idempotency_key"),
             ("_batch_origin", "_origin"),
@@ -3985,6 +3989,8 @@ class DashboardApplication:
             client_request = dict(request)
             client_request.pop("client_ids", None)
             client_request.pop("selection_filter_snapshot", None)
+            if manual_reference_at is not None:
+                client_request["reference_at"] = manual_reference_at
             for internal_key in (
                 "_batch_idempotency_key",
                 "_batch_origin",
