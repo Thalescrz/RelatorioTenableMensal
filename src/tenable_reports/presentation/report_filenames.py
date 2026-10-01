@@ -4,7 +4,7 @@ import re
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
-from tenable_reports.domain.reporting import ReportingPeriod
+from tenable_reports.domain.reporting import PeriodMode, ReportingPeriod
 
 
 MONTHS_PT = ("JAN", "FEV", "MAR", "ABR", "MAI", "JUN", "JUL", "AGO", "SET", "OUT", "NOV", "DEZ")
@@ -20,6 +20,8 @@ def period_suffix(period: ReportingPeriod) -> str:
     start = period.start_at.astimezone(zone)
     exclusive_end = period.end_at.astimezone(zone)
     inclusive_end = exclusive_end - timedelta(microseconds=1)
+    if period.mode is PeriodMode.MONTHLY_CUTOFF:
+        return _month_year(start)
     if start.day == 1 and exclusive_end.day == 1:
         first, last = _month_year(start), _month_year(inclusive_end)
         return first if first == last else f"{first}-{last}"

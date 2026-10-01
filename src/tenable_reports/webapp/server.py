@@ -2460,6 +2460,8 @@ class JobQueue:
                             f"{str(job_id).replace('-', '')}"
                         ),
                     ))
+                    for component in job["selected_components"]:
+                        command.extend(("--selected-component", str(component)))
                 if job.get("_job_control_file"):
                     command.extend((
                         "--job-control-file", str(job["_job_control_file"])

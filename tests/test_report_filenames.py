@@ -29,6 +29,19 @@ def test_monthly_filename_uses_portuguese_abbreviation() -> None:
     )
 
 
+def test_monthly_cutoff_filename_uses_month_competence() -> None:
+    period = explicit_reporting_period(
+        start_at="2026-09-01",
+        end_at="2026-10-01",
+        reference_at="2026-09-30T16:36:04-03:00",
+        timezone_name="America/Fortaleza",
+    )
+
+    assert report_filename("CLIENTE", period, "base") == (
+        "[CLIENTE] Relatório de Vulnerabilidades Tenable SET26.docx"
+    )
+
+
 def test_custom_monthly_filename() -> None:
     assert report_filename("CLIENTE", july_period(), "custom") == (
         "[CLIENTE] Inteligência e Customizações Tenable JUL26.docx"

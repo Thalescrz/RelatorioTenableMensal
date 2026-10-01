@@ -101,6 +101,22 @@ class ReportReferenceTests(unittest.TestCase):
             api["ReferenceKind"].EXACT_RANGE,
         )
 
+    def test_monthly_cutoff_is_eligible_for_monthly_main(self) -> None:
+        api = _domain()
+        cutoff = _candidate(
+            origin="MANUAL",
+            start_at="2026-09-01T03:00:00Z",
+            end_at="2026-09-30T19:36:04Z",
+            period_mode="MONTHLY_CUTOFF",
+        )
+
+        key = api["reference_key_for_candidate"](cutoff)
+        eligibility = api["main_eligibility"](cutoff)
+
+        self.assertIs(key.kind, api["ReferenceKind"].MONTHLY)
+        self.assertEqual(key.period_key, "2026-09")
+        self.assertTrue(eligibility.monthly_eligible)
+
     def test_invalid_publication_cannot_be_main(self) -> None:
         api = _domain()
         invalid = api["ReportCandidate"](

@@ -97,6 +97,14 @@ Uma data final realmente futura continua inválida. Em retentativa manual antiga
 sem `reference_at`, confirme que os comandos de componente herdaram o `created_at`
 persistido do job antes de investigar divergência entre checkpoints.
 
+Quando a seleção cobrir do primeiro ao último dia do mesmo mês, confirme também
+que o modo resolvido é `MONTHLY_CUTOFF`, que a competência é `YYYY-MM` e que os
+arquivos usam o sufixo mensal. O `end_at` deve continuar sendo o corte real para
+auditoria e comparação de evidência. Intervalos parciais permanecem
+`EXPLICIT_RANGE` e não devem ser promovidos ao ZIP mensal por semelhança de datas.
+Se uma retentativa terminar depois da virada, a fronteira exata do primeiro dia do
+mês seguinte continua pertencendo à mesma competência mensal.
+
 Antes de aproveitar a consolidação local de uma retentativa, confirme que os
 checkpoints foram recarregados com hashes válidos e compartilham `start_at`,
 `end_at`, `period_id`, modo, origem e identidade do run. `reference_at` isolado é

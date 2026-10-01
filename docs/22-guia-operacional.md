@@ -183,6 +183,15 @@ rejeitadas. Se uma retentativa antiga não possuir esse instante no payload, VM,
 WAS e Cloud herdam o `created_at` persistido do job, evitando três cortes distintos
 e preservando a consolidação do checkpoint.
 
+Se a seleção começar no primeiro dia do mês e terminar no último dia desse mesmo
+mês, esse corte antecipado mantém a competência mensal. Assim, 01/09 a 30/09,
+executado ainda em 30/09, é identificado como `2026-09` e os arquivos terminam em
+`SET26`. O horário real do corte continua registrado em `period_end_at` para
+auditoria. Seleções parciais, como 15/09 a 30/09, continuam exibindo o intervalo no
+nome e não entram automaticamente no ZIP mensal.
+Se a retentativa concluir após a virada e alcançar exatamente a fronteira do mês,
+ela mantém a mesma competência mensal e o mesmo sufixo.
+
 Quando existir um snapshot compacto exato, a execução padrão o reutiliza e não
 abre novos exports. Para testar a integração ou atualizar deliberadamente a coleta,
 marque **Forçar nova coleta pela API**. A opção vale somente para aquela execução,
@@ -423,6 +432,13 @@ revisão do snapshot compacto; a fotografia parcial anterior não é alterada. S
 componente já estiver `COMPLETE`, uma nova retentativa Cloud é corretamente
 recusada, pois não há dado faltante a recuperar.
 
+Na retentativa exclusiva de Cloud, a montagem acrescenta ou substitui somente os
+documentos Cloud no manifesto já publicado. Os DOCX Geral, customizado e por TAG e
+o snapshot histórico VM não são gerados novamente. Se a coleta remota terminar e
+a publicação local for interrompida, conclua a retomada pelo próprio cliente: o
+checkpoint validado permite repetir apenas renderização e registro, sem outra
+consulta GraphQL.
+
 No bootstrap padrão, o executor faseado oferece retry seletivo para VM, WAS e
 Cloud. Conjuntos excluídos nunca podem ser retentados.
 
@@ -516,6 +532,13 @@ sequência esperada nos eventos é
 `REMOTE_COMPONENTS_CONSOLIDATING`, `COLLECTION_READY`, `BUILD_STARTED` e
 `JOB_FINISHED`.
 
+Quando uma manutenção reclassificar um intervalo elegível de `EXPLICIT_RANGE` para
+`MONTHLY_CUTOFF`, ela precisa reconciliar também a identidade de período dos
+checkpoints persistidos. O intervalo efetivo, os artefatos e os hashes permanecem
+iguais; somente `period_id` e `mode` passam ao contrato mensal. Um backup local é
+criado antes da alteração e uma segunda execução deve encontrar zero checkpoints
+pendentes.
+
 Se a consolidação local falhar, o estado visível é
 `CHECKPOINT_COMPONENT_INCOMPLETE`. Os dados coletados permanecem preservados para
 retentativa; não use **Gerar todos** para contornar essa falha.
@@ -596,6 +619,11 @@ em `RESUMO.txt`; os demais clientes continuam no download. O mês mais recente f
 pré-selecionado. Se existirem referências `MAIN` de contextos diferentes para o
 mesmo cliente e mês, o pacote usa a promoção `MAIN` mais recente e registra a
 decisão no resumo.
+
+Uma execução de mês completo encerrada antecipadamente no último dia aparece no
+mesmo mês do ZIP, com sufixo mensal (`SET26`, por exemplo). O resumo e os metadados
+da publicação preservam o instante efetivo do corte; a competência mensal não deve
+ser interpretada como coleta do período posterior a esse instante.
 
 O mesmo diálogo permite escolher um analista responsável. Nesse caso, entram
 somente os clientes atualmente vinculados a ele, ainda separados em uma pasta por

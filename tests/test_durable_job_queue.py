@@ -4894,3 +4894,5 @@ def test_staged_build_runs_normally_without_existing_publication(tmp_path) -> No
     assert command[option_index + 1] == (
         f"new-run-component-retry-{job.id.hex}"
     )
+    selected_index = command.index("--selected-component")
+    assert command[selected_index + 1] == "CLOUD"
