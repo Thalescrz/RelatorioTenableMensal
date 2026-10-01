@@ -114,7 +114,8 @@ validado e preservado e que apenas os componentes pendentes voltaram à coleta
 remota. Divergência de período, identidade ou hash impede esse reaproveitamento.
 Datas inclusivas escolhidas na interface não são comparadas como texto com os
 limites UTC do checkpoint; valide o período efetivo resolvido e a referência do
-corte.
+corte. Confirme também que os componentes retomados herdaram o mesmo `run_id`
+interno do checkpoint preservado.
 
 Para validar a API no mesmo cliente e período de um snapshot existente, marque
 **Forçar nova coleta pela API**. Confirme o aviso: novos jobs de export serão

@@ -1872,6 +1872,10 @@ def test_retry_preserves_completed_vm_when_parent_failed_before_other_components
         source_job,
         component=ReportComponent.VM_CORE,
     )
+    checkpoint_request = replace(
+        source_request,
+        run_id="component-run-partial-remote-recovery",
+    )
     source_rows = component_repository.create_for_job(
         batch_job_id=source_job.id,
         components=tuple(ReportComponent),
@@ -1884,18 +1888,18 @@ def test_retry_preserves_completed_vm_when_parent_failed_before_other_components
     vm_checkpoint = ComponentCollectionCheckpoint(
         schema_version=1,
         checkpoint_path=component_checkpoint_path(
-            source_request,
+            checkpoint_request,
             ReportComponent.VM_CORE,
         ),
         component=ReportComponent.VM_CORE,
-        client_id=source_request.client_id,
-        tenant_id=source_request.tenant_id,
-        run_id=source_request.run_id,
-        logical_job_id=source_request.logical_job_id,
-        execution_type=source_request.execution_type,
-        mode=source_request.mode,
-        origin=source_request.origin,
-        attempt_number=source_request.attempt_number,
+        client_id=checkpoint_request.client_id,
+        tenant_id=checkpoint_request.tenant_id,
+        run_id=checkpoint_request.run_id,
+        logical_job_id=checkpoint_request.logical_job_id,
+        execution_type=checkpoint_request.execution_type,
+        mode=checkpoint_request.mode,
+        origin=checkpoint_request.origin,
+        attempt_number=checkpoint_request.attempt_number,
         period={
             "start_at": "2026-09-01T03:00:00Z",
             "end_at": "2026-10-01T00:26:07Z",
@@ -1945,6 +1949,7 @@ def test_retry_preserves_completed_vm_when_parent_failed_before_other_components
     assert retry_job.phase is BatchJobPhase.REMOTE_QUEUED
     assert retry_job.status is BatchJobStatus.QUEUED
     assert retry_job.collection_checkpoint_path is None
+    assert retry_job.run_id == checkpoint_request.run_id
     assert (
         retry_by_component[ReportComponent.VM_CORE].state
         is RemoteComponentState.COMPLETE
