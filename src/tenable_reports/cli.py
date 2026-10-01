@@ -3791,7 +3791,12 @@ def _build_from_collection_checkpoint(
     cloud_available = isinstance(cloud_metadata, Mapping) and str(
         cloud_metadata.get("status") or ""
     ).upper() in {"COMPLETE", "COMPLETE_WITH_WARNINGS"}
-    if not vm_available and cloud_available:
+    selected_components = tuple(
+        ReportComponent(value)
+        for value in (getattr(args, "selected_component", None) or ())
+    )
+    selected_cloud_only = selected_components == (ReportComponent.CLOUD,)
+    if cloud_available and (not vm_available or selected_cloud_only):
         return _build_cloud_only_from_collection_checkpoint(
             args,
             profile=profile,
@@ -3823,17 +3828,35 @@ def _build_cloud_only_from_collection_checkpoint(
     cloud_resume = _cloud_resume_from_checkpoint(checkpoint, profile=profile)
     if cloud_resume is None:
         raise ValueError("Nenhum componente publicável foi encontrado no checkpoint.")
-    output_root = _scoped_output_root(
-        args.output_root,
-        checkpoint.execution_type,
-    ).resolve()
-    report_directory = (
-        output_root
-        / "reports"
-        / profile.client_id
-        / checkpoint.run_id
-        / _safe_filename_component(str(period.period_id))
+    selected_components = tuple(
+        ReportComponent(value)
+        for value in (getattr(args, "selected_component", None) or ())
     )
+    selected_cloud_only = selected_components == (ReportComponent.CLOUD,)
+    operations = _postgres_operations(args.database_env_file, required=False)
+    existing_manifest: Path | None = None
+    if selected_cloud_only:
+        if operations is None:
+            raise EnvironmentError(
+                "PostgreSQL é obrigatório para publicar a retentativa Cloud."
+            )
+        context = operations.report_run_context(checkpoint.run_id)
+        existing_manifest = Path(context.publication_manifest).resolve()
+        if not existing_manifest.is_file():
+            raise ValueError("Manifesto original da execução não foi localizado.")
+        report_directory = existing_manifest.parent
+    else:
+        output_root = _scoped_output_root(
+            args.output_root,
+            checkpoint.execution_type,
+        ).resolve()
+        report_directory = (
+            output_root
+            / "reports"
+            / profile.client_id
+            / checkpoint.run_id
+            / _safe_filename_component(str(period.period_id))
+        )
     collected = SimpleNamespace(
         run_id=checkpoint.run_id,
         cloud_dataset_path=cloud_resume[0],
@@ -3867,22 +3890,29 @@ def _build_cloud_only_from_collection_checkpoint(
         )
         for document in cloud_result.documents
     )
-    publication_manifest = create_publication_manifest(
-        output_path=report_directory / "publication-manifest.json",
-        client_id=profile.client_id,
-        tenant_id=profile.tenant_id,
-        run_id=checkpoint.run_id,
-        execution_type=checkpoint.execution_type,
-        period=period.to_dict(),
-        dataset_path=cloud_resume[0],
-        primary_dataset_component="cloud",
-        documents=cloud_documents,
-        history_database=None,
-        origin=checkpoint.origin,
-        logical_job_id=checkpoint.logical_job_id,
-        attempt_number=checkpoint.attempt_number,
-    )
-    operations = _postgres_operations(args.database_env_file, required=False)
+    if existing_manifest is not None:
+        upsert_publication_documents(
+            manifest_path=existing_manifest,
+            documents=cloud_documents,
+            additional_datasets={"cloud": cloud_result.dataset_path},
+        )
+        publication_manifest = existing_manifest
+    else:
+        publication_manifest = create_publication_manifest(
+            output_path=report_directory / "publication-manifest.json",
+            client_id=profile.client_id,
+            tenant_id=profile.tenant_id,
+            run_id=checkpoint.run_id,
+            execution_type=checkpoint.execution_type,
+            period=period.to_dict(),
+            dataset_path=cloud_resume[0],
+            primary_dataset_component="cloud",
+            documents=cloud_documents,
+            history_database=None,
+            origin=checkpoint.origin,
+            logical_job_id=checkpoint.logical_job_id,
+            attempt_number=checkpoint.attempt_number,
+        )
     if operations is not None:
         operations.record_publication_manifest(publication_manifest)
 
@@ -3929,8 +3959,15 @@ def _build_cloud_only_from_collection_checkpoint(
         persisted_attempts,
         planned_components=planned_components_from_attempts(attempts),
     )
+    component_set_status = summary.status.value
     payload = {
-        "status": "partial",
+        "status": (
+            "complete"
+            if component_set_status == "COMPLETE"
+            else "partially_complete"
+            if component_set_status == "PARTIAL_FAILURE"
+            else "failed"
+        ),
         "run_id": checkpoint.run_id,
         "client_id": profile.client_id,
         "publication_manifest": str(publication_manifest.resolve()),
@@ -3939,7 +3976,7 @@ def _build_cloud_only_from_collection_checkpoint(
             {"variant": item.variant, "path": str(Path(item.path).resolve())}
             for item in cloud_result.documents
         ],
-        "component_set_status": summary.status.value,
+        "component_set_status": component_set_status,
         "retryable_components": [
             component.value for component in summary.retryable_components
         ],
@@ -6128,6 +6165,11 @@ def build_parser() -> argparse.ArgumentParser:
     build_client.add_argument("--history-export-csv")
     build_client.add_argument("--skip-history", action="store_true")
     build_client.add_argument("--compact-snapshot-run-id")
+    build_client.add_argument(
+        "--selected-component",
+        action="append",
+        choices=tuple(component.value for component in ReportComponent),
+    )
     build_client.add_argument(
         "--template", default="templates/corporate/base-v1.docx"
     )

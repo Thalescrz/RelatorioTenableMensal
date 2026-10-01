@@ -199,6 +199,152 @@ class CliTests(unittest.TestCase):
             ["cloud"],
         )
 
+    def test_selected_cloud_retry_does_not_rebuild_vm_history(self) -> None:
+        period = SimpleNamespace(timezone="America/Fortaleza")
+        profile = SimpleNamespace(
+            client_id="client-a",
+            tenant_id="tenant-a",
+            reporting=SimpleNamespace(timezone="America/Fortaleza"),
+        )
+        checkpoint = SimpleNamespace(
+            client_id="client-a",
+            tenant_id="tenant-a",
+            run_id="run-a",
+            logical_job_id="logical-a",
+            attempt_number=2,
+            origin="MANUAL",
+            mode="manual",
+            execution_type="MANUAL",
+            component_metadata={
+                "VM_CORE": {"status": "COMPLETE"},
+                "CLOUD": {"status": "COMPLETE"},
+            },
+        )
+        args = SimpleNamespace(selected_component=["CLOUD"])
+
+        with (
+            patch.object(
+                cli_module,
+                "_period_from_collection_checkpoint",
+                return_value=period,
+            ),
+            patch.object(
+                cli_module,
+                "_build_cloud_only_from_collection_checkpoint",
+                return_value=0,
+            ) as cloud_only,
+            patch.object(cli_module, "_materialize_period_from_checkpoint") as full,
+        ):
+            result = cli_module._build_from_collection_checkpoint(
+                args,
+                profile=profile,
+                checkpoint=checkpoint,
+            )
+
+        self.assertEqual(result, 0)
+        cloud_only.assert_called_once()
+        full.assert_not_called()
+
+    def test_selected_cloud_retry_merges_into_existing_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            manifest = directory / "publication-manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+            cloud_dataset = directory / "cloud-dataset.json"
+            cloud_dataset.write_text("{}", encoding="utf-8")
+            cloud_document = directory / "cloud-expanded.docx"
+            cloud_document.write_bytes(b"fixture")
+            period = SimpleNamespace(
+                timezone="America/Fortaleza",
+                period_id="2026-09",
+                to_dict=lambda: {
+                    "period_id": "2026-09",
+                    "mode": "MONTHLY_CUTOFF",
+                    "timezone": "America/Fortaleza",
+                },
+            )
+            profile = SimpleNamespace(
+                client_id="client-a",
+                tenant_id="tenant-a",
+                display_name="CLIENT A",
+                was_scope=SimpleNamespace(enabled=True),
+            )
+            checkpoint = SimpleNamespace(
+                run_id="run-a",
+                execution_type="MANUAL",
+                origin="MANUAL",
+                logical_job_id="logical-a",
+                attempt_number=2,
+                component_metadata={
+                    "VM_CORE": {"status": "COMPLETE"},
+                    "WAS": {"status": "COMPLETE"},
+                    "CLOUD": {"status": "COMPLETE"},
+                },
+            )
+            args = SimpleNamespace(
+                output_root=directory,
+                cloud_template=directory / "cloud-template.docx",
+                database_env_file="database.env",
+                checkpoint=directory / "checkpoint.json",
+                selected_component=["CLOUD"],
+            )
+            cloud_result = CloudComponentResult(
+                status=CloudExecutionStatus.COMPLETE,
+                documents=(CloudGeneratedDocument(cloud_document, "expanded"),),
+                dataset_path=cloud_dataset,
+                cleanup_ready=False,
+            )
+            operations = Mock()
+            operations.report_run_context.return_value = SimpleNamespace(
+                publication_manifest=manifest,
+            )
+            stdout = io.StringIO()
+
+            with (
+                patch.object(
+                    cli_module,
+                    "_cloud_resume_from_checkpoint",
+                    return_value=(cloud_dataset, "a" * 64, {}, "fixture"),
+                ),
+                patch.object(
+                    cli_module,
+                    "_run_cloud_for_client",
+                    return_value=cloud_result,
+                ),
+                patch.object(
+                    cli_module,
+                    "_postgres_operations",
+                    return_value=operations,
+                ),
+                patch.object(
+                    cli_module,
+                    "_report_component_repository",
+                    return_value=None,
+                ),
+                patch.object(cli_module, "upsert_publication_documents") as upsert,
+                patch.object(cli_module, "create_publication_manifest") as create,
+                contextlib.redirect_stdout(stdout),
+            ):
+                result = cli_module._build_cloud_only_from_collection_checkpoint(
+                    args,
+                    profile=profile,
+                    checkpoint=checkpoint,
+                    period=period,
+                )
+
+        self.assertEqual(result, 0)
+        create.assert_not_called()
+        upsert.assert_called_once()
+        self.assertEqual(
+            upsert.call_args.kwargs["manifest_path"],
+            manifest.resolve(),
+        )
+        operations.record_publication_manifest.assert_called_once_with(
+            manifest.resolve()
+        )
+        payload = json.loads(stdout.getvalue().splitlines()[-1])
+        self.assertEqual(payload["status"], "complete")
+
     def test_retry_components_calls_only_selected_component_commands(self) -> None:
         args = SimpleNamespace(
             run_id="published-run-a",
