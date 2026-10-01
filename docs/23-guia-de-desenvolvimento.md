@@ -203,7 +203,9 @@ Mudanças na fila precisam preservar estes contratos:
 - um job `FAILED/UNEXPECTED` com pelo menos um componente publicável e os demais
   estritamente `PENDING` pode ser retomado de forma parcial: valide hash, cliente,
   identidade e período do checkpoint, restaure o componente concluído no novo job
-  e deixe somente os pendentes disponíveis para claim remoto;
+  e deixe somente os pendentes disponíveis para claim remoto; o novo job deve
+  herdar o `run_id` interno do checkpoint preservado para que os novos componentes
+  possam ser consolidados com ele;
 - datas inclusivas de calendário do pedido e limites UTC efetivos do checkpoint
   são representações diferentes; a elegibilidade usa o período resolvido e a
   identidade lógica do checkpoint, nunca igualdade textual entre esses campos;

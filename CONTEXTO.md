@@ -180,7 +180,8 @@ obrigatoriamente à fase remota para revalidar ou reconstruir cada componente.
 Se o processo pai terminar com `UNEXPECTED` depois de um componente já ter sido
 concluído, a retentativa só preserva esse componente quando o checkpoint passa na
 validação de hash, cliente, identidade e período. Os componentes ainda `PENDING`
-voltam à fase remota; o componente validado não abre uma nova coleta.
+voltam à fase remota sob o mesmo `run_id` interno do checkpoint; o componente
+validado não abre uma nova coleta.
 
 ## PostgreSQL, MAIN e armazenamento
 

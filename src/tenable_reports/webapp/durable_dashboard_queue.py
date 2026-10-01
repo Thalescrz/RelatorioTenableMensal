@@ -1414,6 +1414,19 @@ class DurableDashboardJobQueue:
             "_job_control_file",
         }
         for position, source_job in enumerate(selected, start=1):
+            partial_recovery_run_id: str | None = None
+            if partial_remote_recovery_by_job.get(source_job.id, False):
+                identity_window = next(
+                    window
+                    for window in latest_components_by_job[source_job.id].values()
+                    if window.checkpoint_path
+                    and window.state in _REMOTE_COMPONENT_PUBLISHABLE_STATES
+                )
+                identity_checkpoint = load_component_checkpoint(
+                    str(identity_window.checkpoint_path),
+                    storage_root=self._staged_output_root,
+                )
+                partial_recovery_run_id = identity_checkpoint.run_id
             replacement_event = replacement_progress.get(source_job.id)
             replacement_payload = (
                 replacement_event.payload if replacement_event is not None else {}
@@ -1558,6 +1571,7 @@ class DurableDashboardJobQueue:
                 logical_job_id=str(
                     source_job.logical_job_id or source_job.id.hex
                 ),
+                run_id=partial_recovery_run_id,
                 collection_checkpoint_path=reusable_checkpoint,
                 vm_export_uuid=(
                     retry_vm_export_uuid if is_retry else None
