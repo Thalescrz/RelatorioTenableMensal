@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 class PeriodMode(StrEnum):
     PREVIOUS_CALENDAR_MONTH = "PREVIOUS_CALENDAR_MONTH"
+    MONTHLY_CUTOFF = "MONTHLY_CUTOFF"
     MANUAL_ROLLING_MONTH = "MANUAL_ROLLING_MONTH"
     TRAILING_DAYS = "TRAILING_DAYS"
     EXPLICIT_RANGE = "EXPLICIT_RANGE"
@@ -76,9 +77,15 @@ class ReportingPeriod:
         local_start = self.start_at.astimezone(ZoneInfo(self.timezone))
         local_end = self.end_at.astimezone(ZoneInfo(self.timezone))
         if (
-            self.mode is PeriodMode.PREVIOUS_CALENDAR_MONTH
+            self.mode in {
+                PeriodMode.PREVIOUS_CALENDAR_MONTH,
+                PeriodMode.MONTHLY_CUTOFF,
+            }
             and local_start.day == 1
-            and local_end.day == 1
+            and (
+                self.mode is PeriodMode.MONTHLY_CUTOFF
+                or local_end.day == 1
+            )
         ):
             return local_start.strftime("%Y-%m")
         return f"{local_start:%Y%m%dT%H%M%S}-{local_end:%Y%m%dT%H%M%S}"
@@ -173,13 +180,33 @@ def explicit_reporting_period(
     reference = parse_datetime(reference_at, timezone_name)
     start = parse_datetime(start_at, timezone_name)
     end = parse_datetime(end_at, timezone_name)
+    zone = ZoneInfo(timezone_name)
+    local_start = start.astimezone(zone)
+    next_month_start = (
+        local_start.replace(year=local_start.year + 1, month=1)
+        if local_start.month == 12
+        else local_start.replace(month=local_start.month + 1)
+    )
+    is_month_selection = (
+        local_start.day == 1
+        and local_start.hour == 0
+        and local_start.minute == 0
+        and local_start.second == 0
+        and local_start.microsecond == 0
+        and end == next_month_start
+    )
+    mode = (
+        PeriodMode.MONTHLY_CUTOFF
+        if is_month_selection
+        else PeriodMode.EXPLICIT_RANGE
+    )
     if end > reference:
-        local_reference = reference.astimezone(ZoneInfo(timezone_name))
+        local_reference = reference.astimezone(zone)
         next_local_midnight = datetime(
             local_reference.year,
             local_reference.month,
             local_reference.day,
-            tzinfo=ZoneInfo(timezone_name),
+            tzinfo=zone,
         ) + timedelta(days=1)
         if end != next_local_midnight:
             raise ValueError("end_at nao pode ser posterior ao instante da execucao.")
@@ -188,7 +215,7 @@ def explicit_reporting_period(
         start_at=start.astimezone(UTC),
         end_at=end.astimezone(UTC),
         timezone=timezone_name,
-        mode=PeriodMode.EXPLICIT_RANGE,
+        mode=mode,
         reference_at=reference.astimezone(UTC),
     )
 

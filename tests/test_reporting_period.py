@@ -57,16 +57,28 @@ class ReportingPeriodTests(unittest.TestCase):
         )
         self.assertEqual(period.to_dict()["start_at"], "2026-02-28T13:00:00Z")
 
-    def test_explicit_period_uses_exclusive_end(self) -> None:
+    def test_partial_explicit_period_uses_exclusive_end(self) -> None:
         period = explicit_reporting_period(
-            start_at="2026-06-01T00:00:00-03:00",
+            start_at="2026-06-02T00:00:00-03:00",
             end_at="2026-07-01T00:00:00-03:00",
             reference_at="2026-08-13T10:00:00-03:00",
             timezone_name="America/Fortaleza",
         )
         self.assertEqual(period.mode, PeriodMode.EXPLICIT_RANGE)
-        self.assertEqual(period.to_dict()["start_at"], "2026-06-01T03:00:00Z")
+        self.assertEqual(period.to_dict()["start_at"], "2026-06-02T03:00:00Z")
         self.assertEqual(period.to_dict()["end_at"], "2026-07-01T03:00:00Z")
+
+    def test_completed_full_month_is_monthly_cutoff_competence(self) -> None:
+        period = explicit_reporting_period(
+            start_at="2026-09-01T00:00:00-03:00",
+            end_at="2026-10-01T00:00:00-03:00",
+            reference_at="2026-10-01T08:00:00-03:00",
+            timezone_name="America/Fortaleza",
+        )
+
+        self.assertEqual(period.mode, PeriodMode.MONTHLY_CUTOFF)
+        self.assertEqual(period.period_id, "2026-09")
+        self.assertEqual(period.to_dict()["end_at"], "2026-10-01T03:00:00Z")
 
     def test_explicit_period_clips_current_inclusive_day_to_reference_instant(self) -> None:
         period = explicit_reporting_period(
@@ -76,10 +88,22 @@ class ReportingPeriodTests(unittest.TestCase):
             timezone_name="America/Fortaleza",
         )
 
-        self.assertEqual(period.mode, PeriodMode.EXPLICIT_RANGE)
+        self.assertEqual(period.mode, PeriodMode.MONTHLY_CUTOFF)
+        self.assertEqual(period.period_id, "2026-09")
         self.assertEqual(period.to_dict()["start_at"], "2026-09-01T03:00:00Z")
         self.assertEqual(period.to_dict()["end_at"], "2026-09-30T19:36:04Z")
         self.assertEqual(period.to_dict()["reference_at"], "2026-09-30T19:36:04Z")
+
+    def test_partial_current_day_range_remains_exact(self) -> None:
+        period = explicit_reporting_period(
+            start_at="2026-09-15",
+            end_at="2026-10-01",
+            reference_at="2026-09-30T16:36:04-03:00",
+            timezone_name="America/Fortaleza",
+        )
+
+        self.assertEqual(period.mode, PeriodMode.EXPLICIT_RANGE)
+        self.assertNotEqual(period.period_id, "2026-09")
 
     def test_explicit_period_rejects_future_boundary_beyond_current_day(self) -> None:
         with self.assertRaisesRegex(ValueError, "posterior"):

@@ -3,13 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 READY_STATUS = "READY_FOR_CONTROLLED_DISTRIBUTION"
 MONTHLY_CANONICAL_MODE = "MONTHLY_CANONICAL"
+MONTHLY_CUTOFF_MODE = "MONTHLY_CUTOFF"
 
 
 class ReportOrigin(StrEnum):
@@ -130,12 +131,31 @@ def _is_full_calendar_month(start: datetime, end: datetime, timezone_name: str) 
     return local_end == _next_month_start(local_start)
 
 
+def _is_monthly_cutoff(start: datetime, end: datetime, timezone_name: str) -> bool:
+    zone = _zone(timezone_name)
+    local_start = start.astimezone(zone)
+    local_end = end.astimezone(zone)
+    next_month = _next_month_start(local_start)
+    return (
+        local_start.day == 1
+        and local_start.hour == 0
+        and local_start.minute == 0
+        and local_start.second == 0
+        and local_start.microsecond == 0
+        and local_end.date() == (next_month - timedelta(days=1)).date()
+        and local_start < local_end < next_month
+    )
+
+
 def reference_key_for_candidate(candidate: ReportCandidate) -> ReportReferenceKey:
     start = _parse_utc(candidate.period_start_at)
     end = _parse_utc(candidate.period_end_at)
     if start >= end:
         raise ValueError("O início do período precisa ser anterior ao fim.")
-    if _is_full_calendar_month(start, end, candidate.timezone):
+    if _is_full_calendar_month(start, end, candidate.timezone) or (
+        candidate.period_mode == MONTHLY_CUTOFF_MODE
+        and _is_monthly_cutoff(start, end, candidate.timezone)
+    ):
         local_start = start.astimezone(_zone(candidate.timezone))
         kind = ReferenceKind.MONTHLY
         period_key = local_start.strftime("%Y-%m")
