@@ -108,6 +108,11 @@ de preparação da consolidação, confirme que a retentativa entrou novamente n
 remota. Não aceite outro atalho local para esse mesmo erro, mesmo que um ancestral
 tenha checkpoints publicáveis.
 
+Quando um job `UNEXPECTED` tiver componente `COMPLETE` e os demais ainda
+`PENDING`, retente somente esse cliente. Confirme que o checkpoint concluído foi
+validado e preservado e que apenas os componentes pendentes voltaram à coleta
+remota. Divergência de período, identidade ou hash impede esse reaproveitamento.
+
 Para validar a API no mesmo cliente e período de um snapshot existente, marque
 **Forçar nova coleta pela API**. Confirme o aviso: novos jobs de export serão
 criados, o snapshot anterior será preservado e a opção continuará ativa em uma

@@ -520,6 +520,12 @@ Se a consolidação local falhar, o estado visível é
 `CHECKPOINT_COMPONENT_INCOMPLETE`. Os dados coletados permanecem preservados para
 retentativa; não use **Gerar todos** para contornar essa falha.
 
+Uma falha operacional do processo pai também pode ocorrer depois de `VM_CORE`
+ficar `COMPLETE`, enquanto WAS e Cloud ainda aparecem `PENDING`. Nesse caso, use a
+retentativa do próprio cliente. A aplicação valida o checkpoint VM, inclusive o
+período e os hashes, mantém esse resultado e coleta apenas os componentes
+pendentes. Se a validação falhar, o checkpoint não é reutilizado.
+
 No Windows, contenção transitória ao substituir `export-state.json` é retentada
 com arquivo temporário exclusivo. Persistência da contenção resulta em
 `LOCAL_FILESYSTEM_TRANSIENT`. Se isso ocorrer apenas na telemetria WAS opcional,

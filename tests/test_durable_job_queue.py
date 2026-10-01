@@ -1826,6 +1826,142 @@ def _seed_complete_component_jobs_for_retry(
     return source_batch, source_jobs
 
 
+def test_retry_preserves_completed_vm_when_parent_failed_before_other_components(
+    tmp_path,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-partial-remote-recovery",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    source_batch = replace(
+        _batch(status=BatchStatus.COMPLETE_WITH_FAILURES),
+        options={"execution_model": "STAGED_V1"},
+    )
+    source_job = replace(
+        _job(
+            1,
+            status=BatchJobStatus.FAILED,
+            phase=BatchJobPhase.TERMINAL,
+        ),
+        logical_job_id="logical-partial-remote-recovery",
+        run_id="run-partial-remote-recovery",
+        error_code="UNEXPECTED",
+        payload={
+            "mode": "manual",
+            "run_id": "run-partial-remote-recovery",
+            "start_at": "2026-09-01T03:00:00Z",
+            "end_at": "2026-10-01T00:26:07Z",
+            "reference_at": "2026-10-01T00:26:07Z",
+        },
+    )
+    repository.create_batch(source_batch, (source_job,))
+    source_request = queue._component_request(
+        source_job,
+        component=ReportComponent.VM_CORE,
+    )
+    source_rows = component_repository.create_for_job(
+        batch_job_id=source_job.id,
+        components=tuple(ReportComponent),
+        window_number=1,
+        deadline_at=datetime.now(UTC) + timedelta(hours=10),
+        origin="MANUAL",
+        attempt_number=1,
+    )
+    source_by_component = {row.component: row for row in source_rows}
+    vm_checkpoint = ComponentCollectionCheckpoint(
+        schema_version=1,
+        checkpoint_path=component_checkpoint_path(
+            source_request,
+            ReportComponent.VM_CORE,
+        ),
+        component=ReportComponent.VM_CORE,
+        client_id=source_request.client_id,
+        tenant_id=source_request.tenant_id,
+        run_id=source_request.run_id,
+        logical_job_id=source_request.logical_job_id,
+        execution_type=source_request.execution_type,
+        mode=source_request.mode,
+        origin=source_request.origin,
+        attempt_number=source_request.attempt_number,
+        period=dict(source_request.period),
+        status=RemoteComponentState.COMPLETE,
+        artifacts=(),
+        metadata={"status": "COMPLETE"},
+        query_fingerprint="9" * 64,
+    )
+    persist_component_checkpoint(vm_checkpoint, storage_root=tmp_path)
+    component_repository.transition(
+        source_by_component[ReportComponent.VM_CORE].id,
+        expected_state=RemoteComponentState.PENDING,
+        requested_state=RemoteComponentState.COMPLETE,
+        identifier_kind=RemoteIdentifierKind.UUID,
+        remote_identifier="00000000-0000-0000-0000-000000000909",
+        identifier_origin="created",
+        checkpoint_path=str(vm_checkpoint.checkpoint_path),
+        query_fingerprint=vm_checkpoint.query_fingerprint,
+        completed_units=4,
+        total_units=4,
+        ended_at=datetime.now(UTC),
+    )
+
+    try:
+        detail = queue.derive_batch(
+            DerivedBatchRequest(
+                source_batch_id=source_batch.id,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key="retry-partial-remote-recovery",
+                actor="test",
+                reason="Retomar somente os componentes remotos faltantes.",
+            )
+        )
+        retry_batch_id = UUID(detail["batch"]["id"])
+        retry_job = repository.list_batch_jobs(retry_batch_id)[0]
+        retry_rows = component_repository.list_for_jobs((retry_job.id,)).get(
+            retry_job.id,
+            (),
+        )
+    finally:
+        queue.close()
+
+    retry_by_component = {row.component: row for row in retry_rows}
+    assert retry_job.phase is BatchJobPhase.REMOTE_QUEUED
+    assert retry_job.status is BatchJobStatus.QUEUED
+    assert retry_job.collection_checkpoint_path is None
+    assert (
+        retry_by_component[ReportComponent.VM_CORE].state
+        is RemoteComponentState.COMPLETE
+    )
+    assert (
+        retry_by_component[ReportComponent.VM_CORE].checkpoint_path
+        == str(vm_checkpoint.checkpoint_path)
+    )
+    assert (
+        retry_by_component[ReportComponent.VM_CORE].remote_identifier
+        == "00000000-0000-0000-0000-000000000909"
+    )
+    assert (
+        retry_by_component[ReportComponent.WAS].state
+        is RemoteComponentState.PENDING
+    )
+    assert (
+        retry_by_component[ReportComponent.CLOUD].state
+        is RemoteComponentState.PENDING
+    )
+
+
 @pytest.mark.parametrize(
     "error_code",
     (

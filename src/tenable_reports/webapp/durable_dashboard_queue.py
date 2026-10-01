@@ -318,6 +318,90 @@ def _components_ready_for_local_consolidation(
     return bool(vm.checkpoint_path and shared_identity is not None)
 
 
+def _components_ready_for_partial_remote_recovery(
+    job: WebBatchJob,
+    components: Mapping[ReportComponent, RemoteComponentWindow],
+    *,
+    storage_root: Path,
+) -> bool:
+    """Return whether a failed parent can reuse completed component data."""
+
+    if (
+        job.status is not BatchJobStatus.FAILED
+        or str(job.error_code or "").strip().upper() != "UNEXPECTED"
+        or set(components) != set(ReportComponent)
+    ):
+        return False
+    pending = tuple(
+        window
+        for window in components.values()
+        if window.state is RemoteComponentState.PENDING
+    )
+    if not pending or any(
+        window.state not in _REMOTE_COMPONENT_PUBLISHABLE_STATES
+        and window.state is not RemoteComponentState.PENDING
+        for window in components.values()
+    ):
+        return False
+
+    shared_identity: tuple[Any, ...] | None = None
+    checkpoint_count = 0
+    for component in ReportComponent:
+        window = components[component]
+        if window.state is RemoteComponentState.PENDING:
+            continue
+        if window.checkpoint_path:
+            try:
+                checkpoint = load_component_checkpoint(
+                    window.checkpoint_path,
+                    storage_root=storage_root,
+                )
+            except (CheckpointValidationError, OSError, ValueError):
+                return False
+            if checkpoint.client_id != job.client_id:
+                return False
+            for period_key in ("start_at", "end_at", "reference_at"):
+                expected = str(job.payload.get(period_key) or "").strip()
+                observed = str(checkpoint.period.get(period_key) or "").strip()
+                if expected and (
+                    (period_key != "reference_at" and expected != observed)
+                    or (
+                        period_key == "reference_at"
+                        and observed
+                        and expected != observed
+                    )
+                ):
+                    return False
+            stable_period = {
+                key: value
+                for key, value in dict(checkpoint.period).items()
+                if key != "reference_at"
+            }
+            identity = (
+                checkpoint.client_id,
+                checkpoint.tenant_id,
+                checkpoint.run_id,
+                checkpoint.logical_job_id,
+                checkpoint.execution_type,
+                checkpoint.mode,
+                checkpoint.origin,
+                json.dumps(
+                    stable_period,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
+            if shared_identity is None:
+                shared_identity = identity
+            elif identity != shared_identity:
+                return False
+            checkpoint_count += 1
+        elif window.state is not RemoteComponentState.NOT_APPLICABLE:
+            return False
+    return checkpoint_count > 0
+
+
 def _safe_dashboard_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {
@@ -1189,6 +1273,14 @@ class DurableDashboardJobQueue:
             )
             for source_job in source_jobs
         }
+        partial_remote_recovery_by_job = {
+            source_job.id: _components_ready_for_partial_remote_recovery(
+                source_job,
+                latest_components_by_job.get(source_job.id, {}),
+                storage_root=self._staged_output_root,
+            )
+            for source_job in source_jobs
+        }
         replacement_progress: dict[UUID, WebBatchEvent] = {}
         for event in self.repository.list_events(source.id):
             progress = event.payload
@@ -1215,6 +1307,10 @@ class DurableDashboardJobQueue:
                     or (
                         request.kind is BatchAction.RETRY_INCOMPLETE
                         and local_consolidation_by_job.get(job.id, False)
+                    )
+                    or (
+                        request.kind is BatchAction.RETRY_INCOMPLETE
+                        and partial_remote_recovery_by_job.get(job.id, False)
                     )
                     or any(
                         _component_is_retryable(component)
@@ -1282,6 +1378,13 @@ class DurableDashboardJobQueue:
         )
         jobs: list[WebBatchJob] = []
         local_consolidations: list[
+            tuple[
+                WebBatchJob,
+                WebBatchJob,
+                Mapping[ReportComponent, RemoteComponentWindow],
+            ]
+        ] = []
+        partial_remote_recoveries: list[
             tuple[
                 WebBatchJob,
                 WebBatchJob,
@@ -1489,6 +1592,17 @@ class DurableDashboardJobQueue:
                         consolidation_components,
                     )
                 )
+            elif is_retry and partial_remote_recovery_by_job.get(
+                source_job.id,
+                False,
+            ):
+                partial_remote_recoveries.append(
+                    (
+                        source_job,
+                        created_job,
+                        latest_components_by_job[source_job.id],
+                    )
+                )
         with self._component_claim_lock:
             try:
                 self.repository.create_batch(derived, tuple(jobs))
@@ -1543,6 +1657,46 @@ class DurableDashboardJobQueue:
                             error_message=(
                                 "Falha local ao preparar os componentes "
                                 "preservados; os demais clientes continuam."
+                            ),
+                            payload={"retryable": True},
+                        ),
+                    )
+            for (
+                source_job,
+                created_job,
+                source_components,
+            ) in partial_remote_recoveries:
+                try:
+                    self._restore_publishable_components_for_partial_remote_recovery(
+                        source_job=source_job,
+                        retry_job=created_job,
+                        latest=source_components,
+                    )
+                except Exception:
+                    self.repository.append_event(
+                        WebBatchEvent(
+                            batch_id=created_job.batch_id,
+                            job_id=created_job.id,
+                            event_type="PARTIAL_COMPONENT_RECOVERY_PREPARATION_FAILED",
+                            payload={
+                                "error_code": (
+                                    "PARTIAL_COMPONENT_RECOVERY_PREPARATION_FAILED"
+                                ),
+                                "retryable": True,
+                            },
+                        )
+                    )
+                    self.repository.complete_job(
+                        created_job.id,
+                        BatchJobResult(
+                            status=BatchJobStatus.FAILED,
+                            exit_code=2,
+                            error_code=(
+                                "PARTIAL_COMPONENT_RECOVERY_PREPARATION_FAILED"
+                            ),
+                            error_message=(
+                                "Falha local ao preparar a retomada dos componentes; "
+                                "os demais clientes continuam."
                             ),
                             payload={"retryable": True},
                         ),
@@ -1611,6 +1765,73 @@ class DurableDashboardJobQueue:
                     "source_batch_id": str(source_job.batch_id),
                     "source_job_id": str(source_job.id),
                     "remote_collection_skipped": True,
+                },
+            )
+        )
+
+    def _restore_publishable_components_for_partial_remote_recovery(
+        self,
+        *,
+        source_job: WebBatchJob,
+        retry_job: WebBatchJob,
+        latest: Mapping[ReportComponent, RemoteComponentWindow],
+    ) -> None:
+        repository = self._remote_component_repository
+        if repository is None:
+            raise RuntimeError("Repositório de componentes remotos ausente.")
+        if not _components_ready_for_partial_remote_recovery(
+            source_job,
+            latest,
+            storage_root=self._staged_output_root,
+        ):
+            raise ValueError(
+                "Os componentes preservados não estão prontos para retomada parcial."
+            )
+        created = repository.create_for_job(
+            batch_job_id=retry_job.id,
+            components=tuple(ReportComponent),
+            window_number=1,
+            deadline_at=datetime.now(UTC)
+            + timedelta(seconds=self._remote_processing_timeout_seconds),
+            origin="MANUAL_RETRY",
+            query_fingerprints={
+                component: latest[component].query_fingerprint
+                for component in ReportComponent
+                if latest[component].query_fingerprint
+            },
+            attempt_number=1,
+        )
+        restored: list[str] = []
+        for row in created:
+            source = latest[row.component]
+            if source.state not in _REMOTE_COMPONENT_PUBLISHABLE_STATES:
+                continue
+            repository.transition(
+                row.id,
+                expected_state=RemoteComponentState.PENDING,
+                requested_state=source.state,
+                identifier_kind=source.identifier_kind,
+                remote_identifier=source.remote_identifier,
+                identifier_origin=source.identifier_origin,
+                query_fingerprint=source.query_fingerprint,
+                checkpoint_path=source.checkpoint_path,
+                completed_units=source.completed_units,
+                total_units=source.total_units,
+                last_remote_status=source.last_remote_status,
+                last_contact_at=source.last_contact_at,
+                last_progress_at=source.last_progress_at,
+                ended_at=source.ended_at or datetime.now(UTC),
+            )
+            restored.append(row.component.value)
+        self.repository.append_event(
+            WebBatchEvent(
+                batch_id=retry_job.batch_id,
+                job_id=retry_job.id,
+                event_type="PARTIAL_COMPONENT_RECOVERY_CREATED",
+                payload={
+                    "source_batch_id": str(source_job.batch_id),
+                    "source_job_id": str(source_job.id),
+                    "preserved_components": restored,
                 },
             )
         )
