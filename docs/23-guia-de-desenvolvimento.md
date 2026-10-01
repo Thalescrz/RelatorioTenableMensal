@@ -133,6 +133,22 @@ qualquer `reference_at` recebido do formulário ou da requisição HTTP. Como de
 na fronteira dos subprocessos, `staged_component` usa o `created_at` persistido do
 job quando um payload manual legado ou derivado ainda chegar sem `reference_at`.
 
+Quando o intervalo solicitado vai do primeiro ao último dia do mesmo mês e sofre
+apenas esse corte no último dia, use `MONTHLY_CUTOFF`: `period_id` e nome de arquivo
+continuam mensais, mas `period_end_at` permanece no instante real. A referência
+`MAIN` deve usar a chave mensal. Não aplique essa classificação a intervalos
+parciais. Testes precisam cobrir competência, sufixo, elegibilidade para `MAIN` e
+preservação do término efetivo.
+Classifique também como `MONTHLY_CUTOFF` a seleção manual do mês completo quando o
+`reference_at` já estiver no mês seguinte; a fronteira exclusiva continua sendo o
+primeiro dia do mês seguinte.
+
+Uma migração de competência deve atualizar também `period.period_id` e
+`period.mode` nos checkpoints de componente e de consolidação que pertençam à
+mesma janela mensal. Valide o JSON pelo contrato correspondente antes da escrita,
+restrinja caminhos à raiz `data`, preserve `start_at`, `end_at`, artefatos,
+fingerprints e hashes, faça backup e exija idempotência na segunda execução.
+
 No Cloud, consultas GraphQL obrigatórias e opcionais são separadas por contrato. O
 probe mínimo deve ocorrer antes da coleta completa; token nunca entra em perfil,
 argumento, log, manifesto ou resposta HTTP. Enriquecimento de descrição e correção
@@ -277,6 +293,12 @@ coletor ao vivo e, com `render_documents=False`, não renderiza DOCX. Se o datas
 vier de uma tentativa anterior, copie-o para o workspace exclusivo da tentativa
 atual antes de persistir o novo checkpoint. Cubra também o formato legado sem
 artefato explícito, aceitando apenas o caminho determinístico validado.
+
+O build de uma retentativa seletiva que contenha somente `CLOUD` deve receber essa
+seleção explicitamente. Mesmo quando VM está `COMPLETE` no checkpoint consolidado,
+ele renderiza apenas Cloud, usa `upsert_publication_documents` sobre o manifesto
+original e não chama a publicação de histórico VM. Teste o comando do executor, o
+desvio no CLI, a preservação do manifesto e o estado final `COMPLETE`.
 
 Metadados lidos do checkpoint podem conter `MappingProxyType` aninhado. Converta a
 árvore para estruturas mutáveis simples antes da montagem; não use `deepcopy` em
@@ -447,6 +469,11 @@ estrutura interna, omissões, caminhos inseguros e limpeza temporária com teste
 Erros de montagem precisam voltar à interface antes do início do streaming. Use
 token curto, de uso único e com expiração; não materialize o ZIP inteiro na memória
 do navegador.
+
+`MONTHLY_CUTOFF` é elegível para o mesmo `period_key=YYYY-MM` de uma execução
+mensal completa. A migração de publicações antigas deve ser explícita, auditável e
+transacional: validar arquivos e manifesto, recusar colisões, preservar o fim real,
+reclassificar `MAIN` e manter cópia local dos metadados anteriores.
 
 A preparação do ZIP é assíncrona: `POST /api/report-archives/prepare` responde com
 HTTP 202 e um `status_url`; o frontend consulta

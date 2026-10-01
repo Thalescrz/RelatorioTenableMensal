@@ -91,11 +91,27 @@ permanecem somente enquanto necessários para publicação, diagnóstico ou reto
   checkpoint VM e não repete assets, VM, TAG ou Cloud.
 - **Cloud:** é opcional e usa credencial e fluxo GraphQL próprios. Sua falha não
   invalida VM ou WAS concluídos. A retentativa Cloud não repete os demais
-  componentes.
+  componentes. Quando o dataset Cloud já está íntegro, a publicação seletiva
+  atualiza o manifesto existente e o catálogo de documentos sem reconstruir nem
+  republicar o histórico VM.
 
 Cloud representa a fotografia preservada no instante da coleta. A competência do
 relatório não transforma essa fotografia em reconstrução histórica; reprodução
 exata de período anterior exige snapshot Cloud compatível já preservado.
+
+Uma solicitação explícita que cubra o mês-calendário completo, iniciada no último
+dia e recortada no instante real da execução, é registrada como competência mensal
+(`MONTHLY_CUTOFF`). Para setembro de 2026, por exemplo, o identificador editorial e
+de arquivo é `2026-09`/`SET26`, enquanto o `period_end_at` efetivo continua
+preservado para deixar auditável a fração final do dia que não foi coletada. Um
+intervalo parcial comum permanece `EXPLICIT_RANGE` e conserva as datas no nome.
+Uma regularização posterior de competência também reconcilia `period_id` e `mode`
+nos checkpoints persistidos elegíveis, sem alterar `start_at`, `end_at`, hashes ou
+artefatos; assim uma retomada não rejeita dados válidos apenas pela identidade
+editorial anterior.
+Quando a execução ou retentativa alcança a fronteira completa do mês no primeiro
+dia seguinte, a seleção continua `MONTHLY_CUTOFF`; ela não volta a ser
+`EXPLICIT_RANGE` apenas porque o mês já encerrou.
 
 O dataset `cloud-metrics-v3` acrescenta, logo após as principais vulnerabilidades
 com correção disponível, dois rankings de recursos corrigíveis: Top 10 de máquinas
@@ -203,6 +219,10 @@ artefatos recuperáveis conforme a política de retenção.
 Seleção, substituição ou exclusão de `MAIN` é explícita e transacional. Pacotes ZIP
 são projeções temporárias dos documentos válidos registrados, não uma nova fonte de
 verdade.
+
+O ZIP mensal seleciona a competência `YYYY-MM` das referências `MAIN`. Relatórios
+`MONTHLY_CUTOFF` participam da mesma competência mensal sem ocultar o término
+efetivo da coleta em seus metadados de auditoria.
 
 ## Interface web
 
