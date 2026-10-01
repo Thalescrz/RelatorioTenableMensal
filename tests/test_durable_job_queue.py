@@ -1864,7 +1864,6 @@ def test_retry_preserves_completed_vm_when_parent_failed_before_other_components
             "run_id": "run-partial-remote-recovery",
             "start_at": "2026-09-01",
             "end_at": "2026-09-30",
-            "reference_at": "2026-10-01T00:26:07Z",
         },
     )
     repository.create_batch(source_batch, (source_job,))
@@ -1950,6 +1949,8 @@ def test_retry_preserves_completed_vm_when_parent_failed_before_other_components
     assert retry_job.status is BatchJobStatus.QUEUED
     assert retry_job.collection_checkpoint_path is None
     assert retry_job.run_id == checkpoint_request.run_id
+    assert retry_job.payload["run_id"] == checkpoint_request.run_id
+    assert retry_job.payload["reference_at"] == "2026-10-01T00:26:07Z"
     assert (
         retry_by_component[ReportComponent.VM_CORE].state
         is RemoteComponentState.COMPLETE

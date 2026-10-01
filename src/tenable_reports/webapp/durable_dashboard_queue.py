@@ -1415,6 +1415,7 @@ class DurableDashboardJobQueue:
         }
         for position, source_job in enumerate(selected, start=1):
             partial_recovery_run_id: str | None = None
+            partial_recovery_reference_at: str | None = None
             if partial_remote_recovery_by_job.get(source_job.id, False):
                 identity_window = next(
                     window
@@ -1427,6 +1428,11 @@ class DurableDashboardJobQueue:
                     storage_root=self._staged_output_root,
                 )
                 partial_recovery_run_id = identity_checkpoint.run_id
+                partial_recovery_reference_at = str(
+                    identity_checkpoint.period.get("reference_at")
+                    or identity_checkpoint.period.get("end_at")
+                    or ""
+                ).strip() or None
             replacement_event = replacement_progress.get(source_job.id)
             replacement_payload = (
                 replacement_event.payload if replacement_event is not None else {}
@@ -1460,6 +1466,10 @@ class DurableDashboardJobQueue:
                 for key, value in dict(source_job.payload).items()
                 if key not in transient_keys
             }
+            if partial_recovery_run_id:
+                payload["run_id"] = partial_recovery_run_id
+            if partial_recovery_reference_at:
+                payload["reference_at"] = partial_recovery_reference_at
             is_retry = request.kind is BatchAction.RETRY_INCOMPLETE
             component_only_retry = (
                 is_retry
