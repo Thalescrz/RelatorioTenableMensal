@@ -204,6 +204,9 @@ Mudanças na fila precisam preservar estes contratos:
   estritamente `PENDING` pode ser retomado de forma parcial: valide hash, cliente,
   identidade e período do checkpoint, restaure o componente concluído no novo job
   e deixe somente os pendentes disponíveis para claim remoto;
+- datas inclusivas de calendário do pedido e limites UTC efetivos do checkpoint
+  são representações diferentes; a elegibilidade usa o período resolvido e a
+  identidade lógica do checkpoint, nunca igualdade textual entre esses campos;
 - a retomada parcial nunca transforma checkpoint ausente, incompatível ou
   adulterado em sucesso, nem repete a coleta do componente já validado;
 - no mesmo `run_id`, reutilize coleta completa de assets/VM/TAG somente após validar
