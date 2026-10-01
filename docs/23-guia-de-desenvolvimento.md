@@ -200,6 +200,12 @@ Mudanças na fila precisam preservar estes contratos:
 - jobs com erro registrado `CHECKPOINT_COMPONENT_INCOMPLETE` ou
   `LOCAL_CONSOLIDATION_PREPARATION_FAILED` são retentáveis, porém não elegíveis ao
   atalho de consolidação local; a derivação precisa colocá-los em `REMOTE_QUEUED`;
+- um job `FAILED/UNEXPECTED` com pelo menos um componente publicável e os demais
+  estritamente `PENDING` pode ser retomado de forma parcial: valide hash, cliente,
+  identidade e período do checkpoint, restaure o componente concluído no novo job
+  e deixe somente os pendentes disponíveis para claim remoto;
+- a retomada parcial nunca transforma checkpoint ausente, incompatível ou
+  adulterado em sucesso, nem repete a coleta do componente já validado;
 - no mesmo `run_id`, reutilize coleta completa de assets/VM/TAG somente após validar
   identidade, consulta, configuração de TAG, chunks e hashes; divergência deve
   preservar a imutabilidade do artefato;
