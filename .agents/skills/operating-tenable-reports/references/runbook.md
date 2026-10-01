@@ -103,6 +103,10 @@ checkpoints foram recarregados com hashes válidos e compartilham `start_at`,
 metadado de auditoria; divergência em qualquer outro campo do período exige retorno
 ao fluxo remoto. Verifique também o filtro `since` e a data de início das fontes
 para impedir que evidência de uma competência anterior seja publicada como atual.
+Quando o job anterior terminou por `CHECKPOINT_COMPONENT_INCOMPLETE` ou por falha
+de preparação da consolidação, confirme que a retentativa entrou novamente na fase
+remota. Não aceite outro atalho local para esse mesmo erro, mesmo que um ancestral
+tenha checkpoints publicáveis.
 
 Para validar a API no mesmo cliente e período de um snapshot existente, marque
 **Forçar nova coleta pela API**. Confirme o aviso: novos jobs de export serão

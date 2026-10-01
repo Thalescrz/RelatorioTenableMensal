@@ -1743,6 +1743,7 @@ def _seed_complete_component_jobs_for_retry(
     queue: DurableDashboardJobQueue,
     tmp_path: Path,
     count: int,
+    error_code: str = "UNEXPECTED",
 ) -> tuple[WebBatch, tuple[WebBatchJob, ...]]:
     source_batch = replace(
         _batch(status=BatchStatus.COMPLETE_WITH_FAILURES),
@@ -1757,7 +1758,7 @@ def _seed_complete_component_jobs_for_retry(
             ),
             logical_job_id=f"logical-ready-{position}",
             run_id=f"run-ready-{position}",
-            error_code="UNEXPECTED",
+            error_code=error_code,
             payload={
                 "mode": "manual",
                 "run_id": f"run-ready-{position}",
@@ -1823,6 +1824,68 @@ def _seed_complete_component_jobs_for_retry(
                 ended_at=datetime.now(UTC),
             )
     return source_batch, source_jobs
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    (
+        "CHECKPOINT_COMPONENT_INCOMPLETE",
+        "LOCAL_CONSOLIDATION_PREPARATION_FAILED",
+    ),
+)
+def test_retry_routes_checkpoint_failures_back_through_remote_recovery(
+    tmp_path,
+    error_code,
+) -> None:
+    repository = InMemoryWebBatchRepository()
+    component_repository = InMemoryRemoteComponentRepository()
+    queue = DurableDashboardJobQueue(
+        repository=repository,
+        executor=JobQueue(
+            tmp_path,
+            tmp_path / "orchestration" / "clients.json",
+            lambda *args, **kwargs: None,
+            start_worker=False,
+        ),
+        worker_id="worker-checkpoint-recovery-routing",
+        start_worker=False,
+        remote_workers=1,
+        enable_staged_executor=True,
+        remote_component_repository=component_repository,
+        staged_output_root=tmp_path,
+    )
+    source_batch, _ = _seed_complete_component_jobs_for_retry(
+        repository=repository,
+        component_repository=component_repository,
+        queue=queue,
+        tmp_path=tmp_path,
+        count=1,
+        error_code=error_code,
+    )
+
+    try:
+        detail = queue.derive_batch(
+            DerivedBatchRequest(
+                source_batch_id=source_batch.id,
+                kind=BatchAction.RETRY_INCOMPLETE,
+                idempotency_key=f"retry-remote-{error_code}",
+                actor="test",
+                reason="Recuperar checkpoints pela fase remota.",
+            )
+        )
+        retry_batch_id = UUID(detail["batch"]["id"])
+        retry_job = repository.list_batch_jobs(retry_batch_id)[0]
+        retry_rows = component_repository.list_for_jobs((retry_job.id,)).get(
+            retry_job.id,
+            (),
+        )
+    finally:
+        queue.close()
+
+    assert retry_job.phase is BatchJobPhase.REMOTE_QUEUED
+    assert retry_job.status is BatchJobStatus.QUEUED
+    assert retry_job.collection_checkpoint_path is None
+    assert retry_rows == ()
 
 
 def test_collective_local_consolidation_hides_pending_components_from_live_workers(

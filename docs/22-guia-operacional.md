@@ -261,6 +261,10 @@ nova chamada VM, WAS ou Cloud, desde que os checkpoints tenham a mesma identidad
 e o mesmo intervalo efetivo `[início, fim)`. Se os períodos divergirem, a aplicação
 não promove o conjunto local: volta ao fluxo remoto, preserva identificadores ainda
 válidos e produz checkpoints coerentes antes da montagem.
+Se o erro do job for `CHECKPOINT_COMPONENT_INCOMPLETE` ou falha de preparação da
+consolidação, **Tentar falhas/interrompidos** força essa passagem remota mesmo que
+um ancestral possua arquivos publicáveis; isso evita repetir indefinidamente uma
+consolidação local já rejeitada.
 
 Na recuperação da mesma execução, assets, VM e TAGs já completos são validados e
 reutilizados. Se o documento desse `run_id` já estiver publicado e íntegro, a

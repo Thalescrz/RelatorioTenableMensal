@@ -197,6 +197,9 @@ Mudanças na fila precisam preservar estes contratos:
   conjunto incompatível deve voltar ao fluxo remoto de recuperação, e uma exceção
   posterior deve virar `CHECKPOINT_COMPONENT_INCOMPLETE`, nunca ser engolida
   deixando o job em `REMOTE_RUNNING`;
+- jobs com erro registrado `CHECKPOINT_COMPONENT_INCOMPLETE` ou
+  `LOCAL_CONSOLIDATION_PREPARATION_FAILED` são retentáveis, porém não elegíveis ao
+  atalho de consolidação local; a derivação precisa colocá-los em `REMOTE_QUEUED`;
 - no mesmo `run_id`, reutilize coleta completa de assets/VM/TAG somente após validar
   identidade, consulta, configuração de TAG, chunks e hashes; divergência deve
   preservar a imutabilidade do artefato;
