@@ -181,7 +181,9 @@ Se o processo pai terminar com `UNEXPECTED` depois de um componente já ter sido
 concluído, a retentativa só preserva esse componente quando o checkpoint passa na
 validação de hash, cliente, identidade e período. Os componentes ainda `PENDING`
 voltam à fase remota sob o mesmo `run_id` interno do checkpoint; o componente
-validado não abre uma nova coleta.
+validado não abre uma nova coleta. O payload persistido também conserva esse
+`run_id` e o `reference_at` do corte original para sobreviver ao PostgreSQL e a
+reinícios do servidor.
 
 ## PostgreSQL, MAIN e armazenamento
 

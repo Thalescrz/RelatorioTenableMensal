@@ -205,7 +205,9 @@ Mudanças na fila precisam preservar estes contratos:
   identidade e período do checkpoint, restaure o componente concluído no novo job
   e deixe somente os pendentes disponíveis para claim remoto; o novo job deve
   herdar o `run_id` interno do checkpoint preservado para que os novos componentes
-  possam ser consolidados com ele;
+  possam ser consolidados com ele; persista `run_id` e o `reference_at` original
+  também no payload, pois a fase remota pode ser retomada a partir dele antes de o
+  campo de publicação do job existir;
 - datas inclusivas de calendário do pedido e limites UTC efetivos do checkpoint
   são representações diferentes; a elegibilidade usa o período resolvido e a
   identidade lógica do checkpoint, nunca igualdade textual entre esses campos;
