@@ -112,6 +112,9 @@ Quando um job `UNEXPECTED` tiver componente `COMPLETE` e os demais ainda
 `PENDING`, retente somente esse cliente. Confirme que o checkpoint concluído foi
 validado e preservado e que apenas os componentes pendentes voltaram à coleta
 remota. Divergência de período, identidade ou hash impede esse reaproveitamento.
+Datas inclusivas escolhidas na interface não são comparadas como texto com os
+limites UTC do checkpoint; valide o período efetivo resolvido e a referência do
+corte.
 
 Para validar a API no mesmo cliente e período de um snapshot existente, marque
 **Forçar nova coleta pela API**. Confirme o aviso: novos jobs de export serão

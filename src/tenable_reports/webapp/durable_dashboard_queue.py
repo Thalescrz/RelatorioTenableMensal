@@ -358,20 +358,23 @@ def _components_ready_for_partial_remote_recovery(
                 )
             except (CheckpointValidationError, OSError, ValueError):
                 return False
-            if checkpoint.client_id != job.client_id:
+            if (
+                checkpoint.client_id != job.client_id
+                or checkpoint.logical_job_id
+                != str(job.logical_job_id or job.id.hex)
+            ):
                 return False
-            for period_key in ("start_at", "end_at", "reference_at"):
-                expected = str(job.payload.get(period_key) or "").strip()
-                observed = str(checkpoint.period.get(period_key) or "").strip()
-                if expected and (
-                    (period_key != "reference_at" and expected != observed)
-                    or (
-                        period_key == "reference_at"
-                        and observed
-                        and expected != observed
-                    )
-                ):
-                    return False
+            observed_start = str(checkpoint.period.get("start_at") or "").strip()
+            observed_end = str(checkpoint.period.get("end_at") or "").strip()
+            observed_reference = str(
+                checkpoint.period.get("reference_at") or ""
+            ).strip()
+            if (
+                not observed_start
+                or not observed_end
+                or (observed_reference and observed_reference != observed_end)
+            ):
+                return False
             stable_period = {
                 key: value
                 for key, value in dict(checkpoint.period).items()

@@ -1862,8 +1862,8 @@ def test_retry_preserves_completed_vm_when_parent_failed_before_other_components
         payload={
             "mode": "manual",
             "run_id": "run-partial-remote-recovery",
-            "start_at": "2026-09-01T03:00:00Z",
-            "end_at": "2026-10-01T00:26:07Z",
+            "start_at": "2026-09-01",
+            "end_at": "2026-09-30",
             "reference_at": "2026-10-01T00:26:07Z",
         },
     )
@@ -1896,7 +1896,12 @@ def test_retry_preserves_completed_vm_when_parent_failed_before_other_components
         mode=source_request.mode,
         origin=source_request.origin,
         attempt_number=source_request.attempt_number,
-        period=dict(source_request.period),
+        period={
+            "start_at": "2026-09-01T03:00:00Z",
+            "end_at": "2026-10-01T00:26:07Z",
+            "reference_at": "2026-10-01T00:26:07Z",
+            "timezone": "America/Fortaleza",
+        },
         status=RemoteComponentState.COMPLETE,
         artifacts=(),
         metadata={"status": "COMPLETE"},
