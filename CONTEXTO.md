@@ -174,6 +174,9 @@ run, origem e período efetivo `[início, fim)` forem compatíveis entre todos o
 componentes. Um conjunto divergente é devolvido ao fluxo remoto de recuperação;
 assim o identificador válido pode ser consultado novamente sem promover dados de
 outra competência como se pertencessem ao período atual.
+Jobs terminados por `CHECKPOINT_COMPONENT_INCOMPLETE` ou por falha ao preparar a
+consolidação não repetem o mesmo atalho local na retentativa seguinte: voltam
+obrigatoriamente à fase remota para revalidar ou reconstruir cada componente.
 
 ## PostgreSQL, MAIN e armazenamento
 

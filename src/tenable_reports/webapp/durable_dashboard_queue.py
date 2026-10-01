@@ -127,6 +127,12 @@ _INVALID_REMOTE_IDENTIFIER_CODES = frozenset(
         "CHECKPOINT_IDENTITY_MISMATCH",
     }
 )
+_REMOTE_RECOVERY_REQUIRED_ERROR_CODES = frozenset(
+    {
+        "CHECKPOINT_COMPONENT_INCOMPLETE",
+        "LOCAL_CONSOLIDATION_PREPARATION_FAILED",
+    }
+)
 _STAGING_EXPORT_PATTERN = re.compile(
     r"(?i)(tenable_vm_assets_v2|tenable_vm_vulnerabilities|"
     r"tenable_was_findings)[\\/]+"
@@ -344,6 +350,19 @@ class BatchJobRetryability:
 def _batch_job_retryability(job: WebBatchJob) -> BatchJobRetryability:
     recorded_code = str(job.error_code or "").strip() or None
     if job.status is BatchJobStatus.FAILED:
+        if recorded_code == "LOCAL_CONSOLIDATION_PREPARATION_FAILED":
+            return BatchJobRetryability(
+                candidate=True,
+                retryable=True,
+                recorded_error_code=recorded_code,
+                effective_error_code=(
+                    FailureCode.CHECKPOINT_COMPONENT_INCOMPLETE.value
+                ),
+                reason=(
+                    "Preparação local incompleta exige nova passagem pela "
+                    "recuperação remota."
+                ),
+            )
         if recorded_code == "RECOVERY_SNAPSHOT_FAILED":
             return BatchJobRetryability(
                 candidate=True,
@@ -1165,6 +1184,8 @@ class DurableDashboardJobQueue:
                     BatchJobStatus.CANCELLED_BY_USER,
                 }
                 and source_job.id in consolidation_sources_by_job
+                and str(source_job.error_code or "").strip().upper()
+                not in _REMOTE_RECOVERY_REQUIRED_ERROR_CODES
             )
             for source_job in source_jobs
         }
