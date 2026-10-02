@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 
 from tenable_reports.config.profile import load_client_profile
@@ -49,6 +50,40 @@ def _cell_fill(cell) -> str | None:
 
 
 class FullBaseReportDocxTests(unittest.TestCase):
+    def test_full_report_justifies_narrative_text_without_justifying_headings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "justified-narrative.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=FIXTURE,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+            )
+
+            document = Document(output)
+            objective = next(
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.text.startswith("Este documento visa apresentar")
+            )
+            period = next(
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.text.startswith("Período deste relatório")
+            )
+            heading = next(
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.text == "2. OBJETIVO"
+            )
+
+            self.assertEqual(objective.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+            self.assertEqual(period.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+            self.assertNotEqual(heading.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+
     def test_full_report_numbers_every_top_level_section_and_excludes_toc_title(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "numbered-headings.docx"

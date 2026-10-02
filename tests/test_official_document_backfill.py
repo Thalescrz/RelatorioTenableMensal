@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from PIL import Image
 
@@ -133,6 +134,36 @@ def test_plan_rejects_cataloged_document_missing_from_disk(tmp_path: Path) -> No
         raise AssertionError("Documento catalogado ausente deveria invalidar o plano.")
 
 
+def test_plan_ignores_test_and_maintenance_manifests_outside_operational_scopes(
+    tmp_path: Path,
+) -> None:
+    for scope in ("test-temp", "maintenance-backups"):
+        document_path = _docx(
+            tmp_path / "data" / scope / "reports" / "fixture.docx",
+            "Documento auxiliar",
+        )
+        manifest = _manifest(
+            tmp_path,
+            [{"path": str(document_path), "document_kind": "base"}],
+        )
+        destination = (
+            tmp_path
+            / "data"
+            / scope
+            / "reports"
+            / "client-fixture"
+            / "run-fixture"
+            / "20260801T000000-20260901T000000"
+            / "publication-manifest.json"
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        manifest.replace(destination)
+
+    plan = plan_official_document_backfill(tmp_path)
+
+    assert plan.manifests == ()
+
+
 def _shell_with_body(path: Path, kind: str) -> Path:
     document = Document(TEMPLATE)
     shell = _clear_body_after_cover_break(document)
@@ -235,6 +266,59 @@ def test_finalize_official_document_applies_shell_toc_and_numbering_to_every_kin
                 if paragraph.text.startswith("1. Atualize o pacote")
             )
             assert not remediation.style.name.startswith("Heading ")
+
+
+def test_finalize_official_document_justifies_only_narrative_body_text(
+    tmp_path: Path,
+) -> None:
+    path = _shell_with_body(tmp_path / "base-justified.docx", "base")
+    document = Document(path)
+    objective = next(
+        paragraph for paragraph in document.paragraphs if paragraph.text == "OBJETIVO"
+    )
+    objective.insert_paragraph_before(
+        "Texto narrativo suficientemente longo para representar o conteúdo técnico "
+        "dos relatórios publicados e confirmar o alinhamento solicitado."
+    )
+    listed = objective.insert_paragraph_before(
+        "Item de lista que deve permanecer alinhado à esquerda.",
+        style="List Paragraph",
+    )
+    listed.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    document.save(path)
+
+    finalize_official_document(
+        path,
+        OfficialDocumentMetadata(
+            document_kind="base",
+            client_name="Cliente Exemplo",
+            period_label="AGOSTO/2026",
+            period_range="01/08/2026 a 31/08/2026",
+        ),
+    )
+
+    updated = Document(path)
+    narrative = next(
+        paragraph
+        for paragraph in updated.paragraphs
+        if paragraph.text.startswith("Texto narrativo suficientemente longo")
+    )
+    listed = next(
+        paragraph
+        for paragraph in updated.paragraphs
+        if paragraph.text.startswith("Item de lista")
+    )
+    heading = next(
+        paragraph
+        for paragraph in updated.paragraphs
+        if paragraph.text == "2. OBJETIVO"
+    )
+    table_paragraph = updated.tables[-1].cell(0, 0).paragraphs[0]
+
+    assert narrative.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
+    assert listed.alignment == WD_ALIGN_PARAGRAPH.LEFT
+    assert heading.alignment != WD_ALIGN_PARAGRAPH.JUSTIFY
+    assert table_paragraph.alignment != WD_ALIGN_PARAGRAPH.JUSTIFY
 
 
 def test_repackaging_validation_accepts_adjacent_tables_merged_by_word(
@@ -422,6 +506,38 @@ def test_selected_manifests_target_only_postgresql_main_runs(
     ) == manifests
 
 
+def test_selected_manifests_can_be_limited_to_one_reporting_period(
+    tmp_path: Path,
+) -> None:
+    document_path = _docx(
+        tmp_path / "data" / "manual" / "reports" / "main.docx",
+        "Documento MAIN",
+    )
+    _manifest(
+        tmp_path,
+        [{"path": str(document_path), "document_kind": "base"}],
+    )
+    manifests = plan_official_document_backfill(tmp_path).manifests
+    tool = _refresh_tool()
+
+    assert tool._selected_manifests(
+        manifests,
+        client_id=None,
+        period_id="2026-08",
+        limit=None,
+        include_completed=False,
+        main_run_ids=frozenset({"run-fixture"}),
+    ) == manifests
+    assert tool._selected_manifests(
+        manifests,
+        client_id=None,
+        period_id="2026-09",
+        limit=None,
+        include_completed=False,
+        main_run_ids=frozenset({"run-fixture"}),
+    ) == ()
+
+
 def test_word_normalization_repairs_and_updates_only_the_toc_field(
     tmp_path: Path,
 ) -> None:
@@ -522,3 +638,49 @@ def test_staging_is_removed_when_document_preparation_fails(
         )
 
     assert not list(manifest.path.parent.glob(".official-shell-*"))
+
+
+def test_body_alignment_staging_does_not_require_word_automation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    report_root = tmp_path / "data" / "manual" / "reports" / "client-fixture"
+    report_root.mkdir(parents=True, exist_ok=True)
+    document_path = _shell_with_body(report_root / "base.docx", "base")
+    document = Document(document_path)
+    objective = next(
+        paragraph for paragraph in document.paragraphs if paragraph.text == "OBJETIVO"
+    )
+    objective.insert_paragraph_before(
+        "Texto narrativo preservado que deve receber alinhamento justificado "
+        "sem reconstrução do documento ou atualização do sumário pelo Word."
+    )
+    document.save(document_path)
+    _manifest(
+        tmp_path,
+        [{"path": str(document_path), "document_kind": "base"}],
+    )
+    manifest = plan_official_document_backfill(tmp_path).manifests[0]
+    tool = _refresh_tool()
+
+    def fail_word(*args, **kwargs):
+        raise AssertionError("A atualização de alinhamento não deve iniciar o Word.")
+
+    monkeypatch.setattr(tool, "_repair_and_update_toc_with_word", fail_word)
+
+    staging, replacements = tool._stage_manifest(
+        manifest,
+        template=TEMPLATE,
+        client_name="Cliente Exemplo",
+        editorial_mode="justified_body",
+    )
+    try:
+        staged = replacements[0].staged_path
+        narrative = next(
+            paragraph
+            for paragraph in Document(staged).paragraphs
+            if paragraph.text.startswith("Texto narrativo preservado")
+        )
+        assert narrative.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)

@@ -230,6 +230,13 @@ catálogo. Arquivos raw, chunks e datasets intermediários só são removidos de
 publicação validada e persistência do histórico necessário. Falhas preservam os
 artefatos recuperáveis conforme a política de retenção.
 
+Nos quatro documentos oficiais — Geral, Customizações, TAG e Cloud — somente o
+texto narrativo do corpo usa alinhamento justificado. Títulos, sumário, listas,
+notas de fonte, tabelas, gráficos, capa, cabeçalho, rodapé e contracapa preservam o
+alinhamento específico do componente. A republicação editorial pode aplicar esse
+padrão aos conjuntos `MAIN` de uma única competência sem nova coleta e sem alterar
+dados, tabelas, imagens ou a referência `MAIN`.
+
 Seleção, substituição ou exclusão de `MAIN` é explícita e transacional. Pacotes ZIP
 são projeções temporárias dos documentos válidos registrados, não uma nova fonte de
 verdade.

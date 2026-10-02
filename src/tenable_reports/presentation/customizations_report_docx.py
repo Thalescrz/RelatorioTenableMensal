@@ -1123,6 +1123,7 @@ def generate_customizations_report(
         if _module_enabled(profile, "was_unsupported_tech"):
             _was_unsupported(document, data, dataset, profile, rendered)
     faithful._append_official_back_cover(document, report_shell)
+    faithful._justify_narrative_body(document)
     base._enable_field_updates(document)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)

@@ -16,6 +16,8 @@ controle documental.
   QR code e identidade Tenable/ITProtect preservados;
 - cabeçalho e rodapé internos oficiais, com cliente dinâmico;
 - estilos semânticos de título;
+- texto narrativo do corpo justificado, sem alterar o alinhamento próprio de
+  títulos, listas, notas, tabelas, gráficos e páginas institucionais;
 - sumário nativo do Word na página 2, atualizado a partir de `Heading 1` a
   `Heading 3`;
 - oito seções principais do relatório-base numeradas explicitamente de `1` a `8`;
@@ -77,4 +79,7 @@ nos DOCX dos conjuntos `MAIN` registrados no PostgreSQL e referenciados por
 manifestos de publicação válidos, preserva o corpo técnico, gráficos e tabelas,
 valida o pacote, substitui cada conjunto atomicamente e atualiza SHA-256, manifesto
 e catálogo PostgreSQL. Conjuntos não-MAIN, documentos órfãos, arquivos de QA e a
-área de descarte não entram no plano. A operação não altera a seleção `MAIN`.
+área de descarte não entram no plano. Use `--period-id AAAA-MM` para restringir a
+atualização a uma competência e `--justify-body-only` quando a manutenção deve
+alterar somente o alinhamento narrativo, sem reconstruir o shell nem iniciar o
+Word. A operação não altera a seleção `MAIN`.

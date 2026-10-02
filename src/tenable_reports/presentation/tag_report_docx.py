@@ -19,6 +19,7 @@ from tenable_reports.presentation.full_base_report_docx import (
     _compact_rows,
     _configure_styles,
     _heading,
+    _justify_narrative_body,
     _load_dataset,
     _page_break_before,
     _paragraph,
@@ -298,6 +299,7 @@ def generate_tag_report(
         mask_sensitive=mask_sensitive,
     )
     _append_official_back_cover(document, report_shell)
+    _justify_narrative_body(document)
     base._enable_field_updates(document)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -371,6 +373,7 @@ def refresh_tag_temporal_comparison(
     for child in added_nodes:
         anchor.addprevious(child)
 
+    _justify_narrative_body(document)
     base._enable_field_updates(document)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)

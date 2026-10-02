@@ -765,10 +765,25 @@ $env:PYTHONPATH = (Join-Path $PWD 'src')
 .\.venv\Scripts\python.exe tools\refresh_official_report_documents.py --apply
 ```
 
+Para atualizar somente uma competência, informe `--period-id AAAA-MM` tanto na
+análise quanto na aplicação. A atualização exclusiva do alinhamento narrativo não
+reconstrói o shell nem inicia o Word; acrescente `--justify-body-only`. Exemplo para
+setembro de 2026:
+
+```powershell
+.\.venv\Scripts\python.exe tools\refresh_official_report_documents.py `
+  --period-id 2026-09 --justify-body-only
+.\.venv\Scripts\python.exe tools\refresh_official_report_documents.py `
+  --period-id 2026-09 --justify-body-only --apply
+```
+
 O resumo deve informar `scope: postgresql-main`. Cada conjunto é substituído
 atomicamente. Em falha, o conjunto original permanece;
 em sucesso, hashes, manifesto e catálogo PostgreSQL são atualizados juntos e o
-manifesto recebe a auditoria `OFFICIAL_REPORT_SHELL_V3`. Uma nova execução ignora
+manifesto recebe a auditoria `OFFICIAL_REPORT_SHELL_V3` na recomposição completa.
+No modo `--justify-body-only`, recebe
+`OFFICIAL_REPORT_JUSTIFIED_BODY_V1`; títulos, listas, notas de fonte, tabelas,
+gráficos e elementos institucionais mantêm o alinhamento próprio. Uma nova execução ignora
 os conjuntos já marcados; `--include-completed` existe somente para reprocessamento
 deliberado. Um arquivo aberto no Word falha apenas o próprio conjunto e os demais
 continuam; feche o documento e execute novamente para tratar somente o pendente.

@@ -427,6 +427,7 @@ def generate_cloud_report(
 
         anchor._element.getparent().remove(anchor._element)
         faithful._append_official_back_cover(document, report_shell)
+        faithful._justify_narrative_body(document)
         base._enable_field_updates(document)
         _sanitize_properties(document, profile)
         output.parent.mkdir(parents=True, exist_ok=True)

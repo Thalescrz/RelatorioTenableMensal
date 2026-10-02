@@ -368,7 +368,18 @@ inexistentes e nunca percorrer DOCX soltos ou conjuntos não-MAIN. Antes da troc
 valide pacote, seções, conteúdo técnico, tabelas, gráficos e imagens. A
 substituição usa `refresh_publication_documents_atomically`, atualiza hashes no
 manifesto e no PostgreSQL no mesmo commit lógico, registra
-`OFFICIAL_REPORT_SHELL_V3` e preserva flags de negócio como `MAIN`.
+`OFFICIAL_REPORT_SHELL_V3` para a recomposição completa ou
+`OFFICIAL_REPORT_JUSTIFIED_BODY_V1` para a atualização exclusiva do alinhamento, e
+preserva flags de negócio como `MAIN`. Use `--period-id` para limitar uma
+manutenção editorial à competência solicitada. O modo `--justify-body-only` copia
+o pacote existente, altera somente os parágrafos elegíveis e não depende da
+automação do Word.
+
+O alinhamento justificado é restrito aos parágrafos narrativos do corpo. O helper
+compartilhado deve ignorar capa e contracapa, títulos, sumário, listas, notas de
+fonte em tipografia secundária, tabelas, gráficos e qualquer alinhamento explícito
+do componente. Os geradores Geral, Customizações, TAG e Cloud aplicam a mesma regra
+antes de salvar; a republicação aplica a regra novamente para documentos antigos.
 
 Rótulos integrais de severidade/faixa em tabelas destacadas usam a paleta aprovada:
 `CRITICAL`, `HIGH`, `MEDIUM` e `LOW`. A classificação deve ser estrita;

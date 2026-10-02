@@ -95,6 +95,52 @@ def _paragraph_section_properties(paragraph: Any) -> Any | None:
     return None if properties is None else properties.find(qn("w:sectPr"))
 
 
+def _justify_narrative_body(document: DocxDocument) -> int:
+    """Justify narrative paragraphs without changing structural elements."""
+
+    body = document._element.body
+    children = list(body)
+    section_breaks = [
+        child
+        for child in children
+        if child.tag == qn("w:p")
+        and _paragraph_section_properties(child) is not None
+    ]
+    if len(section_breaks) < 2:
+        return 0
+    start_index = children.index(section_breaks[0]) + 1
+    end_index = children.index(section_breaks[1])
+    body_nodes = set(children[start_index:end_index])
+    updated = 0
+    for paragraph in document.paragraphs:
+        if paragraph._p not in body_nodes or not paragraph.text.strip():
+            continue
+        style = paragraph.style
+        style_name = (style.name if style is not None else "").casefold()
+        style_id = (style.style_id if style is not None else "").casefold()
+        if (
+            style_name.startswith(("heading", "toc", "list", "caption", "title"))
+            or style_id.startswith(("heading", "toc", "list", "caption", "title"))
+            or paragraph._p.xpath(".//w:drawing")
+            or paragraph._p.xpath(".//w:pict")
+        ):
+            continue
+        if paragraph.alignment not in (None, WD_ALIGN_PARAGRAPH.JUSTIFY):
+            continue
+        visible_runs = [run for run in paragraph.runs if run.text.strip()]
+        if visible_runs and all(
+            run.font.size is not None and run.font.size.pt <= 8
+            for run in visible_runs
+        ):
+            continue
+        text = paragraph.text.strip().casefold()
+        if text.startswith(("http://", "https://", "plugin id:", "vpr:")):
+            continue
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        updated += 1
+    return updated
+
+
 def _clear_body_after_cover_break(
     document: DocxDocument,
 ) -> OfficialReportShell:
@@ -1067,6 +1113,7 @@ def generate_full_base_report(
     _sanitize_properties(document, title=FULL_REPORT_TITLE)
     top_open_count = _body(document, dataset, profile, mask_sensitive, translator)
     _append_official_back_cover(document, report_shell)
+    _justify_narrative_body(document)
     base._enable_field_updates(document)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)
