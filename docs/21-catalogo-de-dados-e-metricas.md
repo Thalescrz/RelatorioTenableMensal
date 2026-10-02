@@ -190,9 +190,12 @@ e Low.
 - Top 5 VM: ranking local de findings não mitigados usando VPR, severidade e ativos
   afetados, seguido do detalhamento com Plugin ID antes do VPR e conjunto de hosts.
 - Top 5 WAS: ranking equivalente no conjunto WEB suportado.
-- OWASP Top 10: distribuição apenas dos achados que possuem classificação mapeável;
-  categorias sem ocorrências podem permanecer zeradas, acompanhadas de texto quando
-  todo o quadro estiver vazio.
+- OWASP Top 10: distribuição apenas dos achados que possuem classificação mapeável.
+  Cada linha agrupa um Plugin ID dentro da categoria e apresenta nome, maior
+  severidade, maior VPR e quantidade de instâncias. A ordenação é por VPR
+  decrescente; em empate, usa maior severidade, mais instâncias e menor Plugin ID.
+  Valores nulos de VPR ficam depois dos valores reais e aparecem como `0` somente
+  no DOCX. Categorias sem ocorrências recebem a mensagem mensal de ausência.
 
 ## Métricas Cloud
 

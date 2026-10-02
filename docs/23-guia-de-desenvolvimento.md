@@ -108,6 +108,12 @@ use OWASP como substituto. Cubra por teste os dois esquemas da tabela: com a col
 **Família** quando houver ao menos uma correspondência real e sem ela quando não
 houver nenhuma.
 
+O agrupamento OWASP pertence ao domínio WAS. Ele deve conservar maior severidade e
+maior VPR por Plugin ID em cada categoria e ordenar por VPR decrescente antes de
+chegar à apresentação. O DOCX apenas traduz a severidade e aplica a convenção
+visual de `0` para VPR nulo. Testes precisam provar que mais instâncias não passam
+à frente de um VPR maior e que valores nulos permanecem por último.
+
 Não inicie export real, servidor ou cancelamento sem necessidade e autorização.
 
 ## Mensal e Agendador do Windows

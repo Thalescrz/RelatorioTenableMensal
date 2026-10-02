@@ -390,6 +390,13 @@ catálogo oficial. Se nenhuma linha exibida tiver correspondência, a coluna int
 é omitida. Isso não significa falha da coleta WAS e não deve ser interpretado como
 categoria OWASP ausente.
 
+Nas tabelas **OWASP Top 10**, valide as colunas **Severidade** e **VPR** com os
+dados WAS já preservados. O primeiro item deve possuir o maior VPR da categoria;
+a quantidade de instâncias não define mais a ordem principal. Em igualdade de VPR,
+a aplicação usa severidade, instâncias e Plugin ID como desempates determinísticos.
+VPR ausente aparece como `0` no Word, mas continua nulo no dataset e é posicionado
+depois de qualquer VPR real.
+
 ### Componentes e retentativas
 
 O detalhe do conjunto mostra `VM_CORE`, `WAS` e `CLOUD` separadamente. Um
