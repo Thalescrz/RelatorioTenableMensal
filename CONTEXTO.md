@@ -1,7 +1,7 @@
 # Contexto do projeto
 
-**Atualizado em:** 2026-09-15  
-**Base verificada:** `277750f` (`main` no início desta revisão)  
+**Atualizado em:** 2026-10-02  
+**Base verificada:** `04506cf` (`main` no início deste ciclo)  
 **Natureza:** resumo versionado; estado operacional transitório fica fora deste arquivo
 
 ## Finalidade
@@ -169,6 +169,11 @@ versionados.
 - Comparação por TAG sempre usa a mesma categoria e valor em períodos compatíveis.
 - Indicadores de explorabilidade permanecem segregados pelo framework definido;
   um indicador geral não substitui os demais.
+- Nas tabelas OWASP Top 10, cada Plugin ID exibe a maior severidade e o maior VPR
+  observados dentro da categoria. As linhas são ordenadas por VPR decrescente;
+  severidade, quantidade de instâncias e Plugin ID são apenas critérios de
+  desempate. Plugin sem VPR permanece nulo no dataset e aparece como `0` somente
+  na apresentação.
 
 As fórmulas, populações e regras de ausência estão no
 [catálogo de dados e métricas](docs/21-catalogo-de-dados-e-metricas.md).

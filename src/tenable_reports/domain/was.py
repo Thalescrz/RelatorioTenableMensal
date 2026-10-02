@@ -273,8 +273,18 @@ def build_was_report_data(
             row = owasp[category].setdefault(item.plugin_id, {
                 "plugin_id": item.plugin_id,
                 "name": item.plugin_name,
+                "severity": item.severity,
+                "vpr_score": item.vpr_score,
                 "instances": 0,
             })
+            if SEVERITY_WEIGHT.get(item.severity, -1) > SEVERITY_WEIGHT.get(
+                row["severity"], -1
+            ):
+                row["severity"] = item.severity
+            if item.vpr_score is not None and (
+                row["vpr_score"] is None or item.vpr_score > row["vpr_score"]
+            ):
+                row["vpr_score"] = item.vpr_score
             row["instances"] += 1
     availability = "AVAILABLE" if collected and rows else "NO_DATA" if collected else "NOT_COLLECTED"
     was = {
@@ -282,7 +292,16 @@ def build_was_report_data(
         "applications": application_rows,
         "top_vulnerabilities": top_rows[:top_limit],
         "owasp": {
-            category: sorted(values.values(), key=lambda item: (-item["instances"], item["plugin_id"]))
+            category: sorted(
+                values.values(),
+                key=lambda item: (
+                    item["vpr_score"] is None,
+                    -(item["vpr_score"] if item["vpr_score"] is not None else 0),
+                    -SEVERITY_WEIGHT.get(item["severity"], -1),
+                    -item["instances"],
+                    item["plugin_id"],
+                ),
+            )
             for category, values in sorted(owasp.items())
         },
         "population": {

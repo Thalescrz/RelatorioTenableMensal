@@ -632,7 +632,13 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 }
             ]
             dataset.setdefault("was", {}).setdefault("owasp", {})["A01"] = [
-                {"plugin_id": 980001, "name": "Teste OWASP", "instances": 1}
+                {
+                    "plugin_id": 980001,
+                    "name": "Teste OWASP",
+                    "severity": "CRITICAL",
+                    "vpr_score": 9.4,
+                    "instances": 1,
+                }
             ]
             dataset_path = Path(directory) / "dataset.json"
             dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
@@ -661,6 +667,17 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 "State = Resurfaced; Severity = Critical, High, Medium, Low; Resurfaced Date = 01/07/2026 a 31/07/2026",
             ):
                 self.assertIn(marker, text)
+
+            owasp_table = next(
+                table
+                for table in Document(output).tables
+                if tuple(cell.text for cell in table.rows[0].cells)
+                == ("Plugin Id", "Nome", "Severidade", "VPR", "Instâncias")
+            )
+            self.assertEqual(
+                tuple(cell.text for cell in owasp_table.rows[1].cells),
+                ("980001", "Teste OWASP", "Crítica", "9.4", "1"),
+            )
 
     def test_output_column_can_be_enabled_for_vm_and_web(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
