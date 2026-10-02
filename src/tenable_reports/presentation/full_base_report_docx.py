@@ -798,9 +798,21 @@ def _was_section(document: DocxDocument, dataset: Mapping[str, Any], profile: Cl
         rows = []
         for item in owasp.get(category) or []:
             if isinstance(item, Mapping):
-                rows.append((item.get("plugin_id") or "", item.get("name") or "", item.get("instances") or ""))
+                rows.append((
+                    item.get("plugin_id") or "",
+                    item.get("name") or "",
+                    _severity_pt(item.get("severity")),
+                    item.get("vpr_score") if item.get("vpr_score") is not None else 0,
+                    item.get("instances") or "",
+                ))
         if rows:
-            _simple_table(document, ("Plugin Id", "Nome", "Instâncias"), rows, widths=(1200, 6100, 1400), left_columns=frozenset({1}))
+            _simple_table(
+                document,
+                ("Plugin Id", "Nome", "Severidade", "VPR", "Instâncias"),
+                rows,
+                widths=(1050, 4400, 1350, 1050, 1350),
+                left_columns=frozenset({1}),
+            )
             add_source_filter_note(
                 document,
                 dataset,

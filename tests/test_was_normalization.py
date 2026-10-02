@@ -30,6 +30,7 @@ def was_record(
     plugin_id: int = 980001,
     state: str = "OPEN",
     severity: str = "CRITICAL",
+    vpr_score: float | None = 9.1,
     last_found: str = "2026-07-15T10:00:00Z",
     last_fixed: str | None = None,
 ) -> dict:
@@ -44,7 +45,7 @@ def was_record(
             "solution": "Solucao de fixture.",
             "see_also": ["https://example.invalid/advisory"],
             "owasp_2021": ["A03:2021-Injection"],
-            "vpr_v2": {"score": 9.1},
+            "vpr_v2": {"score": vpr_score} if vpr_score is not None else {},
         },
         "state": state,
         "severity": severity,
@@ -93,6 +94,67 @@ class WasNormalizationTests(unittest.TestCase):
         self.assertEqual(len(top), 1)
         self.assertEqual(top[0]["finding_instances"], 1)
         self.assertEqual(was["owasp"]["A03"][0]["instances"], 1)
+
+    def test_owasp_rows_include_risk_and_are_ordered_by_vpr(self) -> None:
+        records = [
+            was_record(
+                "more-instances-1",
+                plugin_id=980010,
+                severity="MEDIUM",
+                vpr_score=4.2,
+            ),
+            was_record(
+                "more-instances-2",
+                plugin_id=980010,
+                severity="HIGH",
+                vpr_score=6.1,
+            ),
+            was_record(
+                "more-instances-3",
+                plugin_id=980010,
+                severity="MEDIUM",
+                vpr_score=5.0,
+            ),
+            was_record(
+                "highest-vpr",
+                plugin_id=980020,
+                severity="HIGH",
+                vpr_score=9.4,
+            ),
+            was_record(
+                "without-vpr-1",
+                plugin_id=980030,
+                severity="CRITICAL",
+                vpr_score=None,
+            ),
+            was_record(
+                "without-vpr-2",
+                plugin_id=980030,
+                severity="CRITICAL",
+                vpr_score=None,
+            ),
+        ]
+        normalized = normalize_was_findings(records, client_id="client-fixture")
+
+        was, _, _ = build_was_report_data(
+            normalized.findings,
+            period=self.period,
+            collected=True,
+            include_info_severity=False,
+            top_limit=5,
+        )
+
+        rows = was["owasp"]["A03"]
+        self.assertEqual(
+            [row["plugin_id"] for row in rows],
+            [980020, 980010, 980030],
+        )
+        self.assertEqual(rows[0]["severity"], "HIGH")
+        self.assertEqual(rows[0]["vpr_score"], 9.4)
+        self.assertEqual(rows[1]["severity"], "HIGH")
+        self.assertEqual(rows[1]["vpr_score"], 6.1)
+        self.assertEqual(rows[1]["instances"], 3)
+        self.assertIsNone(rows[2]["vpr_score"])
 
     def test_no_was_snapshot_is_not_reported_as_zero(self) -> None:
         was, top, population = build_was_report_data(
