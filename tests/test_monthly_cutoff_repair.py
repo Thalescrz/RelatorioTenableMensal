@@ -3,11 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from tenable_reports.application.monthly_cutoff_repair import (
+    MONTHLY_CANONICAL_MODE,
     MONTHLY_CUTOFF_MODE,
     is_monthly_cutoff_interval,
     monthly_competence_document_path,
     needs_monthly_cutoff_repair,
     rewrite_monthly_cutoff_checkpoint,
+    rewrite_history_snapshot_payload,
     rewrite_monthly_cutoff_manifest,
 )
 
@@ -144,3 +146,21 @@ def test_checkpoint_rewrite_rejects_window_outside_target_competence() -> None:
         assert "competência" in str(exc)
     else:
         raise AssertionError("Checkpoint fora da competência deveria ser recusado.")
+
+
+def test_history_snapshot_rewrite_updates_nested_compatibility() -> None:
+    payload = {
+        "period_id": "20260901T000000-20260930T212607",
+        "compatibility": {
+            "client_id": "cliente-exemplo",
+            "period_mode": "EXPLICIT_RANGE",
+            "scope_hash": "scope-a",
+        },
+        "summary": {"non_mitigated": 7},
+    }
+
+    result = rewrite_history_snapshot_payload(payload, period_id="2026-09")
+
+    assert result["period_id"] == "2026-09"
+    assert result["compatibility"]["period_mode"] == MONTHLY_CANONICAL_MODE
+    assert payload["compatibility"]["period_mode"] == "EXPLICIT_RANGE"

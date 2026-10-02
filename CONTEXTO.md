@@ -113,6 +113,15 @@ Quando a execução ou retentativa alcança a fronteira completa do mês no prim
 dia seguinte, a seleção continua `MONTHLY_CUTOFF`; ela não volta a ser
 `EXPLICIT_RANGE` apenas porque o mês já encerrou.
 
+Para seleção de `MAIN` e comparativos, tanto o mês-calendário completo quanto
+`MONTHLY_CUTOFF` usam internamente a identidade mensal canônica
+`MONTHLY_CANONICAL`. O modo e o término efetivos continuam preservados nos dados
+operacionais; a normalização serve somente para localizar a competência anterior.
+Uma divergência de escopo continua bloqueando o comparativo por padrão. A exceção
+é pontual, exige autorização explícita do operador, registra motivo e campos
+afetados e inclui no DOCX um aviso de que os deltas podem refletir a mudança de
+escopo. Ela não desativa a validação global de compatibilidade.
+
 O dataset `cloud-metrics-v3` acrescenta, logo após as principais vulnerabilidades
 com correção disponível, dois rankings de recursos corrigíveis: Top 10 de máquinas
 virtuais e Top 10 de containers. O conector representa containers por imagens de

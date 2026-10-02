@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from zoneinfo import ZoneInfo
 
 from tenable_reports.domain.reporting import parse_datetime
+from tenable_reports.domain.report_reference import MONTHLY_CANONICAL_MODE
 
 
 MONTHLY_CUTOFF_MODE = "MONTHLY_CUTOFF"
@@ -163,11 +164,29 @@ def rewrite_monthly_cutoff_checkpoint(
     return updated
 
 
+def rewrite_history_snapshot_payload(
+    payload: Mapping[str, Any],
+    *,
+    period_id: str,
+) -> dict[str, Any]:
+    """Align the snapshot identity and its nested compatibility metadata."""
+
+    updated = copy.deepcopy(dict(payload))
+    compatibility = updated.get("compatibility")
+    if not isinstance(compatibility, dict):
+        raise ValueError("Snapshot histórico sem compatibilidade válida.")
+    updated["period_id"] = period_id
+    compatibility["period_mode"] = MONTHLY_CANONICAL_MODE
+    return updated
+
+
 __all__ = [
+    "MONTHLY_CANONICAL_MODE",
     "MONTHLY_CUTOFF_MODE",
     "is_monthly_cutoff_interval",
     "monthly_competence_document_path",
     "needs_monthly_cutoff_repair",
     "rewrite_monthly_cutoff_checkpoint",
+    "rewrite_history_snapshot_payload",
     "rewrite_monthly_cutoff_manifest",
 ]

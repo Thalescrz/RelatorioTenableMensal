@@ -11,11 +11,13 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from tenable_reports.application.monthly_cutoff_repair import (
+    MONTHLY_CANONICAL_MODE,
     MONTHLY_CUTOFF_MODE,
     is_monthly_cutoff_interval,
     monthly_competence_document_path,
     needs_monthly_cutoff_repair,
     rewrite_monthly_cutoff_checkpoint,
+    rewrite_history_snapshot_payload,
     rewrite_monthly_cutoff_manifest,
 )
 from tenable_reports.application.component_collection import (
@@ -458,8 +460,10 @@ def _update_database(
                 (run.run_id,),
             ).fetchone()
             if history_row is not None:
-                history_payload = dict(history_row[0])
-                history_payload["period_id"] = period_id
+                history_payload = rewrite_history_snapshot_payload(
+                    history_row[0],
+                    period_id=period_id,
+                )
                 connection.execute(
                     f"""
                     update {SCHEMA_NAME}.history_snapshots
@@ -468,7 +472,7 @@ def _update_database(
                     """,
                     (
                         period_id,
-                        MONTHLY_CUTOFF_MODE,
+                        MONTHLY_CANONICAL_MODE,
                         _jsonb(history_payload),
                         run.run_id,
                     ),

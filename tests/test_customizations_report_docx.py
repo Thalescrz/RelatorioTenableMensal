@@ -265,6 +265,40 @@ def test_first_month_renders_current_baseline_and_explicit_no_data_messages() ->
         assert "Neste mês não foram identificadas tecnologias WEB sem suporte." in text
 
 
+def test_controlled_scope_override_renders_audit_notice_without_no_history() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        source = json.loads(
+            (ROOT / "tests/fixtures/report-dataset-phase5.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        notice = "Comparação autorizada com alteração controlada da cobertura de ativos."
+        source["customizations"]["history_status"] = {
+            "status": "CONTROLLED_SCOPE_OVERRIDE",
+            "predecessor_period_id": "2026-06",
+            "predecessor_snapshot_id": "snapshot-sanitized",
+            "allowed_scope_changes": ["vm_include_unlicensed"],
+            "reason": "USER_AUTHORIZED_SCOPE_CHANGE",
+            "message": notice,
+        }
+        dataset = Path(directory) / "controlled-scope.json"
+        dataset.write_text(json.dumps(source), encoding="utf-8")
+
+        result = generate_customizations_report(
+            template_path=ROOT / "templates/corporate/base-v1.docx",
+            dataset_path=dataset,
+            profile=load_client_profile(
+                ROOT / "clients/examples/client-profile-all-customizations.json"
+            ),
+            output_path=Path(directory) / "custom.docx",
+            mask_sensitive=True,
+        )
+        text = _text(Document(result.output_path))
+
+        assert notice in text
+        assert "Não há histórico do período imediatamente anterior" not in text
+
+
 def test_unavailable_was_customization_is_not_presented_as_no_occurrences() -> None:
     with tempfile.TemporaryDirectory() as directory:
         source = json.loads(

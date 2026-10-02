@@ -6,7 +6,7 @@ import json
 import sqlite3
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -35,6 +35,7 @@ from tenable_reports.domain.history import (
     vulnerability_evolution,
 )
 from tenable_reports.domain.report_reference import (
+    MONTHLY_CANONICAL_MODE,
     READY_STATUS,
     ReportCandidate,
     ReportOrigin,
@@ -70,6 +71,16 @@ class HistoryPreparation:
     tag_enriched_dataset_paths: Mapping[str, Path]
     csv_path: Path | None
     history_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryComparisonOverride:
+    """Explicit authorization to compare one predecessor with a changed scope."""
+
+    predecessor: HistorySnapshot
+    allowed_scope_changes: tuple[str, ...]
+    reason: str
+    notice: str
 
 
 class SnapshotRepository(ABC):
@@ -398,6 +409,8 @@ def _merge_customizations(
     current: HistorySnapshot,
     predecessor: HistorySnapshot | None,
     missing_status: str = "NO_COMPATIBLE_PREDECESSOR",
+    predecessor_status: str = "COMPATIBLE_PREDECESSOR",
+    comparison_notice: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     result = dict(dataset)
     existing = result.get("customizations")
@@ -436,9 +449,10 @@ def _merge_customizations(
         else:
             customizations.pop("network_comparisons", None)
         customizations["history_status"] = {
-            "status": "COMPATIBLE_PREDECESSOR",
+            "status": predecessor_status,
             "predecessor_period_id": predecessor.period_id,
             "predecessor_snapshot_id": predecessor.snapshot_id,
+            **(dict(comparison_notice) if comparison_notice is not None else {}),
         }
     else:
         for key in (
@@ -634,6 +648,87 @@ def _candidate_for_snapshot(
     )
 
 
+def _normalized_monthly_snapshot(snapshot: HistorySnapshot) -> HistorySnapshot:
+    """Normalize monthly compatibility without rewriting collected evidence."""
+
+    try:
+        key = reference_key_for_candidate(_candidate_for_snapshot(snapshot, {}))
+    except ValueError:
+        return snapshot
+    if key.period_mode != MONTHLY_CANONICAL_MODE:
+        return snapshot
+    if snapshot.compatibility.period_mode == MONTHLY_CANONICAL_MODE:
+        return snapshot
+    return replace(
+        snapshot,
+        compatibility=replace(
+            snapshot.compatibility,
+            period_mode=MONTHLY_CANONICAL_MODE,
+        ),
+    )
+
+
+def _controlled_predecessor(
+    *,
+    current: HistorySnapshot,
+    expected_key: ReportReferenceKey | None,
+    override: HistoryComparisonOverride,
+) -> tuple[HistorySnapshot, HistorySnapshot, dict[str, Any]]:
+    predecessor = _normalized_monthly_snapshot(override.predecessor)
+    reason = str(override.reason or "").strip()
+    notice = str(override.notice or "").strip()
+    allowed_changes = tuple(
+        sorted(
+            {
+                str(item).strip()
+                for item in override.allowed_scope_changes
+                if str(item).strip()
+            }
+        )
+    )
+    if expected_key is None:
+        raise ValueError("A exceção de comparação exige uma competência predecessora.")
+    if not reason or not notice or not allowed_changes:
+        raise ValueError(
+            "A exceção de comparação exige motivo, aviso e mudanças de escopo autorizadas."
+        )
+    predecessor_key = reference_key_for_candidate(
+        _candidate_for_snapshot(predecessor, {})
+    )
+    if predecessor_key.period_key != expected_key.period_key:
+        raise ValueError("A exceção não pertence à competência predecessora esperada.")
+    current_fields = current.compatibility
+    predecessor_fields = predecessor.compatibility
+    comparable = (
+        "client_id",
+        "tenant_id",
+        "execution_type",
+        "period_mode",
+        "timezone",
+        "metric_definition_version",
+    )
+    if any(
+        getattr(current_fields, field) != getattr(predecessor_fields, field)
+        for field in comparable
+    ):
+        raise ValueError("A exceção controlada aceita somente divergência de escopo.")
+    if current_fields.scope_hash == predecessor_fields.scope_hash:
+        raise ValueError("A exceção de escopo é desnecessária para snapshots compatíveis.")
+    effective = replace(
+        predecessor,
+        compatibility=replace(
+            predecessor.compatibility,
+            scope_hash=current.compatibility.scope_hash,
+        ),
+    )
+    audit = {
+        "allowed_scope_changes": list(allowed_changes),
+        "reason": reason,
+        "message": notice,
+    }
+    return predecessor, effective, audit
+
+
 def _write_enriched_dataset(path: Path, data: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     content = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
@@ -675,10 +770,15 @@ def _enrich_tag_datasets(
     *,
     snapshots: Iterable[HistorySnapshot],
     current: HistorySnapshot,
+    comparison_notice: Mapping[str, Any] | None = None,
 ) -> dict[str, Path]:
     outputs: dict[str, Path] = {}
+    normalized_current = _normalized_monthly_snapshot(current)
+    normalized_snapshots = tuple(
+        _normalized_monthly_snapshot(snapshot) for snapshot in snapshots
+    )
     compatible_monthly = (
-        current.compatibility.period_mode == "PREVIOUS_CALENDAR_MONTH"
+        normalized_current.compatibility.period_mode == MONTHLY_CANONICAL_MODE
         and len(current.period_id) == 7
         and current.period_id[4:5] == "-"
     )
@@ -693,15 +793,25 @@ def _enrich_tag_datasets(
         if not comparison_enabled:
             enriched["tag_history_status"] = "DISABLED"
             enriched["tag_history"] = []
+            enriched.pop("history_comparison_notice", None)
         elif not compatible_monthly:
             enriched["tag_history_status"] = "INCOMPATIBLE_PERIOD"
             enriched["tag_history"] = []
+            enriched.pop("history_comparison_notice", None)
         else:
             enriched["tag_history_status"] = "AVAILABLE"
             history = list(
-                tag_year_history(snapshots, current=current, tag_uuid=tag_uuid)
+                tag_year_history(
+                    normalized_snapshots,
+                    current=normalized_current,
+                    tag_uuid=tag_uuid,
+                )
             )
             enriched["tag_history"] = history
+            if comparison_notice is not None:
+                enriched["history_comparison_notice"] = dict(comparison_notice)
+            else:
+                enriched.pop("history_comparison_notice", None)
             try:
                 current_year, current_month = (
                     int(value) for value in current.period_id.split("-", 1)
@@ -759,6 +869,7 @@ def prepare_dataset_history(
     database_path: str | Path | None = None,
     csv_path: str | Path | None = None,
     origin: str | None = None,
+    comparison_override: HistoryComparisonOverride | None = None,
 ) -> HistoryPreparation:
     dataset_file = Path(dataset_path)
     data = _read_dataset(dataset_file)
@@ -770,31 +881,60 @@ def prepare_dataset_history(
         profile=profile,
         run_id=run_id,
     )
-    current = _history_snapshot(
+    raw_current = _history_snapshot(
         profile=profile,
         dataset=data,
         dataset_path=dataset_file,
         normalized_findings_path=Path(normalized_findings_path),
         tag_datasets=(value for _, value in tag_datasets.values()),
     )
-    candidate = _candidate_for_snapshot(current, data, origin_override=origin)
+    candidate = _candidate_for_snapshot(raw_current, data, origin_override=origin)
     reference_key = reference_key_for_candidate(candidate)
+    current = _normalized_monthly_snapshot(raw_current)
     predecessor_key = expected_predecessor_key(reference_key)
     predecessor = (
         registry.get_main_snapshot(predecessor_key)
         if predecessor_key is not None
         else None
     )
-    main_snapshots = registry.list_main_snapshots_before(reference_key)
+    predecessor = (
+        _normalized_monthly_snapshot(predecessor)
+        if predecessor is not None
+        else None
+    )
+    main_snapshots = tuple(
+        _normalized_monthly_snapshot(snapshot)
+        for snapshot in registry.list_main_snapshots_before(reference_key)
+    )
+    comparison_notice = None
     history_status = (
         "COMPATIBLE_PREDECESSOR" if predecessor is not None else "NO_IMMEDIATE_MAIN"
     )
+    if comparison_override is not None:
+        if predecessor is not None:
+            raise ValueError(
+                "A exceção de comparação não pode substituir um predecessor compatível."
+            )
+        predecessor, effective_predecessor, comparison_notice = _controlled_predecessor(
+            current=current,
+            expected_key=predecessor_key,
+            override=comparison_override,
+        )
+        main_snapshots = tuple(
+            sorted(
+                (*main_snapshots, effective_predecessor),
+                key=lambda item: (item.period_end_at, item.run_id),
+            )
+        )
+        history_status = "CONTROLLED_SCOPE_OVERRIDE"
     enriched = _merge_customizations(
         data,
         snapshots=main_snapshots,
         current=current,
         predecessor=predecessor,
         missing_status=history_status,
+        predecessor_status=history_status,
+        comparison_notice=comparison_notice,
     )
     output = Path(output_path)
     _write_enriched_dataset(output, enriched)
@@ -802,6 +942,7 @@ def prepare_dataset_history(
         tag_datasets,
         snapshots=main_snapshots,
         current=current,
+        comparison_notice=comparison_notice,
     )
     backend, location, local_database = _repository_metadata(repository, database_path)
     return HistoryPreparation(

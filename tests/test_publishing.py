@@ -260,6 +260,38 @@ class AtomicPublicationTests(unittest.TestCase):
             self.assertEqual(hashes["base"], sha256_file(base))
             self.assertEqual(hashes["cloud"], sha256_file(cloud))
 
+    def test_document_refresh_can_record_a_separate_audit_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            manifest, _dataset, base, _cloud = self._manifest(directory)
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+            payload["document_backfill"] = {"operation": "OFFICIAL_REPORT_SHELL_V3"}
+            manifest.write_text(json.dumps(payload), encoding="utf-8")
+            staged = _document(
+                directory / ".monthly-comparison" / "base.docx",
+                "Documento com comparativo mensal",
+            )
+
+            refresh_publication_documents_atomically(
+                manifest_path=manifest,
+                replacements=(PublicationDocumentReplacement(
+                    staged_path=staged,
+                    destination=PublicationDocument(base, "base"),
+                ),),
+                audit_key="monthly_comparison_repair",
+                audit_metadata={"operation": "MONTHLY_COMPARISON_REPAIR_V1"},
+            )
+            updated = json.loads(manifest.read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                updated["document_backfill"],
+                {"operation": "OFFICIAL_REPORT_SHELL_V3"},
+            )
+            self.assertEqual(
+                updated["monthly_comparison_repair"],
+                {"operation": "MONTHLY_COMPARISON_REPAIR_V1"},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

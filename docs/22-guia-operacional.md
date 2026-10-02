@@ -539,6 +539,32 @@ iguais; somente `period_id` e `mode` passam ao contrato mensal. Um backup local 
 criado antes da alteração e uma segunda execução deve encontrar zero checkpoints
 pendentes.
 
+### Reparar comparativos mensais publicados
+
+Use `tools/repair_monthly_comparison_documents.py` somente quando uma competência
+`MAIN` já publicada estiver sem continuidade mensal, mas os snapshots compactos e
+históricos das duas competências estiverem íntegros. O comando não realiza coleta
+nem consulta a Tenable: ele reconstrói os datasets locais, confirma que resumo e
+chaves de findings atuais coincidem com o histórico persistido, cria backup e
+substitui atomicamente apenas o relatório customizado e a seção 4 dos relatórios
+por TAG.
+
+Primeiro execute sem `--apply`:
+
+```powershell
+.\.venv\Scripts\python.exe tools\repair_monthly_comparison_documents.py `
+  --period-id AAAA-MM
+```
+
+Se um cliente tiver alteração de escopo conscientemente aceita, repita a análise
+com `--scope-override-client client-id`. Essa opção exige predecessor único e
+divergência somente de escopo; o DOCX recebe aviso visível e os outros clientes
+continuam sob compatibilidade estrita. Para aplicar, acrescente `--apply` e
+`--confirmation "REPARAR COMPARATIVOS AAAA-MM"`. Não aplique com jobs ativos.
+Depois confira hashes do manifesto, auditoria `monthly_comparison_repair`, meses
+exibidos e renderização LibreOffice. O backup fica em
+`data/maintenance-backups/monthly-comparisons-AAAA-MM-*`.
+
 Se a consolidação local falhar, o estado visível é
 `CHECKPOINT_COMPONENT_INCOMPLETE`. Os dados coletados permanecem preservados para
 retentativa; não use **Gerar todos** para contornar essa falha.
