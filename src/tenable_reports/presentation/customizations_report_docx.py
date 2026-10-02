@@ -1083,9 +1083,20 @@ def generate_customizations_report(
     data = _custom_data(dataset)
     rendered: list[str] = []
     history_status = data.get("history_status")
+    controlled_scope_override = (
+        isinstance(history_status, Mapping)
+        and history_status.get("status") == "CONTROLLED_SCOPE_OVERRIDE"
+    )
+    if controlled_scope_override:
+        notice = str(history_status.get("message") or "").strip()
+        if notice:
+            faithful._paragraph(document, notice)
     if (
         isinstance(history_status, Mapping)
-        and history_status.get("status") != "COMPATIBLE_PREDECESSOR"
+        and history_status.get("status") not in {
+            "COMPATIBLE_PREDECESSOR",
+            "CONTROLLED_SCOPE_OVERRIDE",
+        }
         and any(_module_enabled(profile, module) for module in HISTORICAL_INTELLIGENCE_MODULES)
     ):
         faithful._paragraph(document, NO_HISTORY_MESSAGE)

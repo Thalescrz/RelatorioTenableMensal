@@ -6,6 +6,8 @@ import tempfile
 from typing import Any, Mapping
 
 from docx import Document
+from docx.oxml.ns import qn
+from docx.text.paragraph import Paragraph
 
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation import base_report_docx as base
@@ -224,6 +226,11 @@ def _temporal_comparison(
             "Ainda não há histórico mensal comparável para esta TAG.",
         )
         return False
+    notice = dataset.get("history_comparison_notice")
+    if isinstance(notice, Mapping):
+        message = str(notice.get("message") or "").strip()
+        if message:
+            _paragraph(document, message)
     scope_label = f"TAG {tag['category_name']} - {tag['value']}"
     with tempfile.TemporaryDirectory() as directory:
         visual_count = render_monthly_visual_bundle(
@@ -302,6 +309,79 @@ def generate_tag_report(
         tag_uuid=str(tag["tag_uuid"]),
         top_asset_rows=len(dataset.get("top_assets") or []),
         top_open_rows=top_open_rows,
+        comparison_rendered=comparison_rendered,
+        masked_sensitive_fields=mask_sensitive,
+    )
+
+
+def refresh_tag_temporal_comparison(
+    *,
+    source_path: str | Path,
+    dataset_path: str | Path,
+    profile: ClientProfile,
+    output_path: str | Path,
+    mask_sensitive: bool = False,
+) -> TagReportRenderResult:
+    """Replace only section 4 while preserving the approved technical body."""
+
+    source = Path(source_path)
+    if not source.is_file():
+        raise ValueError(f"Relatório por TAG não encontrado: {source}")
+    dataset = _load_dataset(Path(dataset_path))
+    tag = _validate_tag_dataset(dataset, profile)
+    document = Document(source)
+    body = document._element.body
+    children = list(body)
+    heading_text = "4. Comparativo Mensal da TAG"
+    start_index = next(
+        (
+            index
+            for index, child in enumerate(children)
+            if child.tag == qn("w:p")
+            and " ".join(Paragraph(child, document).text.split()) == heading_text
+        ),
+        -1,
+    )
+    if start_index < 0:
+        raise ValueError("O relatório publicado não possui a seção comparativa esperada.")
+    end_index = next(
+        (
+            index
+            for index, child in enumerate(children[start_index + 1 :], start_index + 1)
+            if child.tag == qn("w:p")
+            and child.find(qn("w:pPr")) is not None
+            and child.find(qn("w:pPr")).find(qn("w:sectPr")) is not None
+        ),
+        -1,
+    )
+    if end_index < 0:
+        raise ValueError("O limite da seção comparativa não foi localizado.")
+    anchor = children[end_index]
+    for child in children[start_index:end_index]:
+        body.remove(child)
+
+    existing_nodes = {id(child) for child in body}
+    comparison_rendered = _temporal_comparison(
+        document,
+        dataset,
+        tag,
+        mask_sensitive=mask_sensitive,
+    )
+    added_nodes = [child for child in body if id(child) not in existing_nodes]
+    for child in added_nodes:
+        anchor.addprevious(child)
+
+    base._enable_field_updates(document)
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    document.save(output)
+    return TagReportRenderResult(
+        output_path=output,
+        client_id=profile.client_id,
+        period_id=str(dataset["period"].get("period_id") or ""),
+        tag_uuid=str(tag["tag_uuid"]),
+        top_asset_rows=len(dataset.get("top_assets") or []),
+        top_open_rows=len(dataset.get("top_open_vulnerabilities") or []),
         comparison_rendered=comparison_rendered,
         masked_sensitive_fields=mask_sensitive,
     )

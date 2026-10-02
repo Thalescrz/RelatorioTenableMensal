@@ -439,6 +439,7 @@ def refresh_publication_documents_atomically(
     *,
     manifest_path: str | Path,
     replacements: Sequence[PublicationDocumentReplacement],
+    audit_key: str = "document_backfill",
     audit_metadata: Mapping[str, Any] | None = None,
     commit_callback: Callable[[], None] | None = None,
 ) -> Path:
@@ -458,6 +459,9 @@ def refresh_publication_documents_atomically(
         raise ValueError("Manifesto sem documentos validos.")
     if not replacements:
         raise ValueError("Nenhum documento foi informado para atualizacao.")
+    normalized_audit_key = str(audit_key or "").strip()
+    if audit_metadata is not None and not normalized_audit_key.isidentifier():
+        raise ValueError("A chave de auditoria do manifesto é inválida.")
 
     prepared: dict[Path, tuple[Path, Path, dict[str, Any]]] = {}
     for replacement in replacements:
@@ -494,7 +498,7 @@ def refresh_publication_documents_atomically(
     updated["documents"] = refreshed
     updated["updated_at"] = datetime.now(timezone.utc).isoformat()
     if audit_metadata is not None:
-        updated["document_backfill"] = dict(audit_metadata)
+        updated[normalized_audit_key] = dict(audit_metadata)
 
     transaction_id = uuid.uuid4().hex
     backups: list[tuple[Path, Path | None]] = []

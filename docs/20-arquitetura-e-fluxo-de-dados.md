@@ -447,6 +447,20 @@ O próximo comparativo consulta a referência compatível anterior, não apenas 
 arquivo mais recente da pasta. Para TAGs, categoria e valor fazem parte da
 identidade; mudar a TAG evita comparações incorretas.
 
+Meses completos e fechamentos antecipados válidos (`MONTHLY_CUTOFF`) convergem
+para `MONTHLY_CANONICAL` na chave de referência e na leitura do snapshot
+histórico. Essa normalização não altera o intervalo efetivamente coletado. O
+histórico por TAG usa a mesma identidade mensal canônica, por isso um fechamento
+antecipado elegível pode continuar a série da mesma TAG.
+
+O `scope_hash` permanece parte obrigatória da compatibilidade. Uma comparação com
+escopo diferente só é aceita por `HistoryComparisonOverride`, informada para uma
+execução e predecessor específicos. A preparação valida cliente, tenant, tipo de
+execução, fuso, versão métrica e competência anterior, registra motivo e campos
+autorizados e propaga o aviso para os relatórios customizado e por TAG. O
+predecessor persistido não é reescrito e a regra comum continua bloqueando outros
+escopos divergentes.
+
 Excluir é uma ação explícita sobre o conjunto inteiro. Se ele for `MAIN`, a
 interface exige outra referência compatível. O serviço bloqueia gerações ativas,
 valida que todos os alvos pertencem à raiz `data` e usa quarentena reversível antes

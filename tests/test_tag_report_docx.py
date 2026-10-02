@@ -9,7 +9,10 @@ from docx import Document
 from docx.oxml.ns import qn
 
 from tenable_reports.config.profile import load_client_profile
-from tenable_reports.presentation.tag_report_docx import generate_tag_report
+from tenable_reports.presentation.tag_report_docx import (
+    generate_tag_report,
+    refresh_tag_temporal_comparison,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -359,6 +362,70 @@ def test_enabled_tag_comparison_renders_tables_and_five_charts(tmp_path: Path) -
     assert result.comparison_rendered is True
     assert _count_document_images(result.output_path) >= 8
     assert _all_text(document).count("Comparativo Mensal") == 1
+
+
+def test_tag_comparison_renders_controlled_scope_notice(tmp_path: Path) -> None:
+    dataset = _tag_dataset(
+        tmp_path,
+        with_history=True,
+        include_comparison=True,
+    )
+    data = json.loads(dataset.read_text(encoding="utf-8"))
+    notice = "Comparação autorizada com alteração controlada da cobertura de ativos."
+    data["history_comparison_notice"] = {
+        "allowed_scope_changes": ["vm_include_unlicensed"],
+        "reason": "USER_AUTHORIZED_SCOPE_CHANGE",
+        "message": notice,
+    }
+    dataset.write_text(json.dumps(data), encoding="utf-8")
+
+    result = generate_tag_report(
+        template_path=TEMPLATE,
+        dataset_path=dataset,
+        profile=_profile(),
+        output_path=tmp_path / "tag-history-notice.docx",
+    )
+
+    assert notice in _all_text(Document(result.output_path))
+
+
+def test_refresh_tag_comparison_preserves_technical_body(tmp_path: Path) -> None:
+    source = tmp_path / "tag-original.docx"
+    generate_tag_report(
+        template_path=TEMPLATE,
+        dataset_path=_tag_dataset(
+            tmp_path,
+            with_history=False,
+            include_comparison=True,
+        ),
+        profile=_profile(),
+        output_path=source,
+    )
+    dataset = _tag_dataset(
+        tmp_path,
+        with_history=True,
+        include_comparison=True,
+    )
+    data = json.loads(dataset.read_text(encoding="utf-8"))
+    notice = "Comparação autorizada com alteração controlada da cobertura de ativos."
+    data["history_comparison_notice"] = {"message": notice}
+    dataset.write_text(json.dumps(data), encoding="utf-8")
+    output = tmp_path / "tag-refreshed.docx"
+
+    result = refresh_tag_temporal_comparison(
+        source_path=source,
+        dataset_path=dataset,
+        profile=_profile(),
+        output_path=output,
+    )
+    document = Document(output)
+    text = _all_text(document)
+
+    assert result.comparison_rendered is True
+    assert "Atualização de exemplo aplicada" in text
+    assert "Ainda não há histórico mensal comparável" not in text
+    assert notice in text
+    assert text.count("4. Comparativo Mensal da TAG") == 1
 
 
 def test_missing_month_is_unavailable_and_not_plotted_as_zero(tmp_path: Path) -> None:

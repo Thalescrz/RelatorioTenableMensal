@@ -143,6 +143,18 @@ Classifique também como `MONTHLY_CUTOFF` a seleção manual do mês completo qu
 `reference_at` já estiver no mês seguinte; a fronteira exclusiva continua sendo o
 primeiro dia do mês seguinte.
 
+Na camada de referência e histórico, normalize meses completos e
+`MONTHLY_CUTOFF` para `MONTHLY_CANONICAL`. Preserve `period.mode`, `start_at` e
+`end_at` nos registros operacionais; a identidade canônica existe para seleção de
+`MAIN` e predecessor, não para esconder o corte real. O histórico por TAG deve
+usar a mesma normalização.
+
+Não remova `scope_hash` da compatibilidade. Quando houver autorização excepcional,
+modele-a como `HistoryComparisonOverride` pontual, valide as demais dimensões de
+identidade e propague um aviso ao dataset e ao DOCX. Teste rejeição de predecessor
+de outra competência, divergência não limitada ao escopo, exceção desnecessária e
+ausência de motivo ou aviso.
+
 Uma migração de competência deve atualizar também `period.period_id` e
 `period.mode` nos checkpoints de componente e de consolidação que pertençam à
 mesma janela mensal. Valide o JSON pelo contrato correspondente antes da escrita,
@@ -474,6 +486,13 @@ do navegador.
 mensal completa. A migração de publicações antigas deve ser explícita, auditável e
 transacional: validar arquivos e manifesto, recusar colisões, preservar o fim real,
 reclassificar `MAIN` e manter cópia local dos metadados anteriores.
+
+Uma reparação posterior de comparativos deve partir do snapshot compacto validado,
+comparar o resumo e as chaves de findings reconstruídos com o snapshot histórico
+da execução atual e recusar jobs ativos. Gere primeiro em staging, preserve backup
+recuperável e use `refresh_publication_documents_atomically` com chave de auditoria
+específica. Para TAG, substitua somente a seção comparativa quando o corpo técnico
+já publicado não precisar ser reconstruído.
 
 A preparação do ZIP é assíncrona: `POST /api/report-archives/prepare` responde com
 HTTP 202 e um `status_url`; o frontend consulta

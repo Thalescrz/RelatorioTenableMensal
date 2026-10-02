@@ -4,12 +4,15 @@ import csv
 import json
 import tempfile
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from tenable_reports.application.history import (
+    HistoryComparisonOverride,
     SQLiteSnapshotRepository,
+    _controlled_predecessor,
     _enrich_tag_datasets,
     finalize_history_publication,
     import_history_csv,
@@ -24,6 +27,11 @@ from tenable_reports.domain.history import (
     HistorySnapshot,
     SnapshotCompatibility,
     tag_year_history,
+)
+from tenable_reports.domain.report_reference import (
+    MONTHLY_CANONICAL_MODE,
+    ReferenceKind,
+    ReportReferenceKey,
 )
 from tenable_reports.application.retention import (
     apply_cleanup_plan,
@@ -299,6 +307,210 @@ def test_tag_enrichment_builds_asset_comparison_only_for_immediate_month(
     assert [
         row["period_id"] for row in enriched["tag_comparison"]["periods"]
     ] == ["2026-06", "2026-07"]
+
+
+def test_tag_enrichment_compares_previous_month_with_monthly_cutoff(
+    tmp_path: Path,
+) -> None:
+    previous = _tag_history_snapshot("2026-08", total=8)
+    current_source = _tag_history_snapshot("2026-09", total=7)
+    current = replace(
+        current_source,
+        period_end_at="2026-10-01T00:26:07Z",
+        compatibility=replace(
+            current_source.compatibility,
+            period_mode="MONTHLY_CUTOFF",
+        ),
+    )
+    tag_data = {
+        "tag": {
+            "tag_uuid": "tag-a",
+            "category_name": "Equipe",
+            "value": "Infra",
+            "include_temporal_comparison": True,
+        }
+    }
+    source = tmp_path / "tag-a" / "report-dataset.json"
+    source.parent.mkdir()
+    source.write_text(json.dumps(tag_data), encoding="utf-8")
+
+    outputs = _enrich_tag_datasets(
+        {"tag-a": (source, tag_data)},
+        snapshots=(previous,),
+        current=current,
+    )
+    enriched = json.loads(outputs["tag-a"].read_text(encoding="utf-8"))
+
+    assert enriched["tag_history_status"] == "AVAILABLE"
+    assert [
+        row["period_id"] for row in enriched["tag_comparison"]["periods"]
+    ] == ["2026-08", "2026-09"]
+
+
+def test_controlled_scope_override_adds_previous_month_and_audit_notice(
+    tmp_path: Path,
+) -> None:
+    profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+    previous = _tag_history_snapshot("2026-08", total=8)
+    current_data = _dataset(
+        "2026-09",
+        "2026-09-01T03:00:00Z",
+        "2026-10-01T00:26:07Z",
+        total=7,
+    )
+    current_data["period"]["mode"] = "MONTHLY_CUTOFF"
+    dataset_path, findings_path = _write_period(tmp_path, current_data, [])
+    tag_data = deepcopy(current_data)
+    tag_data["document_kind"] = "tag"
+    tag_data["tag"] = {
+        "tag_uuid": "tag-a",
+        "category_uuid": "category-team",
+        "category_name": "Equipe",
+        "value": "Infra",
+        "include_temporal_comparison": True,
+    }
+    tag_data["top_assets"] = []
+    tag_path = tmp_path / "tag-a" / "report-dataset.json"
+    tag_path.parent.mkdir()
+    tag_path.write_text(json.dumps(tag_data), encoding="utf-8")
+    notice = (
+        "Comparação autorizada com alteração controlada da cobertura de ativos."
+    )
+
+    prepared = prepare_dataset_history(
+        profile=profile,
+        dataset_path=dataset_path,
+        normalized_findings_path=findings_path,
+        output_path=tmp_path / "report-dataset-with-history.json",
+        tag_dataset_paths={"tag-a": tag_path},
+        registry=InMemoryReportRegistry(),
+        repository=_RecordingSnapshotRepository(),
+        comparison_override=HistoryComparisonOverride(
+            predecessor=replace(
+                previous,
+                compatibility=replace(
+                    previous.compatibility,
+                    client_id=profile.client_id,
+                    tenant_id=profile.tenant_id,
+                    execution_type="AUTOMATIC_MONTHLY",
+                    scope_hash="legacy-scope",
+                ),
+            ),
+            allowed_scope_changes=("vm_include_unlicensed",),
+            reason="USER_AUTHORIZED_SCOPE_CHANGE",
+            notice=notice,
+        ),
+    )
+
+    assert prepared.history_status == "CONTROLLED_SCOPE_OVERRIDE"
+    enriched = json.loads(prepared.enriched_dataset_path.read_text(encoding="utf-8"))
+    assert [
+        row["period_id"] for row in enriched["customizations"]["monthly_history"]
+    ] == ["2026-08", "2026-09"]
+    assert enriched["customizations"]["history_status"] == {
+        "status": "CONTROLLED_SCOPE_OVERRIDE",
+        "predecessor_period_id": "2026-08",
+        "predecessor_snapshot_id": "snapshot-2026-08-tag-a",
+        "allowed_scope_changes": ["vm_include_unlicensed"],
+        "reason": "USER_AUTHORIZED_SCOPE_CHANGE",
+        "message": notice,
+    }
+    tag_enriched = json.loads(
+        prepared.tag_enriched_dataset_paths["tag-a"].read_text(encoding="utf-8")
+    )
+    assert [
+        row["period_id"] for row in tag_enriched["tag_comparison"]["periods"]
+    ] == ["2026-08", "2026-09"]
+    assert tag_enriched["history_comparison_notice"]["message"] == notice
+
+
+def test_controlled_scope_override_rejects_invalid_authorization() -> None:
+    current_source = _tag_history_snapshot("2026-09", total=7)
+    current = replace(
+        current_source,
+        compatibility=replace(
+            current_source.compatibility,
+            period_mode=MONTHLY_CANONICAL_MODE,
+        ),
+    )
+    previous_source = _tag_history_snapshot("2026-08", total=8)
+    previous = replace(
+        previous_source,
+        compatibility=replace(
+            previous_source.compatibility,
+            scope_hash="legacy-scope",
+        ),
+    )
+    expected_key = ReportReferenceKey(
+        client_id=current.compatibility.client_id,
+        tenant_id=current.compatibility.tenant_id,
+        kind=ReferenceKind.MONTHLY,
+        period_key="2026-08",
+        period_mode=MONTHLY_CANONICAL_MODE,
+        timezone=current.compatibility.timezone,
+        scope_hash=current.compatibility.scope_hash,
+        metric_definition_version=current.compatibility.metric_definition_version,
+    )
+
+    def override(
+        predecessor: HistorySnapshot,
+        *,
+        notice: str = "Aviso de alteração controlada de escopo.",
+    ) -> HistoryComparisonOverride:
+        return HistoryComparisonOverride(
+            predecessor=predecessor,
+            allowed_scope_changes=("vm_include_unlicensed",),
+            reason="USER_AUTHORIZED_SCOPE_CHANGE",
+            notice=notice,
+        )
+
+    with pytest.raises(ValueError, match="motivo, aviso"):
+        _controlled_predecessor(
+            current=current,
+            expected_key=expected_key,
+            override=override(previous, notice=""),
+        )
+    with pytest.raises(ValueError, match="somente divergência de escopo"):
+        _controlled_predecessor(
+            current=current,
+            expected_key=expected_key,
+            override=override(
+                replace(
+                    previous,
+                    compatibility=replace(
+                        previous.compatibility,
+                        tenant_id="outro-tenant",
+                    ),
+                )
+            ),
+        )
+    with pytest.raises(ValueError, match="competência predecessora"):
+        _controlled_predecessor(
+            current=current,
+            expected_key=expected_key,
+            override=override(
+                replace(
+                    previous,
+                    period_id="2026-07",
+                    period_start_at="2026-07-01T03:00:00Z",
+                    period_end_at="2026-08-01T03:00:00Z",
+                )
+            ),
+        )
+    with pytest.raises(ValueError, match="desnecessária"):
+        _controlled_predecessor(
+            current=current,
+            expected_key=expected_key,
+            override=override(
+                replace(
+                    previous,
+                    compatibility=replace(
+                        previous.compatibility,
+                        scope_hash=current.compatibility.scope_hash,
+                    ),
+                )
+            ),
+        )
 
 
 def test_two_compatible_months_publish_trends_and_same_tag_comparison() -> None:

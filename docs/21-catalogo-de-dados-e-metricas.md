@@ -242,6 +242,14 @@ Se não houver referência anterior, os módulos correntes ainda são gerados e 
 comparativo informa que não existe base compatível. Uma ausência não pode resultar
 em documento customizado visualmente vazio.
 
+Na busca do predecessor, `PREVIOUS_CALENDAR_MONTH` e `MONTHLY_CUTOFF` elegíveis
+são tratados como `MONTHLY_CANONICAL`; datas e modo efetivos da coleta não são
+substituídos. Cliente, tenant, fuso, tipo de execução, versão métrica e
+`scope_hash` ainda precisam coincidir. Uma exceção de `scope_hash` é válida apenas
+quando autorizada para aquele cliente e par de competências. Nesse caso, a série
+é apresentada com aviso explícito e os deltas não podem ser interpretados como
+efeito exclusivamente temporal.
+
 ## Conferência na Tenable
 
 Quando habilitados, os filtros de validação aparecem discretamente abaixo de cada
