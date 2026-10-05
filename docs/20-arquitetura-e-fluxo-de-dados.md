@@ -178,6 +178,18 @@ validações determinísticas; a CLI e a orquestração usam
 `load_operational_client_profile` para enriquecer explicitamente o perfil com a
 configuração global local.
 
+O componente não recebe mais a data da geração para preencher essas tabelas. A
+Preparação expõe sempre `30/09/2026`; o Versionamento lê a data global persistida,
+cujo padrão também é `30/09/2026`. A interface apresenta ambas como somente
+leitura para impedir mudanças rotineiras. Uma nova data de versão depende de
+alteração explícita e previamente autorizada da configuração global.
+
+O mesmo componente aplica a formatação horizontal de modo uniforme: a faixa de
+título e a linha de cabeçalho de cada tabela ficam centralizadas, enquanto todas as
+linhas de conteúdo ficam justificadas, inclusive as linhas vazias da Lista de
+Distribuição. Assim, nenhum relatório que incorpore o componente mantém células de
+conteúdo alinhadas à esquerda.
+
 ```text
 Admin -> padrão global de documento -> renderizadores Geral/Cloud
 Cliente -> destinatários adicionais -> linhas posteriores da Lista de Distribuição
@@ -443,6 +455,13 @@ Cada documento publicado possui identidade de cliente, período, tipo, execuçã
 tentativa. O relatório automático válido torna-se `MAIN` por padrão. O analista pode
 promover outra geração do mesmo contexto, preservando rastreabilidade.
 
+`record_publication_manifest` trata o manifesto registrado para um `run_id` como o
+conjunto autoritativo completo. Na mesma transação da publicação, ele remove do
+catálogo as linhas anteriores desse `run_id` e reinsere exatamente os documentos
+declarados no manifesto atual. A reconciliação vale igualmente para Geral,
+Customizações, TAG e Cloud e impede que caminhos de republicações antigas apareçam
+como documentos ativos duplicados.
+
 O próximo comparativo consulta a referência compatível anterior, não apenas o
 arquivo mais recente da pasta. Para TAGs, categoria e valor fazem parte da
 identidade; mudar a TAG evita comparações incorretas.
@@ -452,6 +471,17 @@ para `MONTHLY_CANONICAL` na chave de referência e na leitura do snapshot
 histórico. Essa normalização não altera o intervalo efetivamente coletado. O
 histórico por TAG usa a mesma identidade mensal canônica, por isso um fechamento
 antecipado elegível pode continuar a série da mesma TAG.
+Para snapshots mensais legados já classificados como canônicos, mas com
+`period_id` antigo em formato de intervalo, a leitura deriva `YYYY-MM` de
+`period_start_at` no fuso do cliente. A adaptação ocorre em memória e não modifica
+o snapshot persistido.
+
+A apresentação histórica por TAG consome somente snapshots disponíveis. Uma
+competência ausente não é materializada como linha `Indisponível` nem como rótulo
+sem barra nos gráficos. Para duas competências consecutivas, o snapshot preserva
+até 20 ativos por TAG e a seção comparativa exibe as duas listas temporais e uma
+terceira tabela de variação. A correlação usa `asset_key`/UUID; IP e hostname são
+somente campos de apresentação.
 
 O `scope_hash` permanece parte obrigatória da compatibilidade. Uma comparação com
 escopo diferente só é aceita por `HistoryComparisonOverride`, informada para uma

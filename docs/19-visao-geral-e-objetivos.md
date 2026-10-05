@@ -38,10 +38,11 @@ e Top 5 detalhado de vulnerabilidades WEB quando o WAS estiver disponível. A co
 exploração esteja ativo. A coluna `Output` nos detalhamentos é opcional.
 
 A identidade editorial compartilhada pelos quatro tipos de relatório usa a capa e
-a contracapa oficiais sanitizadas. O sumário nativo do Word fica imediatamente após
-a capa, inclui `Heading 1` a `Heading 3` e é reconstruído ao abrir o documento. As
-seções e subseções recebem numeração explícita própria de cada relatório; o título
-`SUMÁRIO` não participa da própria lista.
+a contracapa oficiais sanitizadas. O sumário materializado e navegável fica
+imediatamente após a capa, inclui `Heading 1` a `Heading 3` e já é gravado no DOCX,
+sem exigir atualização manual no Word. As seções e subseções recebem numeração
+explícita própria de cada relatório; o título `SUMÁRIO` não participa da própria
+lista.
 
 ### Relatório de inteligência e customizações
 
@@ -105,6 +106,9 @@ convertida em zero.
 11. Um conjunto parcial permanece fora de `MAIN` até que os componentes obrigatórios estejam resolvidos.
 12. Preparação, Versionamento e distribuição comum são globais; cada cliente apenas
     acrescenta seus destinatários nas linhas posteriores da Lista de Distribuição.
+    A data de Preparação permanece em `30/09/2026`; a data da versão também parte
+    desse valor, não muda a cada geração e exige autorização prévia para ser
+    atualizada quando houver revisão relevante do conteúdo.
 13. Os cartões mostram capacidades `VM`, `WAS` e `CLOUD`, não IDs técnicos.
 14. Marcar alertas como lidos oculta ocorrências anteriores na interface sem apagar
     jobs, checkpoints ou histórico.

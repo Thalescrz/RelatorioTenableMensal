@@ -18,8 +18,8 @@ controle documental.
 - estilos semânticos de título;
 - texto narrativo do corpo justificado, sem alterar o alinhamento próprio de
   títulos, listas, notas, tabelas, gráficos e páginas institucionais;
-- sumário nativo do Word na página 2, atualizado a partir de `Heading 1` a
-  `Heading 3`;
+- sumário materializado e navegável após a capa, criado a partir de `Heading 1` a
+  `Heading 3` sem depender de atualização manual no Word;
 - oito seções principais do relatório-base numeradas explicitamente de `1` a `8`;
 - tabela “Principais Ativos Vulneráveis” com cabeçalho repetível;
 - `Exploitable` como última coluna e subconjunto de `Total`;
@@ -45,9 +45,10 @@ renderização integral. O arquivo oficial de origem permanece fora do Git.
 
 Os geradores abrem `base-v1.docx`, preservam a capa, materializam o conteúdo entre
 as páginas oficiais e recolocam a contracapa como última página. Os quatro tipos
-usam títulos numerados e estilos semânticos. O sumário usa o campo Word
-`TOC \\o "1-3" \\h \\z`; `w:updateFields` permanece habilitado para que o Word
-recalcule números de página e entradas ao abrir o documento.
+usam títulos numerados e estilos semânticos. O sumário usa `toc 1` a `toc 3` e
+hiperlinks internos para os respectivos títulos, de modo que as entradas já sejam
+visíveis e navegáveis em fluxos automatizados e visualizadores sem atualização de
+campos do Word.
 
 Nos relatórios Geral e Cloud, um componente compartilhado materializa as tabelas
 globais de Preparação e Controle de Versionamento. A Lista de Distribuição recebe
@@ -80,6 +81,7 @@ manifestos de publicação válidos, preserva o corpo técnico, gráficos e tabe
 valida o pacote, substitui cada conjunto atomicamente e atualiza SHA-256, manifesto
 e catálogo PostgreSQL. Conjuntos não-MAIN, documentos órfãos, arquivos de QA e a
 área de descarte não entram no plano. Use `--period-id AAAA-MM` para restringir a
-atualização a uma competência e `--justify-body-only` quando a manutenção deve
-alterar somente o alinhamento narrativo, sem reconstruir o shell nem iniciar o
-Word. A operação não altera a seleção `MAIN`.
+atualização a uma competência, `--justify-body-only` quando a manutenção deve
+alterar somente o alinhamento narrativo e `--materialize-toc-only` quando deve
+corrigir somente o sumário, sem reconstruir o shell nem iniciar o Word. A operação
+não altera a seleção `MAIN`.

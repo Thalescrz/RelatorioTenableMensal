@@ -19,7 +19,10 @@ vulnerabilidade:
 
 - **Controle documental global:** `orchestration/document-control.json` guarda
   Preparação, Controle de Versionamento e destinatários comuns. Os renderizadores
-  Geral e Cloud consomem o mesmo padrão.
+  Geral e Cloud consomem o mesmo padrão. `preparation.date` é normalizado para
+  `30/09/2026`; `version_control.date` também assume esse padrão e só pode receber
+  outra data válida no formato `DD/MM/AAAA` após autorização para revisão do
+  conteúdo. Nenhuma das duas datas é calculada a partir de `generated_at`.
 - **Distribuição adicional do cliente:** o perfil guarda somente
   `document_control.additional_distribution_recipients`. Ao carregar o perfil
   operacional, os destinatários globais são antepostos e e-mails repetidos são
@@ -232,11 +235,23 @@ O recorte acontece depois da coleta e normalização gerais. Os números gerais 
 mudam. O histórico de uma TAG só é comparado com a mesma categoria e valor em
 período anterior compatível.
 
+No comparativo temporal por TAG, competências sem snapshot são omitidas da tabela e
+dos gráficos. Quando o mês imediatamente anterior e o atual estão disponíveis, são
+apresentadas três tabelas: Top 20 do mês anterior, Top 20 do mês atual e comparação
+dos ativos do Top 20 atual. `NOVO`, `AUMENTOU`, `DIMINUIU` e `SEM ALTERAÇÃO` são
+calculados pelo total de vulnerabilidades, relacionando ativos exclusivamente por
+`asset_key` ou UUID de origem. A lista possui até 20 linhas; populações menores
+permanecem menores e não recebem linhas artificiais.
+
 ## Séries históricas
 
 O histórico compacto conserva as agregações necessárias para tabelas e gráficos,
 incluindo totais por severidade/estado, ativos, novas, mitigadas e não mitigadas.
 Ele não depende de reter permanentemente todos os chunks e findings raw.
+
+Para TAGs, a fotografia geral preserva até 20 ativos do recorte. Ao compactar o
+histórico específico da TAG, as métricas específicas são mantidas sem reduzir essa
+lista ao limite editorial de outras tabelas do relatório.
 
 Para Cloud, cada fotografia compacta preserva indicadores, rankings e capacidades;
 as respostas GraphQL completas continuam transitórias.
