@@ -74,8 +74,10 @@ def _title_table(
         row = table.add_row()
         for index, value in enumerate(values):
             row.cells[index].text = "" if value is None else str(value)
-            for run in row.cells[index].paragraphs[0].runs:
-                base._set_run_font(run, size=7.2, color=base.NAVY)
+            for paragraph in row.cells[index].paragraphs:
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                for run in paragraph.runs:
+                    base._set_run_font(run, size=7.2, color=base.NAVY)
         base._prevent_row_split(row)
     _move(table._tbl, mover)
     return table
@@ -89,7 +91,6 @@ def _spacer(document: DocxDocument, mover: ElementMover | None) -> None:
 def append_document_control(
     document: DocxDocument,
     *,
-    generated_date: str,
     preparation: DocumentPreparationConfig,
     version_control: DocumentVersionControlConfig,
     recipients: Sequence[DistributionRecipient],
@@ -105,7 +106,7 @@ def append_document_control(
         document,
         "Preparação",
         ("Ação", "Nome", "Data"),
-        ((preparation.action, preparation.name, generated_date),),
+        ((preparation.action, preparation.name, preparation.date),),
         mover=mover,
     )
     _spacer(document, mover)
@@ -115,7 +116,7 @@ def append_document_control(
         ("Versão", "Data da Versão", "Seções Afetadas", "Alteração", "Alterado por"),
         ((
             version_control.version,
-            generated_date,
+            version_control.date,
             version_control.affected_sections,
             version_control.change,
             version_control.changed_by,

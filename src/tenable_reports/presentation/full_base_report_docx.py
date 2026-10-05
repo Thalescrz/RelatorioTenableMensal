@@ -304,6 +304,85 @@ def _toc_field(document: DocxDocument) -> None:
     run._r.extend((begin, instruction, separate, end))
 
 
+def _materialize_static_toc(document: DocxDocument) -> None:
+    """Materializa um sumário navegável sem depender da atualização do Word."""
+
+    paragraphs = document.paragraphs
+    toc_index = next(
+        (
+            index
+            for index, paragraph in enumerate(paragraphs)
+            if paragraph.text.strip().casefold() == "sumário".casefold()
+        ),
+        -1,
+    )
+    if toc_index < 0:
+        raise ValueError("Documento sem título de SUMÁRIO identificável.")
+    first_heading_index = next(
+        (
+            index
+            for index, paragraph in enumerate(paragraphs[toc_index + 1 :], toc_index + 1)
+            if paragraph.style is not None
+            and paragraph.style.name in {"Heading 1", "Heading 2", "Heading 3"}
+        ),
+        -1,
+    )
+    if first_heading_index < 0:
+        raise ValueError("Documento sem títulos elegíveis para o SUMÁRIO.")
+
+    toc_title = paragraphs[toc_index]
+    first_heading = paragraphs[first_heading_index]
+    for paragraph in paragraphs[toc_index + 1 : first_heading_index]:
+        paragraph._element.getparent().remove(paragraph._element)
+
+    headings = [
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph._element is not toc_title._element
+        and paragraph.style is not None
+        and paragraph.style.name in {"Heading 1", "Heading 2", "Heading 3"}
+        and paragraph.text.strip()
+    ]
+    bookmark_ids = [
+        int(value)
+        for bookmark in document._element.xpath(".//w:bookmarkStart")
+        if (value := bookmark.get(qn("w:id"))) is not None and value.isdigit()
+    ]
+    next_bookmark_id = max(bookmark_ids, default=0) + 1
+
+    for position, heading in enumerate(headings, start=1):
+        level = int(heading.style.name.rsplit(" ", 1)[-1])
+        bookmark_name = f"_TocHeading{position:04d}"
+        existing = next(
+            (
+                bookmark
+                for bookmark in heading._p.findall(qn("w:bookmarkStart"))
+                if bookmark.get(qn("w:name")) == bookmark_name
+            ),
+            None,
+        )
+        if existing is None:
+            bookmark_start = OxmlElement("w:bookmarkStart")
+            bookmark_start.set(qn("w:id"), str(next_bookmark_id))
+            bookmark_start.set(qn("w:name"), bookmark_name)
+            bookmark_end = OxmlElement("w:bookmarkEnd")
+            bookmark_end.set(qn("w:id"), str(next_bookmark_id))
+            properties = heading._p.find(qn("w:pPr"))
+            heading._p.insert(1 if properties is not None else 0, bookmark_start)
+            heading._p.append(bookmark_end)
+            next_bookmark_id += 1
+
+        entry = first_heading.insert_paragraph_before(style=f"toc {level}")
+        hyperlink = OxmlElement("w:hyperlink")
+        hyperlink.set(qn("w:anchor"), bookmark_name)
+        run = OxmlElement("w:r")
+        text = OxmlElement("w:t")
+        text.text = heading.text
+        run.append(text)
+        hyperlink.append(run)
+        entry._p.append(hyperlink)
+
+
 def _toc_heading(document: DocxDocument) -> Any:
     paragraph = document.add_paragraph("SUMÁRIO", style="TOC Heading")
     properties = paragraph._p.get_or_add_pPr()
@@ -1009,12 +1088,10 @@ def _summary_section(
 def _body(document: DocxDocument, dataset: Mapping[str, Any], profile: ClientProfile, mask_sensitive: bool, translator: TextTranslator | None = None) -> int:
     period = dataset["period"]
     start, end = _period_dates(period)
-    generated = base._parse_utc(str(dataset.get("generated_at") or period["end_at"])).astimezone(ZoneInfo(str(period.get("timezone") or "UTC")))
     _toc_heading(document)
     _toc_field(document)
     first_heading = append_document_control(
         document,
-        generated_date=generated.strftime("%d/%m/%Y"),
         preparation=profile.document_control.preparation,
         version_control=profile.document_control.version_control,
         recipients=profile.document_control.distribution_recipients,
@@ -1113,6 +1190,7 @@ def generate_full_base_report(
     _sanitize_properties(document, title=FULL_REPORT_TITLE)
     top_open_count = _body(document, dataset, profile, mask_sensitive, translator)
     _append_official_back_cover(document, report_shell)
+    _materialize_static_toc(document)
     _justify_narrative_body(document)
     base._enable_field_updates(document)
     output.parent.mkdir(parents=True, exist_ok=True)

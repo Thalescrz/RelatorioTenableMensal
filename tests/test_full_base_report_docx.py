@@ -163,8 +163,8 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 )
             self.assertGreaterEqual(document_xml.count("<wp:anchor"), 10)
             self.assertIn("www.itprotect.com.br", all_xml)
-            self.assertIn('TOC \\o "1-3" \\h \\z', document_xml)
-            self.assertNotIn('TOC \\o "1-4"', document_xml)
+            self.assertNotIn('TOC \\o "1-3" \\h \\z', document_xml)
+            self.assertIn('w:hyperlink w:anchor="_TocHeading', document_xml)
             self.assertRegex(settings_xml, r'<w:updateFields\b[^>]*w:val="true"')
             self.assertNotIn("{{CLIENT_NAME}}", all_xml)
             self.assertNotIn("TRT2", all_xml)
@@ -422,7 +422,12 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 mask_sensitive=True,
             )
 
-            paragraphs = [paragraph.text for paragraph in Document(output).paragraphs]
+            paragraphs = [
+                paragraph.text
+                for paragraph in Document(output).paragraphs
+                if paragraph.style is None
+                or not paragraph.style.name.casefold().startswith("toc ")
+            ]
             heading_index = next(
                 index
                 for index, text in enumerate(paragraphs)
@@ -515,7 +520,7 @@ class FullBaseReportDocxTests(unittest.TestCase):
                     if name.endswith(".xml")
                 }
             all_xml = "\n".join(xml_parts.values())
-            self.assertIn(" TOC ", all_xml)
+            self.assertIn('w:hyperlink w:anchor="_TocHeading', all_xml)
             self.assertIn("w:tblHeader", all_xml)
             self.assertIn("w:numPr", all_xml)
             emails = re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", all_xml)

@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 from tenable_reports.config import environment as environment_config
 from tenable_reports.config.environment import (
     CredentialConfig,
@@ -17,10 +19,17 @@ from tenable_reports.config.profile import (
     ProfileError,
     load_client_profile,
     load_operational_client_profile,
+    parse_document_version_control,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_document_version_date_rejects_invalid_calendar_values() -> None:
+    for invalid_date in ("2026-09-30", "31/09/2026"):
+        with pytest.raises(ProfileError, match="date"):
+            parse_document_version_control({"date": invalid_date})
 
 
 def test_loaded_profile_merges_standard_and_additional_distribution_recipients(

@@ -530,6 +530,7 @@ def finalize_official_document(
     else:
         title = faithful.FULL_REPORT_TITLE
     faithful._sanitize_properties(document, title=title)
+    faithful._materialize_static_toc(document)
     faithful._justify_narrative_body(document)
     base._enable_field_updates(document)
     document.save(destination)

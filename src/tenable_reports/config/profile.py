@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 
 CLIENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{2,63}$")
 EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+DOCUMENT_DATE_PATTERN = re.compile(r"^\d{2}/\d{2}/\d{4}$")
+DOCUMENT_PREPARATION_DATE = "30/09/2026"
+DEFAULT_DOCUMENT_VERSION_DATE = "30/09/2026"
 REQUIRED_BASE_MODULES = (
     "summary",
     "infrastructure",
@@ -88,11 +92,13 @@ class DistributionRecipient:
 class DocumentPreparationConfig:
     action: str = "Criação do Documento"
     name: str = ""
+    date: str = field(default=DOCUMENT_PREPARATION_DATE, init=False)
 
 
 @dataclass(frozen=True, slots=True)
 class DocumentVersionControlConfig:
     version: str = "1.0"
+    date: str = DEFAULT_DOCUMENT_VERSION_DATE
     affected_sections: str = "Todas"
     change: str = "Elaboração do conteúdo"
     changed_by: str = ""
@@ -149,18 +155,29 @@ def parse_document_version_control(
     if not isinstance(value, dict):
         raise ProfileError(f"{field_name} deve ser um objeto.")
     version = str(value.get("version", "1.0")).strip()
+    version_date = str(
+        value.get("date", DEFAULT_DOCUMENT_VERSION_DATE)
+    ).strip()
     affected_sections = str(value.get("affected_sections", "Todas")).strip()
     change = str(value.get("change", "Elaboração do conteúdo")).strip()
     changed_by = str(value.get("changed_by") or "").strip()
     for item_name, item_value in (
         ("version", version),
+        ("date", version_date),
         ("affected_sections", affected_sections),
         ("change", change),
     ):
         if not item_value:
             raise ProfileError(f"{field_name}.{item_name} e obrigatorio.")
+    if not DOCUMENT_DATE_PATTERN.fullmatch(version_date):
+        raise ProfileError(f"{field_name}.date deve usar DD/MM/AAAA.")
+    try:
+        datetime.strptime(version_date, "%d/%m/%Y")
+    except ValueError as exc:
+        raise ProfileError(f"{field_name}.date e invalida.") from exc
     return DocumentVersionControlConfig(
         version=version,
+        date=version_date,
         affected_sections=affected_sections,
         change=change,
         changed_by=changed_by,

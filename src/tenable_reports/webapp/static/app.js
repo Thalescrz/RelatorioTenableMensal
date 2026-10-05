@@ -1370,7 +1370,9 @@ function loadDocumentControlAdmin() {
   const versionControl = config.version_control || {};
   $("#document-preparation-action").value = preparation.action || "Criação do Documento";
   $("#document-preparation-name").value = preparation.name || "";
+  $("#document-preparation-date").value = preparation.date || "30/09/2026";
   $("#document-version").value = versionControl.version || "1.0";
+  $("#document-version-date").value = versionControl.date || "30/09/2026";
   $("#document-affected-sections").value = versionControl.affected_sections || "Todas";
   $("#document-change").value = versionControl.change || "Elaboração do conteúdo";
   $("#document-changed-by").value = versionControl.changed_by || "";
@@ -1452,6 +1454,7 @@ $("#save-document-control").addEventListener("click", async event => {
         },
         version_control: {
           version: $("#document-version").value,
+          date: $("#document-version-date").value,
           affected_sections: $("#document-affected-sections").value,
           change: $("#document-change").value,
           changed_by: $("#document-changed-by").value,
