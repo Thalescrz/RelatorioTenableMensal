@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from tenable_reports.infrastructure.jsonl_io import iter_jsonl_objects
 from tenable_reports.domain.fingerprints import fingerprint_finding_key
 from tenable_reports.application.compact_snapshots import (
@@ -40,6 +40,7 @@ from tenable_reports.domain.report_reference import (
     ReportCandidate,
     ReportOrigin,
     ReportReferenceKey,
+    ReferenceKind,
     expected_predecessor_key,
     reference_key_for_candidate,
 )
@@ -382,6 +383,20 @@ def _history_snapshot(
     }
     for tag_dataset in tag_datasets:
         compact = tag_snapshot_from_dataset(tag_dataset)
+        previous = tag_rows_by_uuid.get(compact["tag_uuid"])
+        if isinstance(previous, Mapping):
+            previous_assets = previous.get("top_assets")
+            if previous_assets is None:
+                previous_assets = previous.get("assets")
+            compact_assets = compact.get("top_assets")
+            if (
+                isinstance(previous_assets, (list, tuple))
+                and isinstance(compact_assets, list)
+                and len(previous_assets) > len(compact_assets)
+            ):
+                compact["top_assets"] = [
+                    dict(item) for item in previous_assets if isinstance(item, Mapping)
+                ]
         tag_rows_by_uuid[compact["tag_uuid"]] = compact
     return HistorySnapshot(
         snapshot_id=snapshot_id,
@@ -651,16 +666,31 @@ def _candidate_for_snapshot(
 def _normalized_monthly_snapshot(snapshot: HistorySnapshot) -> HistorySnapshot:
     """Normalize monthly compatibility without rewriting collected evidence."""
 
+    if snapshot.compatibility.period_mode == MONTHLY_CANONICAL_MODE:
+        try:
+            local_start = datetime.fromisoformat(
+                snapshot.period_start_at.replace("Z", "+00:00")
+            ).astimezone(ZoneInfo(snapshot.compatibility.timezone))
+        except (TypeError, ValueError, ZoneInfoNotFoundError):
+            return snapshot
+        canonical_period_id = local_start.strftime("%Y-%m")
+        if snapshot.period_id == canonical_period_id:
+            return snapshot
+        return replace(snapshot, period_id=canonical_period_id)
+
     try:
         key = reference_key_for_candidate(_candidate_for_snapshot(snapshot, {}))
     except ValueError:
         return snapshot
-    if key.period_mode != MONTHLY_CANONICAL_MODE:
+    if (
+        key.kind is not ReferenceKind.MONTHLY
+        or key.period_mode != MONTHLY_CANONICAL_MODE
+    ):
         return snapshot
-    if snapshot.compatibility.period_mode == MONTHLY_CANONICAL_MODE:
-        return snapshot
+    canonical_period_id = key.period_key
     return replace(
         snapshot,
+        period_id=canonical_period_id,
         compatibility=replace(
             snapshot.compatibility,
             period_mode=MONTHLY_CANONICAL_MODE,

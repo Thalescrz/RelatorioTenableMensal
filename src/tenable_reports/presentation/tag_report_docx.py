@@ -21,6 +21,7 @@ from tenable_reports.presentation.full_base_report_docx import (
     _heading,
     _justify_narrative_body,
     _load_dataset,
+    _materialize_static_toc,
     _page_break_before,
     _paragraph,
     _period_dates,
@@ -212,6 +213,7 @@ def _temporal_comparison(
         item
         for item in dataset.get("tag_history") or ()
         if isinstance(item, Mapping)
+        and str(item.get("availability") or "AVAILABLE") == "AVAILABLE"
     ]
     _heading(document, "4. Comparativo Mensal da TAG")
     if status == "INCOMPATIBLE_PERIOD":
@@ -299,6 +301,7 @@ def generate_tag_report(
         mask_sensitive=mask_sensitive,
     )
     _append_official_back_cover(document, report_shell)
+    _materialize_static_toc(document)
     _justify_narrative_body(document)
     base._enable_field_updates(document)
     output = Path(output_path)
@@ -340,7 +343,11 @@ def refresh_tag_temporal_comparison(
             index
             for index, child in enumerate(children)
             if child.tag == qn("w:p")
-            and " ".join(Paragraph(child, document).text.split()) == heading_text
+            and (
+                paragraph := Paragraph(child, document)
+            ).style is not None
+            and paragraph.style.name == "Heading 1"
+            and " ".join(paragraph.text.split()) == heading_text
         ),
         -1,
     )
@@ -373,6 +380,7 @@ def refresh_tag_temporal_comparison(
     for child in added_nodes:
         anchor.addprevious(child)
 
+    _materialize_static_toc(document)
     _justify_narrative_body(document)
     base._enable_field_updates(document)
     output = Path(output_path)

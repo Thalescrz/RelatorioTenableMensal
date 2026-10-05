@@ -361,7 +361,12 @@ def test_enabled_tag_comparison_renders_tables_and_five_charts(tmp_path: Path) -
     assert ("Mês", "Crítica", "Alta", "Média", "Baixa", "Total") in headers
     assert result.comparison_rendered is True
     assert _count_document_images(result.output_path) >= 8
-    assert _all_text(document).count("Comparativo Mensal") == 1
+    assert sum(
+        paragraph.style is not None
+        and paragraph.style.name == "Heading 1"
+        and "Comparativo Mensal" in paragraph.text
+        for paragraph in document.paragraphs
+    ) == 1
 
 
 def test_tag_comparison_renders_controlled_scope_notice(tmp_path: Path) -> None:
@@ -425,10 +430,15 @@ def test_refresh_tag_comparison_preserves_technical_body(tmp_path: Path) -> None
     assert "Atualização de exemplo aplicada" in text
     assert "Ainda não há histórico mensal comparável" not in text
     assert notice in text
-    assert text.count("4. Comparativo Mensal da TAG") == 1
+    assert sum(
+        paragraph.style is not None
+        and paragraph.style.name == "Heading 1"
+        and paragraph.text == "4. Comparativo Mensal da TAG"
+        for paragraph in document.paragraphs
+    ) == 1
 
 
-def test_missing_month_is_unavailable_and_not_plotted_as_zero(tmp_path: Path) -> None:
+def test_missing_month_is_omitted_from_tables_and_graphic_series(tmp_path: Path) -> None:
     output = tmp_path / "tag-history-gap.docx"
     result = generate_tag_report(
         template_path=TEMPLATE,
@@ -443,12 +453,117 @@ def test_missing_month_is_unavailable_and_not_plotted_as_zero(tmp_path: Path) ->
     )
     document = Document(result.output_path)
 
-    assert any(
-        "Fevereiro/2026" in row.cells[0].text
-        and "Indisponível" in row.cells[-1].text
+    assert all(
+        "Fevereiro/2026" not in row.cells[0].text
+        and "Indisponível" not in row.cells[-1].text
         for table in document.tables
         for row in table.rows
     )
+    assert "Fevereiro/2026" not in _all_text(document)
+
+
+def test_tag_asset_comparison_renders_two_top20_tables_and_current_counts(
+    tmp_path: Path,
+) -> None:
+    dataset = _tag_dataset(
+        tmp_path,
+        with_history=True,
+        include_comparison=True,
+    )
+    data = json.loads(dataset.read_text(encoding="utf-8"))
+    previous_assets = []
+    current_assets = []
+    for index in range(1, 23):
+        previous_total = 100 - index
+        current_total = previous_total + (1 if index == 1 else -1)
+        previous_assets.append(
+            {
+                "asset_key": f"asset-{index:02d}",
+                "source_asset_id": f"source-{index:02d}",
+                "ip_address": "",
+                "asset_name": "",
+                "critical": 1,
+                "high": 2,
+                "medium": 3,
+                "low": previous_total - 6,
+                "total": previous_total,
+            }
+        )
+        current_assets.append(
+            {
+                "asset_key": f"asset-{index:02d}",
+                "source_asset_id": f"source-{index:02d}",
+                "ip_address": "",
+                "asset_name": "",
+                "critical": 1,
+                "high": 2,
+                "medium": 3,
+                "low": current_total - 6,
+                "total": current_total,
+            }
+        )
+    current_assets[1]["asset_key"] = "asset-new"
+    current_assets[1]["source_asset_id"] = "source-new"
+    data["tag_comparison"] = {
+        "periods": [
+            {
+                "period_id": "2026-08",
+                "label": "Agosto/2026",
+                "top_assets": previous_assets,
+            },
+            {
+                "period_id": "2026-09",
+                "label": "Setembro/2026",
+                "top_assets": current_assets,
+            },
+        ]
+    }
+    dataset.write_text(json.dumps(data), encoding="utf-8")
+
+    output = tmp_path / "tag-history-top20.docx"
+    generate_tag_report(
+        template_path=TEMPLATE,
+        dataset_path=dataset,
+        profile=_profile(),
+        output_path=output,
+        mask_sensitive=True,
+    )
+    document = Document(output)
+    headers = _headers(document)
+    top20_header = (
+        "Nº",
+        "IP Address",
+        "Asset Name",
+        "Crítica",
+        "Alta",
+        "Média",
+        "Baixa",
+        "Total",
+    )
+    comparison_header = (
+        "Nº",
+        "IP Address",
+        "Comparativo",
+        "Asset Name",
+        "Crítica",
+        "Alta",
+        "Média",
+        "Baixa",
+        "Total",
+    )
+
+    assert headers.count(top20_header) == 2
+    assert headers.count(comparison_header) == 1
+    comparison_table = next(
+        table
+        for table in document.tables
+        if tuple(cell.text for cell in table.rows[0].cells) == comparison_header
+    )
+    assert len(comparison_table.rows) == 21
+    assert comparison_table.rows[1].cells[2].text == "AUMENTOU"
+    assert comparison_table.rows[2].cells[2].text == "NOVO"
+    assert comparison_table.rows[3].cells[2].text == "DIMINUIU"
+    assert comparison_table.rows[1].cells[-1].text == "100"
 
 
 def test_disabled_comparison_has_no_empty_heading_or_chart(tmp_path: Path) -> None:

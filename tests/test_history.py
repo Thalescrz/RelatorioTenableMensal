@@ -14,6 +14,7 @@ from tenable_reports.application.history import (
     SQLiteSnapshotRepository,
     _controlled_predecessor,
     _enrich_tag_datasets,
+    _normalized_monthly_snapshot,
     finalize_history_publication,
     import_history_csv,
     prepare_dataset_history,
@@ -205,7 +206,7 @@ def test_legacy_network_tag_snapshots_load_as_generic_tag_snapshots() -> None:
     assert "network_tag_snapshots" not in stored
 
 
-def test_tag_year_history_marks_missing_month_without_zero() -> None:
+def test_tag_year_history_omits_months_without_a_real_tag_snapshot() -> None:
     rows = tag_year_history(
         (
             _tag_history_snapshot("2025-12", total=99),
@@ -219,17 +220,12 @@ def test_tag_year_history_marks_missing_month_without_zero() -> None:
 
     assert [row["period_id"] for row in rows] == [
         "2026-01",
-        "2026-02",
         "2026-03",
         "2026-04",
     ]
-    assert rows[1] == {
-        "period_id": "2026-02",
-        "label": "Fevereiro/2026",
-        "availability": "UNAVAILABLE",
-    }
-    assert rows[2]["non_mitigated"] == 8
-    assert rows[3]["non_mitigated"] == 7
+    assert all(row["availability"] == "AVAILABLE" for row in rows)
+    assert rows[1]["non_mitigated"] == 8
+    assert rows[2]["non_mitigated"] == 7
 
 
 def test_prepare_history_enriches_each_tag_dataset_and_compacts_current_snapshot(
@@ -242,6 +238,27 @@ def test_prepare_history_enriches_each_tag_dataset_and_compacts_current_snapshot
         "2026-08-01T03:00:00Z",
         total=12,
     )
+    data["customizations"]["network_tag_snapshots"] = [
+        {
+            "tag_uuid": "tag-a",
+            "category": "Equipe",
+            "network": "Infra",
+            "assets": [
+                {
+                    "asset_key": f"asset-key-{index:02d}",
+                    "source_asset_id": f"asset-{index:02d}",
+                    "asset_name": "",
+                    "ip_address": "",
+                    "critical": 1,
+                    "high": 1,
+                    "medium": 1,
+                    "low": 1,
+                    "total": 4,
+                }
+                for index in range(1, 21)
+            ],
+        }
+    ]
     dataset_path, findings_path = _write_period(
         tmp_path,
         data,
@@ -257,7 +274,10 @@ def test_prepare_history_enriches_each_tag_dataset_and_compacts_current_snapshot
         "include_temporal_comparison": True,
     }
     tag_data["metrics"]["non_mitigated"]["total"] = 4
-    tag_data["top_assets"] = [{"source_asset_id": "asset-a", "total": 4}]
+    tag_data["top_assets"] = [
+        {"source_asset_id": f"asset-{index:02d}", "total": 4}
+        for index in range(1, 11)
+    ]
     tag_path = tmp_path / "tag-a" / "report-dataset.json"
     tag_path.parent.mkdir()
     tag_path.write_text(json.dumps(tag_data), encoding="utf-8")
@@ -273,6 +293,7 @@ def test_prepare_history_enriches_each_tag_dataset_and_compacts_current_snapshot
     )
 
     assert prepared.current.tag_snapshots[0]["summary"]["non_mitigated"] == 4
+    assert len(prepared.current.tag_snapshots[0]["top_assets"]) == 20
     enriched_path = prepared.tag_enriched_dataset_paths["tag-a"]
     enriched = json.loads(enriched_path.read_text(encoding="utf-8"))
     assert enriched["tag_history_status"] == "AVAILABLE"
@@ -345,6 +366,64 @@ def test_tag_enrichment_compares_previous_month_with_monthly_cutoff(
     assert [
         row["period_id"] for row in enriched["tag_comparison"]["periods"]
     ] == ["2026-08", "2026-09"]
+
+
+def test_tag_enrichment_normalizes_legacy_period_id_from_monthly_main(
+    tmp_path: Path,
+) -> None:
+    previous_source = _tag_history_snapshot("2026-08", total=8)
+    previous = replace(
+        previous_source,
+        period_id="20260801T000000-20260901T000000",
+        compatibility=replace(
+            previous_source.compatibility,
+            period_mode=MONTHLY_CANONICAL_MODE,
+        ),
+    )
+    current = _tag_history_snapshot("2026-09", total=7)
+    tag_data = {
+        "tag": {
+            "tag_uuid": "tag-a",
+            "category_name": "Equipe",
+            "value": "Infra",
+            "include_temporal_comparison": True,
+        }
+    }
+    source = tmp_path / "tag-a" / "report-dataset.json"
+    source.parent.mkdir()
+    source.write_text(json.dumps(tag_data), encoding="utf-8")
+
+    outputs = _enrich_tag_datasets(
+        {"tag-a": (source, tag_data)},
+        snapshots=(previous,),
+        current=current,
+    )
+    enriched = json.loads(outputs["tag-a"].read_text(encoding="utf-8"))
+
+    assert [row["period_id"] for row in enriched["tag_history"]] == [
+        "2026-08",
+        "2026-09",
+    ]
+    assert [
+        row["period_id"] for row in enriched["tag_comparison"]["periods"]
+    ] == ["2026-08", "2026-09"]
+
+
+def test_canonical_snapshot_derives_month_from_start_when_period_id_is_legacy() -> None:
+    source = _tag_history_snapshot("2026-09", total=7)
+    snapshot = replace(
+        source,
+        period_id="2026-09-01T03:00:00Z/2026-09-30T23:34:18Z",
+        period_end_at="2026-09-30T23:34:18Z",
+        compatibility=replace(
+            source.compatibility,
+            period_mode=MONTHLY_CANONICAL_MODE,
+        ),
+    )
+
+    normalized = _normalized_monthly_snapshot(snapshot)
+
+    assert normalized.period_id == "2026-09"
 
 
 def test_controlled_scope_override_adds_previous_month_and_audit_notice(

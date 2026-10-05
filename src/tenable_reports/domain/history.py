@@ -333,7 +333,7 @@ def tag_year_history(
     current: HistorySnapshot,
     tag_uuid: str,
 ) -> tuple[dict[str, Any], ...]:
-    """Monta janeiro-competencia mantendo meses ausentes como lacunas."""
+    """Monta a série anual somente com competências realmente disponíveis."""
     try:
         current_year, current_month = (
             int(value) for value in current.period_id.split("-", 1)
@@ -381,18 +381,11 @@ def tag_year_history(
             ]
         by_period[snapshot.period_id] = row
 
-    rows: list[dict[str, Any]] = []
-    for month in range(1, current_month + 1):
-        period_id = f"{current_year:04d}-{month:02d}"
-        rows.append(
-            by_period.get(period_id)
-            or {
-                "period_id": period_id,
-                "label": f"{_MONTH_LABELS[month]}/{current_year}",
-                "availability": "UNAVAILABLE",
-            }
-        )
-    return tuple(rows)
+    return tuple(
+        by_period[period_id]
+        for month in range(1, current_month + 1)
+        if (period_id := f"{current_year:04d}-{month:02d}") in by_period
+    )
 
 
 def previous_period_overview(snapshot: HistorySnapshot, *, label: str) -> dict[str, Any]:
