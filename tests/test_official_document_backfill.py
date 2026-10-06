@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from PIL import Image
 
@@ -21,6 +22,8 @@ from tenable_reports.application.official_document_backfill import (
 from tenable_reports.presentation.full_base_report_docx import (
     _append_official_back_cover,
     _clear_body_after_cover_break,
+    _toc_field,
+    _toc_heading,
 )
 
 
@@ -133,6 +136,36 @@ def test_plan_rejects_cataloged_document_missing_from_disk(tmp_path: Path) -> No
         raise AssertionError("Documento catalogado ausente deveria invalidar o plano.")
 
 
+def test_plan_ignores_test_and_maintenance_manifests_outside_operational_scopes(
+    tmp_path: Path,
+) -> None:
+    for scope in ("test-temp", "maintenance-backups"):
+        document_path = _docx(
+            tmp_path / "data" / scope / "reports" / "fixture.docx",
+            "Documento auxiliar",
+        )
+        manifest = _manifest(
+            tmp_path,
+            [{"path": str(document_path), "document_kind": "base"}],
+        )
+        destination = (
+            tmp_path
+            / "data"
+            / scope
+            / "reports"
+            / "client-fixture"
+            / "run-fixture"
+            / "20260801T000000-20260901T000000"
+            / "publication-manifest.json"
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        manifest.replace(destination)
+
+    plan = plan_official_document_backfill(tmp_path)
+
+    assert plan.manifests == ()
+
+
 def _shell_with_body(path: Path, kind: str) -> Path:
     document = Document(TEMPLATE)
     shell = _clear_body_after_cover_break(document)
@@ -221,11 +254,18 @@ def test_finalize_official_document_applies_shell_toc_and_numbering_to_every_kin
         assert "Cliente Exemplo" in text
         assert "AGOSTO/2026" in text
         assert expected[kind] in _headings(path)
+        toc_entries = [
+            paragraph
+            for paragraph in document.paragraphs
+            if paragraph.style is not None
+            and paragraph.style.name.casefold() in {"toc 1", "toc 2", "toc 3"}
+        ]
+        assert expected[kind][1] in {paragraph.text for paragraph in toc_entries}
         with zipfile.ZipFile(path) as package:
             document_xml = package.read("word/document.xml").decode("utf-8")
             settings_xml = package.read("word/settings.xml").decode("utf-8")
-        assert 'TOC \\o "1-3" \\h \\z' in document_xml
-        assert 'TOC \\o "1-4"' not in document_xml
+        assert 'w:hyperlink w:anchor="_TocHeading' in document_xml
+        assert 'TOC \\o "1-3" \\h \\z' not in document_xml
         assert "w:updateFields" in settings_xml
         _assert_toc_occupies_its_own_page(document)
         if kind == "cloud":
@@ -235,6 +275,59 @@ def test_finalize_official_document_applies_shell_toc_and_numbering_to_every_kin
                 if paragraph.text.startswith("1. Atualize o pacote")
             )
             assert not remediation.style.name.startswith("Heading ")
+
+
+def test_finalize_official_document_justifies_only_narrative_body_text(
+    tmp_path: Path,
+) -> None:
+    path = _shell_with_body(tmp_path / "base-justified.docx", "base")
+    document = Document(path)
+    objective = next(
+        paragraph for paragraph in document.paragraphs if paragraph.text == "OBJETIVO"
+    )
+    objective.insert_paragraph_before(
+        "Texto narrativo suficientemente longo para representar o conteúdo técnico "
+        "dos relatórios publicados e confirmar o alinhamento solicitado."
+    )
+    listed = objective.insert_paragraph_before(
+        "Item de lista que deve permanecer alinhado à esquerda.",
+        style="List Paragraph",
+    )
+    listed.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    document.save(path)
+
+    finalize_official_document(
+        path,
+        OfficialDocumentMetadata(
+            document_kind="base",
+            client_name="Cliente Exemplo",
+            period_label="AGOSTO/2026",
+            period_range="01/08/2026 a 31/08/2026",
+        ),
+    )
+
+    updated = Document(path)
+    narrative = next(
+        paragraph
+        for paragraph in updated.paragraphs
+        if paragraph.text.startswith("Texto narrativo suficientemente longo")
+    )
+    listed = next(
+        paragraph
+        for paragraph in updated.paragraphs
+        if paragraph.text.startswith("Item de lista")
+    )
+    heading = next(
+        paragraph
+        for paragraph in updated.paragraphs
+        if paragraph.text == "2. OBJETIVO"
+    )
+    table_paragraph = updated.tables[-1].cell(0, 0).paragraphs[0]
+
+    assert narrative.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
+    assert listed.alignment == WD_ALIGN_PARAGRAPH.LEFT
+    assert heading.alignment != WD_ALIGN_PARAGRAPH.JUSTIFY
+    assert table_paragraph.alignment != WD_ALIGN_PARAGRAPH.JUSTIFY
 
 
 def test_repackaging_validation_accepts_adjacent_tables_merged_by_word(
@@ -422,6 +515,105 @@ def test_selected_manifests_target_only_postgresql_main_runs(
     ) == manifests
 
 
+def test_selected_manifests_uses_authoritative_postgresql_manifest_for_duplicate_run(
+    tmp_path: Path,
+) -> None:
+    document_path = _docx(
+        tmp_path / "data" / "manual" / "reports" / "main.docx",
+        "Documento MAIN",
+    )
+    authoritative = _manifest(
+        tmp_path,
+        [{"path": str(document_path), "document_kind": "base"}],
+    )
+    duplicate = authoritative.parent.parent / "duplicate" / authoritative.name
+    duplicate.parent.mkdir(parents=True, exist_ok=True)
+    duplicate_document = _docx(
+        tmp_path / "data" / "manual" / "reports" / "duplicate.docx",
+        "Documento duplicado",
+    )
+    duplicate_payload = json.loads(authoritative.read_text(encoding="utf-8"))
+    duplicate_payload["documents"][0]["path"] = str(duplicate_document)
+    duplicate.write_text(json.dumps(duplicate_payload), encoding="utf-8")
+    manifests = plan_official_document_backfill(tmp_path).manifests
+    tool = _refresh_tool()
+
+    selected = tool._selected_manifests(
+        manifests,
+        client_id=None,
+        limit=None,
+        include_completed=False,
+        main_run_ids={"run-fixture": authoritative.resolve()},
+    )
+
+    assert tuple(item.path for item in selected) == (authoritative.resolve(),)
+
+
+def test_selected_manifests_rejects_duplicate_main_run_without_authoritative_path(
+    tmp_path: Path,
+) -> None:
+    document_path = _docx(
+        tmp_path / "data" / "manual" / "reports" / "main.docx",
+        "Documento MAIN",
+    )
+    authoritative = _manifest(
+        tmp_path,
+        [{"path": str(document_path), "document_kind": "base"}],
+    )
+    duplicate = authoritative.parent.parent / "duplicate" / authoritative.name
+    duplicate.parent.mkdir(parents=True, exist_ok=True)
+    duplicate_document = _docx(
+        tmp_path / "data" / "manual" / "reports" / "duplicate.docx",
+        "Documento duplicado",
+    )
+    duplicate_payload = json.loads(authoritative.read_text(encoding="utf-8"))
+    duplicate_payload["documents"][0]["path"] = str(duplicate_document)
+    duplicate.write_text(json.dumps(duplicate_payload), encoding="utf-8")
+    manifests = plan_official_document_backfill(tmp_path).manifests
+    tool = _refresh_tool()
+
+    with pytest.raises(ValueError, match="manifesto autoritativo"):
+        tool._selected_manifests(
+            manifests,
+            client_id=None,
+            limit=None,
+            include_completed=False,
+            main_run_ids=frozenset({"run-fixture"}),
+        )
+
+
+def test_selected_manifests_can_be_limited_to_one_reporting_period(
+    tmp_path: Path,
+) -> None:
+    document_path = _docx(
+        tmp_path / "data" / "manual" / "reports" / "main.docx",
+        "Documento MAIN",
+    )
+    _manifest(
+        tmp_path,
+        [{"path": str(document_path), "document_kind": "base"}],
+    )
+    manifests = plan_official_document_backfill(tmp_path).manifests
+    tool = _refresh_tool()
+
+    assert tool._selected_manifests(
+        manifests,
+        client_id=None,
+        period_id="2026-08",
+        limit=None,
+        include_completed=False,
+        main_run_ids=frozenset({"run-fixture"}),
+    ) == manifests
+    assert tool._selected_manifests(
+        manifests,
+        client_id=None,
+        period_id="2026-09",
+        limit=None,
+        include_completed=False,
+        main_run_ids=frozenset({"run-fixture"}),
+    ) == ()
+
+
 def test_word_normalization_repairs_and_updates_only_the_toc_field(
     tmp_path: Path,
 ) -> None:
@@ -522,3 +714,100 @@ def test_staging_is_removed_when_document_preparation_fails(
         )
 
     assert not list(manifest.path.parent.glob(".official-shell-*"))
+
+
+def test_body_alignment_staging_does_not_require_word_automation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    report_root = tmp_path / "data" / "manual" / "reports" / "client-fixture"
+    report_root.mkdir(parents=True, exist_ok=True)
+    document_path = _shell_with_body(report_root / "base.docx", "base")
+    document = Document(document_path)
+    objective = next(
+        paragraph for paragraph in document.paragraphs if paragraph.text == "OBJETIVO"
+    )
+    objective.insert_paragraph_before(
+        "Texto narrativo preservado que deve receber alinhamento justificado "
+        "sem reconstrução do documento ou atualização do sumário pelo Word."
+    )
+    document.save(document_path)
+    _manifest(
+        tmp_path,
+        [{"path": str(document_path), "document_kind": "base"}],
+    )
+    manifest = plan_official_document_backfill(tmp_path).manifests[0]
+    tool = _refresh_tool()
+
+    def fail_word(*args, **kwargs):
+        raise AssertionError("A atualização de alinhamento não deve iniciar o Word.")
+
+    monkeypatch.setattr(tool, "_repair_and_update_toc_with_word", fail_word)
+
+    staging, replacements = tool._stage_manifest(
+        manifest,
+        template=TEMPLATE,
+        client_name="Cliente Exemplo",
+        editorial_mode="justified_body",
+    )
+    try:
+        staged = replacements[0].staged_path
+        narrative = next(
+            paragraph
+            for paragraph in Document(staged).paragraphs
+            if paragraph.text.startswith("Texto narrativo preservado")
+        )
+        assert narrative.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def test_toc_staging_materializes_entries_without_word_automation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    report_root = tmp_path / "data" / "manual" / "reports" / "client-fixture"
+    report_root.mkdir(parents=True, exist_ok=True)
+    document_path = report_root / "base.docx"
+    source_document = Document(TEMPLATE)
+    shell = _clear_body_after_cover_break(source_document)
+    _toc_heading(source_document)
+    _toc_field(source_document)
+    source_document.add_paragraph("1. CONTROLE DE DOCUMENTO", style="Heading 1")
+    source_document.add_paragraph("Texto técnico preservado")
+    _append_official_back_cover(source_document, shell)
+    source_document.save(document_path)
+    _manifest(
+        tmp_path,
+        [{"path": str(document_path), "document_kind": "base"}],
+    )
+    manifest = plan_official_document_backfill(tmp_path).manifests[0]
+    tool = _refresh_tool()
+
+    def fail_word(*args, **kwargs):
+        raise AssertionError("A materialização do sumário não deve iniciar o Word.")
+
+    monkeypatch.setattr(tool, "_repair_and_update_toc_with_word", fail_word)
+
+    staging, replacements = tool._stage_manifest(
+        manifest,
+        template=TEMPLATE,
+        client_name="Cliente Exemplo",
+        editorial_mode="materialized_toc",
+    )
+    try:
+        staged = replacements[0].staged_path
+        document = Document(staged)
+        toc_entries = [
+            paragraph.text
+            for paragraph in document.paragraphs
+            if paragraph.style is not None
+            and paragraph.style.name.casefold() in {"toc 1", "toc 2", "toc 3"}
+        ]
+        assert "1. CONTROLE DE DOCUMENTO" in toc_entries
+        assert any(
+            paragraph.text == "Texto técnico preservado"
+            for paragraph in document.paragraphs
+        )
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)

@@ -283,7 +283,7 @@ def render_tag_asset_comparison(
     for period in periods:
         faithful._paragraph(document, str(period.get("label") or period.get("period_id") or ""), bold=True)
         rows = []
-        for index, asset in enumerate(period.get("top_assets") or (), start=1):
+        for index, asset in enumerate((period.get("top_assets") or ())[:20], start=1):
             if not isinstance(asset, Mapping):
                 continue
             rows.append((
@@ -295,30 +295,67 @@ def render_tag_asset_comparison(
                 asset.get("medium", ""),
                 asset.get("low", ""),
                 asset.get("total", ""),
-                asset.get("exploitable", ""),
             ))
-        faithful._simple_table(document, ("Nº", "IP Address", "Asset Name", "Crítica", "Alta", "Média", "Baixa", "Total", "Exploitable"), rows, widths=(500, 1350, 1750, 800, 800, 800, 800, 950, 1250), left_columns=frozenset({1, 2}))
+        faithful._simple_table(
+            document,
+            ("Nº", "IP Address", "Asset Name", "Crítica", "Alta", "Média", "Baixa", "Total"),
+            rows,
+            widths=(500, 1350, 1900, 750, 750, 750, 750, 950),
+            left_columns=frozenset({1, 2}),
+        )
 
-    previous_assets = [item for item in periods[0].get("top_assets") or () if isinstance(item, Mapping)]
-    current_assets = [item for item in periods[1].get("top_assets") or () if isinstance(item, Mapping)]
-    previous_rank = {
-        str(item.get("asset_key") or item.get("source_asset_id") or ""): index
-        for index, item in enumerate(previous_assets, start=1)
+    previous_assets = [
+        item
+        for item in (periods[0].get("top_assets") or ())[:20]
+        if isinstance(item, Mapping)
+    ]
+    current_assets = [
+        item
+        for item in (periods[1].get("top_assets") or ())[:20]
+        if isinstance(item, Mapping)
+    ]
+    previous_totals = {
+        str(item.get("asset_key") or item.get("source_asset_id") or ""):
+        _optional_number(item.get("total"))
+        for item in previous_assets
     }
-    movement = []
+    comparison_rows = []
     for current_position, item in enumerate(current_assets, start=1):
         identity = str(item.get("asset_key") or item.get("source_asset_id") or "")
-        previous_position = previous_rank.get(identity)
-        movement.append((
-            "" if mask_sensitive else item.get("ip_address", ""),
-            "" if mask_sensitive else item.get("asset_name", ""),
-            previous_position if previous_position is not None else "-",
+        current_total = _optional_number(item.get("total"))
+        if identity not in previous_totals:
+            status = "NOVO"
+        elif current_total is not None and previous_totals[identity] is not None:
+            if current_total > previous_totals[identity]:
+                status = "AUMENTOU"
+            elif current_total < previous_totals[identity]:
+                status = "DIMINUIU"
+            else:
+                status = "SEM ALTERAÇÃO"
+        else:
+            status = "SEM DADO"
+        comparison_rows.append((
             current_position,
-            "Entrada" if previous_position is None else (
-                "Subiu" if current_position < previous_position else
-                "Desceu" if current_position > previous_position else "Permaneceu"
-            ),
+            "" if mask_sensitive else item.get("ip_address", ""),
+            status,
+            "" if mask_sensitive else item.get("asset_name", ""),
+            item.get("critical", ""),
+            item.get("high", ""),
+            item.get("medium", ""),
+            item.get("low", ""),
+            item.get("total", ""),
         ))
-    faithful._simple_table(document, ("IP Address", "Asset Name", "Posição anterior", "Posição atual", "Movimentação"), movement, widths=(1500, 2300, 1500, 1300, 1800), left_columns=frozenset({0, 1, 4}))
+    faithful._paragraph(document, "Comparativo entre os dois períodos acima", bold=True)
+    faithful._simple_table(
+        document,
+        ("Nº", "IP Address", "Comparativo", "Asset Name", "Crítica", "Alta", "Média", "Baixa", "Total"),
+        comparison_rows,
+        widths=(450, 1200, 1300, 1700, 650, 650, 650, 650, 800),
+        left_columns=frozenset({1, 2, 3}),
+    )
+    faithful._paragraph(document, "Legenda:", bold=True)
+    faithful._paragraph(document, "NOVO: ativo que não apareceu no Top 20 do período anterior.")
+    faithful._paragraph(document, "AUMENTOU: o total de vulnerabilidades do ativo aumentou.")
+    faithful._paragraph(document, "DIMINUIU: o total de vulnerabilidades do ativo diminuiu.")
+    faithful._paragraph(document, "SEM ALTERAÇÃO: o total de vulnerabilidades do ativo permaneceu igual.")
     return True
-

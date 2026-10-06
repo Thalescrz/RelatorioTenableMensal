@@ -479,5 +479,68 @@ def test_publication_registry_persists_cloud_variant_and_dataset(tmp_path: Path)
     )
 
 
+def test_publication_registry_reconciles_documents_to_authoritative_manifest(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.json"
+    base_document = tmp_path / "base.docx"
+    custom_document = tmp_path / "custom.docx"
+    for path in (dataset, base_document, custom_document):
+        path.write_text("fixture", encoding="utf-8")
+    manifest = tmp_path / "publication.json"
+    manifest.write_text(
+        json.dumps({
+            "client_id": "cliente-fixture",
+            "tenant_id": "tenant-fixture",
+            "run_id": "run-authoritative",
+            "execution_type": "MANUAL",
+            "status": "READY_FOR_CONTROLLED_DISTRIBUTION",
+            "created_at": "2026-08-27T00:00:00+00:00",
+            "period": {"period_id": "2026-07"},
+            "source_dataset": {
+                "path": str(dataset),
+                "sha256": "a" * 64,
+            },
+            "history_store": {},
+            "distribution": {},
+            "documents": [
+                {
+                    "path": str(base_document),
+                    "sha256": "b" * 64,
+                    "size_bytes": 7,
+                    "package_status": "VALID",
+                    "document_kind": "base",
+                },
+                {
+                    "path": str(custom_document),
+                    "sha256": "c" * 64,
+                    "size_bytes": 7,
+                    "package_status": "VALID",
+                    "document_kind": "custom",
+                },
+            ],
+        }),
+        encoding="utf-8",
+    )
+    database = _PublicationDatabase()
+    repository = PostgresOperationsRepository(database, migrate=False)  # type: ignore[arg-type]
+
+    with patch(
+        "tenable_reports.infrastructure.postgresql._jsonb",
+        side_effect=lambda value: value,
+    ):
+        repository.record_publication_manifest(manifest)
+
+    delete_calls = [
+        (sql, params)
+        for sql, params in database.connection_value.calls
+        if "delete from tenable_reports.published_documents" in sql
+    ]
+    assert len(delete_calls) == 1
+    delete_sql, delete_params = delete_calls[0]
+    assert "document_kind" not in delete_sql
+    assert delete_params == (7,)
+
+
 if __name__ == "__main__":
     unittest.main()

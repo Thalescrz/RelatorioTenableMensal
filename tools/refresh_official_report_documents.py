@@ -9,7 +9,7 @@ import sys
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from docx import Document
 from docx.oxml.ns import qn
@@ -42,9 +42,13 @@ from tenable_reports.infrastructure.postgresql import (  # noqa: E402
     PostgresOperationsRepository,
 )
 from tenable_reports.presentation import base_report_docx as base  # noqa: E402
+from tenable_reports.presentation import full_base_report_docx as faithful  # noqa: E402
 
 
-OPERATION = "OFFICIAL_REPORT_SHELL_V3"
+SHELL_OPERATION = "OFFICIAL_REPORT_SHELL_V3"
+JUSTIFIED_BODY_OPERATION = "OFFICIAL_REPORT_JUSTIFIED_BODY_V1"
+MATERIALIZED_TOC_OPERATION = "OFFICIAL_REPORT_MATERIALIZED_TOC_V1"
+OPERATION = SHELL_OPERATION
 
 
 def _repair_and_update_toc_with_word(
@@ -305,8 +309,16 @@ def _stage_manifest(
     *,
     template: Path,
     client_name: str,
+    editorial_mode: str = "official_shell",
 ) -> tuple[Path, tuple[PublicationDocumentReplacement, ...]]:
-    staging = manifest.path.parent / f".official-shell-{uuid.uuid4().hex}"
+    if editorial_mode not in {"official_shell", "justified_body", "materialized_toc"}:
+        raise ValueError("Modo editorial de republicação inválido.")
+    staging_label = {
+        "official_shell": "shell",
+        "justified_body": "justify",
+        "materialized_toc": "toc",
+    }[editorial_mode]
+    staging = manifest.path.parent / f".official-{staging_label}-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=False)
     replacements = []
     try:
@@ -316,17 +328,27 @@ def _stage_manifest(
                 position=index,
                 source_name=document.path.name,
             )
-            compose_official_document(
-                source=document.path,
-                template=template,
-                document_kind=document.document_kind,
-                output=staged,
-            )
-            finalize_official_document(
-                staged,
-                _metadata(manifest, document, client_name=client_name),
-            )
-            _repair_and_update_toc_with_word(staged)
+            if editorial_mode in {"justified_body", "materialized_toc"}:
+                shutil.copy2(document.path, staged)
+                staged_document = Document(staged)
+                if editorial_mode == "justified_body":
+                    faithful._justify_narrative_body(staged_document)
+                else:
+                    faithful._materialize_static_toc(staged_document)
+                base._enable_field_updates(staged_document)
+                staged_document.save(staged)
+            else:
+                compose_official_document(
+                    source=document.path,
+                    template=template,
+                    document_kind=document.document_kind,
+                    output=staged,
+                )
+                finalize_official_document(
+                    staged,
+                    _metadata(manifest, document, client_name=client_name),
+                )
+                _repair_and_update_toc_with_word(staged)
             _validate_repackaged(
                 document.path,
                 staged,
@@ -358,24 +380,62 @@ def _selected_manifests(
     client_id: str | None,
     limit: int | None,
     include_completed: bool,
-    main_run_ids: frozenset[str] | None = None,
+    period_id: str | None = None,
+    main_run_ids: frozenset[str] | Mapping[str, Path] | None = None,
+    operation: str = OPERATION,
 ) -> tuple[OfficialBackfillManifest, ...]:
+    authoritative_paths = (
+        {
+            str(run_id): Path(path).resolve()
+            for run_id, path in main_run_ids.items()
+        }
+        if isinstance(main_run_ids, Mapping)
+        else None
+    )
     selected = tuple(
         item
         for item in manifests
         if (client_id is None or item.client_id == client_id)
-        and (main_run_ids is None or item.run_id in main_run_ids)
-        and (include_completed or not _operation_already_applied(item.path))
+        and (
+            period_id is None
+            or str(item.period.get("period_id") or "") == period_id
+        )
+        and (
+            main_run_ids is None
+            or (
+                authoritative_paths is not None
+                and authoritative_paths.get(item.run_id) == item.path.resolve()
+            )
+            or (
+                authoritative_paths is None
+                and item.run_id in main_run_ids
+            )
+        )
+        and (
+            include_completed
+            or not _operation_already_applied(item.path, operation=operation)
+        )
     )
+    if authoritative_paths is None:
+        run_ids = [item.run_id for item in selected]
+        if len(run_ids) != len(set(run_ids)):
+            raise ValueError(
+                "Mais de um manifesto foi localizado para o mesmo run_id; "
+                "informe o manifesto autoritativo registrado no PostgreSQL."
+            )
     return selected if limit is None else selected[:limit]
 
 
-def _operation_already_applied(manifest_path: Path) -> bool:
+def _operation_already_applied(
+    manifest_path: Path,
+    *,
+    operation: str = OPERATION,
+) -> bool:
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     audit = payload.get("document_backfill")
     return (
         isinstance(audit, dict)
-        and str(audit.get("operation") or "") == OPERATION
+        and str(audit.get("operation") or "") == operation
     )
 
 
@@ -398,11 +458,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=ROOT / "credentials" / "database.env",
     )
     parser.add_argument("--client-id")
+    parser.add_argument(
+        "--period-id",
+        help="Limita a republicação à competência informada, no formato AAAA-MM.",
+    )
     parser.add_argument("--limit-manifests", type=int)
     parser.add_argument(
         "--include-completed",
         action="store_true",
         help="Reprocessa também manifestos já marcados com a operação atual.",
+    )
+    editorial_group = parser.add_mutually_exclusive_group()
+    editorial_group.add_argument(
+        "--justify-body-only",
+        action="store_true",
+        help=(
+            "Aplica somente o alinhamento justificado ao texto narrativo, "
+            "sem iniciar o Word nem reconstruir o shell."
+        ),
+    )
+    editorial_group.add_argument(
+        "--materialize-toc-only",
+        action="store_true",
+        help=(
+            "Materializa um sumário navegável no próprio DOCX, sem iniciar "
+            "o Word nem reconstruir o shell."
+        ),
     )
     parser.add_argument(
         "--fail-fast",
@@ -412,18 +493,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.materialize_toc_only:
+        operation = MATERIALIZED_TOC_OPERATION
+        editorial_mode = "materialized_toc"
+    elif args.justify_body_only:
+        operation = JUSTIFIED_BODY_OPERATION
+        editorial_mode = "justified_body"
+    else:
+        operation = SHELL_OPERATION
+        editorial_mode = "official_shell"
     operations = _operations(args.database_env_file)
     main_run_ids = frozenset(operations.retention_state()["main_run_ids"])
+    main_manifest_paths = {
+        run_id: operations.report_run_context(run_id).publication_manifest
+        for run_id in main_run_ids
+    }
     plan = plan_official_document_backfill(args.project_root)
     manifests = _selected_manifests(
         plan.manifests,
         client_id=args.client_id,
+        period_id=args.period_id,
         limit=args.limit_manifests,
         include_completed=args.include_completed,
-        main_run_ids=main_run_ids,
+        main_run_ids=main_manifest_paths,
+        operation=operation,
     )
     summary = {
-        "operation": OPERATION,
+        "operation": operation,
         "scope": "postgresql-main",
         "mode": "apply" if args.apply else "dry-run",
         "manifest_count": len(manifests),
@@ -469,12 +565,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 manifest,
                 template=args.template.resolve(),
                 client_name=profile.display_name,
+                editorial_mode=editorial_mode,
             )
             refresh_publication_documents_atomically(
                 manifest_path=manifest.path,
                 replacements=replacements,
                 audit_metadata={
-                    "operation": OPERATION,
+                    "operation": operation,
                     "applied_at": datetime.now(UTC).isoformat(),
                     "document_count": len(replacements),
                 },

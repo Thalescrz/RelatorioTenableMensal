@@ -2,10 +2,12 @@
   "schema_version": 1,
   "preparation": {
     "action": "Criação do Documento",
-    "name": "Equipe Técnica"
+    "name": "Equipe Técnica",
+    "date": "30/09/2026"
   },
   "version_control": {
     "version": "1.0",
+    "date": "30/09/2026",
     "affected_sections": "Todas",
     "change": "Elaboração do conteúdo",
     "changed_by": "Equipe Técnica"

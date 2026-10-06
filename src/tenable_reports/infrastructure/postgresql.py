@@ -837,17 +837,13 @@ class PostgresOperationsRepository:
                 for item in (payload.get("documents") or ())
                 if isinstance(item, Mapping)
             )
-            if any(
-                str(item.get("document_kind") or "").lower() == "cloud"
-                for item in documents
-            ):
-                connection.execute(
-                    f"""
-                    delete from {SCHEMA_NAME}.published_documents
-                    where publication_id = %s and document_kind = 'cloud'
-                    """,
-                    (publication_id,),
-                )
+            connection.execute(
+                f"""
+                delete from {SCHEMA_NAME}.published_documents
+                where publication_id = %s
+                """,
+                (publication_id,),
+            )
             for document in documents:
                 connection.execute(
                     f"""

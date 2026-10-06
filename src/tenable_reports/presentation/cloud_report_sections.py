@@ -301,17 +301,8 @@ def render_document_control(
     mask_sensitive: bool = False,
 ) -> None:
     start, end, _ = _period_labels(dataset)
-    period = dataset.get("period") or {}
-    timezone = ZoneInfo(str(period.get("timezone") or "UTC"))
-    generated_at = str(
-        dataset.get("generated_at")
-        or dataset.get("collected_at")
-        or period.get("end_at")
-    ).replace("Z", "+00:00")
-    generated_date = datetime.fromisoformat(generated_at).astimezone(timezone)
     append_document_control(
         builder.document,
-        generated_date=generated_date.strftime("%d/%m/%Y"),
         preparation=profile.document_control.preparation,
         version_control=profile.document_control.version_control,
         recipients=profile.document_control.distribution_recipients,

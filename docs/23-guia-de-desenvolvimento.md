@@ -154,6 +154,10 @@ Na camada de referência e histórico, normalize meses completos e
 `end_at` nos registros operacionais; a identidade canônica existe para seleção de
 `MAIN` e predecessor, não para esconder o corte real. O histórico por TAG deve
 usar a mesma normalização.
+Ao ler snapshot legado já marcado como `MONTHLY_CANONICAL`, derive também o
+`period_id` `YYYY-MM` a partir de `period_start_at` no fuso do cliente quando a
+identidade antiga estiver em formato de intervalo. Cubra esse caso com teste e não
+reescreva a evidência histórica apenas para efetuar a comparação.
 
 Não remova `scope_hash` da compatibilidade. Quando houver autorização excepcional,
 modele-a como `HistoryComparisonOverride` pontual, valide as demais dimensões de
@@ -318,6 +322,13 @@ ele renderiza apenas Cloud, usa `upsert_publication_documents` sobre o manifesto
 original e não chama a publicação de histórico VM. Teste o comando do executor, o
 desvio no CLI, a preservação do manifesto e o estado final `COMPLETE`.
 
+O registro completo por `record_publication_manifest` tem semântica de substituição
+do catálogo do `run_id`, não de acréscimo por caminho. Dentro da mesma transação,
+remova todas as linhas anteriores de `published_documents` para a publicação e
+insira exatamente a lista do manifesto autoritativo. Cubra por teste a remoção de
+caminhos obsoletos para Geral, Customizações e TAG, além do caso Cloud, sem alterar a
+referência `MAIN`.
+
 Metadados lidos do checkpoint podem conter `MappingProxyType` aninhado. Converta a
 árvore para estruturas mutáveis simples antes da montagem; não use `deepcopy` em
 proxies imutáveis. Ao persistir a recuperação, compare com a tentativa mais recente:
@@ -353,10 +364,11 @@ O template `templates/corporate/base-v1.docx` preserva a capa e a contracapa do
 documento oficial, mas substitui cliente, período, cabeçalho interno e metadados por
 valores controlados. Não reconstrua essas páginas com elementos aproximados. O
 conteúdo geral, customizado, por TAG ou Cloud deve ser inserido entre as duas páginas
-oficiais. A página 2 contém um campo nativo `TOC \\o "1-3" \\h \\z` com atualização
-automática habilitada. `SUMÁRIO` usa `TOC Heading`, fica fora da própria lista, e
-seções/subseções usam `Heading 1` a `Heading 3` com números explícitos. `Heading 4`
-pode estruturar detalhes internos, mas não participa do sumário.
+oficiais. Após a capa, o sumário é materializado com parágrafos `toc 1` a `toc 3` e
+hiperlinks internos para os respectivos títulos; não depende de atualização do
+Word. `SUMÁRIO` usa `TOC Heading`, fica fora da própria lista, e seções/subseções
+usam `Heading 1` a `Heading 3` com números explícitos. `Heading 4` pode estruturar
+detalhes internos, mas não participa do sumário.
 
 `cloud-base-v1.docx` é somente referência histórica. O gerador Cloud atual usa o
 mesmo shell `base-v1.docx` e publica um único modelo completo.
@@ -364,11 +376,29 @@ mesmo shell `base-v1.docx` e publica um único modelo completo.
 Para atualizar documentos antigos, mantenha separadas composição e publicação. O
 planejador deve cruzar os manifestos `READY_FOR_CONTROLLED_DISTRIBUTION` com as
 referências `MAIN` do PostgreSQL, rejeitar caminhos externos, duplicados ou
-inexistentes e nunca percorrer DOCX soltos ou conjuntos não-MAIN. Antes da troca,
+inexistentes e nunca percorrer DOCX soltos ou conjuntos não-MAIN. A seleção deve
+comparar também o caminho do manifesto registrado em `report_runs`; filtrar apenas
+pelo `run_id` não é suficiente, porque uma manutenção antiga pode ter deixado uma
+cópia física não autoritativa da mesma execução. Sem o caminho autoritativo, dois
+manifestos para o mesmo `run_id` devem interromper a operação. Antes da troca,
 valide pacote, seções, conteúdo técnico, tabelas, gráficos e imagens. A
 substituição usa `refresh_publication_documents_atomically`, atualiza hashes no
 manifesto e no PostgreSQL no mesmo commit lógico, registra
-`OFFICIAL_REPORT_SHELL_V3` e preserva flags de negócio como `MAIN`.
+`OFFICIAL_REPORT_SHELL_V3` para a recomposição completa ou
+`OFFICIAL_REPORT_JUSTIFIED_BODY_V1` para a atualização exclusiva do alinhamento, ou
+`OFFICIAL_REPORT_MATERIALIZED_TOC_V1` para materializar somente o sumário. O fluxo
+preserva flags de negócio como `MAIN`. Use `--period-id` para limitar uma
+manutenção editorial à competência solicitada. O modo `--justify-body-only` copia
+o pacote existente, altera somente os parágrafos elegíveis e não depende da
+automação do Word. O modo `--materialize-toc-only` também copia o pacote existente,
+substitui o campo vazio por entradas estáticas navegáveis e não depende da
+automação do Word.
+
+O alinhamento justificado é restrito aos parágrafos narrativos do corpo. O helper
+compartilhado deve ignorar capa e contracapa, títulos, sumário, listas, notas de
+fonte em tipografia secundária, tabelas, gráficos e qualquer alinhamento explícito
+do componente. Os geradores Geral, Customizações, TAG e Cloud aplicam a mesma regra
+antes de salvar; a republicação aplica a regra novamente para documentos antigos.
 
 Rótulos integrais de severidade/faixa em tabelas destacadas usam a paleta aprovada:
 `CRITICAL`, `HIGH`, `MEDIUM` e `LOW`. A classificação deve ser estrita;
@@ -418,6 +448,20 @@ quando precisar apenas analisar um JSON de forma determinística e
 `load_operational_client_profile` nos fluxos de produção que devem incorporar a
 lista global local. O modo `mask_sensitive` deve esvaziar os três campos da lista
 de distribuição em todos os renderizadores e retentativas.
+
+`DocumentPreparationConfig.date` é invariavelmente `30/09/2026` e não aceita
+sobrescrita do JSON. `DocumentVersionControlConfig.date` usa `30/09/2026` como
+padrão, valida `DD/MM/AAAA` e pode ser persistido com outro valor somente em uma
+alteração explicitamente autorizada. `append_document_control` consome esses dois
+campos diretamente; não volte a repassar `generated_at`, `collected_at` ou o fim
+do período como data do controle documental. Testes de renderização devem provar
+que Geral e Cloud compartilham as mesmas datas e que uma data autorizada de versão
+não altera a data fixa de Preparação.
+
+Em `_title_table`, preserve título e cabeçalhos centralizados e defina
+`WD_ALIGN_PARAGRAPH.JUSTIFY` em cada parágrafo das células de conteúdo. A regra vale
+para Preparação, Controle de Versionamento e Lista de Distribuição, inclusive
+células vazias, e deve ser coberta diretamente no componente compartilhado.
 
 Para o relatório Cloud padrão sanitizado:
 
@@ -499,6 +543,13 @@ da execução atual e recusar jobs ativos. Gere primeiro em staging, preserve ba
 recuperável e use `refresh_publication_documents_atomically` com chave de auditoria
 específica. Para TAG, substitua somente a seção comparativa quando o corpo técnico
 já publicado não precisar ser reconstruído.
+
+Na série por TAG, não crie placeholders para competências sem snapshot. Filtre a
+mesma sequência antes de gerar tabelas e gráficos, para que ambos exibam exatamente
+os meses reais. O histórico específico deve combinar as métricas da TAG com a lista
+de até 20 ativos preservada no recorte geral. As três tabelas temporais usam UUID
+para correlacionar ativos; testes devem cobrir omissão de lacunas, limite de 20,
+ativo novo e aumento/diminuição do total.
 
 A preparação do ZIP é assíncrona: `POST /api/report-archives/prepare` responde com
 HTTP 202 e um `status_url`; o frontend consulta

@@ -568,9 +568,11 @@ class DashboardConfigStore:
                 "preparation": {
                     "action": preparation.action,
                     "name": preparation.name,
+                    "date": preparation.date,
                 },
                 "version_control": {
                     "version": version_control.version,
+                    "date": version_control.date,
                     "affected_sections": version_control.affected_sections,
                     "change": version_control.change,
                     "changed_by": version_control.changed_by,
@@ -602,9 +604,11 @@ class DashboardConfigStore:
                 "preparation": {
                     "action": preparation.action,
                     "name": preparation.name,
+                    "date": preparation.date,
                 },
                 "version_control": {
                     "version": version_control.version,
+                    "date": version_control.date,
                     "affected_sections": version_control.affected_sections,
                     "change": version_control.change,
                     "changed_by": version_control.changed_by,

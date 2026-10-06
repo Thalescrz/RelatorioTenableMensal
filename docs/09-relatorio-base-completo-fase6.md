@@ -24,6 +24,10 @@ o arquivo e acompanha os níveis de título do conteúdo. As oito seções princ
 do relatório-base são numeradas explicitamente de `1` a `8`, inclusive Objetivo,
 Sensor Nessus e Vulnerabilidades e suas correções/contramedidas.
 
+> **Estado atual:** o campo nativo descrito nesta fase histórica foi substituído por
+> um sumário materializado e navegável no próprio DOCX. Consulte `CONTEXTO.md` e os
+> guias `docs/22` e `docs/23` para o comportamento vigente.
+
 ## Fidelidade editorial
 
 - os textos estáticos estão isolados em `editorial_catalog.py` e foram transcritos dos DOCX de referência;

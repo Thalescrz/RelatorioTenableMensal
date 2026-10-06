@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 
 from tenable_reports.config.profile import load_client_profile
@@ -49,6 +50,40 @@ def _cell_fill(cell) -> str | None:
 
 
 class FullBaseReportDocxTests(unittest.TestCase):
+    def test_full_report_justifies_narrative_text_without_justifying_headings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "justified-narrative.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=FIXTURE,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+            )
+
+            document = Document(output)
+            objective = next(
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.text.startswith("Este documento visa apresentar")
+            )
+            period = next(
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.text.startswith("Período deste relatório")
+            )
+            heading = next(
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.text == "2. OBJETIVO"
+            )
+
+            self.assertEqual(objective.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+            self.assertEqual(period.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+            self.assertNotEqual(heading.alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+
     def test_full_report_numbers_every_top_level_section_and_excludes_toc_title(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "numbered-headings.docx"
@@ -128,8 +163,8 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 )
             self.assertGreaterEqual(document_xml.count("<wp:anchor"), 10)
             self.assertIn("www.itprotect.com.br", all_xml)
-            self.assertIn('TOC \\o "1-3" \\h \\z', document_xml)
-            self.assertNotIn('TOC \\o "1-4"', document_xml)
+            self.assertNotIn('TOC \\o "1-3" \\h \\z', document_xml)
+            self.assertIn('w:hyperlink w:anchor="_TocHeading', document_xml)
             self.assertRegex(settings_xml, r'<w:updateFields\b[^>]*w:val="true"')
             self.assertNotIn("{{CLIENT_NAME}}", all_xml)
             self.assertNotIn("TRT2", all_xml)
@@ -387,7 +422,12 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 mask_sensitive=True,
             )
 
-            paragraphs = [paragraph.text for paragraph in Document(output).paragraphs]
+            paragraphs = [
+                paragraph.text
+                for paragraph in Document(output).paragraphs
+                if paragraph.style is None
+                or not paragraph.style.name.casefold().startswith("toc ")
+            ]
             heading_index = next(
                 index
                 for index, text in enumerate(paragraphs)
@@ -480,7 +520,7 @@ class FullBaseReportDocxTests(unittest.TestCase):
                     if name.endswith(".xml")
                 }
             all_xml = "\n".join(xml_parts.values())
-            self.assertIn(" TOC ", all_xml)
+            self.assertIn('w:hyperlink w:anchor="_TocHeading', all_xml)
             self.assertIn("w:tblHeader", all_xml)
             self.assertIn("w:numPr", all_xml)
             emails = re.findall(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", all_xml)

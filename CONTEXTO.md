@@ -64,8 +64,10 @@ Uma execução pode publicar quatro tipos de documento:
 4. **Relatório Tenable Cloud Security:** documento opcional, independente e gerado
    em um único modelo padrão completo.
 
-Os quatro tipos usam o shell corporativo oficial, com capa, sumário nativo do Word,
-títulos numerados e contracapa. O relatório geral nunca é filtrado por TAG.
+Os quatro tipos usam o shell corporativo oficial, com capa, sumário materializado e
+navegável, títulos numerados e contracapa. As entradas de `Heading 1` a `Heading 3`
+são gravadas no próprio DOCX e não dependem de uma atualização manual no Word. O
+relatório geral nunca é filtrado por TAG.
 
 ## Arquitetura resumida
 
@@ -117,6 +119,10 @@ Para seleção de `MAIN` e comparativos, tanto o mês-calendário completo quant
 `MONTHLY_CUTOFF` usam internamente a identidade mensal canônica
 `MONTHLY_CANONICAL`. O modo e o término efetivos continuam preservados nos dados
 operacionais; a normalização serve somente para localizar a competência anterior.
+Snapshots mensais legados que ainda carreguem um `period_id` em formato de
+intervalo têm a competência `YYYY-MM` derivada, em memória, de `period_start_at`
+no fuso do cliente. A leitura histórica é corrigida sem reescrever a evidência
+persistida nem alterar o intervalo efetivamente coletado.
 Uma divergência de escopo continua bloqueando o comparativo por padrão. A exceção
 é pontual, exige autorização explícita do operador, registra motivo e campos
 afetados e inclui no DOCX um aviso de que os deltas podem refletir a mudança de
@@ -140,10 +146,20 @@ para:
 - tabela **Controle de Versionamento**;
 - linhas comuns da **Lista de Distribuição**.
 
+A data da tabela **Preparação** é fixa em `30/09/2026`. A data da tabela
+**Controle de Versionamento** usa `30/09/2026` como padrão persistido e não é
+derivada do instante da coleta ou da geração. Somente uma alteração relevante do
+conteúdo, previamente autorizada, permite mudar a data da versão; a data de
+Preparação permanece inalterada.
+
 Em **Gerenciar clientes**, cada cliente mantém somente destinatários adicionais da
 Lista de Distribuição. Na renderização, as linhas globais aparecem primeiro e os
 adicionais do cliente são anexados nas linhas seguintes. A personalização não
 substitui nem edita o padrão global.
+
+Nas três tabelas do Controle de Documento, os títulos e cabeçalhos permanecem
+centralizados e todas as células de conteúdo usam alinhamento justificado. O
+padrão vale para todo relatório que incorpora o componente compartilhado.
 
 Os relatórios Geral e Cloud usam o mesmo componente de controle documental. O
 padrão global fica em `orchestration/document-control.json`; os adicionais ficam no
@@ -167,6 +183,12 @@ versionados.
 - TAG é recortada localmente do dataset VM geral pelos UUIDs associados; sua
   seleção não modifica a coleta nem os números do relatório geral.
 - Comparação por TAG sempre usa a mesma categoria e valor em períodos compatíveis.
+- A série mensal por TAG mostra somente competências respaldadas por snapshot real;
+  meses sem dados não geram linha `Indisponível` nem rótulo vazio nos gráficos.
+- Quando existem as duas competências consecutivas, a seção temporal inclui o Top
+  20 do mês anterior, o Top 20 do mês atual e uma terceira tabela que compara os
+  totais por ativo. O vínculo entre períodos continua sendo feito pelo UUID do
+  ativo, nunca por IP ou hostname.
 - Indicadores de explorabilidade permanecem segregados pelo framework definido;
   um indicador geral não substitui os demais.
 - Nas tabelas OWASP Top 10, cada Plugin ID exibe a maior severidade e o maior VPR
@@ -229,6 +251,20 @@ DOCX publicados permanecem no armazenamento local controlado e são registrados 
 catálogo. Arquivos raw, chunks e datasets intermediários só são removidos depois de
 publicação validada e persistência do histórico necessário. Falhas preservam os
 artefatos recuperáveis conforme a política de retenção.
+
+Nos quatro documentos oficiais — Geral, Customizações, TAG e Cloud — somente o
+texto narrativo do corpo usa alinhamento justificado. Títulos, sumário, listas,
+notas de fonte, tabelas, gráficos, capa, cabeçalho, rodapé e contracapa preservam o
+alinhamento específico do componente. A republicação editorial pode aplicar esse
+padrão aos conjuntos `MAIN` de uma única competência sem nova coleta e sem alterar
+dados, tabelas, imagens ou a referência `MAIN`.
+
+Para cada `run_id` `MAIN`, a republicação editorial usa exclusivamente o caminho
+de manifesto autoritativo registrado no PostgreSQL. Cópias físicas antigas com o
+mesmo `run_id` não são contadas nem republicadas como um segundo conjunto.
+Ao registrar novamente esse manifesto, o catálogo de documentos do `run_id` é
+reconciliado com o conjunto exato nele declarado: caminhos antigos de qualquer
+tipo — Geral, Customizações, TAG ou Cloud — deixam de compor a publicação ativa.
 
 Seleção, substituição ou exclusão de `MAIN` é explícita e transacional. Pacotes ZIP
 são projeções temporárias dos documentos válidos registrados, não uma nova fonte de

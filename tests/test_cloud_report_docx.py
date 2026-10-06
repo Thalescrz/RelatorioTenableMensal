@@ -87,6 +87,7 @@ def test_general_and_cloud_reports_share_document_control_tables(tmp_path: Path)
             ),
             version_control=DocumentVersionControlConfig(
                 version="2.0",
+                date="15/10/2026",
                 affected_sections="Todas",
                 change="Revisao mensal",
                 changed_by="Equipe Tecnica",
@@ -145,7 +146,9 @@ def test_general_and_cloud_reports_share_document_control_tables(tmp_path: Path)
             "Elaboracao do Documento",
             "Equipe Tecnica",
         ]
+        assert control_tables[0]["rows"][0][2] == "30/09/2026"
         assert control_tables[1]["rows"][0][0] == "2.0"
+        assert control_tables[1]["rows"][0][1] == "15/10/2026"
         assert control_tables[1]["rows"][0][2:] == [
             "Todas",
             "Revisao mensal",
@@ -566,7 +569,7 @@ def test_sanitized_cloud_template_keeps_three_page_families() -> None:
     assert "dc:creator></dc:creator" in all_xml or "dc:creator/>" in all_xml
 
 
-def test_cloud_report_uses_shared_official_shell_and_native_heading_hierarchy(
+def test_cloud_report_uses_shared_official_shell_and_materialized_toc(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "cloud-official-shell.docx"
@@ -605,8 +608,8 @@ def test_cloud_report_uses_shared_official_shell_and_native_heading_hierarchy(
     with zipfile.ZipFile(output) as package:
         document_xml = package.read("word/document.xml").decode("utf-8")
         settings_xml = package.read("word/settings.xml").decode("utf-8")
-    assert 'TOC \\o "1-3" \\h \\z' in document_xml
-    assert 'TOC \\o "1-4"' not in document_xml
+    assert 'TOC \\o "1-3" \\h \\z' not in document_xml
+    assert 'w:hyperlink w:anchor="_TocHeading' in document_xml
     assert re.search(r'<w:updateFields\b[^>]*w:val="true"', settings_xml)
 
 
@@ -727,7 +730,12 @@ def test_correctable_asset_rankings_distinguish_partial_and_unavailable_sources(
         variant=CloudReportVariant.EXPANDED,
     )
 
-    paragraphs = [paragraph.text for paragraph in Document(output).paragraphs]
+    paragraphs = [
+        paragraph.text
+        for paragraph in Document(output).paragraphs
+        if paragraph.style is None
+        or not paragraph.style.name.casefold().startswith("toc ")
+    ]
     vm_start = paragraphs.index(
         "3.5.1. Top 10 Máquinas Virtuais com Vulnerabilidades Corrigíveis"
     )
@@ -916,6 +924,8 @@ def test_expanded_cloud_report_uses_current_period_when_history_is_missing(
         paragraph
         for paragraph in document.paragraphs
         if paragraph.text.startswith("3.11.")
+        and paragraph.style is not None
+        and paragraph.style.name == "Heading 2"
     )
     assert monthly_heading._p.getprevious().xpath('.//w:br[@w:type="page"]')
 
@@ -951,6 +961,8 @@ def test_expanded_cloud_report_is_the_approved_standard_editorial_model(
         paragraph
         for paragraph in document.paragraphs
         if paragraph.text.startswith("3.4.1.")
+        and paragraph.style is not None
+        and paragraph.style.name == "Heading 3"
     )
     assert cve_heading.style.name == "Heading 3"
     vpr_paragraph = next(
@@ -964,5 +976,7 @@ def test_expanded_cloud_report_is_the_approved_standard_editorial_model(
         paragraph
         for paragraph in document.paragraphs
         if paragraph.text.startswith("3.11.")
+        and paragraph.style is not None
+        and paragraph.style.name == "Heading 2"
     )
     assert not monthly_heading._p.getprevious().xpath('.//w:br[@w:type="page"]')

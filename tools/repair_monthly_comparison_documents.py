@@ -5,7 +5,7 @@ import json
 import shutil
 import sys
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -111,10 +111,69 @@ class RepairPlanItem:
     profile_path: Path
     profile: ClientProfile
     compact_snapshot: CompactFindingSnapshot
+    predecessor_compact_snapshot: CompactFindingSnapshot | None
     current_snapshot: HistorySnapshot
     predecessor_snapshot: HistorySnapshot
     documents: tuple[PublicationDocument, ...]
     controlled_scope_override: bool
+
+
+def _overlay_tag_top_assets(
+    snapshot: HistorySnapshot,
+    recovered_rows: Sequence[Mapping[str, Any]],
+) -> HistorySnapshot:
+    recovered_by_uuid = {
+        str(item.get("tag_uuid") or ""): item
+        for item in recovered_rows
+        if str(item.get("tag_uuid") or "")
+    }
+    changed = False
+    tag_snapshots: list[dict[str, Any]] = []
+    for stored in snapshot.tag_snapshots:
+        row = dict(stored)
+        recovered = recovered_by_uuid.get(str(row.get("tag_uuid") or ""))
+        if recovered is not None:
+            recovered_assets = recovered.get("top_assets")
+            if recovered_assets is None:
+                recovered_assets = recovered.get("assets")
+            stored_assets = row.get("top_assets")
+            if stored_assets is None:
+                stored_assets = row.get("assets")
+            if (
+                isinstance(recovered_assets, (list, tuple))
+                and len(recovered_assets) > len(stored_assets or ())
+            ):
+                row["top_assets"] = [
+                    dict(item)
+                    for item in recovered_assets[:20]
+                    if isinstance(item, Mapping)
+                ]
+                changed = True
+        tag_snapshots.append(row)
+    if not changed:
+        return snapshot
+    return replace(snapshot, tag_snapshots=tuple(tag_snapshots))
+
+
+class _SnapshotOverlayRegistry:
+    def __init__(self, base: Any, replacement: HistorySnapshot) -> None:
+        self._base = base
+        self._replacement = replacement
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._base, name)
+
+    def get_main_snapshot(self, key: Any) -> HistorySnapshot | None:
+        snapshot = self._base.get_main_snapshot(key)
+        if snapshot is not None and snapshot.run_id == self._replacement.run_id:
+            return self._replacement
+        return snapshot
+
+    def list_main_snapshots_before(self, key: Any) -> tuple[HistorySnapshot, ...]:
+        return tuple(
+            self._replacement if item.run_id == self._replacement.run_id else item
+            for item in self._base.list_main_snapshots_before(key)
+        )
 
 
 def _iso(value: Any) -> str:
@@ -234,6 +293,30 @@ def _manifest_documents(path: Path) -> tuple[PublicationDocument, ...]:
     return selected
 
 
+def _selected_documents(
+    documents: Sequence[PublicationDocument],
+    *,
+    tag_only: bool,
+) -> tuple[PublicationDocument, ...]:
+    if tag_only:
+        return tuple(item for item in documents if item.document_kind == "tag")
+    return tuple(documents)
+
+
+def _selected_plan(
+    plan: Sequence[Any],
+    *,
+    tag_only: bool,
+) -> tuple[Any, ...]:
+    if not tag_only:
+        return tuple(plan)
+    return tuple(
+        item
+        for item in plan
+        if _selected_documents(item.documents, tag_only=True)
+    )
+
+
 def _matching_predecessor(
     current: MainRun,
     candidates: Sequence[MainRun],
@@ -304,6 +387,11 @@ def build_plan(
         predecessor_report = registry.get_report(predecessor.run_id)
         if current_report.snapshot is None or predecessor_report.snapshot is None:
             raise ValueError("Snapshot histórico MAIN não foi localizado.")
+        predecessor_compact = compact_repository.find_run(
+            client_id=predecessor.client_id,
+            tenant_id=predecessor.tenant_id,
+            run_id=predecessor.run_id,
+        )
         planned.append(
             RepairPlanItem(
                 current=current,
@@ -311,6 +399,7 @@ def build_plan(
                 profile_path=profile_path,
                 profile=profile,
                 compact_snapshot=compact,
+                predecessor_compact_snapshot=predecessor_compact,
                 current_snapshot=current_report.snapshot,
                 predecessor_snapshot=predecessor_report.snapshot,
                 documents=_manifest_documents(current.manifest_path),
@@ -354,6 +443,7 @@ def _backup(
     *,
     backup_root: Path,
     period_id: str,
+    tag_only: bool,
 ) -> Path:
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     destination = (
@@ -367,7 +457,10 @@ def _backup(
         manifest_backup = item_root / "publication-manifest.json"
         shutil.copy2(item.current.manifest_path, manifest_backup)
         documents = []
-        for document_position, document in enumerate(item.documents, start=1):
+        for document_position, document in enumerate(
+            _selected_documents(item.documents, tag_only=tag_only),
+            start=1,
+        ):
             source = Path(document.path).resolve()
             target = item_root / f"{document_position:03d}.docx"
             shutil.copy2(source, target)
@@ -409,6 +502,41 @@ def _validate_rebuilt_history(
         raise ValueError("Os findings ressurgidos reconstruídos divergem do histórico atual.")
 
 
+def _rebuild_predecessor_tag_assets(
+    item: RepairPlanItem,
+    *,
+    output_root: Path,
+) -> HistorySnapshot:
+    compact = item.predecessor_compact_snapshot
+    if compact is None:
+        return item.predecessor_snapshot
+    materialize_compact_snapshot_run(
+        snapshot=compact,
+        profile=item.profile,
+        run_id=item.predecessor.run_id,
+        output_root=output_root,
+    )
+    artifact = build_report_dataset_from_snapshot(
+        profile=item.profile,
+        run_id=item.predecessor.run_id,
+        period=_period(item.predecessor),
+        output_root=output_root,
+        include_output=item.profile.presentation.vm_top5_include_output,
+        execution_type=item.predecessor.execution_type,
+    )
+    payload = json.loads(artifact.dataset_path.read_text(encoding="utf-8"))
+    customizations = payload.get("customizations")
+    if not isinstance(customizations, Mapping):
+        return item.predecessor_snapshot
+    rows = customizations.get("network_tag_snapshots")
+    if not isinstance(rows, list):
+        return item.predecessor_snapshot
+    return _overlay_tag_top_assets(
+        item.predecessor_snapshot,
+        tuple(row for row in rows if isinstance(row, Mapping)),
+    )
+
+
 def _apply_item(
     item: RepairPlanItem,
     *,
@@ -416,12 +544,17 @@ def _apply_item(
     template: Path,
     work_root: Path,
     applied_at: str,
+    tag_only: bool,
 ) -> int:
     item_work = work_root / uuid.uuid4().hex
     item_work.mkdir(parents=True, exist_ok=False)
     staging = item.current.manifest_path.parent / f".monthly-comparison-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=False)
     try:
+        predecessor_snapshot = _rebuild_predecessor_tag_assets(
+            item,
+            output_root=item_work,
+        )
         materialized = materialize_compact_snapshot_run(
             snapshot=item.compact_snapshot,
             profile=item.profile,
@@ -450,7 +583,7 @@ def _apply_item(
         }
         override = (
             HistoryComparisonOverride(
-                predecessor=item.predecessor_snapshot,
+                predecessor=predecessor_snapshot,
                 allowed_scope_changes=("vm_include_unlicensed",),
                 reason=CONTROLLED_SCOPE_REASON,
                 notice=CONTROLLED_SCOPE_NOTICE,
@@ -458,42 +591,46 @@ def _apply_item(
             if item.controlled_scope_override
             else None
         )
+        base_registry = PostgresReportRegistry(database, migrate=False)
+        registry = _SnapshotOverlayRegistry(base_registry, predecessor_snapshot)
         prepared = prepare_dataset_history(
             profile=item.profile,
             dataset_path=artifact.dataset_path,
             normalized_findings_path=materialized.findings_path,
             output_path=artifact.directory / "report-dataset-with-history.json",
             tag_dataset_paths=tag_paths,
-            registry=PostgresReportRegistry(database, migrate=False),
+            registry=registry,
             repository=PostgresSnapshotRepository(database, migrate=False),
             origin=item.current.origin,
             comparison_override=override,
         )
         _validate_rebuilt_history(item=item, current=prepared.current)
+        selected_documents = _selected_documents(item.documents, tag_only=tag_only)
         by_kind = {
             document.document_kind: document
-            for document in item.documents
+            for document in selected_documents
             if document.document_kind == "custom"
         }
         replacements: list[PublicationDocumentReplacement] = []
-        custom_destination = by_kind["custom"]
-        custom_staged = staging / "custom.docx"
-        generate_customizations_report(
-            template_path=template,
-            dataset_path=prepared.enriched_dataset_path,
-            profile=item.profile,
-            output_path=custom_staged,
-            mask_sensitive=False,
-        )
-        replacements.append(
-            PublicationDocumentReplacement(
-                staged_path=custom_staged,
-                destination=custom_destination,
+        if "custom" in by_kind:
+            custom_destination = by_kind["custom"]
+            custom_staged = staging / "custom.docx"
+            generate_customizations_report(
+                template_path=template,
+                dataset_path=prepared.enriched_dataset_path,
+                profile=item.profile,
+                output_path=custom_staged,
+                mask_sensitive=False,
             )
-        )
+            replacements.append(
+                PublicationDocumentReplacement(
+                    staged_path=custom_staged,
+                    destination=custom_destination,
+                )
+            )
         tag_artifacts = {value.tag.uuid: value for value in tag_bundle.artifacts}
         tag_position = 0
-        for destination in item.documents:
+        for destination in selected_documents:
             if destination.document_kind != "tag":
                 continue
             tag_position += 1
@@ -526,6 +663,7 @@ def _apply_item(
                 "document_count": len(replacements),
                 "history_status": prepared.history_status,
                 "controlled_scope_override": item.controlled_scope_override,
+                "tag_only": tag_only,
                 **(
                     {
                         "allowed_scope_changes": ["vm_include_unlicensed"],
@@ -579,6 +717,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=ROOT / "data" / "maintenance-work" / "monthly-comparisons",
     )
     parser.add_argument("--scope-override-client", action="append", default=[])
+    parser.add_argument("--tag-only", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirmation")
     args = parser.parse_args(argv)
@@ -593,13 +732,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         profiles_root=args.profiles_root,
         scope_override_clients=overrides,
     )
+    plan = _selected_plan(plan, tag_only=args.tag_only)
     conflicts = _active_conflicts(database, plan)
     summary = {
         "operation": OPERATION,
         "period_id": args.period_id,
         "mode": "apply" if args.apply else "dry-run",
         "main_count": len(plan),
-        "document_count": sum(len(item.documents) for item in plan),
+        "document_count": sum(
+            len(_selected_documents(item.documents, tag_only=args.tag_only))
+            for item in plan
+        ),
         "custom_document_count": sum(
             document.document_kind == "custom"
             for item in plan
@@ -613,6 +756,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "controlled_scope_override_count": sum(
             item.controlled_scope_override for item in plan
         ),
+        "predecessor_compact_snapshot_count": sum(
+            item.predecessor_compact_snapshot is not None for item in plan
+        ),
+        "tag_only": args.tag_only,
         "active_conflicts": conflicts,
         "applied": False,
     }
@@ -626,7 +773,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("Há execução ativa para cliente incluído; aguarde antes de aplicar.")
     if not args.template.is_file():
         raise ValueError("Template oficial não encontrado.")
-    backup = _backup(plan, backup_root=args.backup_root, period_id=args.period_id)
+    backup = _backup(
+        plan,
+        backup_root=args.backup_root,
+        period_id=args.period_id,
+        tag_only=args.tag_only,
+    )
     args.work_root.mkdir(parents=True, exist_ok=True)
     applied_at = datetime.now(UTC).isoformat()
     applied_documents = 0
@@ -637,7 +789,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "status": "PROCESSING",
                     "position": position,
                     "total": len(plan),
-                    "document_count": len(item.documents),
+                    "document_count": len(
+                        _selected_documents(item.documents, tag_only=args.tag_only)
+                    ),
                 },
                 ensure_ascii=False,
             ),
@@ -649,6 +803,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             template=args.template.resolve(),
             work_root=args.work_root.resolve(),
             applied_at=applied_at,
+            tag_only=args.tag_only,
         )
     print(
         json.dumps(

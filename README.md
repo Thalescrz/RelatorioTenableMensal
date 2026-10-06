@@ -19,10 +19,11 @@ possam alimentar quatro tipos de documento:
 As TAGs nunca filtram os dois relatórios gerais. A coleta VM geral acontece uma vez
 e os relatórios por TAG são recortes locais por UUID dos ativos.
 
-Todos os quatro tipos usam o mesmo padrão editorial oficial: capa, sumário nativo
-do Word na segunda página, títulos numerados e contracapa. O sumário é reconstruído
-a partir de `Heading 1` a `Heading 3`; o corpo técnico continua independente por
-tipo de relatório.
+Todos os quatro tipos usam o mesmo padrão editorial oficial: capa, sumário
+materializado e navegável após a capa, títulos numerados e contracapa. O sumário é
+gravado no próprio DOCX a partir de `Heading 1` a `Heading 3`, sem depender de uma
+atualização manual no Word; o corpo técnico continua independente por tipo de
+relatório.
 
 ## Começar
 
@@ -48,6 +49,9 @@ Controle de Versionamento e Lista de Distribuição. Em **Gerenciar clientes**, 
 perfil acrescenta somente seus destinatários próprios; no DOCX, os destinatários
 globais aparecem primeiro e os adicionais vêm nas linhas seguintes. Os relatórios
 Geral e Cloud usam o mesmo contrato.
+Em ambos, a data de Preparação permanece fixa em `30/09/2026`. A data do Controle
+de Versionamento também inicia em `30/09/2026`, não acompanha a data da geração e
+só deve ser alterada mediante autorização prévia para uma revisão relevante.
 
 Os cartões da carteira exibem os módulos ativos `VM`, `WAS` e `CLOUD`, sem mostrar
 IDs técnicos. A atualização automática reconcilia somente o que mudou, preservando

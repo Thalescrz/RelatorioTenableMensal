@@ -92,7 +92,14 @@ def plan_official_document_backfill(
     data_root = (root / "data").resolve()
     manifests: list[OfficialBackfillManifest] = []
     seen_documents: set[Path] = set()
-    for manifest_path in sorted(data_root.glob("**/reports/**/publication-manifest.json")):
+    operational_manifests = sorted(
+        manifest_path
+        for scope in ("manual", "automatic-monthly")
+        for manifest_path in (data_root / scope / "reports").glob(
+            "**/publication-manifest.json"
+        )
+    )
+    for manifest_path in operational_manifests:
         try:
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -523,6 +530,8 @@ def finalize_official_document(
     else:
         title = faithful.FULL_REPORT_TITLE
     faithful._sanitize_properties(document, title=title)
+    faithful._materialize_static_toc(document)
+    faithful._justify_narrative_body(document)
     base._enable_field_updates(document)
     document.save(destination)
     return destination

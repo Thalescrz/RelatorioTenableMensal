@@ -421,7 +421,7 @@
     <section id="admin-document-control-panel" class="admin-tab-panel hidden" role="tabpanel">
       <div class="document-control-intro">
         <strong>Padrão global do Controle de Documento</strong>
-        <p>Preparação e Controle de Versionamento são iguais para todos os clientes. A data é preenchida automaticamente na geração.</p>
+        <p>Preparação e Controle de Versionamento são iguais para todos os clientes. A data de Preparação permanece em 30/09/2026. A data da versão não muda automaticamente e só deve ser alterada após autorização prévia.</p>
       </div>
       <form id="document-control-form" class="document-control-form">
         <section class="document-control-table-config" aria-labelledby="document-preparation-title">
@@ -431,6 +431,7 @@
           <div class="field-row">
             <label>Ação<input id="document-preparation-action" required maxlength="160"></label>
             <label>Nome<input id="document-preparation-name" maxlength="160" placeholder="Opcional"></label>
+            <label>Data<input id="document-preparation-date" value="30/09/2026" readonly aria-readonly="true"></label>
           </div>
         </section>
         <section class="document-control-table-config" aria-labelledby="document-version-title">
@@ -439,6 +440,7 @@
           </div>
           <div class="field-row">
             <label>Versão<input id="document-version" required maxlength="40"></label>
+            <label>Data da versão<input id="document-version-date" value="30/09/2026" readonly aria-readonly="true"></label>
             <label>Seções afetadas<input id="document-affected-sections" required maxlength="160"></label>
           </div>
           <div class="field-row">

@@ -61,8 +61,12 @@ As chaves ficam no arquivo local ignorado pelo Git e não retornam para a tela.
 ### Controle de documento e lista de distribuição
 
 Em **Admin → Controle de documento**, configure o padrão global das tabelas
-**Preparação** e **Controle de Versionamento**. As datas permanecem dinâmicas e são
-preenchidas automaticamente na geração. Na mesma área, cadastre as entidades que
+**Preparação** e **Controle de Versionamento**. A data de Preparação permanece fixa
+em `30/09/2026`. A data da versão também usa `30/09/2026` por padrão e não é
+atualizada automaticamente quando um relatório é gerado. Os dois valores aparecem
+como somente leitura no painel. A data da versão só deve ser alterada por uma ação
+explícita, depois de autorização prévia, quando houver mudança relevante no
+conteúdo; a data de Preparação não muda. Na mesma área, cadastre as entidades que
 devem constar na **Lista de Distribuição** de todos os documentos, sempre com nome,
 organização e e-mail. Clique em **Incluir** para montar a lista e em **Salvar
 Controle de Documento padrão** para gravar as três tabelas.
@@ -572,6 +576,13 @@ Depois confira hashes do manifesto, auditoria `monthly_comparison_repair`, meses
 exibidos e renderização LibreOffice. O backup fica em
 `data/maintenance-backups/monthly-comparisons-AAAA-MM-*`.
 
+Quando somente os relatórios por TAG precisarem de correção, use `--tag-only`. O
+modo mantém o relatório customizado intacto, reconstrói localmente os dados da TAG,
+omite competências sem snapshot e atualiza apenas a seção 4 dos DOCX por TAG. Se o
+snapshot compacto do predecessor ainda existir, ele também recupera até 20 ativos
+da competência anterior; sem esse snapshot, preserva a lista histórica disponível,
+sem inventar linhas. Nenhuma dessas opções consulta a API Tenable.
+
 Se a consolidação local falhar, o estado visível é
 `CHECKPOINT_COMPONENT_INCOMPLETE`. Os dados coletados permanecem preservados para
 retentativa; não use **Gerar todos** para contornar essa falha.
@@ -643,6 +654,13 @@ Cada conjunto mostra o período do relatório, a data e a hora em que a execuç�
 concluída e, em uma linha técnica separada, o `run_id` e o tamanho total. Para
 publicações legadas sem horário de conclusão, a interface usa o horário em que o
 documento foi registrado no PostgreSQL.
+
+Quando um manifesto autoritativo é registrado novamente para corrigir uma
+publicação, o catálogo passa a refletir somente os documentos declarados nele.
+Caminhos antigos do mesmo `run_id` são retirados do conjunto ativo para todos os
+tipos de relatório, não apenas Cloud. Antes de arquivar cópias físicas excedentes,
+confirme o caminho do manifesto no `MAIN`, a validade e os hashes dos DOCX e a
+ausência de job ativo; mantenha a cópia removida em backup recuperável.
 
 O botão **Baixar ZIP mensal**, no topo do painel, solicita o mês e cria uma pasta
 `Relatorios-Tenable-AAAA-MM`, com uma subpasta por cliente. Esse pacote inclui
@@ -749,6 +767,10 @@ excluído explicitamente pela interface.
 Use a republicação apenas para aplicar o shell oficial aos DOCX dos conjuntos
 `MAIN` registrados no PostgreSQL. Ela não realiza coleta, não altera a seleção
 `MAIN` e ignora conjuntos não-MAIN, órfãos, artefatos de QA e a área de descarte.
+Se houver mais de um manifesto físico para o mesmo `run_id`, somente o caminho
+autoritativo armazenado no PostgreSQL participa da análise. A ferramenta recusa a
+ambiguidade quando esse caminho não é fornecido, em vez de contar duas vezes a
+mesma execução.
 Execute primeiro a análise:
 
 ```powershell
@@ -757,18 +779,47 @@ $env:PYTHONPATH = (Join-Path $PWD 'src')
 ```
 
 Depois de conferir as contagens, a aplicação controlada exige PostgreSQL disponível.
-A composição Open XML preserva os relacionamentos e mantém `w:updateFields`
-habilitado; o Word atualiza o sumário nativo ao abrir o arquivo:
+A composição Open XML preserva os relacionamentos. Novos relatórios já saem com o
+sumário materializado e navegável no próprio DOCX:
 
 ```powershell
 $env:PYTHONPATH = (Join-Path $PWD 'src')
 .\.venv\Scripts\python.exe tools\refresh_official_report_documents.py --apply
 ```
 
+Para atualizar somente uma competência, informe `--period-id AAAA-MM` tanto na
+análise quanto na aplicação. A atualização exclusiva do alinhamento narrativo não
+reconstrói o shell nem inicia o Word; acrescente `--justify-body-only`. Exemplo para
+setembro de 2026:
+
+```powershell
+.\.venv\Scripts\python.exe tools\refresh_official_report_documents.py `
+  --period-id 2026-09 --justify-body-only
+.\.venv\Scripts\python.exe tools\refresh_official_report_documents.py `
+  --period-id 2026-09 --justify-body-only --apply
+```
+
+Para corrigir documentos publicados cujo campo de sumário ainda esteja vazio, use
+`--materialize-toc-only`. Esse modo copia o pacote existente, grava as entradas
+clicáveis de `Heading 1` a `Heading 3`, não consulta API e não inicia o Word:
+
+```powershell
+.\.venv\Scripts\python.exe tools\refresh_official_report_documents.py `
+  --period-id 2026-09 --materialize-toc-only
+.\.venv\Scripts\python.exe tools\refresh_official_report_documents.py `
+  --period-id 2026-09 --materialize-toc-only --apply
+```
+
 O resumo deve informar `scope: postgresql-main`. Cada conjunto é substituído
 atomicamente. Em falha, o conjunto original permanece;
 em sucesso, hashes, manifesto e catálogo PostgreSQL são atualizados juntos e o
-manifesto recebe a auditoria `OFFICIAL_REPORT_SHELL_V3`. Uma nova execução ignora
+manifesto recebe a auditoria `OFFICIAL_REPORT_SHELL_V3` na recomposição completa.
+No modo `--justify-body-only`, recebe
+`OFFICIAL_REPORT_JUSTIFIED_BODY_V1`; títulos, listas, notas de fonte, tabelas,
+gráficos e elementos institucionais mantêm o alinhamento próprio.
+No modo `--materialize-toc-only`, recebe
+`OFFICIAL_REPORT_MATERIALIZED_TOC_V1`; somente a área do sumário e os marcadores
+internos dos títulos são atualizados. Uma nova execução ignora
 os conjuntos já marcados; `--include-completed` existe somente para reprocessamento
 deliberado. Um arquivo aberto no Word falha apenas o próprio conjunto e os demais
 continuam; feche o documento e execute novamente para tratar somente o pendente.

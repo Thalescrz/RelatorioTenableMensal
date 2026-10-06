@@ -2894,6 +2894,7 @@ class WebDashboardTests(unittest.TestCase):
             }
             version_control = {
                 "version": "2.0",
+                "date": "15/10/2026",
                 "affected_sections": "Todas",
                 "change": "Revisao mensal",
                 "changed_by": "Equipe Tecnica",
@@ -2905,7 +2906,10 @@ class WebDashboardTests(unittest.TestCase):
                 "distribution_recipients": [],
             })
 
-            self.assertEqual(saved["preparation"], preparation)
+            self.assertEqual(saved["preparation"], {
+                **preparation,
+                "date": "30/09/2026",
+            })
             self.assertEqual(saved["version_control"], version_control)
             self.assertEqual(store.document_control(), saved)
 
