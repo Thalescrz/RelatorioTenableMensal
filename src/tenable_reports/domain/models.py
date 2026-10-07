@@ -112,6 +112,7 @@ def build_source_snapshot(
     started_at: str,
     collector_version: str,
     raw_manifest_uri: str,
+    completed_at: str | None = None,
 ) -> SourceSnapshot:
     ordered_chunks = sorted((int(chunk_id), bytes(content)) for chunk_id, content in chunks)
     digest = hashlib.sha256()
@@ -131,7 +132,7 @@ def build_source_snapshot(
         status=SnapshotStatus.COMPLETE,
         availability=availability,
         started_at=started_at,
-        completed_at=utc_now_iso(),
+        completed_at=completed_at or utc_now_iso(),
         record_count=record_count,
         chunk_ids=tuple(chunk_id for chunk_id, _ in ordered_chunks),
         raw_sha256=digest.hexdigest(),
@@ -154,6 +155,7 @@ def build_source_snapshot_from_chunk_hashes(
     started_at: str,
     collector_version: str,
     raw_manifest_uri: str,
+    completed_at: str | None = None,
 ) -> SourceSnapshot:
     ordered = sorted((int(chunk_id), str(content_hash)) for chunk_id, content_hash in chunk_hashes)
     digest = hashlib.sha256()
@@ -172,7 +174,7 @@ def build_source_snapshot_from_chunk_hashes(
         status=SnapshotStatus.COMPLETE,
         availability=Availability.AVAILABLE if record_count else Availability.NO_DATA,
         started_at=started_at,
-        completed_at=utc_now_iso(),
+        completed_at=completed_at or utc_now_iso(),
         record_count=record_count,
         chunk_ids=tuple(chunk_id for chunk_id, _ in ordered),
         raw_sha256=digest.hexdigest(),

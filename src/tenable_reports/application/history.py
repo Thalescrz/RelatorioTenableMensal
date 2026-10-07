@@ -383,7 +383,7 @@ def _period_label(snapshot: HistorySnapshot, *, short: bool = False) -> str:
     )
 
 
-def _history_snapshot(
+def build_history_snapshot(
     *,
     profile: ClientProfile,
     dataset: Mapping[str, Any],
@@ -468,6 +468,11 @@ def _history_snapshot(
         source_dataset_path=str(dataset_path.resolve()),
         source_dataset_sha256=hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
     )
+
+
+# Compatibilidade interna para consumidores e testes anteriores à exposição do
+# construtor usado pela manutenção reprodutível de históricos.
+_history_snapshot = build_history_snapshot
 
 
 def _merge_customizations(
@@ -964,7 +969,7 @@ def prepare_dataset_history(
         profile=profile,
         run_id=run_id,
     )
-    raw_current = _history_snapshot(
+    raw_current = build_history_snapshot(
         profile=profile,
         dataset=data,
         dataset_path=dataset_file,
@@ -1107,7 +1112,7 @@ def publish_dataset_history(
     data = _read_dataset(dataset_file)
     if data.get("client_id") != profile.client_id:
         raise ValueError("O dataset nao pertence ao cliente selecionado.")
-    current = _history_snapshot(
+    current = build_history_snapshot(
         profile=profile,
         dataset=data,
         dataset_path=dataset_file,

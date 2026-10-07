@@ -37,6 +37,7 @@ from tenable_reports.application.compact_snapshots import (  # noqa: E402
 )
 from tenable_reports.application.history import (  # noqa: E402
     HistoryComparisonOverride,
+    build_history_snapshot,
     prepare_dataset_history,
 )
 from tenable_reports.application.publishing import (  # noqa: E402
@@ -373,6 +374,18 @@ def _selected_plan(
     )
 
 
+def _select_clients(
+    plan: Sequence[Any],
+    client_ids: frozenset[str],
+) -> tuple[Any, ...]:
+    if not client_ids:
+        return tuple(plan)
+    available = {str(item.current.client_id) for item in plan}
+    if not client_ids.issubset(available):
+        raise ValueError("Cliente solicitado não pertence ao plano selecionado.")
+    return tuple(item for item in plan if item.current.client_id in client_ids)
+
+
 def _plan_from_position(plan: Sequence[Any], start_position: int) -> tuple[Any, ...]:
     if not plan and start_position == 1:
         return ()
@@ -566,7 +579,7 @@ def _validate_rebuilt_history(
         raise ValueError("Os findings ressurgidos reconstruídos divergem do histórico atual.")
 
 
-def _rebuild_predecessor_tag_assets(
+def _rebuild_predecessor_snapshot(
     item: RepairPlanItem,
     *,
     output_root: Path,
@@ -574,7 +587,7 @@ def _rebuild_predecessor_tag_assets(
     compact = item.predecessor_compact_snapshot
     if compact is None:
         return item.predecessor_snapshot
-    materialize_compact_snapshot_run(
+    materialized = materialize_compact_snapshot_run(
         snapshot=compact,
         profile=item.profile,
         run_id=item.predecessor.run_id,
@@ -588,16 +601,34 @@ def _rebuild_predecessor_tag_assets(
         include_output=item.profile.presentation.vm_top5_include_output,
         execution_type=item.predecessor.execution_type,
     )
+    tag_bundle = build_tag_report_datasets_from_snapshot(
+        profile=item.profile,
+        run_id=item.predecessor.run_id,
+        period=_period(item.predecessor),
+        output_root=output_root,
+        include_output=item.profile.presentation.vm_top5_include_output,
+        execution_type=item.predecessor.execution_type,
+    )
     payload = json.loads(artifact.dataset_path.read_text(encoding="utf-8"))
-    customizations = payload.get("customizations")
-    if not isinstance(customizations, Mapping):
-        return item.predecessor_snapshot
-    rows = customizations.get("network_tag_snapshots")
-    if not isinstance(rows, list):
-        return item.predecessor_snapshot
-    return _overlay_tag_top_assets(
-        item.predecessor_snapshot,
-        tuple(row for row in rows if isinstance(row, Mapping)),
+    tag_payloads = tuple(
+        json.loads(tag_artifact.dataset_path.read_text(encoding="utf-8"))
+        for tag_artifact in tag_bundle.artifacts
+    )
+    rebuilt = build_history_snapshot(
+        profile=item.profile,
+        dataset=payload,
+        dataset_path=artifact.dataset_path,
+        normalized_findings_path=materialized.findings_path,
+        tag_datasets=tag_payloads,
+    )
+    if rebuilt.run_id != item.predecessor.run_id:
+        raise ValueError("O histórico predecessor reconstruído diverge da execução MAIN.")
+    if rebuilt.period_id != item.predecessor.period_key:
+        raise ValueError("O histórico predecessor reconstruído diverge da competência MAIN.")
+    return replace(
+        rebuilt,
+        snapshot_id=item.predecessor_snapshot.snapshot_id,
+        compatibility=item.predecessor_snapshot.compatibility,
     )
 
 
@@ -615,7 +646,7 @@ def _apply_item(
     staging = item.current.manifest_path.parent / f".monthly-comparison-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=False)
     try:
-        predecessor_snapshot = _rebuild_predecessor_tag_assets(
+        predecessor_snapshot = _rebuild_predecessor_snapshot(
             item,
             output_root=item_work,
         )
@@ -841,6 +872,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=ROOT / "data" / "maintenance-work" / "monthly-comparisons",
     )
     parser.add_argument("--scope-override-client", action="append", default=[])
+    parser.add_argument(
+        "--client-id",
+        action="append",
+        default=[],
+        help="Restringe a manutenção a um cliente do plano; pode ser repetido.",
+    )
     parser.add_argument("--tag-only", action="store_true")
     parser.add_argument(
         "--start-position",
@@ -863,6 +900,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         scope_override_clients=overrides,
     )
     plan = _selected_plan(plan, tag_only=args.tag_only)
+    selected_clients = frozenset(
+        str(value).strip() for value in args.client_id if str(value).strip()
+    )
+    plan = _select_clients(plan, selected_clients)
     plan = _plan_from_position(plan, args.start_position)
     conflicts = _active_conflicts(database, plan)
     summary = {
