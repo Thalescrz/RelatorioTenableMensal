@@ -361,6 +361,71 @@ def test_exact_snapshot_is_replayed_without_live_collection(tmp_path: Path) -> N
     assert result.snapshot_id == snapshot.snapshot_id
 
 
+def test_exact_snapshot_replay_rebuilds_monthly_history_from_main_snapshots(
+    tmp_path: Path,
+) -> None:
+    repository = MemoryCloudSnapshotRepository()
+    dependencies, calls = _dependencies(tmp_path, repository)
+    written: list[dict] = []
+    original_write = dependencies.write_dataset
+
+    def capture_dataset(**kwargs):
+        written.append(dict(kwargs["dataset"]))
+        return original_write(**kwargs)
+
+    request = _request(tmp_path)
+    compatibility = request.compatibility()
+    prior_period = previous_calendar_month(
+        reference_at="2026-07-01T12:00:00-03:00",
+        timezone_name="America/Fortaleza",
+    )
+    prior = build_cloud_snapshot(
+        dataset=_dataset(prior_period),
+        client_id=request.profile.client_id,
+        tenant_id=request.profile.tenant_id,
+        run_id="run-prior-main",
+        attempt_number=1,
+        execution_type="AUTOMATIC_MONTHLY",
+        period_mode="EXPLICIT_RANGE",
+        timezone=request.period.timezone,
+        period_start_at=prior_period.to_dict()["start_at"],
+        period_end_at=prior_period.to_dict()["end_at"],
+        scope_hash=compatibility.scope_hash,
+        collected_at="2026-07-01T11:00:00Z",
+        capabilities={"required_ready": True},
+    )
+    repository.publish(prior)
+    repository.mark_main(prior.run_id)
+    current = build_cloud_snapshot(
+        dataset=_dataset(request.period),
+        client_id=request.profile.client_id,
+        tenant_id=request.profile.tenant_id,
+        run_id="run-current-exact",
+        attempt_number=1,
+        execution_type=request.execution_type,
+        period_mode=request.period.mode.value,
+        timezone=request.period.timezone,
+        period_start_at=request.period.to_dict()["start_at"],
+        period_end_at=request.period.to_dict()["end_at"],
+        scope_hash=compatibility.scope_hash,
+        collected_at="2026-08-01T11:00:00Z",
+        capabilities={"required_ready": True},
+    )
+    repository.publish(current)
+
+    result = execute_cloud_component(
+        request,
+        dependencies=replace(dependencies, write_dataset=capture_dataset),
+    )
+
+    assert result.status is CloudExecutionStatus.REPLAYED
+    assert calls["collect"] == 0
+    assert [row["period_id"] for row in written[-1]["history"]] == [
+        "2026-06",
+        "2026-07",
+    ]
+
+
 def test_remote_cloud_preparation_writes_dataset_without_rendering_docx(
     tmp_path: Path,
 ) -> None:

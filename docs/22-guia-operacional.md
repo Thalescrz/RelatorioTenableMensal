@@ -136,10 +136,18 @@ progresso e falha próprios. A coleta representa o estado no instante da execuç
 Solicitar um período passado não reconstrói o fechamento histórico sem uma
 fotografia Cloud compatível já preservada.
 
-As colunas `Fixed by` dependem de uma fonte GraphQL opcional do tenant. Quando a
-fonte não existir, não houver permissão ou a vulnerabilidade não informar versão, o
-relatório usa `N/D` e continua. Isso não deve ser tratado como falha da coleta Cloud
-obrigatória nem preenchido manualmente por inferência de texto.
+A versão `FixedBy` depende de uma fonte GraphQL opcional do tenant. Ela continua
+sendo evidência interna para os rankings corrigíveis, mas não é apresentada como
+coluna no relatório. Quando a fonte não existir ou não houver permissão, o
+documento sinaliza cobertura parcial ou indisponível nos rankings afetados; isso
+não deve ser tratado como falha da coleta Cloud obrigatória nem preenchido
+manualmente por inferência de texto.
+
+Na evolução mensal, referências `MAIN` anteriores podem participar mesmo quando
+foram geradas por modo ou tipo de execução legado, desde que pertençam ao mesmo
+cliente, tenant, fuso, escopo e contrato técnico compatível. Assim, um mês real não
+deve desaparecer apenas porque foi criado como intervalo explícito. A regeneração
+por replay usa os snapshots preservados e não executa nova coleta.
 
 Uma fotografia exata pode ser reutilizada. Outra coleta Cloud completa dentro de
 24 horas é bloqueada por padrão para evitar consumo repetido; atualização forçada
@@ -156,6 +164,12 @@ customizado ou TAG.
 
 Uma única coleta geral atende os relatórios gerais e os recortes por TAG. Escolher
 uma TAG não reduz o universo dos relatórios gerais.
+
+No item 4 do relatório TAG, valide primeiro o gráfico consolidado e depois os
+subitens de não mitigadas, mitigadas e novas. O gráfico de novas deve ter séries de
+severidade e **Total Novas**. Meses sem snapshot não aparecem. Quando há dois meses
+comparáveis, o documento também contém o Top 20 anterior, o Top 20 atual e a tabela
+comparativa correlacionada por UUID.
 
 O Workbench da Tenable lista no máximo 5.000 ativos. Se uma TAG exceder esse limite,
 a aplicação inicia automaticamente um Asset Export v1 exclusivo para o escopo da
@@ -557,8 +571,9 @@ Use `tools/repair_monthly_comparison_documents.py` somente quando uma competênc
 históricos das duas competências estiverem íntegros. O comando não realiza coleta
 nem consulta a Tenable: ele reconstrói os datasets locais, confirma que resumo e
 chaves de findings atuais coincidem com o histórico persistido, cria backup e
-substitui atomicamente apenas o relatório customizado e a seção 4 dos relatórios
-por TAG.
+substitui atomicamente o relatório customizado, a seção 4 dos relatórios por TAG e,
+quando existir no manifesto, o relatório Cloud recomposto com snapshots mensais
+`MAIN`. O fluxo continua sem coleta Tenable.
 
 Primeiro execute sem `--apply`:
 
@@ -575,6 +590,13 @@ continuam sob compatibilidade estrita. Para aplicar, acrescente `--apply` e
 Depois confira hashes do manifesto, auditoria `monthly_comparison_repair`, meses
 exibidos e renderização LibreOffice. O backup fica em
 `data/maintenance-backups/monthly-comparisons-AAAA-MM-*`.
+
+Se uma execução já tiver confirmado posições anteriores e for interrompida antes
+de uma substituição, `--start-position N` permite retomar somente a cauda ainda não
+processada do plano determinístico. Execute primeiro o dry-run com a mesma posição
+e confirme contagens, ausência de conflitos e presença do Cloud esperado. Cada
+retomada cria seu próprio backup; não use a opção para pular documentos ainda não
+regenerados.
 
 Quando somente os relatórios por TAG precisarem de correção, use `--tag-only`. O
 modo mantém o relatório customizado intacto, reconstrói localmente os dados da TAG,

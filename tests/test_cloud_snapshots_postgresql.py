@@ -157,6 +157,7 @@ def test_postgres_repository_exposes_replay_history_and_contract_methods() -> No
         "find_exact",
         "latest_compatible_since",
         "list_main_before",
+        "list_monthly_main_before",
         "save_contract_check",
         "latest_contract_check",
         "invalidate_contract_checks",
@@ -198,3 +199,40 @@ def test_main_history_query_qualifies_snapshot_columns() -> None:
     sql, _ = database.connection_value.calls[-1]
     assert "select s.snapshot_id, s.schema_version" in " ".join(sql.split())
     assert "join tenable_reports.report_main_references" in sql
+
+
+def test_monthly_history_query_uses_main_period_and_metric_family() -> None:
+    snapshots = importlib.import_module(
+        "tenable_reports.application.cloud_snapshots"
+    )
+    module = importlib.import_module(
+        "tenable_reports.infrastructure.cloud_snapshots_postgresql"
+    )
+    database = FakeDatabase()
+    repository = module.PostgresCloudSnapshotRepository(database, migrate=False)
+    compatibility = snapshots.CloudSnapshotCompatibility(
+        client_id="cliente-fixture",
+        tenant_id="tenant-fixture",
+        execution_type="MANUAL",
+        period_mode="MONTHLY_CUTOFF",
+        timezone="America/Fortaleza",
+        scope_hash="scope-cloud-v1",
+        metric_definition_version="cloud-metrics-v3",
+        connector_version="cloud-graphql-v1",
+        normalizer_version="cloud-normalizer-v1",
+        schema_version=1,
+    )
+
+    assert repository.list_monthly_main_before(
+        compatibility=compatibility,
+        period_id_before="2026-09",
+    ) == ()
+
+    sql, params = database.connection_value.calls[-1]
+    normalized = " ".join(sql.split())
+    assert "m.reference_kind = 'MONTHLY'" in normalized
+    assert "m.period_key < %s" in normalized
+    assert "s.metric_definition_version = any(%s)" in normalized
+    assert "s.period_mode = %s" not in normalized
+    assert "s.execution_type = %s" not in normalized
+    assert params is not None and params[-1] == "2026-09"

@@ -222,28 +222,12 @@ def render_monthly_visual_bundle(
     output.mkdir(parents=True, exist_ok=True)
     year = str(rows[-1].get("label") or "").split("/")[-1] if rows else ""
 
-    faithful._heading(document, "Vulnerabilidades Não Mitigadas", 3)
-    render_monthly_table(document, rows, "non_mitigated_by_severity", "non_mitigated")
-    non_mitigated_rows = _severity_rows(rows, nested_key="non_mitigated_by_severity", total_key="non_mitigated")
-    non_mitigated_comparison = output / "tag-non-mitigated-comparison.png"
-    _grouped_monthly_chart(non_mitigated_comparison, f"Comparativo de Vulnerabilidades Não Mitigadas {year}", non_mitigated_rows, (*SEVERITY_SERIES, ("total", "Total Vulnerabilidades", "#B244A5")))
-    _add_chart(document, non_mitigated_comparison, f"Comparativo mensal de vulnerabilidades não mitigadas - {scope_label}")
-    non_mitigated_volume = output / "tag-non-mitigated-volume.png"
-    _monthly_line_chart(non_mitigated_volume, f"Volume de Vuln. Não Mitigadas {year}", rows, value_key="non_mitigated")
-    _add_chart(document, non_mitigated_volume, f"Volume mensal de vulnerabilidades não mitigadas - {scope_label}")
-
-    faithful._heading(document, "Vulnerabilidades Mitigadas", 3)
-    render_monthly_table(document, rows, "mitigated_by_severity", "mitigated")
-    mitigated_rows = _severity_rows(rows, nested_key="mitigated_by_severity", total_key="mitigated")
-    mitigated_comparison = output / "tag-mitigated-comparison.png"
-    _grouped_monthly_chart(mitigated_comparison, f"Comparativo de Vulnerabilidades Mitigadas {year}", mitigated_rows, (*SEVERITY_SERIES, ("total", "Total Mitigadas", "#B244A5")))
-    _add_chart(document, mitigated_comparison, f"Comparativo mensal de vulnerabilidades mitigadas - {scope_label}")
-    mitigated_volume = output / "tag-mitigated-volume.png"
-    _monthly_line_chart(mitigated_volume, f"Volume de Vuln. Mitigadas {year}", rows, value_key="mitigated")
-    _add_chart(document, mitigated_volume, f"Volume mensal de vulnerabilidades mitigadas - {scope_label}")
-
-    faithful._heading(document, "Vulnerabilidades Novas", 3)
-    render_monthly_table(document, rows, "new_by_severity", "new")
+    faithful._heading(document, "4.1. Evolução Mensal de Vulnerabilidades", 2)
+    faithful._paragraph(
+        document,
+        "O gráfico a seguir consolida a evolução mensal das vulnerabilidades "
+        "não mitigadas, mitigadas e novas identificadas para esta TAG.",
+    )
     evolution_rows = [
         {
             "label": row.get("label") or "",
@@ -265,7 +249,62 @@ def render_monthly_visual_bundle(
         ),
     )
     _add_chart(document, evolution, f"Evolução mensal de vulnerabilidades - {scope_label}")
-    return 5
+
+    faithful._heading(document, "4.2. Vulnerabilidades Não Mitigadas", 2)
+    faithful._paragraph(
+        document,
+        "Esta série apresenta as vulnerabilidades que permaneciam abertas ao fim "
+        "de cada período, segregadas por severidade e total.",
+    )
+    render_monthly_table(document, rows, "non_mitigated_by_severity", "non_mitigated")
+    non_mitigated_rows = _severity_rows(rows, nested_key="non_mitigated_by_severity", total_key="non_mitigated")
+    non_mitigated_comparison = output / "tag-non-mitigated-comparison.png"
+    _grouped_monthly_chart(non_mitigated_comparison, f"Comparativo de Vulnerabilidades Não Mitigadas {year}", non_mitigated_rows, (*SEVERITY_SERIES, ("total", "Total Vulnerabilidades", "#B244A5")))
+    _add_chart(document, non_mitigated_comparison, f"Comparativo mensal de vulnerabilidades não mitigadas - {scope_label}")
+    non_mitigated_volume = output / "tag-non-mitigated-volume.png"
+    _monthly_line_chart(non_mitigated_volume, f"Volume de Vuln. Não Mitigadas {year}", rows, value_key="non_mitigated")
+    _add_chart(document, non_mitigated_volume, f"Volume mensal de vulnerabilidades não mitigadas - {scope_label}")
+
+    faithful._heading(document, "4.3. Vulnerabilidades Mitigadas", 2)
+    faithful._paragraph(
+        document,
+        "Esta série apresenta as vulnerabilidades corrigidas em cada período, "
+        "segregadas por severidade e total.",
+    )
+    render_monthly_table(document, rows, "mitigated_by_severity", "mitigated")
+    mitigated_rows = _severity_rows(rows, nested_key="mitigated_by_severity", total_key="mitigated")
+    mitigated_comparison = output / "tag-mitigated-comparison.png"
+    _grouped_monthly_chart(mitigated_comparison, f"Comparativo de Vulnerabilidades Mitigadas {year}", mitigated_rows, (*SEVERITY_SERIES, ("total", "Total Mitigadas", "#B244A5")))
+    _add_chart(document, mitigated_comparison, f"Comparativo mensal de vulnerabilidades mitigadas - {scope_label}")
+    mitigated_volume = output / "tag-mitigated-volume.png"
+    _monthly_line_chart(mitigated_volume, f"Volume de Vuln. Mitigadas {year}", rows, value_key="mitigated")
+    _add_chart(document, mitigated_volume, f"Volume mensal de vulnerabilidades mitigadas - {scope_label}")
+
+    faithful._heading(document, "4.4. Vulnerabilidades Novas", 2)
+    faithful._paragraph(
+        document,
+        "Esta série apresenta somente as vulnerabilidades identificadas como novas "
+        "em cada período, segregadas por severidade e total.",
+    )
+    render_monthly_table(document, rows, "new_by_severity", "new")
+    new_rows = _severity_rows(
+        rows,
+        nested_key="new_by_severity",
+        total_key="new",
+    )
+    new_comparison = output / "tag-new-comparison.png"
+    _grouped_monthly_chart(
+        new_comparison,
+        f"Comparativo de Vulnerabilidades Novas {year}",
+        new_rows,
+        (*SEVERITY_SERIES, ("total", "Total Novas", "#B244A5")),
+    )
+    _add_chart(
+        document,
+        new_comparison,
+        f"Comparativo de Vulnerabilidades Novas {year} por severidade e total",
+    )
+    return 6
 
 
 def render_tag_asset_comparison(

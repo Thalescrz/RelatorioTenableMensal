@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from tenable_reports.application.cloud_snapshots import (
+    CLOUD_HISTORY_METRIC_DEFINITION_VERSIONS,
     CloudContractCheck,
     CloudReportSnapshot,
     CloudSnapshotCompatibility,
@@ -243,6 +244,46 @@ class PostgresCloudSnapshotRepository:
                 order by s.period_end_at, s.run_id
                 """,
                 (*_compatibility_values(compatibility), period_end_before),
+            ).fetchall()
+        return tuple(_snapshot_from_row(row) for row in rows)
+
+    def list_monthly_main_before(
+        self,
+        *,
+        compatibility: CloudSnapshotCompatibility,
+        period_id_before: str,
+    ) -> tuple[CloudReportSnapshot, ...]:
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                f"""
+                select {_SNAPSHOT_COLUMNS_QUALIFIED}
+                from {SCHEMA_NAME}.cloud_report_snapshots s
+                join {SCHEMA_NAME}.report_main_references m
+                  on m.run_id = s.run_id
+                join {SCHEMA_NAME}.report_runs r
+                  on r.run_id = s.run_id
+                where s.client_id = %s and s.tenant_id = %s
+                  and s.timezone = %s and s.scope_hash = %s
+                  and s.metric_definition_version = any(%s)
+                  and s.connector_version = %s
+                  and s.normalizer_version = %s
+                  and s.schema_version = %s
+                  and m.reference_kind = 'MONTHLY'
+                  and m.period_key < %s
+                  and r.deleted_at is null
+                order by m.period_key, s.run_id
+                """,
+                (
+                    compatibility.client_id,
+                    compatibility.tenant_id,
+                    compatibility.timezone,
+                    compatibility.scope_hash,
+                    list(CLOUD_HISTORY_METRIC_DEFINITION_VERSIONS),
+                    compatibility.connector_version,
+                    compatibility.normalizer_version,
+                    compatibility.schema_version,
+                    period_id_before,
+                ),
             ).fetchall()
         return tuple(_snapshot_from_row(row) for row in rows)
 

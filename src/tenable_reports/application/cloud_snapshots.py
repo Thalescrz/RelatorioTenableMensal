@@ -8,6 +8,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Mapping, Protocol, Sequence
+from zoneinfo import ZoneInfo
 
 from tenable_reports.application.cloud_report_dataset import (
     CLOUD_DATASET_SCHEMA_VERSION,
@@ -17,6 +18,10 @@ from tenable_reports.application.cloud_report_dataset import (
 
 CLOUD_SNAPSHOT_SCHEMA_VERSION = 1
 CLOUD_NORMALIZER_VERSION = "cloud-normalizer-v1"
+CLOUD_HISTORY_METRIC_DEFINITION_VERSIONS = (
+    "cloud-metrics-v2",
+    "cloud-metrics-v3",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +119,13 @@ class CloudSnapshotRepository(Protocol):
         *,
         compatibility: CloudSnapshotCompatibility,
         period_end_before: str,
+    ) -> tuple[CloudReportSnapshot, ...]: ...
+
+    def list_monthly_main_before(
+        self,
+        *,
+        compatibility: CloudSnapshotCompatibility,
+        period_id_before: str,
     ) -> tuple[CloudReportSnapshot, ...]: ...
 
     def save_contract_check(self, check: CloudContractCheck) -> None: ...
@@ -336,6 +348,28 @@ def _compatible(
     return snapshot.compatibility == compatibility
 
 
+def _monthly_history_compatible(
+    snapshot: CloudReportSnapshot,
+    compatibility: CloudSnapshotCompatibility,
+) -> bool:
+    return (
+        snapshot.client_id == compatibility.client_id
+        and snapshot.tenant_id == compatibility.tenant_id
+        and snapshot.timezone == compatibility.timezone
+        and snapshot.scope_hash == compatibility.scope_hash
+        and snapshot.metric_definition_version
+        in CLOUD_HISTORY_METRIC_DEFINITION_VERSIONS
+        and snapshot.connector_version == compatibility.connector_version
+        and snapshot.normalizer_version == compatibility.normalizer_version
+        and snapshot.schema_version == compatibility.schema_version
+    )
+
+
+def _monthly_period_id(snapshot: CloudReportSnapshot) -> str:
+    local = _parse(snapshot.period_start_at).astimezone(ZoneInfo(snapshot.timezone))
+    return f"{local.year:04d}-{local.month:02d}"
+
+
 class MemoryCloudSnapshotRepository:
     def __init__(self) -> None:
         self._snapshots: dict[str, CloudReportSnapshot] = {}
@@ -436,6 +470,26 @@ class MemoryCloudSnapshotRepository:
                     _parse(item.period_end_at),
                     item.run_id,
                 ),
+            )
+        )
+
+    def list_monthly_main_before(
+        self,
+        *,
+        compatibility: CloudSnapshotCompatibility,
+        period_id_before: str,
+    ) -> tuple[CloudReportSnapshot, ...]:
+        values = [
+            item
+            for item in self._snapshots.values()
+            if item.run_id in self._main_run_ids
+            and _monthly_history_compatible(item, compatibility)
+            and _monthly_period_id(item) < period_id_before
+        ]
+        return tuple(
+            sorted(
+                values,
+                key=lambda item: (_monthly_period_id(item), item.run_id),
             )
         )
 
