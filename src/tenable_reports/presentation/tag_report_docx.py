@@ -216,6 +216,12 @@ def _temporal_comparison(
         and str(item.get("availability") or "AVAILABLE") == "AVAILABLE"
     ]
     _heading(document, "4. Comparativo Mensal da TAG")
+    _paragraph(
+        document,
+        "Esta seção compara a evolução temporal da TAG e detalha, em blocos "
+        "separados, as vulnerabilidades não mitigadas, mitigadas e novas. "
+        "Somente os meses com dados comparáveis são apresentados.",
+    )
     if status == "INCOMPATIBLE_PERIOD":
         _paragraph(
             document,
@@ -249,7 +255,7 @@ def _temporal_comparison(
                 comparison,
                 mask_sensitive=mask_sensitive,
             )
-    return visual_count == 5
+    return visual_count == 6
 
 
 def generate_tag_report(

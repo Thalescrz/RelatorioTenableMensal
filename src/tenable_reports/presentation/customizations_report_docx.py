@@ -204,23 +204,45 @@ def _font(size: int, bold: bool = False) -> Any:
 
 
 def _bar_chart(path: Path, title: str, rows: Sequence[Mapping[str, Any]], keys: Sequence[tuple[str, str, str]]) -> None:
-    width, height = 1400, max(650, 220 + len(rows) * 95)
+    row_height = max(88, 44 + len(keys) * 38)
+    width, height = 1400, max(650, 210 + len(rows) * row_height)
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
     draw.text((50, 38), title, font=_font(34, True), fill="#0B1F4A")
-    max_value = max((int(row.get(key, 0) or 0) for row in rows for key, _, _ in keys), default=1)
+    values = [
+        int(row.get(key, 0) or 0)
+        for row in rows
+        for key, _, _ in keys
+    ]
+    minimum = min((*values, 0))
+    maximum = max((*values, 0))
+    if minimum == maximum:
+        maximum = minimum + 1
+    plot_left, plot_right = 380, 1030
+    plot_width = plot_right - plot_left
+    zero_x = plot_left + int((-minimum) * plot_width / (maximum - minimum))
+    draw.line((zero_x, 112, zero_x, height - 45), fill="#8290A8", width=2)
     y = 130
     for row in rows:
         label = str(row.get("label") or row.get("month") or "")
         draw.text((50, y + 16), label, font=_font(20, True), fill="#0B1F4A")
-        x = 310
         for key, caption, color in keys:
             value = int(row.get(key, 0) or 0)
-            bar = int(780 * value / max_value) if max_value else 0
-            draw.rectangle((x, y, x + bar, y + 25), fill=color)
-            draw.text((x + bar + 12, y), f"{caption}: {value}", font=_font(17), fill="#0B1F4A")
-            y += 32
-        y += 25
+            value_x = plot_left + int(
+                (value - minimum) * plot_width / (maximum - minimum)
+            )
+            bar_left, bar_right = sorted((zero_x, value_x))
+            if bar_left == bar_right:
+                bar_right += 2
+            draw.rectangle((bar_left, y, bar_right, y + 25), fill=color)
+            draw.text(
+                (1060, y),
+                f"{caption}: {value}",
+                font=_font(17),
+                fill="#0B1F4A",
+            )
+            y += 38
+        y += row_height - len(keys) * 38
     image.save(path)
 
 
@@ -476,10 +498,10 @@ def _monthly_modules(document: Any, data: Mapping[str, Any], temp: Path, rendere
     views = _monthly_views(data)
     if not views:
         return
-    faithful._heading(document, "1.1. Comparativo Mensal de Vulnerabilidades Mitigadas e Não Mitigadas.", 2)
+    faithful._heading(document, "1.2. Comparativo Mensal de Vulnerabilidades Mitigadas e Não Mitigadas.", 2)
     faithful._paragraph(document, MONTHLY_COMPARISON)
     year = str(views[0][1][-1].get("label") or "").split("/")[-1]
-    faithful._heading(document, "1.1.1. Vulnerabilidades “Não Mitigadas”.", 3)
+    faithful._heading(document, "1.2.1. Vulnerabilidades “Não Mitigadas”.", 3)
     for view_index, (view_label, history) in enumerate(views):
         if view_index:
             _new_report_section(document)
@@ -512,7 +534,7 @@ def _monthly_modules(document: Any, data: Mapping[str, Any], temp: Path, rendere
         )
         _chart(document, volume, f"Volume mensal de vulnerabilidades não mitigadas - {view_label}")
 
-    faithful._heading(document, "1.1.2. Vulnerabilidades “Mitigadas”.", 3)
+    faithful._heading(document, "1.2.2. Vulnerabilidades “Mitigadas”.", 3)
     for view_index, (view_label, history) in enumerate(views):
         if view_index:
             _new_report_section(document)
@@ -553,7 +575,7 @@ def _scan_health(document: Any, data: Mapping[str, Any], temp: Path, rendered: l
     known = isinstance(statuses, Mapping) and "scan_auth_health" in statuses
     if not isinstance(health, Mapping) and not known:
         return
-    heading = faithful._heading(document, "1.2. Integridade da varredura", 2)
+    heading = faithful._heading(document, "1.3. Integridade da varredura", 2)
     heading.paragraph_format.page_break_before = True
     faithful._paragraph(document, SCAN_HEALTH)
     if not isinstance(health, Mapping) or not _number(health.get("total")):
@@ -577,7 +599,7 @@ def _previous_period(
     previous = data.get("previous_period_overview")
     if not isinstance(previous, Mapping):
         return
-    faithful._heading(document, "1.3. Comparativo com o período anterior", 2)
+    faithful._heading(document, "1.4. Comparativo com o período anterior", 2)
     faithful._paragraph(document, f"Comparativo relatório anterior ({previous.get('label', '')})")
     rows = []
     for label, key in (("TOTAL", "total"), ("Crítica", "critical"), ("Alta", "high"), ("Média", "medium"), ("Baixa", "low")):
@@ -750,7 +772,7 @@ def _plugin_family(
         return
     faithful._heading(
         document,
-        "1.4. Vulnerabilidades mitigadas por família de plugin",
+        "1.5. Vulnerabilidades mitigadas por família de plugin",
         2,
     )
     faithful._paragraph(document, PLUGIN_FAMILY)
@@ -785,7 +807,7 @@ def _eol(
         return
     faithful._heading(
         document,
-        "1.5. Sistemas operacionais e softwares sem suporte",
+        "1.6. Sistemas operacionais e softwares sem suporte",
         2,
     )
     for text in (EOL_INTRO, EOL_TENABLE, EOL_METHOD):
@@ -800,10 +822,10 @@ def _eol(
         if isinstance(item, Mapping) and item.get("plugin_id") is not None
     )
     plugin_filter = {"Plugin ID": plugin_ids} if plugin_ids else None
-    faithful._heading(document, "1.5.1. Ativos com SOs e softwares sem suporte.", 3)
+    faithful._heading(document, "1.6.1. Ativos com SOs e softwares sem suporte.", 3)
     faithful._paragraph(document, EOL_ASSETS)
     asset_rows = []
-    for item in assets or []:
+    for item in (assets or [])[:20]:
         if isinstance(item, Mapping):
             asset_rows.append((
                 "" if mask_sensitive else item.get("ip_address", ""),
@@ -820,7 +842,7 @@ def _eol(
     )
     faithful._heading(
         document,
-        "1.5.2. Principais softwares e SOs sem suporte por vulnerabilidades",
+        "1.6.2. Principais softwares e SOs sem suporte por vulnerabilidades",
         3,
     )
     faithful._paragraph(document, EOL_SOFTWARE)
@@ -846,7 +868,7 @@ def _executive(document: Any, data: Mapping[str, Any], temp: Path, rendered: lis
         return
     faithful._heading(
         document,
-        "1.6. Análise Executiva da Evolução de Vulnerabilidades e Criticidade dos Ativos",
+        "1.7. Análise Executiva da Evolução de Vulnerabilidades e Criticidade dos Ativos",
         2,
     )
     for text in EXECUTIVE_PARAGRAPHS:
@@ -862,7 +884,7 @@ def _evolution(document: Any, data: Mapping[str, Any], temp: Path, rendered: lis
     if not views:
         return
     history = views[0][1]
-    faithful._heading(document, "1.7. Evolução mensal de vulnerabilidades", 2)
+    faithful._heading(document, "1.1. Evolução mensal de vulnerabilidades", 2)
     for text in EVOLUTION_PARAGRAPHS:
         faithful._paragraph(document, text)
     evolution_rows = []
@@ -899,14 +921,14 @@ def _evolution(document: Any, data: Mapping[str, Any], temp: Path, rendered: lis
         new_chart = temp / "monthly-new-by-severity.png"
         _grouped_monthly_chart(
             new_chart,
-            f"Comparativo de Vulnerabilidades “Novas” por níveis elevados de Risco {year}",
+            f"Comparativo de Vulnerabilidades Novas {year}",
             new_rows,
-            SEVERITY_SERIES,
+            (*SEVERITY_SERIES, ("total", "Total Novas", "#B244A5")),
         )
         _chart(
             document,
             new_chart,
-            "Comparativo mensal de vulnerabilidades novas por severidade",
+            f"Comparativo de Vulnerabilidades Novas {year} por severidade e total",
         )
     rendered.append("vm_monthly_evolution")
 
@@ -1102,6 +1124,8 @@ def generate_customizations_report(
         faithful._paragraph(document, NO_HISTORY_MESSAGE)
     with tempfile.TemporaryDirectory() as directory:
         temp = Path(directory)
+        if _module_enabled(profile, "vm_monthly_evolution"):
+            _evolution(document, data, temp, rendered)
         if _module_enabled(profile, "vm_monthly_volume"):
             _monthly_modules(document, data, temp, rendered)
         if _module_enabled(profile, "scan_auth_health"):
@@ -1114,8 +1138,6 @@ def generate_customizations_report(
             _eol(document, data, dataset, profile, mask_sensitive, rendered)
         if _module_enabled(profile, "vm_executive_evolution"):
             _executive(document, data, temp, rendered)
-        if _module_enabled(profile, "vm_monthly_evolution"):
-            _evolution(document, data, temp, rendered)
         if _module_enabled(profile, "cloud_container_images"):
             _containers(document, data, dataset, profile, mask_sensitive, rendered)
         if _module_enabled(profile, "vm_exploit_vector"):

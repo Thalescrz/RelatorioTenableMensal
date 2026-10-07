@@ -8,14 +8,42 @@ from pathlib import Path
 
 from docx import Document
 from docx.oxml.ns import qn
+from PIL import Image as PilImage
 
 from tenable_reports.config.profile import load_client_profile
 from tenable_reports.presentation.customizations_report_docx import (
+    _bar_chart,
     generate_customizations_report,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_executive_bar_chart_keeps_bars_out_of_the_label_column(tmp_path: Path) -> None:
+    output = tmp_path / "executive-mixed-signs.png"
+
+    _bar_chart(
+        output,
+        "Evolução de Vulnerabilidades",
+        (
+            {"label": "Categoria com descrição longa", "change": -100},
+            {"label": "Outra categoria", "change": 80},
+        ),
+        (("change", "Variação", "#2E59FC"),),
+    )
+
+    with PilImage.open(output) as image:
+        pixels = image.load()
+        blue_positions = [
+            x
+            for y in range(image.height)
+            for x in range(image.width)
+            if pixels[x, y] == (46, 89, 252)
+        ]
+
+    assert blue_positions
+    assert min(blue_positions) >= 360
 
 
 def _text(document):
@@ -144,16 +172,71 @@ def test_customizations_report_has_one_numbered_top_level_and_numbered_modules()
         assert first_heading._p.get_or_add_pPr().find(qn("w:pageBreakBefore")) is not None
         assert (
             "Heading 2",
-            "1.1. Comparativo Mensal de Vulnerabilidades Mitigadas e Não Mitigadas.",
+            "1.1. Evolução mensal de vulnerabilidades",
         ) in headings
         assert (
             "Heading 2",
-            "1.5. Sistemas operacionais e softwares sem suporte",
+            "1.2. Comparativo Mensal de Vulnerabilidades Mitigadas e Não Mitigadas.",
+        ) in headings
+        assert (
+            "Heading 2",
+            "1.6. Sistemas operacionais e softwares sem suporte",
         ) in headings
         assert (
             "Heading 2",
             "1.9. Vulnerabilidades Exploráveis por Vetor de Ataque",
         ) in headings
+        level_two = [text for style, text in headings if style == "Heading 2"]
+        assert level_two.index("1.1. Evolução mensal de vulnerabilidades") < level_two.index(
+            "1.2. Comparativo Mensal de Vulnerabilidades Mitigadas e Não Mitigadas."
+        )
+        with zipfile.ZipFile(output) as package:
+            document_xml = package.read("word/document.xml").decode("utf-8")
+        assert "Comparativo de Vulnerabilidades Novas 2026 por severidade e total" in document_xml
+
+
+def test_eol_asset_ranking_is_limited_to_twenty_rows() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        source = json.loads(
+            (ROOT / "tests/fixtures/report-dataset-phase5.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        source["customizations"]["eol_assets"] = [
+            {
+                "asset_key": f"asset-{index:02d}",
+                "ip_address": "",
+                "asset_name": "",
+                "critical": 1,
+                "high": 2,
+                "medium": 3,
+                "low": index,
+                "total": index + 6,
+            }
+            for index in range(25)
+        ]
+        dataset = Path(directory) / "eol-top20.json"
+        dataset.write_text(json.dumps(source), encoding="utf-8")
+        output = Path(directory) / "custom-eol-top20.docx"
+
+        generate_customizations_report(
+            template_path=ROOT / "templates/corporate/base-v1.docx",
+            dataset_path=dataset,
+            profile=load_client_profile(
+                ROOT / "clients/examples/client-profile-all-customizations.json"
+            ),
+            output_path=output,
+            mask_sensitive=True,
+        )
+
+        document = Document(output)
+        table = next(
+            table
+            for table in document.tables
+            if tuple(cell.text for cell in table.rows[0].cells)
+            == ("IP Address", "Asset Name", "Crítica", "Alta", "Média", "Baixa", "Total")
+        )
+        assert len(table.rows) == 21
 
 
 def test_customizations_report_mirrors_branding_on_even_body_pages() -> None:

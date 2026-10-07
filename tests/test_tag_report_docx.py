@@ -292,6 +292,10 @@ def test_tag_report_uses_standalone_numbered_heading_hierarchy(tmp_path: Path) -
     assert ("Heading 2", "2.1. Vulnerabilidades Mitigadas") in headings
     assert ("Heading 2", "2.2. Vulnerabilidades Não Mitigadas") in headings
     assert ("Heading 2", "2.3. Vulnerabilidades Ressurgidas") in headings
+    assert ("Heading 2", "4.1. Evolução Mensal de Vulnerabilidades") in headings
+    assert ("Heading 2", "4.2. Vulnerabilidades Não Mitigadas") in headings
+    assert ("Heading 2", "4.3. Vulnerabilidades Mitigadas") in headings
+    assert ("Heading 2", "4.4. Vulnerabilidades Novas") in headings
 
 
 
@@ -343,7 +347,7 @@ def test_output_column_and_tag_validation_filters_are_optional(tmp_path: Path) -
     assert "Tag = Equipe:Infraestrutura" in text
 
 
-def test_enabled_tag_comparison_renders_tables_and_five_charts(tmp_path: Path) -> None:
+def test_enabled_tag_comparison_renders_tables_and_six_charts(tmp_path: Path) -> None:
     output = tmp_path / "tag-history.docx"
     result = generate_tag_report(
         template_path=TEMPLATE,
@@ -360,13 +364,16 @@ def test_enabled_tag_comparison_renders_tables_and_five_charts(tmp_path: Path) -
 
     assert ("Mês", "Crítica", "Alta", "Média", "Baixa", "Total") in headers
     assert result.comparison_rendered is True
-    assert _count_document_images(result.output_path) >= 8
+    assert _count_document_images(result.output_path) >= 9
     assert sum(
         paragraph.style is not None
         and paragraph.style.name == "Heading 1"
         and "Comparativo Mensal" in paragraph.text
         for paragraph in document.paragraphs
     ) == 1
+    with zipfile.ZipFile(result.output_path) as package:
+        document_xml = package.read("word/document.xml").decode("utf-8")
+    assert "Comparativo de Vulnerabilidades Novas 2026 por severidade e total" in document_xml
 
 
 def test_tag_comparison_renders_controlled_scope_notice(tmp_path: Path) -> None:
