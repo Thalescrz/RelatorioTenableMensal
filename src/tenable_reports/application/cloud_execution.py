@@ -352,6 +352,30 @@ def _history_row(dataset: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _monthly_history(
+    *,
+    repository: CloudSnapshotRepository,
+    compatibility: CloudSnapshotCompatibility,
+    period_id_before: str,
+) -> list[Mapping[str, Any]]:
+    return [
+        _history_row(replay_cloud_snapshot(prior).dataset)
+        for prior in repository.list_monthly_main_before(
+            compatibility=compatibility,
+            period_id_before=period_id_before,
+        )
+    ]
+
+
+def _with_monthly_history(
+    dataset: Mapping[str, Any],
+    history: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    enriched = dict(dataset)
+    enriched["history"] = [*history, _history_row(dataset)]
+    return enriched
+
+
 def _variants(_profile: ClientProfile) -> tuple[str, ...]:
     return ("expanded",)
 
@@ -495,10 +519,15 @@ def execute_cloud_component(
                     snapshot_id=exact.snapshot_id,
                 )
                 replay = replay_cloud_snapshot(exact)
+                history = _monthly_history(
+                    repository=dependencies.repository,
+                    compatibility=compatibility,
+                    period_id_before=str(period.get("period_id") or ""),
+                )
                 dataset_path, documents = _write_and_render(
                     request=request,
                     dependencies=dependencies,
-                    dataset=replay.dataset,
+                    dataset=_with_monthly_history(replay.dataset, history),
                 )
                 _emit(
                     progress_callback,
@@ -565,12 +594,11 @@ def execute_cloud_component(
                     else None
                 ),
             )
-        history: list[Mapping[str, Any]] = []
-        for prior in dependencies.repository.list_main_before(
+        history = _monthly_history(
+            repository=dependencies.repository,
             compatibility=compatibility,
-            period_end_before=str(period["end_at"]),
-        ):
-            history.append(_history_row(replay_cloud_snapshot(prior).dataset))
+            period_id_before=str(period.get("period_id") or ""),
+        )
 
         with _cloud_stage(ComponentStage.DATASET, "CLOUD_DATASET_FAILED"):
             dataset = dependencies.build_dataset(

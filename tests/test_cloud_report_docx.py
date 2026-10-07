@@ -650,7 +650,7 @@ def test_standard_cloud_report_keeps_approved_sections_and_detailed_top_five(
     assert "CVE-2099-1000" in text
     assert "Tipo de correção" in text
     assert "3.3.1. Overview das Vulnerabilidades das Imagens de Contêiner" in text
-    assert "2.0.1" in text
+    assert "2.0.1" not in text
     table_headers = [
         [cell.text for cell in table.rows[0].cells]
         for table in document.tables
@@ -660,7 +660,6 @@ def test_standard_cloud_report_keeps_approved_sections_and_detailed_top_five(
         "Severidade",
         "VPR",
         "Software",
-        "Fixed by",
     ] in table_headers
     assert [
         "Máquina virtual",
@@ -687,8 +686,16 @@ def test_standard_cloud_report_keeps_approved_sections_and_detailed_top_five(
         "Severidade",
         "Ativos afetados",
         "Software",
-        "Fixed by",
     ] in table_headers
+    assert [
+        "Política",
+        "Categoria",
+        "Severidade",
+        "Provedor",
+        "Recursos",
+    ] in table_headers
+    assert "Fixed by" not in text
+    assert "priorização técnica das correções" in text
     assert "Ativos afetados" in text
     assert "VPR: 0" in text
     assert "TRADUZIDO:" in text
@@ -751,10 +758,8 @@ def test_correctable_asset_rankings_distinguish_partial_and_unavailable_sources(
     )
 
     assert "Resultado parcial:" in vm_section
-    assert (
-        "Neste mês esta informação não pôde ser obtida pela API "
-        "Tenable Cloud Security."
-    ) in container_section
+    assert "Esta informação não estava disponível na fotografia considerada" in container_section
+    assert "API Tenable Cloud Security" not in container_section
     assert "não foram identificadas vulnerabilidades" not in container_section
 
 

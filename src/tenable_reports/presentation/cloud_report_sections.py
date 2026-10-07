@@ -434,16 +434,15 @@ def render_container_image_vulnerability_overview(
                 ),
                 row.get("vpr_display") or "N/D",
                 row.get("software") or "N/D",
-                row.get("fixed_by_display") or "N/D",
             )
             for row in item.get("rows") or ()
             if isinstance(row, Mapping)
         ]
         builder.table(
-            ("CVE", "Severidade", "VPR", "Software", "Fixed by"),
+            ("CVE", "Severidade", "VPR", "Software"),
             rows,
-            widths=(1450, 1300, 800, 2700, 2950),
-            left_columns=frozenset({0, 3, 4}),
+            widths=(1600, 1400, 900, 5300),
+            left_columns=frozenset({0, 3}),
         )
     builder.source_note(
         dataset,
@@ -618,7 +617,6 @@ def render_top_correctable(
             ),
             item.get("affected_assets", 0),
             item.get("software") or "N/D",
-            item.get("fixed_by_display") or "N/D",
         )
         for item in dataset.get("top_correctable_vulnerabilities") or ()
     ]
@@ -630,11 +628,10 @@ def render_top_correctable(
             "Severidade",
             "Ativos afetados",
             "Software",
-            "Fixed by",
         ),
         rows,
-        widths=(1200, 650, 650, 1050, 1150, 2100, 2400),
-        left_columns=frozenset({0, 5, 6}),
+        widths=(1300, 700, 700, 1200, 1300, 4000),
+        left_columns=frozenset({0, 5}),
         empty_message=copy.EMPTY_CORRECTABLE_MONTH,
     )
     builder.source_note(
@@ -894,16 +891,15 @@ def render_cloud_posture(
             item.get("category") or "",
             SEVERITY_LABELS.get(str(item.get("severity") or ""), item.get("severity") or ""),
             item.get("provider") or "N/D",
-            item.get("findings", 0),
             item.get("affected_resources", 0),
         )
         for item in dataset.get("top_posture_findings") or ()
         if isinstance(item, Mapping)
     ]
     builder.table(
-        ("Política", "Categoria", "Severidade", "Provedor", "Achados", "Recursos"),
+        ("Política", "Categoria", "Severidade", "Provedor", "Recursos"),
         rows,
-        widths=(3000, 1600, 1200, 1400, 1000, 1000),
+        widths=(3500, 1800, 1300, 1600, 1000),
         left_columns=frozenset({0, 1, 3}),
     )
     builder.source_note(dataset, "cloud_posture", enabled=show_source_filters)

@@ -176,6 +176,38 @@ def test_history_returns_only_compatible_main_runs_before_boundary() -> None:
     assert [row.run_id for row in rows] == ["run-jun", "run-jul"]
 
 
+def test_monthly_history_accepts_legacy_mode_execution_and_metric_v2() -> None:
+    module = _module()
+    repository = module.MemoryCloudSnapshotRepository()
+    legacy = module.build_cloud_snapshot(
+        dataset=_dataset(),
+        **_identity("run-legacy-aug"),
+    )
+    legacy = replace(
+        legacy,
+        execution_type="MANUAL",
+        period_mode="EXPLICIT_RANGE",
+        metric_definition_version="cloud-metrics-v2",
+    )
+    repository.publish(legacy)
+    repository.mark_main(legacy.run_id)
+    other_scope = replace(
+        legacy,
+        snapshot_id="snapshot-other-scope",
+        run_id="run-other-scope",
+        scope_hash="other-scope",
+    )
+    repository.publish(other_scope)
+    repository.mark_main(other_scope.run_id)
+
+    rows = repository.list_monthly_main_before(
+        compatibility=_compatibility(),
+        period_id_before="2026-09",
+    )
+
+    assert [row.run_id for row in rows] == ["run-legacy-aug"]
+
+
 def test_recent_compatible_snapshot_and_contract_cache_can_be_invalidated() -> None:
     module = _module()
     repository = module.MemoryCloudSnapshotRepository()

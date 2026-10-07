@@ -4,8 +4,14 @@ from __future__ import annotations
 
 
 OBJECTIVE = (
-    "Este documento visa apresentar o relatório de vulnerabilidades da solução "
-    "Tenable durante o período mensal corrente."
+    "Este relatório apresenta a situação das vulnerabilidades e da postura de "
+    "segurança dos recursos monitorados pelo Tenable Cloud Security no período "
+    "indicado. O documento consolida os principais riscos, os ativos mais "
+    "expostos, as vulnerabilidades com correção disponível, os indicadores de "
+    "remediação e a evolução mensal quando existe histórico compatível. Essas "
+    "informações apoiam a priorização técnica das correções e o acompanhamento "
+    "da redução da exposição, considerando as evidências disponíveis na "
+    "fotografia coletada."
 )
 
 CLOUD_OVERVIEW = (
@@ -206,7 +212,8 @@ PARTIAL_CORRECTABLE_COVERAGE = (
     "coletadas."
 )
 SOURCE_UNAVAILABLE = (
-    "Neste mês esta informação não pôde ser obtida pela API Tenable Cloud Security."
+    "Esta informação não estava disponível na fotografia considerada para este "
+    "relatório."
 )
 TRANSLATION_UNAVAILABLE = (
     "A tradução automática não pôde ser concluída; o texto original foi preservado."
