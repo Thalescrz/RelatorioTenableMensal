@@ -744,6 +744,18 @@ def _rebuild_predecessor_snapshot(
     )
 
 
+def _create_item_work_directory(work_root: Path) -> Path:
+    work_root.mkdir(parents=True, exist_ok=True)
+    for _ in range(10):
+        candidate = work_root / uuid.uuid4().hex[:8]
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        return candidate
+    raise FileExistsError("Não foi possível reservar diretório temporário da manutenção.")
+
+
 def _apply_item(
     item: RepairPlanItem,
     *,
@@ -753,8 +765,7 @@ def _apply_item(
     applied_at: str,
     tag_only: bool,
 ) -> int:
-    item_work = work_root / uuid.uuid4().hex
-    item_work.mkdir(parents=True, exist_ok=False)
+    item_work = _create_item_work_directory(work_root)
     staging = item.current.manifest_path.parent / f".monthly-comparison-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=False)
     try:

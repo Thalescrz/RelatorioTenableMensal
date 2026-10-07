@@ -419,3 +419,13 @@ def test_predecessor_identity_accepts_legacy_period_id_with_same_boundaries() ->
         assert "fronteiras" in str(exc)
     else:
         raise AssertionError("Fronteiras divergentes deveriam ser rejeitadas.")
+
+
+def test_item_work_directory_uses_short_name_for_windows_paths(tmp_path: Path) -> None:
+    work_root = tmp_path / "maintenance-work" / "monthly-comparisons"
+
+    created = repair._create_item_work_directory(work_root)
+
+    assert created.parent == work_root
+    assert created.is_dir()
+    assert len(created.name) <= 12
