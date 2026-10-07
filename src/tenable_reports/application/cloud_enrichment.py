@@ -11,7 +11,6 @@ from tenable_reports.application.cloud_corrections import (
 )
 from tenable_reports.domain.cloud import (
     CloudAssetKey,
-    CloudAssetKind,
     NormalizedCloudSnapshot,
 )
 
@@ -105,14 +104,15 @@ def correlate_cloud_enrichments(
 ) -> tuple[CloudVulnerabilityEnrichment, ...]:
     """Require an explicit resource+CVE relation for every remediation."""
 
-    occurrence_by_key = {
-        (
-            occurrence.asset.kind,
-            occurrence.asset.asset_id,
-            occurrence.vulnerability_id,
-        ): occurrence
-        for occurrence in snapshot.occurrences
-    }
+    occurrences_by_resource: dict[
+        tuple[str, str],
+        dict[CloudAssetKey, Any],
+    ] = {}
+    for occurrence in snapshot.occurrences:
+        occurrences_by_resource.setdefault(
+            (occurrence.asset.asset_id, occurrence.vulnerability_id),
+            {},
+        )[occurrence.asset] = occurrence
     correlated: dict[
         tuple[str, CloudAssetKey],
         dict[str, Any],
@@ -127,16 +127,17 @@ def correlate_cloud_enrichments(
         ):
             continue
         for resource in finding.resources:
-            asset = CloudAssetKey(
-                kind=CloudAssetKind.VIRTUAL_MACHINE,
-                asset_id=resource.resource_id,
-            )
             for cve in resource.vulnerability_ids:
-                occurrence = occurrence_by_key.get(
-                    (asset.kind, asset.asset_id, cve)
+                candidates = tuple(
+                    occurrences_by_resource.get(
+                        (resource.resource_id, cve),
+                        {},
+                    ).values()
                 )
-                if occurrence is None:
+                if len(candidates) != 1:
                     continue
+                occurrence = candidates[0]
+                asset = occurrence.asset
                 key = (cve, asset)
                 value = correlated.setdefault(
                     key,
