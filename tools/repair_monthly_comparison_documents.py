@@ -672,6 +672,28 @@ def _validate_rebuilt_history(
         raise ValueError("Os findings ressurgidos reconstruídos divergem do histórico atual.")
 
 
+def _validate_predecessor_identity(
+    predecessor: MainRun,
+    rebuilt: HistorySnapshot,
+) -> None:
+    if rebuilt.run_id != predecessor.run_id:
+        raise ValueError("O histórico predecessor reconstruído diverge da execução MAIN.")
+    expected_start = parse_datetime(
+        predecessor.period_start_at,
+        predecessor.timezone,
+    )
+    expected_end = parse_datetime(
+        predecessor.period_end_at,
+        predecessor.timezone,
+    )
+    rebuilt_start = parse_datetime(rebuilt.period_start_at, predecessor.timezone)
+    rebuilt_end = parse_datetime(rebuilt.period_end_at, predecessor.timezone)
+    if rebuilt_start != expected_start or rebuilt_end != expected_end:
+        raise ValueError(
+            "O histórico predecessor reconstruído diverge das fronteiras MAIN."
+        )
+
+
 def _rebuild_predecessor_snapshot(
     item: RepairPlanItem,
     *,
@@ -714,10 +736,7 @@ def _rebuild_predecessor_snapshot(
         normalized_findings_path=materialized.findings_path,
         tag_datasets=tag_payloads,
     )
-    if rebuilt.run_id != item.predecessor.run_id:
-        raise ValueError("O histórico predecessor reconstruído diverge da execução MAIN.")
-    if rebuilt.period_id != item.predecessor.period_key:
-        raise ValueError("O histórico predecessor reconstruído diverge da competência MAIN.")
+    _validate_predecessor_identity(item.predecessor, rebuilt)
     return replace(
         rebuilt,
         snapshot_id=item.predecessor_snapshot.snapshot_id,

@@ -385,3 +385,37 @@ def test_rebuild_predecessor_snapshot_updates_summary_fingerprints_and_tag(
     )
     assert rebuilt.tag_snapshots[0]["summary"]["non_mitigated"] == 1
     assert rebuilt.tag_snapshots[0]["top_assets"][0]["total"] == 1
+
+
+def test_predecessor_identity_accepts_legacy_period_id_with_same_boundaries() -> None:
+    run = repair.MainRun(
+        run_id="run-august",
+        client_id="client-a",
+        tenant_id="tenant-a",
+        period_key="2026-08",
+        timezone="America/Fortaleza",
+        scope_hash="scope-a",
+        metric_definition_version="report-definition-v1.2",
+        execution_type="MANUAL",
+        period_start_at="2026-08-01T03:00:00Z",
+        period_end_at="2026-09-01T03:00:00Z",
+        period_mode="EXPLICIT_RANGE",
+        origin="MANUAL",
+        manifest_path=Path("publication-manifest.json"),
+    )
+    rebuilt = replace(
+        _snapshot("run-august", top_count=0),
+        period_id="20260801T000000-20260901T000000",
+    )
+
+    repair._validate_predecessor_identity(run, rebuilt)
+
+    try:
+        repair._validate_predecessor_identity(
+            run,
+            replace(rebuilt, period_end_at="2026-09-02T03:00:00Z"),
+        )
+    except ValueError as exc:
+        assert "fronteiras" in str(exc)
+    else:
+        raise AssertionError("Fronteiras divergentes deveriam ser rejeitadas.")
