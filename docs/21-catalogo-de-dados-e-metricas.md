@@ -127,8 +127,9 @@ O dataset `cloud-metrics-v3` conserva:
 - totais de ativos, workloads, imagens, CVEs e ocorrências por severidade;
 - Top 5 de CVEs críticas com VPR, CVSS, componentes e ativos afetados;
 - overview das cinco imagens mais vulneráveis, com até cinco combinações
-  CVE/software e versão `Fixed by` por imagem;
-- Top 10 com correção agrupado por CVE/software, incluindo `Fixed by` quando houver;
+  CVE/software e evidência interna de `FixedBy` quando disponível;
+- Top 10 com correção agrupado por CVE/software, usando `FixedBy` ou remediação
+  correlacionada como evidência interna;
 - Top 10 de máquinas virtuais e Top 10 de containers corrigíveis. Containers são
   representados por imagens de container; cada recurso conta combinações distintas
   de CVE/software com `FixedBy` ou remediação correlacionada ao mesmo recurso e CVE;
@@ -149,6 +150,11 @@ inventada no ranking. O tipo de correção prefere campo explícito; a regra loc
 determinística registra sua origem e, sem evidência, retorna `Não determinado`.
 `FixedBy` ausente, nulo ou não suportado permanece `N/D`; versões nunca são
 inferidas de texto livre.
+
+O DOCX não expõe a coluna `Fixed by`. No overview por imagem apresenta CVE,
+severidade, VPR e software; na tabela de correção apresenta CVE, VPR, CVSS,
+severidade, ativos afetados e software. A ausência da fonte continua registrada na
+cobertura e na proveniência, sem produzir uma coluna `N/D` para o cliente.
 
 ## Janela temporal
 
@@ -205,23 +211,27 @@ e Low.
 - Principais hosts e imagens: ranking por ocorrências e severidade dentro da
   fotografia, sem misturar as duas populações.
 - Overview por imagem: cinco imagens do ranking e até cinco combinações
-  CVE/software por imagem, ordenadas por VPR, severidade e CVSS. `Fixed by` é
-  opcional e `N/D` não elimina a linha.
+  CVE/software por imagem, ordenadas por VPR, severidade e CVSS. A evidência de
+  versão corrigida participa do dataset, mas não é exibida como coluna.
 - Top 5 críticas: CVEs críticas ordenadas por VPR real, CVSS e ativos afetados,
   acompanhadas de descrição, correção e tabela de ativos.
 - Top 10 com correção: combinações CVE/software com `FixedBy` estruturado ou
   remediação correlacionada ao recurso e à CVE. Uma CVE pode ocupar mais de uma
-  linha quando os softwares forem distintos; `Fixed by` ausente aparece como
-  `N/D`. O documento não repete a ação recomendada extensa nessa tabela.
+  linha quando os softwares forem distintos. O documento não exibe `Fixed by` nem
+  repete a ação recomendada extensa nessa tabela.
 - Postura Cloud: findings não relacionados a vulnerabilidade, somente quando a
-  capacidade e a população são confirmadas.
+  capacidade e a população são confirmadas; o DOCX exibe **Recursos** e não repete
+  a mesma contagem em uma coluna **Achados**.
 - Aging: ocorrências abertas por idade; data ausente permanece em faixa própria.
 - Remediação: resoluções dentro do intervalo e média de dias somente para registros
   com datas válidas.
-- Evolução mensal: comparação de fotografias Cloud compactas e compatíveis; mês
-  indisponível permanece como lacuna, nunca zero artificial. Quando só existe a
-  fotografia atual, a tabela e o gráfico exibem um único ponto real e o texto deixa
-  explícito que ainda não há comparação temporal.
+- Evolução mensal: comparação de fotografias Cloud compactas `MAIN` da mesma
+  identidade de cliente, tenant, fuso, escopo, conector, normalizador e schema. A
+  série aceita `cloud-metrics-v2` e `cloud-metrics-v3` e tolera diferenças legadas
+  de modo de período e tipo de execução; isso não altera a compatibilidade estrita
+  usada para replay exato. Mês indisponível permanece como lacuna, nunca zero
+  artificial. Quando só existe a fotografia atual, a tabela e o gráfico exibem um
+  único ponto real e o texto deixa explícito que ainda não há comparação temporal.
 
 ## TAGs
 

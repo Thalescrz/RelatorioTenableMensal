@@ -1,7 +1,7 @@
 # Contexto do projeto
 
-**Atualizado em:** 2026-10-02  
-**Base verificada:** `04506cf` (`main` no início deste ciclo)  
+**Atualizado em:** 2026-10-07  
+**Base verificada:** `28894e7` (`main` no início deste ciclo)  
 **Natureza:** resumo versionado; estado operacional transitório fica fora deste arquivo
 
 ## Finalidade
@@ -137,6 +137,15 @@ não aumentam a contagem. O dataset registra separadamente a cobertura dessas
 fontes de correção; o DOCX informa resultado parcial ou fonte indisponível em vez
 de apresentar ausência de achados como se fosse um zero confirmado.
 
+No DOCX Cloud, `FixedBy` permanece como evidência interna para formar os rankings
+corrigíveis, mas não é apresentado em coluna. O overview por imagem exibe CVE,
+severidade, VPR e software; a tabela principal corrigível também omite `Fixed by`.
+Em Postura de Segurança, **Recursos** é a única contagem exibida. A evolução mensal
+aceita como predecessores `MAIN` da mesma competência lógica, cliente, tenant,
+fuso, escopo e versões de conector/normalizador, incluindo snapshots
+`cloud-metrics-v2` e `cloud-metrics-v3`, mesmo quando o modo de período ou o tipo de
+execução legado diferem. O replay exato continua exigindo compatibilidade estrita.
+
 ## Controle de documento
 
 O controle documental tem um padrão global, administrado na área administrativa,
@@ -189,6 +198,13 @@ versionados.
   20 do mês anterior, o Top 20 do mês atual e uma terceira tabela que compara os
   totais por ativo. O vínculo entre períodos continua sendo feito pelo UUID do
   ativo, nunca por IP ou hostname.
+- A seção temporal por TAG começa pela evolução consolidada e depois separa
+  não mitigadas, mitigadas e novas. O gráfico de novas usa somente
+  `new_by_severity` e inclui a série **Total Novas**.
+- No relatório de Inteligência, a evolução mensal é o primeiro bloco da seção 1;
+  o gráfico de novas inclui total, a lista de ativos com software sem suporte é
+  limitada ao Top 20 e o gráfico executivo reserva áreas distintas para rótulos,
+  barras e valores, inclusive quando há variação negativa.
 - Indicadores de explorabilidade permanecem segregados pelo framework definido;
   um indicador geral não substitui os demais.
 - Nas tabelas OWASP Top 10, cada Plugin ID exibe a maior severidade e o maior VPR

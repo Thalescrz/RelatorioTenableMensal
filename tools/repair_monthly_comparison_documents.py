@@ -20,6 +20,17 @@ if str(SRC) not in sys.path:
 from tenable_reports.application.collection_execution import (  # noqa: E402
     materialize_compact_snapshot_run,
 )
+from tenable_reports.application.cloud_execution import (  # noqa: E402
+    CloudExecutionRequest,
+    _history_row,
+    _with_monthly_history,
+)
+from tenable_reports.application.cloud_report_dataset import (  # noqa: E402
+    load_cloud_report_dataset,
+)
+from tenable_reports.application.cloud_snapshots import (  # noqa: E402
+    replay_cloud_snapshot,
+)
 from tenable_reports.application.compact_snapshots import (  # noqa: E402
     CompactFindingSnapshot,
     replay_compact_snapshot,
@@ -32,6 +43,7 @@ from tenable_reports.application.publishing import (  # noqa: E402
     PublicationDocument,
     PublicationDocumentReplacement,
     refresh_publication_documents_atomically,
+    sha256_file,
     write_json_atomic,
 )
 from tenable_reports.application.report_dataset import (  # noqa: E402
@@ -55,6 +67,9 @@ from tenable_reports.domain.reporting import (  # noqa: E402
 from tenable_reports.infrastructure.compact_snapshots_postgresql import (  # noqa: E402
     PostgresCompactSnapshotRepository,
 )
+from tenable_reports.infrastructure.cloud_snapshots_postgresql import (  # noqa: E402
+    PostgresCloudSnapshotRepository,
+)
 from tenable_reports.infrastructure.postgresql import (  # noqa: E402
     SCHEMA_NAME,
     PostgresDatabase,
@@ -63,6 +78,12 @@ from tenable_reports.infrastructure.postgresql import (  # noqa: E402
 )
 from tenable_reports.infrastructure.report_registry_postgresql import (  # noqa: E402
     PostgresReportRegistry,
+)
+from tenable_reports.infrastructure.translation import (  # noqa: E402
+    build_default_text_translator,
+)
+from tenable_reports.presentation.cloud_report_docx import (  # noqa: E402
+    generate_cloud_report,
 )
 from tenable_reports.presentation.customizations_report_docx import (  # noqa: E402
     generate_customizations_report,
@@ -192,6 +213,23 @@ def _previous_month(period_id: str) -> str:
     return f"{value.year:04d}-{value.month - 1:02d}"
 
 
+def _cloud_dataset_matches_period(
+    period: Mapping[str, Any],
+    *,
+    period_key: str,
+    timezone: str,
+) -> bool:
+    if str(period.get("period_id") or "") == period_key:
+        return True
+    start_at = str(period.get("start_at") or "").strip()
+    if not start_at:
+        return False
+    try:
+        return parse_datetime(start_at, timezone).strftime("%Y-%m") == period_key
+    except ValueError:
+        return False
+
+
 def _database(path: Path) -> PostgresDatabase:
     load_dotenv_file(path, override=True)
     if not DatabaseConfig.is_configured():
@@ -284,13 +322,31 @@ def _manifest_documents(path: Path) -> tuple[PublicationDocument, ...]:
         _publication_document(item) for item in values if isinstance(item, Mapping)
     )
     selected = tuple(
-        item for item in documents if item.document_kind in {"custom", "tag"}
+        item for item in documents if item.document_kind in {"custom", "tag", "cloud"}
     )
     if sum(item.document_kind == "custom" for item in selected) != 1:
         raise ValueError("A publicação precisa ter exatamente um relatório customizado.")
     if any(not Path(item.path).resolve().is_file() for item in selected):
         raise ValueError("Um documento mensal publicado não foi localizado.")
     return selected
+
+
+def _manifest_cloud_dataset_path(path: Path) -> Path:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Manifesto MAIN inválido.") from exc
+    sources = payload.get("source_datasets") if isinstance(payload, Mapping) else None
+    cloud = sources.get("cloud") if isinstance(sources, Mapping) else None
+    if not isinstance(cloud, Mapping):
+        raise ValueError("Manifesto MAIN sem dataset Cloud registrado.")
+    dataset_path = Path(str(cloud.get("path") or "")).resolve()
+    if not dataset_path.is_file():
+        raise ValueError("Dataset Cloud publicado não foi localizado.")
+    expected = str(cloud.get("sha256") or "").strip().lower()
+    if expected and sha256_file(dataset_path) != expected:
+        raise ValueError("Hash do dataset Cloud publicado não confere.")
+    return dataset_path
 
 
 def _selected_documents(
@@ -315,6 +371,14 @@ def _selected_plan(
         for item in plan
         if _selected_documents(item.documents, tag_only=True)
     )
+
+
+def _plan_from_position(plan: Sequence[Any], start_position: int) -> tuple[Any, ...]:
+    if not plan and start_position == 1:
+        return ()
+    if start_position < 1 or start_position > len(plan):
+        raise ValueError("A posição inicial precisa existir no plano selecionado.")
+    return tuple(plan[start_position - 1 :])
 
 
 def _matching_predecessor(
@@ -651,6 +715,66 @@ def _apply_item(
                     destination=destination,
                 )
             )
+        cloud_destinations = tuple(
+            document
+            for document in selected_documents
+            if document.document_kind == "cloud"
+        )
+        if len(cloud_destinations) > 1:
+            raise ValueError("A publicação possui mais de um relatório Cloud.")
+        if cloud_destinations:
+            cloud_destination = cloud_destinations[0]
+            cloud_dataset = load_cloud_report_dataset(
+                _manifest_cloud_dataset_path(item.current.manifest_path)
+            )
+            cloud_period = cloud_dataset.get("period")
+            if not isinstance(cloud_period, Mapping):
+                raise ValueError("Dataset Cloud publicado sem período válido.")
+            if not _cloud_dataset_matches_period(
+                cloud_period,
+                period_key=item.current.period_key,
+                timezone=item.current.timezone,
+            ):
+                raise ValueError("Dataset Cloud publicado pertence a outra competência.")
+            cloud_request = CloudExecutionRequest(
+                profile=item.profile,
+                period=period,
+                execution_type=item.current.execution_type,
+                run_id=item.current.run_id,
+                attempt_number=1,
+                output_root=item_work,
+                report_directory=staging,
+                template_path=template,
+            )
+            cloud_repository = PostgresCloudSnapshotRepository(database, migrate=False)
+            cloud_history = [
+                _history_row(replay_cloud_snapshot(snapshot).dataset)
+                for snapshot in cloud_repository.list_monthly_main_before(
+                    compatibility=cloud_request.compatibility(),
+                    period_id_before=item.current.period_key,
+                )
+            ]
+            cloud_enriched = _with_monthly_history(cloud_dataset, cloud_history)
+            cloud_dataset_staged = write_json_atomic(
+                staging / "cloud-dataset-with-history.json",
+                cloud_enriched,
+            )
+            cloud_staged = staging / "cloud.docx"
+            generate_cloud_report(
+                template_path=template,
+                dataset_path=cloud_dataset_staged,
+                profile=item.profile,
+                output_path=cloud_staged,
+                variant=cloud_destination.document_variant or "expanded",
+                translator=build_default_text_translator(),
+                mask_sensitive=False,
+            )
+            replacements.append(
+                PublicationDocumentReplacement(
+                    staged_path=cloud_staged,
+                    destination=cloud_destination,
+                )
+            )
         operations = PostgresOperationsRepository(database, migrate=False)
         refresh_publication_documents_atomically(
             manifest_path=item.current.manifest_path,
@@ -718,6 +842,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--scope-override-client", action="append", default=[])
     parser.add_argument("--tag-only", action="store_true")
+    parser.add_argument(
+        "--start-position",
+        type=int,
+        default=1,
+        help="Retoma a partir da posição N do plano determinístico já confirmado.",
+    )
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirmation")
     args = parser.parse_args(argv)
@@ -733,6 +863,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         scope_override_clients=overrides,
     )
     plan = _selected_plan(plan, tag_only=args.tag_only)
+    plan = _plan_from_position(plan, args.start_position)
     conflicts = _active_conflicts(database, plan)
     summary = {
         "operation": OPERATION,
@@ -750,6 +881,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
         "tag_document_count": sum(
             document.document_kind == "tag"
+            for item in plan
+            for document in item.documents
+        ),
+        "cloud_document_count": sum(
+            document.document_kind == "cloud"
             for item in plan
             for document in item.documents
         ),

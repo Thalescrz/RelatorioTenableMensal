@@ -155,6 +155,15 @@ imagens de container. Uma fotografia normalizada alimenta o único DOCX Cloud pa
 e o snapshot compacto PostgreSQL. O valor técnico de variante continua `expanded`
 somente para compatibilidade com o histórico e com a restrição do banco.
 
+Há dois níveis deliberadamente distintos de compatibilidade Cloud. Reutilização
+exata e proteção contra coleta recente continuam comparando todos os campos da
+identidade do snapshot. A montagem da evolução mensal consulta referências
+`MAIN/MONTHLY` anteriores e aceita a família `cloud-metrics-v2`/`cloud-metrics-v3`,
+ignorando apenas diferenças legadas de `execution_type` e `period_mode`; cliente,
+tenant, fuso, escopo, conector, normalizador e schema continuam obrigatórios. Um
+replay exato recompõe a série histórica antes de renderizar, sem nova consulta
+remota e sem modificar o snapshot imutável.
+
 O único DOCX Cloud usa o mesmo shell oficial, base tipográfica e paleta corporativa
 do relatório geral: Calibri no conteúdo gerado, azul institucional em títulos e
 cabeçalhos e cores de severidade compartilhadas. Runs herdados do corpo técnico

@@ -55,6 +55,11 @@ Comparativos temporais só são produzidos quando existe referência compatível
 primeiro relatório continua útil e apresenta os blocos que dependem apenas do mês
 corrente.
 
+A seção 1 começa pela evolução mensal consolidada e pelo comparativo de
+vulnerabilidades novas, com séries por severidade e **Total Novas**. Os demais
+módulos seguem depois. A lista 1.6.1 de ativos com sistemas operacionais ou
+softwares sem suporte é efetivamente limitada aos 20 primeiros itens.
+
 ### Relatório operacional por TAG
 
 É um recorte VM compacto para uma TAG selecionada. Repete os módulos operacionais
@@ -66,6 +71,12 @@ comparativo da mesma TAG no tempo.
 O nome do arquivo identifica cliente, categoria/valor da TAG e período. A seleção
 de TAGs para gerar documentos é independente da seleção de TAGs que recebem o
 comparativo temporal.
+
+Quando habilitado, o item 4 começa pela evolução consolidada e apresenta em
+subitens separados vulnerabilidades não mitigadas, mitigadas e novas. O gráfico de
+novas usa exclusivamente a série mensal de novas por severidade e inclui o total;
+ele não reutiliza o gráfico consolidado. O bloco mantém as tabelas Top 20 do mês
+anterior, do mês atual e a comparação entre ambas.
 
 ### Relatório Tenable Cloud Security
 
@@ -80,16 +91,23 @@ imagens mais vulneráveis com até cinco linhas por combinação CVE/software e 
 com correção disponível também agrupado por CVE/software. Logo após esse item, o
 documento apresenta o Top 10 de máquinas virtuais e o Top 10 de containers —
 representados pelas imagens de container disponíveis no conector — com mais
-combinações distintas de CVE/software corrigíveis. As tabelas exibem
-`Software` e `Fixed by`; versão ausente ou fonte opcional não suportada aparece como
-`N/D`, sem impedir o restante do documento. A coluna extensa de ação recomendada
-permanece removida. O relatório segue com dashboard, componentes,
-postura quando suportada, envelhecimento, remediação e evolução mensal. O item de
+combinações distintas de CVE/software corrigíveis. As tabelas exibem `Software`,
+mas não publicam a versão `Fixed by`; essa evidência permanece interna ao cálculo
+de corrigibilidade. A coluna extensa de ação recomendada permanece removida. O
+relatório segue com dashboard, componentes, postura quando suportada — exibindo
+**Recursos** sem repetir a mesma contagem em **Achados** —, envelhecimento,
+remediação e evolução mensal. O item de
 inventário Cloud foi removido. Em 3.6.2 permanece o marcador editorial para inserir
 a captura da plataforma. Sem histórico anterior, 3.11 apresenta tabela e gráfico
 com somente a fotografia atual; não cria comparação fictícia. Fontes não
 licenciadas ou indisponíveis são omitidas ou sinalizadas, e ausência de dado não é
 convertida em zero.
+
+A série 3.11 combina referências mensais `MAIN` de `cloud-metrics-v2` e
+`cloud-metrics-v3` quando cliente, tenant, fuso, escopo, conector, normalizador e
+schema coincidem. Diferenças legadas de modo de período ou tipo de execução não
+eliminam um mês real da série; a reutilização exata de uma fotografia continua
+seguindo o contrato estrito.
 
 ## Princípios de negócio
 

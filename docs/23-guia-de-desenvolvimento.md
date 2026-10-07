@@ -197,9 +197,14 @@ nova exige migration própria e teste que percorra todo o enum `BatchAction`.
 Segredos do banco ficam em `credentials/database.env`; exemplos só contêm nomes de
 variáveis e valores fictícios.
 
-Snapshots Cloud usam migration própria, compatibilidade por cliente, tenant, ambiente,
-período e versão de métricas. A exclusão permanente remove o snapshot Cloud pelo
-`run_id` dentro da mesma transação que apaga `report_runs`.
+Snapshots Cloud usam migration própria, compatibilidade por cliente, tenant,
+ambiente, período e versão de métricas. Preserve a separação entre compatibilidade
+estrita de replay e compatibilidade de série mensal. `list_monthly_main_before`
+consulta somente referências `MAIN/MONTHLY`, aceita `cloud-metrics-v2` e
+`cloud-metrics-v3`, não filtra `execution_type` ou `period_mode` e mantém cliente,
+tenant, fuso, escopo, conector, normalizador e schema como dimensões obrigatórias.
+A exclusão permanente remove o snapshot Cloud pelo `run_id` dentro da mesma
+transação que apaga `report_runs`.
 
 ## Lotes duráveis
 
@@ -433,7 +438,8 @@ Depois de alterar apresentação:
 2. confirme estrutura por teste;
 3. renderize com LibreOffice;
 4. inspecione páginas críticas, tabelas, cortes e campos vazios; no Cloud, confirme
-   também os blocos por imagem e as colunas `Software` e `Fixed by` da seção 3.5;
+   também os blocos por imagem, a coluna `Software`, a ausência de `Fixed by` e a
+   tabela de postura sem a coluna redundante `Achados`;
 5. mantenha a prova fora do Git quando contiver dados reais.
 
 O controle de documento é renderizado exclusivamente por
@@ -542,7 +548,11 @@ comparar o resumo e as chaves de findings reconstruídos com o snapshot históri
 da execução atual e recusar jobs ativos. Gere primeiro em staging, preserve backup
 recuperável e use `refresh_publication_documents_atomically` com chave de auditoria
 específica. Para TAG, substitua somente a seção comparativa quando o corpo técnico
-já publicado não precisar ser reconstruído.
+já publicado não precisar ser reconstruído. Quando o manifesto contém Cloud, leia
+o dataset registrado com validação de hash, recomponha `history` a partir dos
+snapshots mensais `MAIN` e regenere o DOCX no mesmo estágio atômico, sem alterar o
+snapshot imutável nem chamar a Tenable. Uma retomada por posição só pode selecionar
+a cauda de um plano determinístico já confirmado e deve criar novo backup.
 
 Na série por TAG, não crie placeholders para competências sem snapshot. Filtre a
 mesma sequência antes de gerar tabelas e gráficos, para que ambos exibam exatamente
@@ -550,6 +560,13 @@ os meses reais. O histórico específico deve combinar as métricas da TAG com a
 de até 20 ativos preservada no recorte geral. As três tabelas temporais usam UUID
 para correlacionar ativos; testes devem cobrir omissão de lacunas, limite de 20,
 ativo novo e aumento/diminuição do total.
+
+`render_monthly_visual_bundle` deve produzir primeiro 4.1 com a evolução
+consolidada, depois 4.2 não mitigadas, 4.3 mitigadas e 4.4 novas. O último gráfico
+usa `new_by_severity` e inclui `total`; não reutilize a evolução consolidada. No
+relatório de Inteligência, mantenha a evolução como 1.1, limite a tabela de ativos
+EOL a 20 linhas e reserve no gráfico executivo zonas independentes para rótulos,
+barras e valores, incluindo variações negativas.
 
 A preparação do ZIP é assíncrona: `POST /api/report-archives/prepare` responde com
 HTTP 202 e um `status_url`; o frontend consulta
