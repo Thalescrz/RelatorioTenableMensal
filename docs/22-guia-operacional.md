@@ -575,12 +575,26 @@ substitui atomicamente o relatório customizado, a seção 4 dos relatórios por
 quando existir no manifesto, o relatório Cloud recomposto com snapshots mensais
 `MAIN`. O fluxo continua sem coleta Tenable.
 
+Quando o predecessor foi coletado depois da tolerância configurada, a manutenção
+refaz o snapshot histórico completo pela regra conservadora de continuidade:
+resumo, fingerprints e todos os recortes por TAG são recalculados. O timestamp da
+fotografia original é preservado durante o replay. A operação não altera o
+snapshot compacto, não cria findings ausentes e não reconstrói Cloud sem uma
+fotografia Cloud compatível.
+
 Primeiro execute sem `--apply`:
 
 ```powershell
 .\.venv\Scripts\python.exe tools\repair_monthly_comparison_documents.py `
-  --period-id AAAA-MM
+  --period-id AAAA-MM `
+  --client-id cliente-a `
+  --client-id cliente-b
 ```
+
+`--client-id` pode ser repetido e mantém a ordem determinística do plano. Um ID
+que não pertença ao plano é recusado antes de backup ou substituição. Omitir a
+opção seleciona todos os clientes elegíveis; prefira a lista explícita quando uma
+auditoria anterior já delimitou os afetados.
 
 Se um cliente tiver alteração de escopo conscientemente aceita, repita a análise
 com `--scope-override-client client-id`. Essa opção exige predecessor único e
@@ -601,9 +615,15 @@ regenerados.
 Quando somente os relatórios por TAG precisarem de correção, use `--tag-only`. O
 modo mantém o relatório customizado intacto, reconstrói localmente os dados da TAG,
 omite competências sem snapshot e atualiza apenas a seção 4 dos DOCX por TAG. Se o
-snapshot compacto do predecessor ainda existir, ele também recupera até 20 ativos
-da competência anterior; sem esse snapshot, preserva a lista histórica disponível,
-sem inventar linhas. Nenhuma dessas opções consulta a API Tenable.
+snapshot compacto do predecessor ainda existir, ele refaz o resumo, fingerprints
+e até 20 ativos da competência anterior; sem esse snapshot, preserva o histórico
+disponível, sem inventar linhas. Nenhuma dessas opções consulta a API Tenable.
+
+No Cloud, uma remediação é aceita somente quando `resource_id + CVE` resolve uma
+única ocorrência. A cobertura de containers combina a fonte de versões corrigidas
+por imagem e a fonte de remediações. `PARTIAL` e `UNAVAILABLE` são resultados
+válidos e devem permanecer visíveis; nunca trate fonte indisponível como zero nem
+faça nova coleta durante essa manutenção sem autorização separada.
 
 Se a consolidação local falhar, o estado visível é
 `CHECKPOINT_COMPONENT_INCOMPLETE`. Os dados coletados permanecem preservados para

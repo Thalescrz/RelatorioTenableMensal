@@ -132,6 +132,32 @@ dos documentos e do dataset. Somente então reconstrói os registros ausentes no
 PostgreSQL e conclui sem renderizar novamente. `MemoryError` nessa fronteira é uma
 falha local de recurso retentável, não uma falha da API Tenable.
 
+## Reconciliação temporal de coleta VM tardia
+
+O domínio aplica `reconcile_late_open_findings` antes de calcular o dataset geral
+e os recortes por TAG. O gatilho compara o término persistido da coleta com
+`period_end_at + late_collection_grace_days`; por padrão, a tolerância é um dia.
+Antes ou na fronteira da tolerância, nenhuma reconciliação é feita.
+
+Depois do gatilho, são elegíveis somente findings `OPEN` ou `REOPENED`, ligados ao
+ativo pelo UUID normalizado, com `first_found < period_end_at` e
+`last_found >= period_end_at`. Para `REOPENED`, `resurfaced_at` precisa existir e
+também ser anterior ao fechamento. A visão efetiva posiciona apenas o
+`last_found` em `period_end_at - 1 microssegundo`; objetos normalizados, snapshot
+compacto, hashes e datas de origem permanecem imutáveis. O dataset registra método,
+quantidade e severidades ajustadas em `collection_timing.reconciliation`.
+
+Ao reproduzir um snapshot compacto, os snapshots de fonte recebem como
+`completed_at` o `created_at` preservado da fotografia, e não o relógio da
+manutenção. Assim, um replay posterior não transforma artificialmente uma coleta
+pontual em tardia. A reconstrução do predecessor usa o mesmo caminho de domínio
+para refazer resumo, fingerprints e TAGs antes de montar o comparativo.
+
+A regra é deliberadamente conservadora: não inclui findings que nasceram depois do
+fechamento, `REOPENED` sem ressurgimento anterior, registros sem vínculo UUID,
+severidades fora do escopo ou findings `FIXED`. Também não se aplica à fotografia
+Cloud, cuja evolução depende de snapshots mensais compatíveis já preservados.
+
 ## Fluxo Cloud Security
 
 O componente Cloud usa `TCS_API_SECRET` e endpoint definido pelo ambiente do perfil.
@@ -154,6 +180,14 @@ remediação correlacionada ao mesmo recurso e CVE e separa máquinas virtuais d
 imagens de container. Uma fotografia normalizada alimenta o único DOCX Cloud padrão
 e o snapshot compacto PostgreSQL. O valor técnico de variante continua `expanded`
 somente para compatibilidade com o histórico e com a restrição do banco.
+
+A correlação de remediação indexa ocorrências por `resource_id + CVE` e só aceita
+uma correspondência exata. Se o mesmo identificador e CVE forem ambíguos entre
+tipos de recurso, nenhum deles recebe a correção por inferência. Para containers,
+a cobertura combina `container_image_fix_versions` e
+`vulnerability_remediations`; uma fonte completa e outra ausente produz
+`PARTIAL`, ambas completas produzem `COMPLETE` e nenhuma disponível produz
+`UNAVAILABLE`.
 
 Há dois níveis deliberadamente distintos de compatibilidade Cloud. Reutilização
 exata e proteção contra coleta recente continuam comparando todos os campos da
