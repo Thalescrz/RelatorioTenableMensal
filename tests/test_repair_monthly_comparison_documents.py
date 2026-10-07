@@ -188,6 +188,104 @@ def test_client_selection_preserves_plan_order_and_rejects_unknown_client() -> N
         raise AssertionError("Seleção desconhecida deveria ser rejeitada.")
 
 
+def test_main_run_selection_happens_before_unselected_plan_validation() -> None:
+    runs = (
+        SimpleNamespace(client_id="client-a"),
+        SimpleNamespace(client_id="client-b"),
+        SimpleNamespace(client_id="client-c"),
+    )
+
+    assert repair._select_main_runs(runs, frozenset({"client-c", "client-a"})) == (
+        runs[0],
+        runs[2],
+    )
+
+    try:
+        repair._select_main_runs(runs, frozenset({"client-missing"}))
+    except ValueError as exc:
+        assert "não pertence" in str(exc)
+    else:
+        raise AssertionError("Cliente fora dos MAIN deveria ser rejeitado.")
+
+
+def test_missing_compact_is_restored_from_preserved_normalized_run(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    execution_root = tmp_path / "manual"
+    dataset = (
+        execution_root
+        / "report-datasets"
+        / "client-a"
+        / "run-august"
+        / "2026-08"
+        / "report-dataset.json"
+    )
+    dataset.parent.mkdir(parents=True)
+    dataset.write_text("{}", encoding="utf-8")
+    source_snapshot = (
+        execution_root
+        / "snapshots"
+        / "client-a"
+        / "run-august"
+        / "tenable_vm_vulnerabilities.snapshot.json"
+    )
+    source_snapshot.parent.mkdir(parents=True)
+    source_snapshot.write_text(
+        json.dumps({"completed_at": "2026-09-05T12:00:00Z"}),
+        encoding="utf-8",
+    )
+    document = tmp_path / "custom.docx"
+    document.write_bytes(b"docx")
+    manifest = tmp_path / "publication-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "source_datasets": {
+                    "vm": {
+                        "path": str(dataset),
+                        "sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    run = repair.MainRun(
+        run_id="run-august",
+        client_id="client-a",
+        tenant_id="tenant-a",
+        period_key="2026-08",
+        timezone="America/Fortaleza",
+        scope_hash="scope-a",
+        metric_definition_version="report-definition-v1.2",
+        execution_type="AUTOMATIC_MONTHLY",
+        period_start_at="2026-08-01T03:00:00Z",
+        period_end_at="2026-09-01T03:00:00Z",
+        period_mode="PREVIOUS_CALENDAR_MONTH",
+        origin="SCHEDULED",
+        manifest_path=manifest,
+    )
+    marker = object()
+    captured = {}
+
+    def fake_prepare(**kwargs):
+        captured.update(kwargs)
+        return marker
+
+    monkeypatch.setattr(repair, "prepare_compact_run_snapshot", fake_prepare)
+
+    restored = repair._restore_predecessor_compact(
+        predecessor=run,
+        profile=SimpleNamespace(),
+        documents=(repair.PublicationDocument(path=str(document), document_kind="custom"),),
+    )
+
+    assert restored is marker
+    assert captured["output_root"] == execution_root.resolve()
+    assert captured["created_at"] == "2026-09-05T12:00:00Z"
+
+
 def test_rebuild_predecessor_snapshot_updates_summary_fingerprints_and_tag(
     tmp_path: Path,
 ) -> None:

@@ -35,6 +35,9 @@ from tenable_reports.application.compact_snapshots import (  # noqa: E402
     CompactFindingSnapshot,
     replay_compact_snapshot,
 )
+from tenable_reports.application.compact_publication import (  # noqa: E402
+    prepare_compact_run_snapshot,
+)
 from tenable_reports.application.history import (  # noqa: E402
     HistoryComparisonOverride,
     build_history_snapshot,
@@ -350,6 +353,73 @@ def _manifest_cloud_dataset_path(path: Path) -> Path:
     return dataset_path
 
 
+def _manifest_vm_dataset_path(path: Path) -> Path:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Manifesto MAIN inválido.") from exc
+    sources = payload.get("source_datasets") if isinstance(payload, Mapping) else None
+    vm = sources.get("vm") if isinstance(sources, Mapping) else None
+    if not isinstance(vm, Mapping):
+        vm = payload.get("source_dataset") if isinstance(payload, Mapping) else None
+    if not isinstance(vm, Mapping):
+        raise ValueError("Manifesto MAIN sem dataset VM registrado.")
+    dataset_path = Path(str(vm.get("path") or "")).resolve()
+    if not dataset_path.is_file():
+        raise ValueError("Dataset VM publicado não foi localizado.")
+    expected = str(vm.get("sha256") or "").strip().lower()
+    if expected and sha256_file(dataset_path) != expected:
+        raise ValueError("Hash do dataset VM publicado não confere.")
+    return dataset_path
+
+
+def _execution_root_from_dataset(dataset_path: Path) -> Path:
+    for parent in dataset_path.resolve().parents:
+        if parent.name == "report-datasets":
+            return parent.parent
+    raise ValueError("Dataset VM publicado está fora da estrutura operacional esperada.")
+
+
+def _restore_predecessor_compact(
+    *,
+    predecessor: MainRun,
+    profile: ClientProfile,
+    documents: Sequence[PublicationDocument],
+) -> CompactFindingSnapshot:
+    dataset_path = _manifest_vm_dataset_path(predecessor.manifest_path)
+    output_root = _execution_root_from_dataset(dataset_path)
+    snapshot_path = (
+        output_root
+        / "snapshots"
+        / predecessor.client_id
+        / predecessor.run_id
+        / "tenable_vm_vulnerabilities.snapshot.json"
+    )
+    try:
+        source_snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "Snapshot de fonte VM do predecessor não foi localizado."
+        ) from exc
+    completed_at = str(source_snapshot.get("completed_at") or "").strip()
+    if not completed_at:
+        raise ValueError("Snapshot de fonte VM do predecessor sem data de conclusão.")
+    parse_datetime(completed_at, predecessor.timezone)
+    references = {
+        f"{document.document_kind}:{position}": str(Path(document.path).resolve())
+        for position, document in enumerate(documents, start=1)
+    }
+    return prepare_compact_run_snapshot(
+        profile=profile,
+        source_run_id=predecessor.run_id,
+        execution_type=predecessor.execution_type,
+        period=_period(predecessor),
+        output_root=output_root.resolve(),
+        document_references=references,
+        created_at=completed_at,
+    )
+
+
 def _selected_documents(
     documents: Sequence[PublicationDocument],
     *,
@@ -384,6 +454,18 @@ def _select_clients(
     if not client_ids.issubset(available):
         raise ValueError("Cliente solicitado não pertence ao plano selecionado.")
     return tuple(item for item in plan if item.current.client_id in client_ids)
+
+
+def _select_main_runs(
+    runs: Sequence[Any],
+    client_ids: frozenset[str],
+) -> tuple[Any, ...]:
+    if not client_ids:
+        return tuple(runs)
+    available = {str(item.client_id) for item in runs}
+    if not client_ids.issubset(available):
+        raise ValueError("Cliente solicitado não pertence aos conjuntos MAIN.")
+    return tuple(item for item in runs if item.client_id in client_ids)
 
 
 def _plan_from_position(plan: Sequence[Any], start_position: int) -> tuple[Any, ...]:
@@ -428,8 +510,12 @@ def build_plan(
     period_id: str,
     profiles_root: Path,
     scope_override_clients: frozenset[str],
+    selected_client_ids: frozenset[str] = frozenset(),
 ) -> tuple[RepairPlanItem, ...]:
-    current_runs = _main_runs(database, period_id=period_id)
+    current_runs = _select_main_runs(
+        _main_runs(database, period_id=period_id),
+        selected_client_ids,
+    )
     previous_runs = _main_runs(database, period_id=_previous_month(period_id))
     if not current_runs:
         raise ValueError("Nenhum conjunto MAIN foi encontrado para a competência.")
@@ -464,11 +550,18 @@ def build_plan(
         predecessor_report = registry.get_report(predecessor.run_id)
         if current_report.snapshot is None or predecessor_report.snapshot is None:
             raise ValueError("Snapshot histórico MAIN não foi localizado.")
+        predecessor_documents = _manifest_documents(predecessor.manifest_path)
         predecessor_compact = compact_repository.find_run(
             client_id=predecessor.client_id,
             tenant_id=predecessor.tenant_id,
             run_id=predecessor.run_id,
         )
+        if predecessor_compact is None:
+            predecessor_compact = _restore_predecessor_compact(
+                predecessor=predecessor,
+                profile=profile,
+                documents=predecessor_documents,
+            )
         planned.append(
             RepairPlanItem(
                 current=current,
@@ -893,17 +986,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     overrides = frozenset(
         str(value).strip() for value in args.scope_override_client if str(value).strip()
     )
+    selected_clients = frozenset(
+        str(value).strip() for value in args.client_id if str(value).strip()
+    )
     plan = build_plan(
         database,
         period_id=args.period_id,
         profiles_root=args.profiles_root,
         scope_override_clients=overrides,
+        selected_client_ids=selected_clients,
     )
     plan = _selected_plan(plan, tag_only=args.tag_only)
-    selected_clients = frozenset(
-        str(value).strip() for value in args.client_id if str(value).strip()
-    )
-    plan = _select_clients(plan, selected_clients)
     plan = _plan_from_position(plan, args.start_position)
     conflicts = _active_conflicts(database, plan)
     summary = {
