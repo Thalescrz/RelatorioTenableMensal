@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import Any, Iterable, Mapping, Sequence
 
 from tenable_reports.domain.normalization import NormalizedAsset, NormalizedFinding
+from tenable_reports.domain.late_collection import reconcile_late_open_findings
 from tenable_reports.domain.reporting import ReportingPeriod, iso_utc, parse_utc
 from tenable_reports.domain.was import NormalizedWasFinding, build_was_report_data
 
@@ -660,7 +661,15 @@ def build_report_dataset(
     was_collected: bool = False,
 ) -> ReportDatasetResult:
     asset_rows = tuple(assets)
-    finding_rows = tuple(findings)
+    source_finding_rows = tuple(findings)
+    late_reconciliation = reconcile_late_open_findings(
+        source_finding_rows,
+        period=period,
+        collection_completed_at=collection_completed_at,
+        grace_days=late_collection_grace_days,
+        include_info_severity=include_info_severity,
+    )
+    finding_rows = late_reconciliation.findings
     assets_by_key = {item.asset_key: item for item in asset_rows}
 
     preliminary_reasons = {
@@ -1261,6 +1270,8 @@ def build_report_dataset(
             if execution_type == "AUTOMATIC_MONTHLY" else None
         ),
     }
+    if late_reconciliation.applied:
+        collection_timing["reconciliation"] = late_reconciliation.audit()
     populations = {
         "assets": {
             "input": len(asset_rows),

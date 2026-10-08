@@ -11,8 +11,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
 from tenable_reports.infrastructure.jsonl_io import iter_jsonl_objects
 from tenable_reports.domain.fingerprints import fingerprint_finding_key
+from tenable_reports.domain.late_collection import reconcile_late_open_findings
+from tenable_reports.domain.normalization import NormalizedFinding
+from tenable_reports.domain.reporting import PeriodMode, ReportingPeriod, parse_datetime
 from tenable_reports.application.compact_snapshots import (
     CompactFindingSnapshot,
     CompactSnapshotRepository,
@@ -247,6 +251,8 @@ def _normalized_keys(
     path: Path,
     *,
     period: Mapping[str, Any],
+    collection_timing: Mapping[str, Any] | None = None,
+    include_info_severity: bool = False,
 ) -> tuple[tuple[bytes, ...], tuple[bytes, ...], tuple[bytes, ...], tuple[dict[str, Any], ...]]:
     start_at = datetime.fromisoformat(str(period["start_at"]).replace("Z", "+00:00"))
     end_at = datetime.fromisoformat(str(period["end_at"]).replace("Z", "+00:00"))
@@ -256,42 +262,85 @@ def _normalized_keys(
     plugin_counts: dict[str, dict[str, Any]] = {}
     if not path.is_file():
         raise ValueError(f"Findings normalizados nao encontrados: {path}")
-    for item in iter_jsonl_objects(path):
-            finding_key = str(item.get("finding_key") or "")
-            state = str(item.get("state") or "").upper()
-            event_name = "last_fixed_at" if state == "FIXED" else "last_found_at"
-            raw_event = item.get(event_name)
+    raw_findings = tuple(iter_jsonl_objects(path))
+    timing = collection_timing if isinstance(collection_timing, Mapping) else {}
+    effective_items: tuple[Mapping[str, Any], ...] = raw_findings
+    if str(timing.get("status") or "").upper() == "LATE":
+        timezone_name = str(period.get("timezone") or "UTC")
+        try:
+            mode = PeriodMode(str(period.get("mode") or "EXPLICIT_RANGE"))
+        except ValueError:
+            mode = PeriodMode.EXPLICIT_RANGE
+        effective_period = ReportingPeriod(
+            start_at=parse_datetime(str(period["start_at"]), timezone_name),
+            end_at=parse_datetime(str(period["end_at"]), timezone_name),
+            timezone=timezone_name,
+            mode=mode,
+            reference_at=parse_datetime(
+                str(period.get("reference_at") or period["end_at"]),
+                timezone_name,
+            ),
+        )
+        try:
+            completed_at = parse_datetime(
+                str(timing.get("collection_completed_at") or period["end_at"]),
+                timezone_name,
+            )
+            grace_days = int(timing.get("grace_days") or 0)
+            normalized_findings = tuple(
+                NormalizedFinding.from_dict(item) for item in raw_findings
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "A evidencia tardia normalizada invalida impede a reconciliacao historica."
+            ) from exc
+        else:
+            effective_items = tuple(
+                item.to_dict()
+                for item in reconcile_late_open_findings(
+                    normalized_findings,
+                    period=effective_period,
+                    collection_completed_at=completed_at,
+                    grace_days=grace_days,
+                    include_info_severity=include_info_severity,
+                ).findings
+            )
+    for item in effective_items:
+        finding_key = str(item.get("finding_key") or "")
+        state = str(item.get("state") or "").upper()
+        event_name = "last_fixed_at" if state == "FIXED" else "last_found_at"
+        raw_event = item.get(event_name)
+        try:
+            event = datetime.fromisoformat(str(raw_event).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        if not finding_key or not start_at <= event < end_at:
+            continue
+        fingerprint = fingerprint_finding_key(finding_key)
+        if state in {"OPEN", "REOPENED"}:
+            open_keys.add(fingerprint)
+            raw_plugin_id = item.get("plugin_id")
+            if raw_plugin_id is not None:
+                plugin_key = str(raw_plugin_id)
+                entry = plugin_counts.setdefault(plugin_key, {
+                    "plugin_id": raw_plugin_id,
+                    "plugin_name": str(item.get("plugin_name") or ""),
+                    "count": 0,
+                })
+                entry["count"] = int(entry["count"]) + 1
+                if not entry.get("plugin_name") and item.get("plugin_name"):
+                    entry["plugin_name"] = str(item["plugin_name"])
+        elif state == "FIXED":
+            fixed_keys.add(fingerprint)
+        if state == "REOPENED":
             try:
-                event = datetime.fromisoformat(str(raw_event).replace("Z", "+00:00"))
+                resurfaced_at = datetime.fromisoformat(
+                    str(item.get("resurfaced_at")).replace("Z", "+00:00")
+                )
             except (TypeError, ValueError):
-                continue
-            if not finding_key or not start_at <= event < end_at:
-                continue
-            fingerprint = fingerprint_finding_key(finding_key)
-            if state in {"OPEN", "REOPENED"}:
-                open_keys.add(fingerprint)
-                raw_plugin_id = item.get("plugin_id")
-                if raw_plugin_id is not None:
-                    plugin_key = str(raw_plugin_id)
-                    entry = plugin_counts.setdefault(plugin_key, {
-                        "plugin_id": raw_plugin_id,
-                        "plugin_name": str(item.get("plugin_name") or ""),
-                        "count": 0,
-                    })
-                    entry["count"] = int(entry["count"]) + 1
-                    if not entry.get("plugin_name") and item.get("plugin_name"):
-                        entry["plugin_name"] = str(item["plugin_name"])
-            elif state == "FIXED":
-                fixed_keys.add(fingerprint)
-            if state == "REOPENED":
-                try:
-                    resurfaced_at = datetime.fromisoformat(
-                        str(item.get("resurfaced_at")).replace("Z", "+00:00")
-                    )
-                except (TypeError, ValueError):
-                    resurfaced_at = None
-                if resurfaced_at is not None and start_at <= resurfaced_at < end_at:
-                    resurfaced_keys.add(fingerprint)
+                resurfaced_at = None
+            if resurfaced_at is not None and start_at <= resurfaced_at < end_at:
+                resurfaced_keys.add(fingerprint)
     return (
         tuple(sorted(open_keys)),
         tuple(sorted(fixed_keys)),
@@ -336,7 +385,7 @@ def _period_label(snapshot: HistorySnapshot, *, short: bool = False) -> str:
     )
 
 
-def _history_snapshot(
+def build_history_snapshot(
     *,
     profile: ClientProfile,
     dataset: Mapping[str, Any],
@@ -350,6 +399,12 @@ def _history_snapshot(
     open_keys, fixed_keys, resurfaced_keys, open_plugin_counts = _normalized_keys(
         normalized_findings_path,
         period=period,
+        collection_timing=(
+            dataset.get("collection_timing")
+            if isinstance(dataset.get("collection_timing"), Mapping)
+            else None
+        ),
+        include_info_severity=profile.reporting.include_info_severity,
     )
     compatibility = SnapshotCompatibility(
         client_id=profile.client_id,
@@ -415,6 +470,11 @@ def _history_snapshot(
         source_dataset_path=str(dataset_path.resolve()),
         source_dataset_sha256=hashlib.sha256(dataset_path.read_bytes()).hexdigest(),
     )
+
+
+# Compatibilidade interna para consumidores e testes anteriores à exposição do
+# construtor usado pela manutenção reprodutível de históricos.
+_history_snapshot = build_history_snapshot
 
 
 def _merge_customizations(
@@ -911,7 +971,7 @@ def prepare_dataset_history(
         profile=profile,
         run_id=run_id,
     )
-    raw_current = _history_snapshot(
+    raw_current = build_history_snapshot(
         profile=profile,
         dataset=data,
         dataset_path=dataset_file,
@@ -1054,7 +1114,7 @@ def publish_dataset_history(
     data = _read_dataset(dataset_file)
     if data.get("client_id") != profile.client_id:
         raise ValueError("O dataset nao pertence ao cliente selecionado.")
-    current = _history_snapshot(
+    current = build_history_snapshot(
         profile=profile,
         dataset=data,
         dataset_path=dataset_file,

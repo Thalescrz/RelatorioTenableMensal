@@ -135,6 +135,83 @@ def test_remediation_requires_same_resource_and_cve() -> None:
     assert enrichment.correction.correction_type == "patch_update"
 
 
+def test_container_remediation_uses_the_exact_resource_and_cve() -> None:
+    domain = _domain()
+    image = _asset("image-a", image=True)
+    occurrence = _occurrence(image, "CVE-2026-0100")
+    finding = domain.CloudFinding(
+        finding_key="finding-container-fixture",
+        account_id=None,
+        account_name=None,
+        category="Vulnerability",
+        policy_name="Fixture container vulnerability policy",
+        provider="AWS",
+        severity="HIGH",
+        status="OPEN",
+        description=None,
+        creation_time=None,
+        open_time=None,
+        status_update_time=None,
+        resources=(
+            domain.CloudResourceReference(
+                resource_id=image.key.asset_id,
+                name="fixture-image-a",
+                vulnerability_ids=(occurrence.vulnerability_id,),
+            ),
+        ),
+        remediation_steps=("Upgrade the affected image package.",),
+        vulnerability_related=True,
+    )
+
+    enrichments = _module().correlate_cloud_enrichments(
+        _snapshot((image,), (occurrence,), (finding,))
+    )
+
+    assert len(enrichments) == 1
+    assert enrichments[0].asset == image.key
+    assert enrichments[0].cve == occurrence.vulnerability_id
+
+
+def test_ambiguous_resource_id_across_asset_kinds_is_not_correlated() -> None:
+    domain = _domain()
+    vm = _asset("shared-resource")
+    image = _asset("shared-resource", image=True)
+    cve = "CVE-2026-0200"
+    finding = domain.CloudFinding(
+        finding_key="finding-ambiguous-fixture",
+        account_id=None,
+        account_name=None,
+        category="Vulnerability",
+        policy_name="Fixture ambiguous vulnerability policy",
+        provider="AWS",
+        severity="HIGH",
+        status="OPEN",
+        description=None,
+        creation_time=None,
+        open_time=None,
+        status_update_time=None,
+        resources=(
+            domain.CloudResourceReference(
+                resource_id="shared-resource",
+                name="fixture-shared-resource",
+                vulnerability_ids=(cve,),
+            ),
+        ),
+        remediation_steps=("Apply the vendor security patch.",),
+        vulnerability_related=True,
+    )
+
+    enrichments = _module().correlate_cloud_enrichments(
+        _snapshot(
+            (vm, image),
+            (_occurrence(vm, cve), _occurrence(image, cve)),
+            (finding,),
+        )
+    )
+
+    assert enrichments == ()
+
+
 def test_generic_finding_with_remediation_is_not_correlated() -> None:
     domain = _domain()
     vm = _asset("vm-a")

@@ -64,6 +64,7 @@ def prepare_compact_run_snapshot(
     period: ReportingPeriod,
     output_root: str | Path,
     document_references: Mapping[str, str],
+    created_at: str | None = None,
 ) -> CompactFindingSnapshot:
     references = {
         str(key): str(value)
@@ -95,6 +96,7 @@ def prepare_compact_run_snapshot(
         tag_scope=inputs.tag_scope,
         was_findings=inputs.was_findings,
         document_references=references,
+        created_at=created_at,
     )
 
 

@@ -14,6 +14,7 @@ from tenable_reports.application.history import (
     SQLiteSnapshotRepository,
     _controlled_predecessor,
     _enrich_tag_datasets,
+    _history_snapshot,
     _normalized_monthly_snapshot,
     finalize_history_publication,
     import_history_csv,
@@ -38,6 +39,7 @@ from tenable_reports.application.retention import (
     apply_cleanup_plan,
     plan_published_run_cleanup,
 )
+from tests.test_report_dataset import normalized_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -204,6 +206,100 @@ def test_legacy_network_tag_snapshots_load_as_generic_tag_snapshots() -> None:
     stored = snapshot.to_dict()
     assert "tag_snapshots" in stored
     assert "network_tag_snapshots" not in stored
+
+
+def test_history_fingerprints_use_the_same_late_reconciled_view(
+    tmp_path: Path,
+) -> None:
+    profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+    dataset = _dataset(
+        "2026-07",
+        "2026-07-01T03:00:00Z",
+        "2026-08-01T03:00:00Z",
+        total=1,
+    )
+    dataset["collection_timing"] = {
+        "collection_completed_at": "2026-08-03T03:00:00Z",
+        "period_end_at": "2026-08-01T03:00:00Z",
+        "grace_days": 1,
+        "status": "LATE",
+        "reconciliation": {
+            "status": "APPLIED",
+            "method": "confirmed_open_temporal_continuity",
+            "adjusted_open_findings": 1,
+            "by_severity": {
+                "critical": 1,
+                "high": 0,
+                "medium": 0,
+                "low": 0,
+            },
+        },
+    }
+    normalized = normalized_fixture()
+    finding = replace(
+        normalized.findings[0],
+        finding_key="finding-confirmed-before-close",
+        client_id=profile.client_id,
+        asset_key="cliente-exemplo:tenable_vm:asset-a",
+        source_asset_id="asset-a",
+        state="OPEN",
+        severity="CRITICAL",
+        first_found_at="2026-06-10T10:00:00Z",
+        last_found_at="2026-08-03T02:00:00Z",
+        resurfaced_at=None,
+    )
+    dataset_path = tmp_path / "report-dataset.json"
+    normalized_path = tmp_path / "findings.jsonl"
+    dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+    normalized_path.write_text(
+        json.dumps(finding.to_dict()) + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot = _history_snapshot(
+        profile=profile,
+        dataset=dataset,
+        dataset_path=dataset_path,
+        normalized_findings_path=normalized_path,
+    )
+
+    assert snapshot.open_finding_keys == (
+        fingerprint_finding_key(finding.finding_key),
+    )
+    assert snapshot.open_plugin_counts[0]["count"] == 1
+
+
+def test_late_history_rebuild_rejects_invalid_reconciliation_evidence(
+    tmp_path: Path,
+) -> None:
+    profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+    dataset = _dataset(
+        "2026-07",
+        "2026-07-01T03:00:00Z",
+        "2026-08-01T03:00:00Z",
+        total=0,
+    )
+    dataset["collection_timing"] = {
+        "collection_completed_at": "2026-08-03T03:00:00Z",
+        "period_end_at": "2026-08-01T03:00:00Z",
+        "grace_days": 1,
+        "status": "LATE",
+    }
+    dataset_path = tmp_path / "report-dataset.json"
+    normalized_path = tmp_path / "findings.jsonl"
+    dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+    normalized_path.write_text(
+        json.dumps({"finding_key": "incomplete-preserved-evidence"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="evidencia tardia normalizada invalida"):
+        _history_snapshot(
+            profile=profile,
+            dataset=dataset,
+            dataset_path=dataset_path,
+            normalized_findings_path=normalized_path,
+        )
 
 
 def test_tag_year_history_omits_months_without_a_real_tag_snapshot() -> None:

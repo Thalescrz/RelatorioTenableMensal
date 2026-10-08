@@ -66,6 +66,7 @@ class CollectionExecutionTests(unittest.TestCase):
             quality_issues=self.normalized.issues,
             tag_asset_ids={},
             document_references={"base": "C:/reports/source.docx"},
+            created_at="2026-08-02T12:00:00Z",
         )
 
     def test_exact_snapshot_is_selected_before_any_external_source(self) -> None:
@@ -146,6 +147,10 @@ class CollectionExecutionTests(unittest.TestCase):
 
         self.assertEqual(inputs.assets, self.normalized.assets)
         self.assertEqual(inputs.findings, self.normalized.findings)
+        self.assertEqual(
+            inputs.collection_completed_at,
+            datetime(2026, 8, 2, 12, 0, tzinfo=UTC),
+        )
         self.assertEqual(
             inputs.collection_provenance["collection_route"], "snapshot_replay"
         )

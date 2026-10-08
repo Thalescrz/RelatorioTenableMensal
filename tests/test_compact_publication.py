@@ -75,10 +75,12 @@ class CompactPublicationTests(unittest.TestCase):
                 period=period,
                 output_root=directory,
                 document_references={"base": str(base)},
+                created_at="2026-08-02T12:00:00Z",
             )
 
         self.assertEqual(repository.count, 0)
         self.assertEqual(prepared.run_id, "published-run-was-recovered")
+        self.assertEqual(prepared.created_at, "2026-08-02T12:00:00Z")
         self.assertEqual(prepared.record_counts["findings"], 1)
     def test_publishes_only_after_document_references_are_available(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")

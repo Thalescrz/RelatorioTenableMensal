@@ -128,6 +128,16 @@ Uma divergência de escopo continua bloqueando o comparativo por padrão. A exce
 afetados e inclui no DOCX um aviso de que os deltas podem refletir a mudança de
 escopo. Ela não desativa a validação global de compatibilidade.
 
+Uma coleta VM concluída depois de `period_end_at + late_collection_grace_days`
+ativa a reconciliação conservadora de findings ainda `OPEN` ou `REOPENED`. Só são
+recolocados no mês os findings ligados a um ativo por UUID, existentes antes do
+fechamento e ainda observados depois dele; em `REOPENED`, o ressurgimento também
+precisa ser anterior ao fechamento. A evidência original não é alterada: a visão
+efetiva, a contagem ajustada e a distribuição por severidade ficam auditáveis no
+dataset. Essa regra alimenta igualmente o geral, o histórico e cada recorte por
+TAG. Ela não reconstrói findings já `FIXED`, estados ambíguos ou um ponto no tempo
+Cloud que não tenha sido preservado.
+
 O dataset `cloud-metrics-v3` acrescenta, logo após as principais vulnerabilidades
 com correção disponível, dois rankings de recursos corrigíveis: Top 10 de máquinas
 virtuais e Top 10 de containers. O conector representa containers por imagens de
@@ -136,6 +146,10 @@ container. Cada total conta combinações distintas de CVE e software que possua
 não aumentam a contagem. O dataset registra separadamente a cobertura dessas
 fontes de correção; o DOCX informa resultado parcial ou fonte indisponível em vez
 de apresentar ausência de achados como se fosse um zero confirmado.
+Uma remediação só é associada ao recurso quando `resource_id + CVE` identifica um
+único ativo do mesmo tipo; colisão entre VM e imagem de container é rejeitada. A
+cobertura de containers considera tanto `container_image_fix_versions` quanto
+`vulnerability_remediations`, preservando `COMPLETE`, `PARTIAL` ou `UNAVAILABLE`.
 
 No DOCX Cloud, `FixedBy` permanece como evidência interna para formar os rankings
 corrigíveis, mas não é apresentado em coluna. O overview por imagem exibe CVE,

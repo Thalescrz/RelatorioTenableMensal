@@ -651,7 +651,10 @@ def _correctable_asset_coverage(
             "virtual_machine_fix_versions",
             "vulnerability_remediations",
         ),
-        "container_images": ("container_image_fix_versions",),
+        "container_images": (
+            "container_image_fix_versions",
+            "vulnerability_remediations",
+        ),
     }
     coverage: dict[str, dict[str, Any]] = {}
     for asset_group, sources in source_groups.items():

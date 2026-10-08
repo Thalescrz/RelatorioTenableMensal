@@ -323,7 +323,7 @@ def test_correctable_asset_coverage_distinguishes_partial_and_unavailable() -> N
         snapshot=_snapshot(
             source_status={
                 "virtual_machine_fix_versions": "COMPLETE",
-                "vulnerability_remediations": "UNAVAILABLE",
+                "vulnerability_remediations": "COMPLETE",
                 "container_image_fix_versions": "UNAVAILABLE",
             },
         ),
@@ -332,27 +332,28 @@ def test_correctable_asset_coverage_distinguishes_partial_and_unavailable() -> N
 
     assert dataset["correctable_asset_coverage"] == {
         "virtual_machines": {
-            "status": "PARTIAL",
+            "status": "COMPLETE",
             "source_status": {
                 "virtual_machine_fix_versions": "COMPLETE",
-                "vulnerability_remediations": "UNAVAILABLE",
+                "vulnerability_remediations": "COMPLETE",
             },
         },
         "container_images": {
-            "status": "UNAVAILABLE",
+            "status": "PARTIAL",
             "source_status": {
                 "container_image_fix_versions": "UNAVAILABLE",
+                "vulnerability_remediations": "COMPLETE",
             },
         },
     }
     provenance = dataset["table_provenance"]["tables"]
     assert (
         provenance["cloud_top_correctable_virtual_machines"]["coverage_status"]
-        == "PARTIAL"
+        == "COMPLETE"
     )
     assert (
         provenance["cloud_top_correctable_container_images"]["coverage_status"]
-        == "UNAVAILABLE"
+        == "PARTIAL"
     )
 
 

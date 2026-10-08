@@ -554,6 +554,26 @@ snapshots mensais `MAIN` e regenere o DOCX no mesmo estágio atômico, sem alter
 snapshot imutável nem chamar a Tenable. Uma retomada por posição só pode selecionar
 a cauda de um plano determinístico já confirmado e deve criar novo backup.
 
+O predecessor não pode ser reparado por sobreposição isolada do Top 20. Materialize
+o compacto preservando `created_at` como `completed_at`, gere novamente o dataset
+geral e todos os datasets TAG e use `build_history_snapshot` para reconstruir
+resumo, fingerprints, contagens de plugins e `tag_snapshots`. Preserve a identidade
+e a compatibilidade publicadas somente depois de validar `run_id` e `period_id`.
+Seleção por `--client-id` precisa rejeitar IDs fora do plano antes de qualquer
+efeito e conservar a ordem original.
+
+`reconcile_late_open_findings` é a única regra para continuidade tardia. Testes
+devem provar o gatilho estritamente posterior à tolerância, inclusão conservadora
+de `OPEN`/`REOPENED`, exclusão de `FIXED` e registros ambíguos, não mutação da
+evidência e propagação idêntica ao geral, histórico e TAG. Evidência normalizada
+inválida em um histórico marcado como `LATE` deve interromper a reconstrução; não
+aceite fallback silencioso para os timestamps brutos.
+
+Na correlação Cloud, indexe ocorrências por `(resource_id, CVE)` e aceite a
+remediação apenas com correspondência única. O status do ranking de containers
+combina `container_image_fix_versions` e `vulnerability_remediations`; testes devem
+cobrir cobertura completa, parcial, indisponível e colisão entre VM e container.
+
 Na série por TAG, não crie placeholders para competências sem snapshot. Filtre a
 mesma sequência antes de gerar tabelas e gráficos, para que ambos exibam exatamente
 os meses reais. O histórico específico deve combinar as métricas da TAG com a lista

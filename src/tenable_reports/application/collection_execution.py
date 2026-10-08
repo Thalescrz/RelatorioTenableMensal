@@ -159,6 +159,7 @@ def materialize_compact_snapshot_run(
         started_at=started_at,
         collector_version=__version__,
         raw_manifest_uri=source_uri,
+        completed_at=snapshot.created_at,
     )
     finding_source = build_source_snapshot(
         run_id=run_id,
@@ -179,6 +180,7 @@ def materialize_compact_snapshot_run(
         started_at=started_at,
         collector_version=__version__,
         raw_manifest_uri=source_uri,
+        completed_at=snapshot.created_at,
     )
     asset_snapshot_path = snapshot_directory / "tenable_vm_assets_v2.snapshot.json"
     finding_snapshot_path = snapshot_directory / "tenable_vm_vulnerabilities.snapshot.json"
@@ -210,6 +212,7 @@ def materialize_compact_snapshot_run(
             started_at=started_at,
             collector_version=__version__,
             raw_manifest_uri=source_uri,
+            completed_at=snapshot.created_at,
         )
         was_source.write_json(snapshot_directory / "tenable_was_findings.snapshot.json")
 

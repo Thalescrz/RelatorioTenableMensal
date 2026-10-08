@@ -35,8 +35,12 @@ from tenable_reports.application.compact_snapshots import (  # noqa: E402
     CompactFindingSnapshot,
     replay_compact_snapshot,
 )
+from tenable_reports.application.compact_publication import (  # noqa: E402
+    prepare_compact_run_snapshot,
+)
 from tenable_reports.application.history import (  # noqa: E402
     HistoryComparisonOverride,
+    build_history_snapshot,
     prepare_dataset_history,
 )
 from tenable_reports.application.publishing import (  # noqa: E402
@@ -349,6 +353,73 @@ def _manifest_cloud_dataset_path(path: Path) -> Path:
     return dataset_path
 
 
+def _manifest_vm_dataset_path(path: Path) -> Path:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("Manifesto MAIN inválido.") from exc
+    sources = payload.get("source_datasets") if isinstance(payload, Mapping) else None
+    vm = sources.get("vm") if isinstance(sources, Mapping) else None
+    if not isinstance(vm, Mapping):
+        vm = payload.get("source_dataset") if isinstance(payload, Mapping) else None
+    if not isinstance(vm, Mapping):
+        raise ValueError("Manifesto MAIN sem dataset VM registrado.")
+    dataset_path = Path(str(vm.get("path") or "")).resolve()
+    if not dataset_path.is_file():
+        raise ValueError("Dataset VM publicado não foi localizado.")
+    expected = str(vm.get("sha256") or "").strip().lower()
+    if expected and sha256_file(dataset_path) != expected:
+        raise ValueError("Hash do dataset VM publicado não confere.")
+    return dataset_path
+
+
+def _execution_root_from_dataset(dataset_path: Path) -> Path:
+    for parent in dataset_path.resolve().parents:
+        if parent.name == "report-datasets":
+            return parent.parent
+    raise ValueError("Dataset VM publicado está fora da estrutura operacional esperada.")
+
+
+def _restore_predecessor_compact(
+    *,
+    predecessor: MainRun,
+    profile: ClientProfile,
+    documents: Sequence[PublicationDocument],
+) -> CompactFindingSnapshot:
+    dataset_path = _manifest_vm_dataset_path(predecessor.manifest_path)
+    output_root = _execution_root_from_dataset(dataset_path)
+    snapshot_path = (
+        output_root
+        / "snapshots"
+        / predecessor.client_id
+        / predecessor.run_id
+        / "tenable_vm_vulnerabilities.snapshot.json"
+    )
+    try:
+        source_snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            "Snapshot de fonte VM do predecessor não foi localizado."
+        ) from exc
+    completed_at = str(source_snapshot.get("completed_at") or "").strip()
+    if not completed_at:
+        raise ValueError("Snapshot de fonte VM do predecessor sem data de conclusão.")
+    parse_datetime(completed_at, predecessor.timezone)
+    references = {
+        f"{document.document_kind}:{position}": str(Path(document.path).resolve())
+        for position, document in enumerate(documents, start=1)
+    }
+    return prepare_compact_run_snapshot(
+        profile=profile,
+        source_run_id=predecessor.run_id,
+        execution_type=predecessor.execution_type,
+        period=_period(predecessor),
+        output_root=output_root.resolve(),
+        document_references=references,
+        created_at=completed_at,
+    )
+
+
 def _selected_documents(
     documents: Sequence[PublicationDocument],
     *,
@@ -371,6 +442,30 @@ def _selected_plan(
         for item in plan
         if _selected_documents(item.documents, tag_only=True)
     )
+
+
+def _select_clients(
+    plan: Sequence[Any],
+    client_ids: frozenset[str],
+) -> tuple[Any, ...]:
+    if not client_ids:
+        return tuple(plan)
+    available = {str(item.current.client_id) for item in plan}
+    if not client_ids.issubset(available):
+        raise ValueError("Cliente solicitado não pertence ao plano selecionado.")
+    return tuple(item for item in plan if item.current.client_id in client_ids)
+
+
+def _select_main_runs(
+    runs: Sequence[Any],
+    client_ids: frozenset[str],
+) -> tuple[Any, ...]:
+    if not client_ids:
+        return tuple(runs)
+    available = {str(item.client_id) for item in runs}
+    if not client_ids.issubset(available):
+        raise ValueError("Cliente solicitado não pertence aos conjuntos MAIN.")
+    return tuple(item for item in runs if item.client_id in client_ids)
 
 
 def _plan_from_position(plan: Sequence[Any], start_position: int) -> tuple[Any, ...]:
@@ -415,8 +510,12 @@ def build_plan(
     period_id: str,
     profiles_root: Path,
     scope_override_clients: frozenset[str],
+    selected_client_ids: frozenset[str] = frozenset(),
 ) -> tuple[RepairPlanItem, ...]:
-    current_runs = _main_runs(database, period_id=period_id)
+    current_runs = _select_main_runs(
+        _main_runs(database, period_id=period_id),
+        selected_client_ids,
+    )
     previous_runs = _main_runs(database, period_id=_previous_month(period_id))
     if not current_runs:
         raise ValueError("Nenhum conjunto MAIN foi encontrado para a competência.")
@@ -451,11 +550,18 @@ def build_plan(
         predecessor_report = registry.get_report(predecessor.run_id)
         if current_report.snapshot is None or predecessor_report.snapshot is None:
             raise ValueError("Snapshot histórico MAIN não foi localizado.")
+        predecessor_documents = _manifest_documents(predecessor.manifest_path)
         predecessor_compact = compact_repository.find_run(
             client_id=predecessor.client_id,
             tenant_id=predecessor.tenant_id,
             run_id=predecessor.run_id,
         )
+        if predecessor_compact is None:
+            predecessor_compact = _restore_predecessor_compact(
+                predecessor=predecessor,
+                profile=profile,
+                documents=predecessor_documents,
+            )
         planned.append(
             RepairPlanItem(
                 current=current,
@@ -566,7 +672,29 @@ def _validate_rebuilt_history(
         raise ValueError("Os findings ressurgidos reconstruídos divergem do histórico atual.")
 
 
-def _rebuild_predecessor_tag_assets(
+def _validate_predecessor_identity(
+    predecessor: MainRun,
+    rebuilt: HistorySnapshot,
+) -> None:
+    if rebuilt.run_id != predecessor.run_id:
+        raise ValueError("O histórico predecessor reconstruído diverge da execução MAIN.")
+    expected_start = parse_datetime(
+        predecessor.period_start_at,
+        predecessor.timezone,
+    )
+    expected_end = parse_datetime(
+        predecessor.period_end_at,
+        predecessor.timezone,
+    )
+    rebuilt_start = parse_datetime(rebuilt.period_start_at, predecessor.timezone)
+    rebuilt_end = parse_datetime(rebuilt.period_end_at, predecessor.timezone)
+    if rebuilt_start != expected_start or rebuilt_end != expected_end:
+        raise ValueError(
+            "O histórico predecessor reconstruído diverge das fronteiras MAIN."
+        )
+
+
+def _rebuild_predecessor_snapshot(
     item: RepairPlanItem,
     *,
     output_root: Path,
@@ -574,7 +702,7 @@ def _rebuild_predecessor_tag_assets(
     compact = item.predecessor_compact_snapshot
     if compact is None:
         return item.predecessor_snapshot
-    materialize_compact_snapshot_run(
+    materialized = materialize_compact_snapshot_run(
         snapshot=compact,
         profile=item.profile,
         run_id=item.predecessor.run_id,
@@ -588,17 +716,44 @@ def _rebuild_predecessor_tag_assets(
         include_output=item.profile.presentation.vm_top5_include_output,
         execution_type=item.predecessor.execution_type,
     )
-    payload = json.loads(artifact.dataset_path.read_text(encoding="utf-8"))
-    customizations = payload.get("customizations")
-    if not isinstance(customizations, Mapping):
-        return item.predecessor_snapshot
-    rows = customizations.get("network_tag_snapshots")
-    if not isinstance(rows, list):
-        return item.predecessor_snapshot
-    return _overlay_tag_top_assets(
-        item.predecessor_snapshot,
-        tuple(row for row in rows if isinstance(row, Mapping)),
+    tag_bundle = build_tag_report_datasets_from_snapshot(
+        profile=item.profile,
+        run_id=item.predecessor.run_id,
+        period=_period(item.predecessor),
+        output_root=output_root,
+        include_output=item.profile.presentation.vm_top5_include_output,
+        execution_type=item.predecessor.execution_type,
     )
+    payload = json.loads(artifact.dataset_path.read_text(encoding="utf-8"))
+    tag_payloads = tuple(
+        json.loads(tag_artifact.dataset_path.read_text(encoding="utf-8"))
+        for tag_artifact in tag_bundle.artifacts
+    )
+    rebuilt = build_history_snapshot(
+        profile=item.profile,
+        dataset=payload,
+        dataset_path=artifact.dataset_path,
+        normalized_findings_path=materialized.findings_path,
+        tag_datasets=tag_payloads,
+    )
+    _validate_predecessor_identity(item.predecessor, rebuilt)
+    return replace(
+        rebuilt,
+        snapshot_id=item.predecessor_snapshot.snapshot_id,
+        compatibility=item.predecessor_snapshot.compatibility,
+    )
+
+
+def _create_item_work_directory(work_root: Path) -> Path:
+    work_root.mkdir(parents=True, exist_ok=True)
+    for _ in range(10):
+        candidate = work_root / uuid.uuid4().hex[:8]
+        try:
+            candidate.mkdir()
+        except FileExistsError:
+            continue
+        return candidate
+    raise FileExistsError("Não foi possível reservar diretório temporário da manutenção.")
 
 
 def _apply_item(
@@ -610,12 +765,11 @@ def _apply_item(
     applied_at: str,
     tag_only: bool,
 ) -> int:
-    item_work = work_root / uuid.uuid4().hex
-    item_work.mkdir(parents=True, exist_ok=False)
+    item_work = _create_item_work_directory(work_root)
     staging = item.current.manifest_path.parent / f".monthly-comparison-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=False)
     try:
-        predecessor_snapshot = _rebuild_predecessor_tag_assets(
+        predecessor_snapshot = _rebuild_predecessor_snapshot(
             item,
             output_root=item_work,
         )
@@ -841,6 +995,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=ROOT / "data" / "maintenance-work" / "monthly-comparisons",
     )
     parser.add_argument("--scope-override-client", action="append", default=[])
+    parser.add_argument(
+        "--client-id",
+        action="append",
+        default=[],
+        help="Restringe a manutenção a um cliente do plano; pode ser repetido.",
+    )
     parser.add_argument("--tag-only", action="store_true")
     parser.add_argument(
         "--start-position",
@@ -856,11 +1016,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     overrides = frozenset(
         str(value).strip() for value in args.scope_override_client if str(value).strip()
     )
+    selected_clients = frozenset(
+        str(value).strip() for value in args.client_id if str(value).strip()
+    )
     plan = build_plan(
         database,
         period_id=args.period_id,
         profiles_root=args.profiles_root,
         scope_override_clients=overrides,
+        selected_client_ids=selected_clients,
     )
     plan = _selected_plan(plan, tag_only=args.tag_only)
     plan = _plan_from_position(plan, args.start_position)

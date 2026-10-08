@@ -134,8 +134,10 @@ O dataset `cloud-metrics-v3` conserva:
   representados por imagens de container; cada recurso conta combinações distintas
   de CVE/software com `FixedBy` ou remediação correlacionada ao mesmo recurso e CVE;
 - cobertura `COMPLETE`, `PARTIAL` ou `UNAVAILABLE` para os rankings corrigíveis,
-  derivada do estado das fontes opcionais de `FixedBy` e remediação. Cobertura
-  parcial recebe aviso explícito; indisponibilidade nunca é apresentada como zero;
+  derivada do estado das fontes opcionais de `FixedBy` e remediação. Para imagens
+  de container, são avaliadas `container_image_fix_versions` e
+  `vulnerability_remediations`. Cobertura parcial recebe aviso explícito;
+  indisponibilidade nunca é apresentada como zero;
 - aging, resolvidas e tempo médio de remediação quando o ciclo de vida existe;
 - inventário por provedor e região;
 - findings de postura e capacidades observadas no tenant;
@@ -171,6 +173,23 @@ relatório e o instante final pertence ao período seguinte.
 O filtro inferior enviado à API é seguido por validação local das duas fronteiras.
 `Informational` é excluída; as severidades consideradas são Critical, High, Medium
 e Low.
+
+### Coleta tardia de findings ativos
+
+Se `collection_completed_at` for posterior a
+`period_end_at + late_collection_grace_days`, a visão mensal inclui um finding
+ativo somente quando há continuidade temporal comprovada: estado `OPEN` ou
+`REOPENED`, UUID de ativo válido, `first_found` anterior ao fim e `last_found` no
+fim ou depois dele. Um `REOPENED` exige ainda `resurfaced_at` anterior ao fim. O
+valor efetivo de `last_found` usado no cálculo passa a ser o último microssegundo
+do período, sem reescrever o registro normalizado.
+
+O dataset registra `status=APPLIED`, método
+`confirmed_open_temporal_continuity`, total ajustado e contagem por severidade.
+Findings `FIXED`, registros incompletos e ocorrências iniciadas depois do período
+permanecem fora. Por isso a reconciliação corrige a subcontagem comprovável de
+abertos, mas não afirma reconstruir toda fotografia histórica nem substitui um
+snapshot Cloud ausente.
 
 ## Métricas principais
 
@@ -218,7 +237,9 @@ e Low.
 - Top 10 com correção: combinações CVE/software com `FixedBy` estruturado ou
   remediação correlacionada ao recurso e à CVE. Uma CVE pode ocupar mais de uma
   linha quando os softwares forem distintos. O documento não exibe `Fixed by` nem
-  repete a ação recomendada extensa nessa tabela.
+  repete a ação recomendada extensa nessa tabela. A correlação exige uma única
+  ocorrência para `resource_id + CVE`; correspondência ambígua entre tipos de
+  recurso não é aceita.
 - Postura Cloud: findings não relacionados a vulnerabilidade, somente quando a
   capacidade e a população são confirmadas; o DOCX exibe **Recursos** e não repete
   a mesma contagem em uma coluna **Achados**.
