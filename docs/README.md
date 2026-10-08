@@ -10,7 +10,7 @@ uma descrição de fase antiga.
    mapa das fontes de verdade.
 2. [README](../README.md): início rápido e resumo de uso.
 3. [Design da solução](../DESIGN.md): arquitetura e invariantes estruturais.
-4. Guias `19` a `23`: contratos vigentes de produto, dados, operação e
+4. Guias `19` a `24`: contratos vigentes de produto, dados, operação e
    desenvolvimento.
 5. Documentos `01` a `18` e registros em `superpowers`: evolução histórica e
    decisões de cada ciclo.
@@ -28,6 +28,8 @@ uma descrição de fase antiga.
   acompanhamento, falhas, `MAIN` e armazenamento.
 - [Guia de desenvolvimento](23-guia-de-desenvolvimento.md): organização do código,
   testes, alterações seguras e validação dos documentos.
+- [Integração Tenable Cloud e licenciamento](24-integracao-apis-tenable-cloud-e-licenciamento.md):
+  contrato GraphQL, fontes, retry, retomada e limites de leitura de licenças.
 
 ## Referências históricas
 

@@ -93,6 +93,11 @@ estrutura, não redação exata.
 
 ## Tenable VM, WAS e Cloud Security
 
+Consulte também a referência vigente de
+[Integração Tenable Cloud e licenciamento](24-integracao-apis-tenable-cloud-e-licenciamento.md)
+antes de alterar endpoint, consulta, autenticação, fonte opcional, classificação de
+cobertura ou leitura de licença.
+
 Respeite o contrato assíncrono dos exports. Não interprete `total_chunks` como estado
 final. Persista chunks conforme ficam disponíveis e preserve o manifesto parcial
 para retentativa.

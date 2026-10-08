@@ -1,7 +1,7 @@
 # Contexto do projeto
 
-**Atualizado em:** 2026-10-07  
-**Base verificada:** `28894e7` (`main` no início deste ciclo)  
+**Atualizado em:** 2026-10-08  
+**Base verificada:** `98bbdf6` (`main` no início deste ciclo)  
 **Natureza:** resumo versionado; estado operacional transitório fica fora deste arquivo
 
 ## Finalidade
@@ -22,7 +22,7 @@ Em caso de divergência, use esta ordem:
 1. código, testes e migrations definem o comportamento executável;
 2. `AGENTS.md` da raiz e dos diretórios definem limites para alterações;
 3. este `CONTEXTO.md` registra o mapa consolidado do estado atual;
-4. [DESIGN.md](DESIGN.md) e [docs/19 a docs/23](docs/README.md) detalham os
+4. [DESIGN.md](DESIGN.md) e [docs/19 a docs/24](docs/README.md) detalham os
    contratos vigentes;
 5. skills e runbooks locais orientam procedimentos especializados;
 6. `docs/01` a `docs/18` preservam contratos e etapas históricas;
@@ -159,6 +159,22 @@ aceita como predecessores `MAIN` da mesma competência lógica, cliente, tenant,
 fuso, escopo e versões de conector/normalizador, incluindo snapshots
 `cloud-metrics-v2` e `cloud-metrics-v3`, mesmo quando o modo de período ou o tipo de
 execução legado diferem. O replay exato continua exigindo compatibilidade estrita.
+
+O contrato técnico do conector, incluindo endpoints candidatos, fontes GraphQL,
+paginação, retry, checkpoints e limites de licenciamento, fica consolidado em
+[Integração Tenable Cloud e licenciamento](docs/24-integracao-apis-tenable-cloud-e-licenciamento.md).
+Licenciamento deve separar valor direto, cálculo derivado, evidência exclusiva da
+console e indisponibilidade. O inventário do relatório Cloud, a quantidade de
+findings de Attack Path ou o número de scans WAS não equivalem automaticamente a
+consumo de licença.
+
+Um futuro relatório **Health Check** será projetado em ciclo próprio a partir do
+modelo editorial e dos requisitos aprovados. A direção confirmada é manter APIs
+públicas ou contratos autenticados validados no núcleo e usar a console apenas
+como complemento assistido e auditável. Login e MFA pertencem ao operador; a
+navegação será somente leitura, por um cliente de cada vez, sem persistir senha,
+cookie, token ou sessão. Rotas internas observadas no navegador não se tornam
+dependência regular sem contrato estável e validação específica.
 
 ## Controle de documento
 
@@ -395,6 +411,8 @@ A ajuda da CLI pode ser consultada sem iniciar coleta:
 - [Guia operacional](docs/22-guia-operacional.md): uso seguro da interface e CLI.
 - [Guia de desenvolvimento](docs/23-guia-de-desenvolvimento.md): alteração, testes e
   validação.
+- [Integração Tenable Cloud e licenciamento](docs/24-integracao-apis-tenable-cloud-e-licenciamento.md):
+  contrato GraphQL, fontes, retomada, licenciamento e protocolo de validação.
 - [Template corporativo](templates/corporate/README.md): contrato do shell DOCX.
 - [Instruções para agentes](AGENTS.md): regras globais, complementadas pelos
   `AGENTS.md` de cada diretório.
@@ -410,6 +428,9 @@ A ajuda da CLI pode ser consultada sem iniciar coleta:
 - Retentativas seletivas dependem de checkpoint ou snapshot íntegro para evitar
   repetir coleta concluída.
 - Alterações editoriais nos modelos oficiais exigem aprovação e inspeção visual.
+- O consumo de licença por produto só pode ser publicado como direto quando a API
+  documentar essa semântica; valores calculados ou exclusivos da console precisam
+  permanecer identificados como tais.
 
 ## Como manter este contexto
 

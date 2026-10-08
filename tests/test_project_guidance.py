@@ -17,6 +17,7 @@ REQUIRED_FILES = (
     "docs/21-catalogo-de-dados-e-metricas.md",
     "docs/22-guia-operacional.md",
     "docs/23-guia-de-desenvolvimento.md",
+    "docs/24-integracao-apis-tenable-cloud-e-licenciamento.md",
     "AGENTS.md",
     "src/tenable_reports/AGENTS.md",
     "tests/AGENTS.md",
@@ -71,6 +72,21 @@ class ProjectGuidanceTests(unittest.TestCase):
 
         self.assertIn(
             ("MISSING_REQUIRED_FILE", "CONTEXTO.md"),
+            {(item.code, item.path) for item in issues},
+        )
+
+    def test_requires_current_cloud_api_and_licensing_guide(self) -> None:
+        self.write_minimum_valid_tree()
+        guide = self.root / "docs/24-integracao-apis-tenable-cloud-e-licenciamento.md"
+        guide.unlink()
+
+        issues = validate_guidance(self.root)
+
+        self.assertIn(
+            (
+                "MISSING_REQUIRED_FILE",
+                "docs/24-integracao-apis-tenable-cloud-e-licenciamento.md",
+            ),
             {(item.code, item.path) for item in issues},
         )
 
