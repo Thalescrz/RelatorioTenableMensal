@@ -269,6 +269,39 @@ def test_history_fingerprints_use_the_same_late_reconciled_view(
     assert snapshot.open_plugin_counts[0]["count"] == 1
 
 
+def test_late_history_rebuild_rejects_invalid_reconciliation_evidence(
+    tmp_path: Path,
+) -> None:
+    profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+    dataset = _dataset(
+        "2026-07",
+        "2026-07-01T03:00:00Z",
+        "2026-08-01T03:00:00Z",
+        total=0,
+    )
+    dataset["collection_timing"] = {
+        "collection_completed_at": "2026-08-03T03:00:00Z",
+        "period_end_at": "2026-08-01T03:00:00Z",
+        "grace_days": 1,
+        "status": "LATE",
+    }
+    dataset_path = tmp_path / "report-dataset.json"
+    normalized_path = tmp_path / "findings.jsonl"
+    dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+    normalized_path.write_text(
+        json.dumps({"finding_key": "incomplete-preserved-evidence"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="evidencia tardia normalizada invalida"):
+        _history_snapshot(
+            profile=profile,
+            dataset=dataset,
+            dataset_path=dataset_path,
+            normalized_findings_path=normalized_path,
+        )
+
+
 def test_tag_year_history_omits_months_without_a_real_tag_snapshot() -> None:
     rows = tag_year_history(
         (

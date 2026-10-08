@@ -290,8 +290,10 @@ def _normalized_keys(
             normalized_findings = tuple(
                 NormalizedFinding.from_dict(item) for item in raw_findings
             )
-        except (KeyError, TypeError, ValueError):
-            pass
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "A evidencia tardia normalizada invalida impede a reconciliacao historica."
+            ) from exc
         else:
             effective_items = tuple(
                 item.to_dict()

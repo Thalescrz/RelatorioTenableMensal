@@ -565,7 +565,9 @@ efeito e conservar a ordem original.
 `reconcile_late_open_findings` é a única regra para continuidade tardia. Testes
 devem provar o gatilho estritamente posterior à tolerância, inclusão conservadora
 de `OPEN`/`REOPENED`, exclusão de `FIXED` e registros ambíguos, não mutação da
-evidência e propagação idêntica ao geral, histórico e TAG.
+evidência e propagação idêntica ao geral, histórico e TAG. Evidência normalizada
+inválida em um histórico marcado como `LATE` deve interromper a reconstrução; não
+aceite fallback silencioso para os timestamps brutos.
 
 Na correlação Cloud, indexe ocorrências por `(resource_id, CVE)` e aceite a
 remediação apenas com correspondência única. O status do ranking de containers

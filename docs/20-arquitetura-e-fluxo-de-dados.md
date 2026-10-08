@@ -152,6 +152,9 @@ Ao reproduzir um snapshot compacto, os snapshots de fonte recebem como
 manutenção. Assim, um replay posterior não transforma artificialmente uma coleta
 pontual em tardia. A reconstrução do predecessor usa o mesmo caminho de domínio
 para refazer resumo, fingerprints e TAGs antes de montar o comparativo.
+Se um dataset marcado como `LATE` não puder ser reconstruído como
+`NormalizedFinding`, a leitura histórica falha de forma explícita; ela não recua
+silenciosamente para a visão bruta e potencialmente subcontada.
 
 A regra é deliberadamente conservadora: não inclui findings que nasceram depois do
 fechamento, `REOPENED` sem ressurgimento anterior, registros sem vínculo UUID,
