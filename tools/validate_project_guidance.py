@@ -18,6 +18,7 @@ REQUIRED_GUIDANCE_FILES = (
     "docs/21-catalogo-de-dados-e-metricas.md",
     "docs/22-guia-operacional.md",
     "docs/23-guia-de-desenvolvimento.md",
+    "docs/24-integracao-apis-tenable-cloud-e-licenciamento.md",
     "AGENTS.md",
     "src/tenable_reports/AGENTS.md",
     "tests/AGENTS.md",

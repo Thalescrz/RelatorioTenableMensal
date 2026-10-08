@@ -375,4 +375,6 @@ Uma mudança estrutural deve declarar:
 Para a retomada consolidada, consulte [CONTEXTO.md](CONTEXTO.md). Para detalhes
 complementares, consulte [arquitetura e fluxo de dados](docs/20-arquitetura-e-fluxo-de-dados.md),
 [catálogo de dados e métricas](docs/21-catalogo-de-dados-e-metricas.md) e
-[guia de desenvolvimento](docs/23-guia-de-desenvolvimento.md).
+[guia de desenvolvimento](docs/23-guia-de-desenvolvimento.md). O contrato do
+conector GraphQL e das fontes de licenciamento fica em
+[Integração Tenable Cloud e licenciamento](docs/24-integracao-apis-tenable-cloud-e-licenciamento.md).

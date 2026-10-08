@@ -19,7 +19,7 @@ nunca é filtrado pelas TAGs.
 
 - Código e testes definem o comportamento executável.
 - `CONTEXTO.md` mantém o mapa consolidado do estado e dos limites vigentes.
-- `docs/19` a `docs/23` descrevem o estado atual.
+- `docs/19` a `docs/24` descrevem o estado atual.
 - `docs/01` a `docs/18` registram contratos e evolução histórica.
 - PostgreSQL é a fonte operacional de histórico, documentos, tentativas e `MAIN`.
 - Credenciais ficam somente em arquivos locais ignorados pelo Git.

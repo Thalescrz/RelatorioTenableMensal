@@ -328,6 +328,12 @@ Referência: https://developer.tenable.com/reference/was-v2-vulns-details
 
 ## Tenable Cloud Exposure / Cloud Security
 
+> **Estado vigente:** o conector GraphQL foi implementado depois desta fase. A
+> referência atual, derivada do código e dos testes, está em
+> [Integração Tenable Cloud e licenciamento](24-integracao-apis-tenable-cloud-e-licenciamento.md).
+> A tabela abaixo preserva o estado histórico de 2026-08-23 e não deve orientar
+> novas alterações sozinha.
+
 ### GraphQL
 
 | Campo | Registro |
@@ -338,10 +344,13 @@ Referência: https://developer.tenable.com/reference/was-v2-vulns-details
 | Endpoint citado na documentação pública | Endpoint único descrito genericamente como `/graphql` |
 | Paginação | `first`, `after`, `pageInfo.hasNextPage`, `pageInfo.endCursor` |
 | Fontes conhecidas | `VirtualMachines`, `ContainerImages`, `Entities`, `Findings`, `VulnerabilityInstances` |
-| Situação | Não implementar agora. Confirmar endpoint e schema no tenant e na documentação autenticada antes de qualquer mudança. |
+| Situação naquela fase | Não implementar naquele momento. Confirmar endpoint e schema no tenant e na documentação autenticada antes de qualquer mudança. |
 | Referência | https://developer.tenable.com/docs/cloud-security-integrations |
 
-O material local testa cursor repetido, timeout, reset de conexão, redução adaptativa de página e isolamento de fontes opcionais. Esses comportamentos devem ser extraídos para o futuro adaptador Cloud.
+Naquela fase, o material local já testava cursor repetido, timeout, reset de
+conexão, redução adaptativa de página e isolamento de fontes opcionais. O adaptador
+vigente incorporou esses controles; consulte o guia atual antes de operar ou
+alterar o conector.
 
 ## Lacunas remanescentes após os DOCX
 
