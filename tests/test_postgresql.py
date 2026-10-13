@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -55,6 +56,87 @@ class _MemoryOperationsTarget:
 
 
 class PostgreSqlTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Fallback de libpq especifico do Windows")
+    def test_driver_falls_back_to_installed_libpq_when_binary_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            program_files = Path(temp_dir)
+            postgresql_bin = program_files / "PostgreSQL" / "18" / "bin"
+            postgresql_bin.mkdir(parents=True)
+            (postgresql_bin / "libpq.dll").write_bytes(b"test-only")
+
+            fake_driver = object()
+            import_attempts: list[tuple[str | None, str]] = []
+            real_import = __import__
+
+            def controlled_import(name, globals=None, locals=None, fromlist=(), level=0):
+                if name == "psycopg":
+                    implementation = os.environ.get("PSYCOPG_IMPL")
+                    current_path = os.environ.get("PATH", "")
+                    import_attempts.append((implementation, current_path))
+                    if (
+                        implementation == "python"
+                        and current_path.split(os.pathsep)[0] == str(postgresql_bin)
+                    ):
+                        return fake_driver
+                    raise ImportError("wrapper binario bloqueado pela politica local")
+                return real_import(name, globals, locals, fromlist, level)
+
+            with (
+                patch.dict(
+                    os.environ,
+                    {
+                        "ProgramFiles": str(program_files),
+                        "PATH": str(program_files / "existing-bin"),
+                    },
+                    clear=True,
+                ),
+                patch("builtins.__import__", side_effect=controlled_import),
+            ):
+                driver = postgresql_module._driver()
+
+                self.assertIs(driver, fake_driver)
+                self.assertEqual(os.environ["PSYCOPG_IMPL"], "python")
+                self.assertEqual(
+                    os.environ["PATH"].split(os.pathsep)[0],
+                    str(postgresql_bin),
+                )
+
+            self.assertEqual(len(import_attempts), 2)
+            self.assertIsNone(import_attempts[0][0])
+            self.assertEqual(import_attempts[1][0], "python")
+
+    @unittest.skipUnless(os.name == "nt", "Fallback de libpq especifico do Windows")
+    def test_driver_preserves_explicit_psycopg_implementation(self) -> None:
+        import_attempts = 0
+        real_import = __import__
+
+        def controlled_import(name, globals=None, locals=None, fromlist=(), level=0):
+            nonlocal import_attempts
+            if name == "psycopg":
+                import_attempts += 1
+                raise ImportError("implementacao explicita indisponivel")
+            return real_import(name, globals, locals, fromlist, level)
+
+        original_path = str(ROOT / "existing-bin")
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "PSYCOPG_IMPL": "binary",
+                    "PATH": original_path,
+                },
+                clear=True,
+            ),
+            patch("builtins.__import__", side_effect=controlled_import),
+        ):
+            with self.assertRaises(RuntimeError):
+                postgresql_module._driver()
+
+            self.assertEqual(os.environ["PSYCOPG_IMPL"], "binary")
+            self.assertEqual(os.environ["PATH"], original_path)
+
+        self.assertEqual(import_attempts, 1)
+
     def test_database_connection_retries_role_connection_exhaustion(self) -> None:
         config = DatabaseConfig.from_environment({
             "TENABLE_REPORTS_DB_NAME": "tenable_reports",

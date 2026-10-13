@@ -30,6 +30,27 @@ arquivo local apropriado. Use
 [credentials/database.env.example](../credentials/database.env.example) como
 referência de nomes, sem colocar a senha real no arquivo de exemplo.
 
+### Driver PostgreSQL no Windows
+
+A aplicação prefere o driver binário do `psycopg`. Quando uma política do Windows
+impede o carregamento desse módulo, a inicialização usa automaticamente a
+implementação Python com a `libpq.dll` instalada em
+`C:\Program Files\PostgreSQL\<versão>\bin`. Não é necessário alterar o `PATH` do
+Windows.
+
+Se o PostgreSQL estiver em outro local, defina a pasta `bin` apenas na sessão que
+iniciará a aplicação:
+
+```powershell
+$env:TENABLE_REPORTS_POSTGRESQL_BIN = 'D:\PostgreSQL\bin'
+.\scripts\run_web.ps1
+```
+
+A pasta informada precisa conter `libpq.dll`. Uma configuração explícita de
+`PSYCOPG_IMPL` é respeitada e não é substituída pelo fallback. Se o carregamento
+continuar indisponível, execute novamente `scripts/setup.ps1` e confirme a
+instalação local do PostgreSQL antes de iniciar uma operação.
+
 ## Iniciar a interface
 
 ```powershell
