@@ -1,7 +1,7 @@
 # Integração Tenable Cloud e licenciamento
 
 **Estado:** referência técnica vigente  
-**Verificado em:** 2026-10-08  
+**Verificado em:** 2026-10-13  
 **Conector Cloud:** `cloud-graphql-v1`
 
 Este guia consolida o contrato das integrações Cloud e das fontes de
@@ -139,6 +139,76 @@ que a organização possui zero vulnerabilidades corrigíveis.
 
 ## Fontes oficiais de licenciamento
 
+### Tenable Cloud Security: uso, média e tendência
+
+A tela de licenciamento do Tenable Cloud Security apresenta medições com
+semânticas diferentes. Elas não podem ser intercambiadas:
+
+| Medição | Semântica oficial | Uso seguro neste projeto |
+|---|---|---|
+| Current Resource Usage | última fotografia de uso calculada pelo Tenable Cloud Security | `CONSOLE_ONLY`; representa o estado mais recente, não uma média histórica |
+| Average Resource Usage | média de recursos faturáveis em uma janela de até 90 dias | `CONSOLE_ONLY`; não pode ser substituída pelo inventário atual nem pelo último snapshot |
+| Usage Trend | série de recursos faturáveis usados e adquiridos em uma janela de até 90 dias | `CONSOLE_ONLY`; preservar período, unidade e instante da captura |
+| Resource Breakdown e CSV | decomposição em unidades faturáveis segundo o tipo e a proporção aplicável | `CONSOLE_ONLY`; não tratar as linhas como contagem bruta de inventário |
+
+Os modelos de cobrança documentados incluem recursos computacionais, recursos
+baseados em scan e solicitantes JIT. A natureza da unidade faturável depende do
+tipo de recurso e da licença; somar essas classes como se fossem unidades
+homogêneas produz um total incorreto.
+
+A proporção padrão é 1:1 quando não existe exceção documentada. Entre as exceções
+publicadas estão recursos serverless na proporção de 10:1 e proporções legadas
+aplicáveis somente aos tipos e contratos indicados pela Tenable. Uma proporção
+nunca deve ser inferida a partir do nome do recurso ou aplicada a outro tipo por
+analogia.
+
+Para containers, a unidade faturável é o repositório, não a quantidade de imagens
+nele. O mesmo repositório acompanhado por integração de CI/CD e por registro pode
+ser contabilizado como dois recursos distintos. Por isso `container_images` e o
+número de digests do relatório Cloud não equivalem ao consumo de licença.
+
+Referências oficiais autenticadas, revisadas em 2026-10-13:
+
+- [Licensing](https://docs.app.tenable.com/docs/licensing)
+- [Feature Comparison by License](https://docs.app.tenable.com/docs/feature-comparison-by-license)
+- [Environment Sizing Guide](https://docs.app.tenable.com/docs/sizing-guide)
+
+### Aplicabilidade por licença
+
+Foundation, Advanced, CNAPP Complete, Standard e Enterprise não expõem o mesmo
+conjunto de capacidades. Cloud VM e as demais funções de CNAPP devem ser
+classificadas conforme a licença documentada e a habilitação observada para o
+tenant. A existência de um campo no schema, de um item no menu ou de um registro
+no inventário não comprova que a capacidade está licenciada ou habilitada.
+
+Este guia não mantém uma cópia da matriz comercial, que pode evoluir. Antes de
+atribuir uma capacidade a um cliente, consulte a comparação oficial vigente e
+registre a edição/data usada. Ausência de permissão ou de fonte mantém o estado
+`UNAVAILABLE`; não autoriza inferir o tier contratado.
+
+### Sizing versus consumo faturável
+
+Os scripts do Environment Sizing Guide fornecem uma fotografia pontual de
+recursos brutos visíveis no ambiente. Eles auxiliam dimensionamento, mas não são
+histórico de faturamento nem substituem os indicadores de licenciamento da
+console. Para comparar o resultado com unidades faturáveis é obrigatório:
+
+1. registrar o instante e o escopo da execução;
+2. aplicar somente as proporções oficiais pertinentes a cada classe;
+3. contabilizar manualmente as classes que o próprio guia declara não cobertas;
+4. preservar arredondamento e regra de agregação;
+5. reconciliar o resultado com a fotografia ou média correspondente na console.
+
+O resultado continua `DERIVED` até essa reconciliação. Diferença entre sizing,
+inventário GraphQL e licenciamento não é, isoladamente, falha de coleta: as três
+fontes podem medir universos, instantes e unidades diferentes.
+
+Não há paridade pública estável confirmada neste projeto para o CSV de breakdown,
+alocações, saldo restante ou série Usage Trend. Esses itens permanecem
+`CONSOLE_ONLY`. O endpoint `/server/properties` é uma fonte pública parcial para
+propriedades e limites do container Tenable; ele não representa o contrato
+completo de faturamento do Tenable Cloud Security.
+
 ### Container comum Tenable
 
 O endpoint público abaixo expõe propriedades do container:
@@ -203,7 +273,7 @@ Todo indicador futuro deve declarar uma das classificações abaixo:
 | VM | `/server/properties`, aplicação `tio` e limites gerais | derivável pelos ativos licenciados | contar UUIDs de ativos cuja evidência oficial de licenciamento continua válida; comparar com a console antes de publicar como total oficial |
 | WAS | `/server/properties`, aplicação `was`, inclusive `web_assets` quando presente | não há contador público universal confirmado no projeto | derivação por aplicação web licenciada exige validação contra a console e não pode contar scans ou findings como licenças |
 | Attack Path | presença e metadados da aplicação `apa` | não confirmado por endpoint público específico | não usar quantidade de paths, findings ou vetores como consumo de licença |
-| Cloud Exposure/CNAPP | aplicações `cns`/`cnapp` quando retornadas | detalhamento por recurso ainda não confirmado em API pública do projeto | inventário GraphQL do relatório Cloud não equivale automaticamente ao contador de licença |
+| Cloud Exposure/CNAPP | aplicações `cns`/`cnapp` quando retornadas | fotografia, média, breakdown e tendência detalhada permanecem `CONSOLE_ONLY` | inventário GraphQL e scripts de sizing não equivalem automaticamente a unidades faturáveis; aplicar a licença e a proporção documentadas antes de qualquer cálculo `DERIVED` |
 | Tenable One | aplicação `one`, alocação e `ratio` quando retornados | depende das regras e proporções do contrato | não somar contagens brutas de produtos diferentes |
 | MSSP | endpoints MSSP retornam limite e uso agregado | `DIRECT` no container parceiro | não usar em tenant comum nem misturar contas-filhas |
 
@@ -287,8 +357,13 @@ clientes ou períodos.
   valor vazio.
 - O relatório Cloud não reconstrói um ponto passado sem snapshot compatível.
 - O inventário Cloud não é, por si só, consumo de licença.
-- `/server/properties` informa licenciamento e aplicações, mas a semântica de uso
-  de cada campo ainda precisa ser validada contra o painel antes de publicação.
+- `/server/properties` informa propriedades, aplicações e alguns limites do
+  container, mas não fornece a visão completa de faturamento do Tenable Cloud
+  Security; a semântica de cada campo precisa ser validada antes de publicação.
+- Current Resource Usage, Average Resource Usage e Usage Trend medem coisas
+  diferentes; snapshot, média histórica e série temporal não são substitutos.
+- Resource Breakdown/CSV trabalham com unidades faturáveis, enquanto inventário
+  GraphQL e sizing partem de recursos brutos e podem ter cobertura distinta.
 - Endpoints MSSP dependem de uma conta parceira e não são fallback para cliente
   comum.
 - Attack Path findings não medem consumo de licença.
