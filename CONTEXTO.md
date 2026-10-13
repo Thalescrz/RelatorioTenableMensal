@@ -1,7 +1,7 @@
 # Contexto do projeto
 
-**Atualizado em:** 2026-10-08  
-**Base verificada:** `98bbdf6` (`main` no início deste ciclo)  
+**Atualizado em:** 2026-10-13  
+**Base verificada:** `b90104a` (`main` no início deste ciclo)  
 **Natureza:** resumo versionado; estado operacional transitório fica fora deste arquivo
 
 ## Finalidade
@@ -172,6 +172,14 @@ Licenciamento deve separar valor direto, cálculo derivado, evidência exclusiva
 console e indisponibilidade. O inventário do relatório Cloud, a quantidade de
 findings de Attack Path ou o número de scans WAS não equivalem automaticamente a
 consumo de licença.
+
+No Tenable Cloud Security, a fotografia atual, a média de até 90 dias, a série de
+uso e as unidades faturáveis do breakdown são medidas diferentes. Inventário
+GraphQL e sizing representam recursos brutos com cobertura e instante próprios;
+eles não substituem esses indicadores nem se tornam consumo faturável sem aplicar
+as proporções documentadas e reconciliar a fonte. O detalhamento, as limitações e
+a classificação `CONSOLE_ONLY` vigente ficam em
+[Integração Tenable Cloud e licenciamento](docs/24-integracao-apis-tenable-cloud-e-licenciamento.md).
 
 Um futuro relatório **Health Check** será projetado em ciclo próprio a partir do
 modelo editorial e dos requisitos aprovados. A direção confirmada é manter APIs
@@ -451,6 +459,9 @@ A ajuda da CLI pode ser consultada sem iniciar coleta:
 - O consumo de licença por produto só pode ser publicado como direto quando a API
   documentar essa semântica; valores calculados ou exclusivos da console precisam
   permanecer identificados como tais.
+- Snapshot atual, média histórica, inventário bruto e unidade faturável de Cloud
+  Security não são intercambiáveis; ausência de paridade pública mantém o dado
+  como `CONSOLE_ONLY`, e ausência de evidência nunca se torna zero.
 
 ## Como manter este contexto
 
