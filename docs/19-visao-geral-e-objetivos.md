@@ -137,7 +137,9 @@ seguindo o contrato estrito.
   é reproduzido exatamente quando existe fotografia Cloud compatível preservada.
 - A tradução automática usa um tradutor lazy por execução, cache compartilhado e
   divisão semântica de textos longos. Evidências operacionais e identificadores de
-  ativos não são enviados ao provedor.
+  ativos não são enviados ao provedor. Falha remanescente em qualquer trecho
+  bloqueia o novo DOCX, preserva a publicação anterior e produz alerta operacional
+  sanitizado fora do documento.
 - O WAS depende da disponibilidade e das permissões do tenant. Sua ausência não
   bloqueia a entrega VM.
 - A interface é local e simples; autenticação multiusuário e publicação remota não

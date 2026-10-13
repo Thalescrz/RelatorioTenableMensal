@@ -464,6 +464,14 @@ a publicação local for interrompida, conclua a retomada pelo próprio cliente:
 checkpoint validado permite repetir apenas renderização e registro, sem outra
 consulta GraphQL.
 
+Essa retomada deve ser feita pelo fluxo oficial **Tentar Cloud novamente** ou pelo
+comando `retry-cloud`, nunca chamando o gerador DOCX isoladamente. O fluxo valida e
+mantém o checkpoint bruto, recompõe a evolução com snapshots mensais `MAIN`, grava
+um dataset enriquecido separado e carrega o perfil operacional com o Controle de
+Documento global mais os adicionais do cliente. Antes de promover ou distribuir,
+confirme no DOCX a presença do mês atual e dos predecessores esperados e confira as
+três tabelas do Controle de Documento.
+
 No bootstrap padrão, o executor faseado oferece retry seletivo para VM, WAS e
 Cloud. Conjuntos excluídos nunca podem ser retentados.
 
@@ -743,15 +751,18 @@ tentativa.
 Descrições e soluções técnicas em inglês dos detalhamentos VM, TAG e Cloud são
 traduzidas automaticamente para português do Brasil durante a montagem. Textos
 extensos são enviados em partes ordenadas de até 900 caracteres para evitar que o
-serviço rejeite o conteúdo. Se uma parte falhar, o relatório mantém apenas aquela
-parte no idioma original, continua as demais e mostra um aviso explícito.
+serviço rejeite o conteúdo. Se uma parte continuar falhando depois das retentativas,
+o novo documento não é salvo nem publicado: o `MAIN` anterior permanece intacto e
+o painel mostra um alerta sanitizado com a quantidade de trechos pendentes.
 
 A tradução utiliza o Google Translate como serviço externo. Somente os campos
 editoriais de descrição, sinopse, solução, remediação e contramedida são enviados:
 Plugin Output, IP, hostname, URI, TAG, conta e tabelas de hosts permanecem locais.
 O mesmo contrato vale para VM, WAS, relatórios por TAG e Cloud. Há cache por
 execução, timeout e retentativa curta para erros transitórios; a indisponibilidade
-do tradutor não bloqueia a publicação e o erro não registra o conteúdo enviado.
+do tradutor bloqueia somente o documento afetado e o erro não registra o conteúdo
+enviado. Não é inserido no DOCX aviso técnico, menção ao mecanismo de tradução nem
+texto original como substituto de uma tradução incompleta.
 O parser aceita a forma aninhada retornada pelo endpoint do Google e descarta o
 código do idioma de origem. Em uma correção controlada de documentos já publicados,
 somente esses mesmos blocos editoriais podem ser alterados; manifesto, hashes no

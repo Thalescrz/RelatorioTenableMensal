@@ -23,6 +23,7 @@ from tenable_reports.presentation import editorial_catalog as copy
 from tenable_reports.presentation.source_filters import add_source_filter_note
 from tenable_reports.presentation.translation import (
     TextTranslator,
+    TranslationIncompleteError,
     translate_semantic_text,
 )
 
@@ -731,7 +732,7 @@ def _labeled_blocks(
     for chunk in translated.chunks:
         _paragraph(document, chunk)
     if translated.had_failures:
-        _paragraph(document, copy.TRANSLATION_UNAVAILABLE)
+        raise TranslationIncompleteError(translated.failed_chunk_count)
 
 
 def _host_rows(item: Mapping[str, Any], mask_sensitive: bool, include_output: bool) -> list[tuple[Any, ...]]:

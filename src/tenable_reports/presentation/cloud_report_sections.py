@@ -26,6 +26,7 @@ from tenable_reports.presentation.document_control import append_document_contro
 from tenable_reports.presentation.source_filters import format_source_filter_note
 from tenable_reports.presentation.translation import (
     TextTranslator,
+    TranslationIncompleteError,
     translate_semantic_text,
 )
 
@@ -485,9 +486,9 @@ def render_top_critical(
 def _translated_description(
     text: str,
     translator: TextTranslator | None,
-) -> tuple[tuple[str, ...], bool]:
+) -> tuple[tuple[str, ...], int]:
     result = translate_semantic_text(text, translator, max_chars=900)
-    return result.chunks, result.had_failures
+    return result.chunks, result.failed_chunk_count
 
 
 def render_critical_details(
@@ -497,6 +498,7 @@ def render_critical_details(
     translator: TextTranslator | None,
 ) -> None:
     critical = dataset.get("top_critical_cves") or ()
+    failed_chunk_count = 0
     corrections: dict[str, Mapping[str, Any]] = {}
     for item in dataset.get("top_correctable_vulnerabilities") or ():
         if not isinstance(item, Mapping):
@@ -534,32 +536,22 @@ def render_critical_details(
         builder.standard_heading("Descrição:", 4)
         description = str(item.get("description") or "").strip()
         if description:
-            chunks, failed = _translated_description(description, translator)
+            chunks, failures = _translated_description(description, translator)
             for chunk in chunks:
                 builder.standard_paragraph(chunk)
-            if failed:
-                builder.standard_paragraph(
-                    copy.TRANSLATION_UNAVAILABLE,
-                    color=MID_GRAY,
-                    align=WD_ALIGN_PARAGRAPH.LEFT,
-                )
+            failed_chunk_count += failures
         else:
             builder.standard_paragraph(copy.SOURCE_UNAVAILABLE, color=MID_GRAY)
         correction = corrections.get(cve)
         builder.standard_heading("Correção ou contramedida recomendada:", 4)
         if correction and correction.get("recommended_action"):
-            action_chunks, action_failed = _translated_description(
+            action_chunks, action_failures = _translated_description(
                 str(correction["recommended_action"]),
                 translator,
             )
             for chunk in action_chunks:
                 builder.standard_paragraph(chunk)
-            if action_failed:
-                builder.standard_paragraph(
-                    copy.TRANSLATION_UNAVAILABLE,
-                    color=MID_GRAY,
-                    align=WD_ALIGN_PARAGRAPH.LEFT,
-                )
+            failed_chunk_count += action_failures
             builder.standard_paragraph(
                 "Tipo de correção: "
                 + str(correction.get("correction_type_display") or "Não determinado"),
@@ -596,6 +588,8 @@ def render_critical_details(
             widths=(1200, 2100, 2500, 1500, 1900),
             left_columns=frozenset({0, 1, 2, 3, 4}),
         )
+    if failed_chunk_count:
+        raise TranslationIncompleteError(failed_chunk_count)
 
 
 def render_top_correctable(

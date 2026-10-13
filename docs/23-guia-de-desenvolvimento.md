@@ -326,6 +326,14 @@ vier de uma tentativa anterior, copie-o para o workspace exclusivo da tentativa
 atual antes de persistir o novo checkpoint. Cubra também o formato legado sem
 artefato explícito, aceitando apenas o caminho determinístico validado.
 
+Na retomada que renderiza Cloud, `_resume_cloud_component` deve consultar
+`list_monthly_main_before`, recompor `history` e materializar um dataset enriquecido
+separado antes de chamar o gerador. O checkpoint validado e o payload do snapshot
+publicado permanecem com a fotografia bruta; não sobrescreva nem acrescente dados
+derivados ao arquivo de retomada. Testes devem provar ausência de coleta remota,
+presença dos predecessores no dataset de renderização, invariância do hash do
+checkpoint e ausência de histórico derivado no snapshot da tentativa.
+
 O build de uma retentativa seletiva que contenha somente `CLOUD` deve receber essa
 seleção explicitamente. Mesmo quando VM está `COMPLETE` no checkpoint consolidado,
 ele renderiza apenas Cloud, usa `upsert_publication_documents` sobre o manifesto
@@ -423,8 +431,11 @@ Tradução de descrição usa `translate_semantic_text`: parágrafo, sentença e
 de palavra, com CVE/URL/versão inteiros quando couberem. A CLI deve criar um único
 `GoogleTextTranslator` lazy por execução e reutilizá-lo no geral, nas TAGs e no
 Cloud, garantindo cache comum e destino `pt-BR` (`pt` no provedor). Use tradutor
-falso injetado e cache nos testes, nunca rede. Falha de um chunk preserva somente a
-fonte daquele chunk, inclui aviso editorial e não bloqueia os demais nem o DOCX.
+falso injetado e cache nos testes, nunca rede. Falha de um chunk pode preservar a
+fonte apenas no resultado intermediário para concluir a contagem, mas o gerador
+deve lançar `TranslationIncompleteError` antes de salvar. A execução Cloud converte
+essa condição em `CLOUD_TRANSLATION_INCOMPLETE`, preserva o documento anterior e
+expõe somente a contagem sanitizada fora do DOCX.
 `translator=None` continua sendo o modo explícito de preservação do texto. Não
 encaminhe Plugin Output nem identificadores/evidências de ativos ao tradutor.
 O adaptador HTTP usa a rota `clients5.google.com/translate_a/t`, timeout explícito
@@ -459,6 +470,9 @@ quando precisar apenas analisar um JSON de forma determinística e
 `load_operational_client_profile` nos fluxos de produção que devem incorporar a
 lista global local. O modo `mask_sensitive` deve esvaziar os três campos da lista
 de distribuição em todos os renderizadores e retentativas.
+O comando oficial `retry-cloud` também deve usar o perfil operacional; um reparo
+local não deve invocar o renderizador com o JSON bruto do cliente, pois isso omite
+Preparação, Controle de Versionamento e destinatários globais.
 
 `DocumentPreparationConfig.date` é invariavelmente `30/09/2026` e não aceita
 sobrescrita do JSON. `DocumentVersionControlConfig.date` usa `30/09/2026` como

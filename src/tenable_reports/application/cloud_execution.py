@@ -55,7 +55,10 @@ from tenable_reports.infrastructure.tenable_cloud.queries import (
     CLOUD_SOURCE_QUERIES,
 )
 from tenable_reports.presentation.cloud_report_docx import generate_cloud_report
-from tenable_reports.presentation.translation import TextTranslator
+from tenable_reports.presentation.translation import (
+    TextTranslator,
+    TranslationIncompleteError,
+)
 from tenable_reports.presentation.report_filenames import cloud_report_filename
 from tenable_reports.application.publishing import sha256_file, validate_docx_package
 
@@ -416,6 +419,18 @@ class _CloudStageFailure(Exception):
         self.retryable = retryable
 
 
+def _translation_warning(failed_chunk_count: int) -> dict[str, Any]:
+    count = max(1, int(failed_chunk_count))
+    return {
+        "code": "CLOUD_TRANSLATION_INCOMPLETE",
+        "message": (
+            f"A tradução de {count} trecho{'s' if count != 1 else ''} "
+            "não foi concluída; o documento anterior foi preservado."
+        ),
+        "retryable": True,
+    }
+
+
 @contextmanager
 def _cloud_stage(stage: ComponentStage, failure_code: str):
     try:
@@ -427,7 +442,11 @@ def _cloud_stage(stage: ComponentStage, failure_code: str):
     except Exception as exc:
         raise _CloudStageFailure(
             stage=stage,
-            failure_code=failure_code,
+            failure_code=(
+                "CLOUD_TRANSLATION_INCOMPLETE"
+                if isinstance(exc, TranslationIncompleteError)
+                else failure_code
+            ),
             retryable=bool(getattr(exc, "retryable", True)),
         ) from exc
 
@@ -667,14 +686,17 @@ def execute_cloud_component(
     except ExecutionInterruptedError:
         raise
     except _CloudStageFailure as exc:
-        warning = {
-            "code": "CLOUD_COMPONENT_FAILED",
-            "message": (
-                "Falha no componente Cloud Security; os demais relatórios "
-                "foram preservados."
-            ),
-            "retryable": exc.retryable,
-        }
+        if isinstance(exc.__cause__, TranslationIncompleteError):
+            warning = _translation_warning(exc.__cause__.failed_chunk_count)
+        else:
+            warning = {
+                "code": "CLOUD_COMPONENT_FAILED",
+                "message": (
+                    "Falha no componente Cloud Security; os demais relatórios "
+                    "foram preservados."
+                ),
+                "retryable": exc.retryable,
+            }
         _emit(
             progress_callback,
             request=request,
@@ -745,15 +767,20 @@ def _resume_failure(
     progress_callback: Callable[[Mapping[str, Any]], None] | None,
     stage: ComponentStage,
     failure_code: str,
+    failed_chunk_count: int | None = None,
 ) -> CloudComponentResult:
-    warning = {
-        "code": "CLOUD_COMPONENT_FAILED",
-        "message": (
-            "Falha no componente Cloud Security; os demais relatórios "
-            "foram preservados."
-        ),
-        "retryable": True,
-    }
+    warning = (
+        _translation_warning(failed_chunk_count)
+        if failed_chunk_count is not None
+        else {
+            "code": "CLOUD_COMPONENT_FAILED",
+            "message": (
+                "Falha no componente Cloud Security; os demais relatórios "
+                "foram preservados."
+            ),
+            "retryable": True,
+        }
+    )
     _emit(
         progress_callback,
         request=request,
@@ -824,7 +851,7 @@ def _resume_cloud_component(
         actual_sha256 = str(dependencies.hash_file(dataset_path)).strip().lower()
         if not hmac.compare_digest(actual_sha256, resume.dataset_sha256):
             raise ValueError("Hash do dataset Cloud de retomada nao confere.")
-        dataset = dict(dependencies.load_dataset(dataset_path))
+        source_dataset = dict(dependencies.load_dataset(dataset_path))
     except ExecutionInterruptedError:
         raise
     except Exception:
@@ -833,6 +860,24 @@ def _resume_cloud_component(
             progress_callback=progress_callback,
             stage=ComponentStage.DATASET,
             failure_code="CLOUD_RESUME_DATASET_INVALID",
+        )
+
+    try:
+        period = request.period.to_dict()
+        history = _monthly_history(
+            repository=dependencies.repository,
+            compatibility=request.compatibility(),
+            period_id_before=str(period.get("period_id") or ""),
+        )
+        render_dataset = _with_monthly_history(source_dataset, history)
+    except ExecutionInterruptedError:
+        raise
+    except Exception:
+        return _resume_failure(
+            request=request,
+            progress_callback=progress_callback,
+            stage=ComponentStage.DATASET,
+            failure_code="CLOUD_RESUME_HISTORY_FAILED",
         )
 
     documents: tuple[CloudGeneratedDocument, ...] = ()
@@ -844,6 +889,19 @@ def _resume_cloud_component(
             stage=ComponentStage.RENDER.value,
         )
         try:
+            execution_directory = (
+                "automatic-monthly"
+                if request.execution_type == "AUTOMATIC_MONTHLY"
+                else "manual"
+            )
+            artifact = dependencies.write_dataset(
+                dataset=render_dataset,
+                output_root=request.output_root,
+                execution_type=execution_directory,
+                client_id=request.profile.client_id,
+                run_id=request.run_id,
+            )
+            dataset_path = Path(artifact.dataset_path)
             documents = _render_resumed_dataset(
                 request=request,
                 dependencies=dependencies,
@@ -851,12 +909,24 @@ def _resume_cloud_component(
             )
         except ExecutionInterruptedError:
             raise
-        except Exception:
+        except Exception as exc:
+            translation_failure = (
+                exc if isinstance(exc, TranslationIncompleteError) else None
+            )
             return _resume_failure(
                 request=request,
                 progress_callback=progress_callback,
                 stage=ComponentStage.RENDER,
-                failure_code="CLOUD_RENDER_FAILED",
+                failure_code=(
+                    "CLOUD_TRANSLATION_INCOMPLETE"
+                    if translation_failure is not None
+                    else "CLOUD_RENDER_FAILED"
+                ),
+                failed_chunk_count=(
+                    translation_failure.failed_chunk_count
+                    if translation_failure is not None
+                    else None
+                ),
             )
 
         _emit(
@@ -879,9 +949,8 @@ def _resume_cloud_component(
             )
 
     try:
-        period = request.period.to_dict()
         snapshot = build_cloud_snapshot(
-            dataset=dataset,
+            dataset=source_dataset,
             client_id=request.profile.client_id,
             tenant_id=request.profile.tenant_id,
             run_id=request.run_id,
@@ -892,7 +961,7 @@ def _resume_cloud_component(
             period_start_at=str(period["start_at"]),
             period_end_at=str(period["end_at"]),
             scope_hash=request.compatibility().scope_hash,
-            collected_at=str(dataset.get("collected_at") or ""),
+            collected_at=str(source_dataset.get("collected_at") or ""),
             capabilities=resume.capabilities,
             connector_version=resume.connector_version,
         )

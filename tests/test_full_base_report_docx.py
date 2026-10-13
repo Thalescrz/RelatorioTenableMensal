@@ -776,28 +776,25 @@ class FullBaseReportDocxTests(unittest.TestCase):
         self.assertTrue(all(len(chunk) <= 300 for chunk in chunks))
         self.assertEqual(" ".join(chunks), text)
 
-    def test_failed_translation_keeps_source_and_adds_explicit_notice(self) -> None:
+    def test_failed_translation_blocks_document_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "translation-fallback.docx"
+            output.write_bytes(b"previous-main")
 
-            generate_full_base_report(
-                template_path=TEMPLATE,
-                dataset_path=FIXTURE,
-                profile=load_client_profile(PROFILE),
-                output_path=output,
-                assets_dir=ASSETS,
-                mask_sensitive=True,
-                translator=lambda *_: (_ for _ in ()).throw(
-                    RuntimeError("translator unavailable")
-                ),
-            )
+            with self.assertRaisesRegex(RuntimeError, "tradução"):
+                generate_full_base_report(
+                    template_path=TEMPLATE,
+                    dataset_path=FIXTURE,
+                    profile=load_client_profile(PROFILE),
+                    output_path=output,
+                    assets_dir=ASSETS,
+                    mask_sensitive=True,
+                    translator=lambda *_: (_ for _ in ()).throw(
+                        RuntimeError("translator unavailable")
+                    ),
+                )
 
-            text = all_document_text(Document(output))
-            self.assertIn(
-                "A tradução automática não pôde ser concluída; "
-                "o texto original foi preservado.",
-                text,
-            )
+            self.assertEqual(output.read_bytes(), b"previous-main")
 
     def test_empty_framework_and_owasp_categories_have_monthly_message(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
