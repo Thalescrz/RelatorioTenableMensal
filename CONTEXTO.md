@@ -301,6 +301,13 @@ PostgreSQL mantém:
 - referência `MAIN` por identidade de cliente, período e tipo de relatório;
 - metadados necessários para retomada e auditoria.
 
+No Windows, o acesso usa primeiro a implementação padrão do `psycopg`. Se a
+política local bloquear o módulo binário, a aplicação tenta novamente no mesmo
+processo com a implementação Python e a `libpq.dll` da instalação mais recente em
+`Program Files\PostgreSQL`. Instalações em outro local podem informar somente a
+pasta `bin` em `TENABLE_REPORTS_POSTGRESQL_BIN`. Esse fallback não altera o `PATH`
+do sistema nem suas políticas; a configuração vale apenas para o processo atual.
+
 DOCX publicados permanecem no armazenamento local controlado e são registrados no
 catálogo. Arquivos raw, chunks e datasets intermediários só são removidos depois de
 publicação validada e persistência do histórico necessário. Falhas preservam os

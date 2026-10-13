@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -25,19 +28,102 @@ from tenable_reports.domain.fingerprints import (
 
 SCHEMA_NAME = "tenable_reports"
 MIGRATION_LOCK_NAME = "tenable-reports-schema-migrations"
+POSTGRESQL_BIN_ENV = "TENABLE_REPORTS_POSTGRESQL_BIN"
+_DLL_DIRECTORY_HANDLES: list[Any] = []
+
+
+def _postgresql_version_key(bin_directory: Path) -> tuple[int, ...]:
+    version_numbers = re.findall(r"\d+", bin_directory.parent.name)
+    return tuple(int(number) for number in version_numbers) or (0,)
+
+
+def _windows_postgresql_bin() -> Path | None:
+    configured = os.environ.get(POSTGRESQL_BIN_ENV, "").strip()
+    if configured:
+        candidate = Path(configured).expanduser()
+        return candidate if (candidate / "libpq.dll").is_file() else None
+
+    roots: list[Path] = []
+    for variable in ("ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"):
+        value = os.environ.get(variable, "").strip()
+        if not value:
+            continue
+        root = Path(value)
+        if root not in roots:
+            roots.append(root)
+
+    candidates: list[Path] = []
+    for root in roots:
+        postgresql_root = root / "PostgreSQL"
+        try:
+            version_directories = tuple(postgresql_root.iterdir())
+        except OSError:
+            continue
+        for version_directory in version_directories:
+            bin_directory = version_directory / "bin"
+            if (bin_directory / "libpq.dll").is_file():
+                candidates.append(bin_directory)
+
+    if not candidates:
+        return None
+    return max(candidates, key=_postgresql_version_key)
+
+
+def _activate_windows_psycopg_fallback() -> bool:
+    if os.name != "nt" or os.environ.get("PSYCOPG_IMPL", "").strip():
+        return False
+
+    postgresql_bin = _windows_postgresql_bin()
+    if postgresql_bin is None:
+        return False
+
+    os.environ["PSYCOPG_IMPL"] = "python"
+    current_path = os.environ.get("PATH", "")
+    path_entries = [entry for entry in current_path.split(os.pathsep) if entry]
+    normalized_bin = os.path.normcase(os.path.abspath(postgresql_bin))
+    if not any(
+        os.path.normcase(os.path.abspath(entry)) == normalized_bin
+        for entry in path_entries
+    ):
+        os.environ["PATH"] = os.pathsep.join((str(postgresql_bin), *path_entries))
+
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    if add_dll_directory is not None:
+        try:
+            _DLL_DIRECTORY_HANDLES.append(add_dll_directory(str(postgresql_bin)))
+        except OSError:
+            pass
+    return True
+
+
+def _clear_failed_psycopg_import() -> None:
+    for module_name in tuple(sys.modules):
+        if module_name == "psycopg" or module_name.startswith("psycopg."):
+            sys.modules.pop(module_name, None)
 
 
 def _driver() -> Any:
     try:
         import psycopg
-    except ImportError as exc:
+    except ImportError as first_error:
+        if _activate_windows_psycopg_fallback():
+            _clear_failed_psycopg_import()
+            try:
+                import psycopg
+            except ImportError:
+                pass
+            else:
+                return psycopg
         raise RuntimeError(
-            "O driver PostgreSQL nao esta instalado. Execute scripts/setup.ps1."
-        ) from exc
+            "O driver PostgreSQL nao pôde ser carregado. Execute scripts/setup.ps1 "
+            "e confirme o runtime local do PostgreSQL; no Windows, também é possível "
+            f"configurar {POSTGRESQL_BIN_ENV} com a pasta bin da instalação."
+        ) from first_error
     return psycopg
 
 
 def _jsonb(value: Any) -> Any:
+    _driver()
     try:
         from psycopg.types.json import Jsonb
     except ImportError as exc:

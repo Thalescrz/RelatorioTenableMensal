@@ -202,6 +202,16 @@ nova exige migration própria e teste que percorra todo o enum `BatchAction`.
 Segredos do banco ficam em `credentials/database.env`; exemplos só contêm nomes de
 variáveis e valores fictícios.
 
+O adaptador central em `infrastructure/postgresql.py` também resolve o runtime do
+driver no Windows. Ele mantém a implementação padrão quando disponível e, somente
+quando o primeiro import falha e `PSYCOPG_IMPL` não foi definido pelo operador,
+repete o carregamento com a implementação Python e a `libpq.dll` encontrada na
+instalação mais recente em `Program Files\PostgreSQL`. O caminho alternativo pode
+ser informado em `TENABLE_REPORTS_POSTGRESQL_BIN`; ele deve apontar para a pasta
+`bin`. A alteração de `PATH` e do seletor do `psycopg` é local ao processo. Novos
+pontos de acesso ao banco devem continuar passando por `_driver()` antes de
+importar submódulos do `psycopg`, para conservar esse comportamento.
+
 Snapshots Cloud usam migration própria, compatibilidade por cliente, tenant,
 ambiente, período e versão de métricas. Preserve a separação entre compatibilidade
 estrita de replay e compatibilidade de série mensal. `list_monthly_main_before`
