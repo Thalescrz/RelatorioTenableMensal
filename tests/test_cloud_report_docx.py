@@ -780,23 +780,23 @@ def test_empty_cloud_table_has_monthly_message_not_blank_page(
     assert "{{" not in text
 
 
-def test_empty_translation_preserves_original_with_explicit_notice(
+def test_incomplete_translation_blocks_cloud_document_publication(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "cloud-translation-fallback.docx"
+    output.write_bytes(b"previous-main")
 
-    generate_cloud_report(
-        template_path=CLOUD_TEMPLATE,
-        dataset_path=_dataset(tmp_path),
-        profile=_profile(),
-        output_path=output,
-        variant=CloudReportVariant.EXPANDED,
-        translator=lambda *_: "",
-    )
+    with pytest.raises(RuntimeError, match="tradução"):
+        generate_cloud_report(
+            template_path=CLOUD_TEMPLATE,
+            dataset_path=_dataset(tmp_path),
+            profile=_profile(),
+            output_path=output,
+            variant=CloudReportVariant.EXPANDED,
+            translator=lambda *_: "",
+        )
 
-    text = _all_text(output)
-    assert "Long technical sentence 0." in text
-    assert "A tradução automática não pôde ser concluída" in text
+    assert output.read_bytes() == b"previous-main"
 
 
 def _expanded_dataset(

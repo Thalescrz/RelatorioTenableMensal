@@ -200,6 +200,11 @@ ignorando apenas diferenças legadas de `execution_type` e `period_mode`; client
 tenant, fuso, escopo, conector, normalizador e schema continuam obrigatórios. Um
 replay exato recompõe a série histórica antes de renderizar, sem nova consulta
 remota e sem modificar o snapshot imutável.
+O mesmo contrato vale na retomada por checkpoint: o arquivo bruto é validado por
+SHA-256 e preservado, a série é recomposta em memória e um dataset enriquecido
+separado é materializado para o DOCX e para o manifesto. A publicação do snapshot
+da tentativa continua usando a fotografia bruta, impedindo que dados derivados de
+histórico alterem a evidência retomável.
 
 O único DOCX Cloud usa o mesmo shell oficial, base tipográfica e paleta corporativa
 do relatório geral: Calibri no conteúdo gerado, azul institucional em títulos e
@@ -601,8 +606,11 @@ relatórios geral, por TAG e Cloud. Descrições e soluções são traduzidas de
 para português do Brasil; textos longos são divididos por parágrafo, depois
 sentença e, por fim, limite seguro de 900 caracteres. CVE, URL e versão permanecem
 inteiros quando cabem no limite. Chunks repetidos usam cache em memória. Uma falha
-preserva somente o chunk fonte, permite que os demais continuem e inclui no DOCX o
-aviso de que o original foi mantido. Plugin Output, hostname, IP, URI e tabelas de
+permite que os demais chunks sejam tentados para consolidar a contagem, mas bloqueia
+o salvamento e a publicação do DOCX inteiro. O documento anterior permanece
+inalterado; a execução emite apenas `CLOUD_TRANSLATION_INCOMPLETE` e a quantidade
+sanitizada de trechos, sem incluir conteúdo fonte no alerta ou aviso técnico no
+relatório. Plugin Output, hostname, IP, URI e tabelas de
 evidência não passam pelo tradutor. O adaptador é carregado somente quando encontra
 o primeiro texto e depende de acesso ao Google Translate; a autorização vigente
 abrange somente descrição, sinopse, solução, remediação e contramedida de VM, WAS,

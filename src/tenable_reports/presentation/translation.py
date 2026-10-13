@@ -14,6 +14,20 @@ class SemanticTranslationResult:
     paragraphs: tuple[str, ...]
     chunks: tuple[str, ...]
     had_failures: bool
+    failed_chunk_count: int = 0
+
+
+class TranslationIncompleteError(RuntimeError):
+    """Signal that a report must not be published with untranslated narrative."""
+
+    retryable = True
+
+    def __init__(self, failed_chunk_count: int) -> None:
+        self.failed_chunk_count = max(1, int(failed_chunk_count))
+        super().__init__(
+            "Não foi possível concluir a tradução de "
+            f"{self.failed_chunk_count} trecho(s) do documento."
+        )
 
 
 def _paragraphs(text: str) -> tuple[str, ...]:
@@ -81,19 +95,20 @@ def translate_semantic_text(
 
     paragraphs = _paragraphs(text)
     if not paragraphs:
-        return SemanticTranslationResult((), (), False)
+        return SemanticTranslationResult((), (), False, 0)
     if translator is None:
         chunks = tuple(
             chunk
             for paragraph in paragraphs
             for chunk in split_translation_chunks(paragraph, max_chars=max_chars)
         )
-        return SemanticTranslationResult(paragraphs, chunks, False)
+        return SemanticTranslationResult(paragraphs, chunks, False, 0)
 
     translations = cache if cache is not None else {}
     translated_paragraphs: list[str] = []
     translated_all_chunks: list[str] = []
     had_failures = False
+    failed_chunk_count = 0
     for paragraph in paragraphs:
         translated_chunks: list[str] = []
         for chunk in split_translation_chunks(paragraph, max_chars=max_chars):
@@ -110,6 +125,7 @@ def translate_semantic_text(
                     raise ValueError("O tradutor retornou um bloco vazio.")
             except Exception:
                 had_failures = True
+                failed_chunk_count += 1
                 translated_chunks.append(chunk)
                 translated_all_chunks.append(chunk)
                 continue
@@ -121,6 +137,7 @@ def translate_semantic_text(
         tuple(translated_paragraphs),
         tuple(translated_all_chunks),
         had_failures,
+        failed_chunk_count,
     )
 
 

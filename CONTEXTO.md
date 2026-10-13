@@ -159,6 +159,11 @@ aceita como predecessores `MAIN` da mesma competência lógica, cliente, tenant,
 fuso, escopo e versões de conector/normalizador, incluindo snapshots
 `cloud-metrics-v2` e `cloud-metrics-v3`, mesmo quando o modo de período ou o tipo de
 execução legado diferem. O replay exato continua exigindo compatibilidade estrita.
+Uma retomada baseada no dataset Cloud aplica a mesma recomposição antes de montar
+o DOCX: o checkpoint bruto tem seu hash validado e permanece imutável, enquanto um
+dataset enriquecido separado recebe os predecessores `MAIN` compatíveis e passa a
+ser a fonte registrada da publicação. Assim, uma republicação seletiva não reduz a
+série ao mês corrente.
 
 O contrato técnico do conector, incluindo endpoints candidatos, fontes GraphQL,
 paginação, retry, checkpoints e limites de licenciamento, fica consolidado em
@@ -204,6 +209,9 @@ Os relatórios Geral e Cloud usam o mesmo componente de controle documental. O
 padrão global fica em `orchestration/document-control.json`; os adicionais ficam no
 perfil local do cliente. Nenhum dos dois deve conter dados reais em arquivos
 versionados.
+Retentativas e republicações oficiais carregam o perfil operacional composto antes
+de renderizar, para não perder Preparação, Controle de Versionamento nem os
+destinatários globais ao reutilizar um dataset já coletado.
 
 ## Períodos, identidade e métricas
 
@@ -352,6 +360,11 @@ esses controles sejam projetados e implementados.
   autorização explícitos.
 - A tradução externa se limita aos campos editoriais permitidos; evidências como
   Plugin Output, hosts e IPs não são enviadas.
+- Se qualquer trecho editorial autorizado continuar sem tradução depois das
+  retentativas, a montagem do DOCX é interrompida antes de salvar ou publicar. O
+  `MAIN` anterior permanece intacto e a execução registra somente um alerta
+  sanitizado com a quantidade de trechos, sem inserir aviso técnico ou o texto
+  original no relatório.
 
 ## Ambiente e comandos seguros
 

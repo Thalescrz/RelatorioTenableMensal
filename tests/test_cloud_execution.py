@@ -22,12 +22,14 @@ from tenable_reports.application.publishing import sha256_file
 from tenable_reports.application.cloud_snapshots import (
     MemoryCloudSnapshotRepository,
     build_cloud_snapshot,
+    replay_cloud_snapshot,
 )
 from tenable_reports.config.profile import ClientProfile, CloudSecurityScope
 from tenable_reports.domain.cloud import NormalizedCloudSnapshot
 from tenable_reports.domain.execution_control import ExecutionInterruptedError
 from tenable_reports.domain.report_components import ComponentStage
 from tenable_reports.domain.reporting import previous_calendar_month
+from tenable_reports.presentation.translation import TranslationIncompleteError
 
 
 def _profile(*, enabled: bool = True) -> ClientProfile:
@@ -424,6 +426,13 @@ def test_exact_snapshot_replay_rebuilds_monthly_history_from_main_snapshots(
         "2026-06",
         "2026-07",
     ]
+    published = repository.find_exact(
+        compatibility=compatibility,
+        period_start_at=request.period.to_dict()["start_at"],
+        period_end_at=request.period.to_dict()["end_at"],
+    )
+    assert published is not None
+    assert replay_cloud_snapshot(published).dataset["history"] == []
 
 
 def test_remote_cloud_preparation_writes_dataset_without_rendering_docx(
@@ -551,12 +560,72 @@ def test_retry_cloud_with_valid_dataset_resumes_at_render_without_api(
     )
 
     assert result.status is CloudExecutionStatus.COMPLETE
-    assert result.dataset_path == dataset_path
+    assert result.dataset_path != dataset_path
     assert result.snapshot_id
     assert calls["collect"] == 0
-    assert calls["write"] == 0
+    assert calls["write"] == 1
     assert calls["render"] == ["expanded"]
     assert len(calls["validate"]) == 1
+
+
+def test_retry_cloud_resume_rebuilds_monthly_history_from_main_snapshots(
+    tmp_path: Path,
+) -> None:
+    repository = MemoryCloudSnapshotRepository()
+    dependencies, calls = _dependencies(tmp_path, repository)
+    written: list[dict] = []
+    original_write = dependencies.write_dataset
+
+    def capture_dataset(**kwargs):
+        written.append(dict(kwargs["dataset"]))
+        return original_write(**kwargs)
+
+    request = _request(tmp_path)
+    compatibility = request.compatibility()
+    prior_period = previous_calendar_month(
+        reference_at="2026-07-01T12:00:00-03:00",
+        timezone_name="America/Fortaleza",
+    )
+    prior = build_cloud_snapshot(
+        dataset=_dataset(prior_period),
+        client_id=request.profile.client_id,
+        tenant_id=request.profile.tenant_id,
+        run_id="run-prior-main",
+        attempt_number=1,
+        execution_type="AUTOMATIC_MONTHLY",
+        period_mode="EXPLICIT_RANGE",
+        timezone=request.period.timezone,
+        period_start_at=prior_period.to_dict()["start_at"],
+        period_end_at=prior_period.to_dict()["end_at"],
+        scope_hash=compatibility.scope_hash,
+        collected_at="2026-07-01T11:00:00Z",
+        capabilities={"required_ready": True},
+    )
+    repository.publish(prior)
+    repository.mark_main(prior.run_id)
+    original_dataset_path, resume = _resume_context(tmp_path)
+
+    result = retry_cloud_component(
+        request,
+        dependencies=replace(dependencies, write_dataset=capture_dataset),
+        resume=resume,
+    )
+
+    assert result.status is CloudExecutionStatus.COMPLETE
+    assert calls["collect"] == 0
+    assert calls["write"] == 1
+    assert result.dataset_path != original_dataset_path
+    assert [row["period_id"] for row in written[-1]["history"]] == [
+        "2026-06",
+        "2026-07",
+    ]
+    published = repository.find_exact(
+        compatibility=compatibility,
+        period_start_at=request.period.to_dict()["start_at"],
+        period_end_at=request.period.to_dict()["end_at"],
+    )
+    assert published is not None
+    assert replay_cloud_snapshot(published).dataset["history"] == []
 
 
 def test_retry_cloud_render_failure_is_sanitized_and_reports_render_stage(
@@ -602,7 +671,66 @@ def test_retry_cloud_render_failure_is_sanitized_and_reports_render_stage(
     )
     assert marker not in evidence
     assert calls["collect"] == 0
-    assert calls["write"] == 0
+    assert calls["write"] == 1
+
+
+def test_cloud_translation_failure_is_reported_without_publishing_document(
+    tmp_path: Path,
+) -> None:
+    dependencies, calls = _dependencies(tmp_path)
+
+    def fail_translation(**kwargs):
+        calls["render"].append(str(kwargs["variant"]))
+        raise TranslationIncompleteError(3)
+
+    result = execute_cloud_component(
+        _request(tmp_path),
+        dependencies=replace(dependencies, render_report=fail_translation),
+    )
+
+    assert result.status is CloudExecutionStatus.FAILED
+    assert result.failure_stage is ComponentStage.RENDER
+    assert result.failure_code == "CLOUD_TRANSLATION_INCOMPLETE"
+    assert result.documents == ()
+    assert result.warnings == (
+        {
+            "code": "CLOUD_TRANSLATION_INCOMPLETE",
+            "message": (
+                "A tradução de 3 trechos não foi concluída; "
+                "o documento anterior foi preservado."
+            ),
+            "retryable": True,
+        },
+    )
+    assert calls["validate"] == []
+
+
+def test_retry_cloud_translation_failure_preserves_resume_dataset(
+    tmp_path: Path,
+) -> None:
+    dependencies, calls = _dependencies(tmp_path)
+    dataset_path, resume = _resume_context(tmp_path)
+
+    def fail_translation(**kwargs):
+        calls["render"].append(str(kwargs["variant"]))
+        raise TranslationIncompleteError(2)
+
+    result = retry_cloud_component(
+        _request(tmp_path),
+        dependencies=replace(dependencies, render_report=fail_translation),
+        resume=resume,
+    )
+
+    assert result.status is CloudExecutionStatus.FAILED
+    assert result.failure_stage is ComponentStage.RENDER
+    assert result.failure_code == "CLOUD_TRANSLATION_INCOMPLETE"
+    assert result.warnings[0]["code"] == "CLOUD_TRANSLATION_INCOMPLETE"
+    assert "2 trechos" in str(result.warnings[0]["message"])
+    assert dataset_path.is_file()
+    assert sha256_file(dataset_path) == resume.dataset_sha256
+    assert calls["collect"] == 0
+    assert calls["write"] == 1
+    assert calls["validate"] == []
 
 
 def test_retry_cloud_rejects_tampered_resume_dataset_without_api(

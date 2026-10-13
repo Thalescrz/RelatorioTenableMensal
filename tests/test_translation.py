@@ -79,6 +79,7 @@ def test_semantic_translation_preserves_only_failed_chunk_and_continues() -> Non
     result = translate_semantic_text(source, translator, max_chars=40)
 
     assert result.had_failures
+    assert result.failed_chunk_count == 1
     assert len(calls) == 3
     assert result.paragraphs == (
         "PT<First technical sentence is safe.> "

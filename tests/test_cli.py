@@ -2544,7 +2544,14 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "proof.docx"
             stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
+            with (
+                contextlib.redirect_stdout(stdout),
+                patch.object(
+                    cli_module,
+                    "build_default_text_translator",
+                    return_value=lambda text, *_: f"TRADUZIDO: {text}",
+                ),
+            ):
                 exit_code = main([
                     "generate-base-docx",
                     "--profile",
@@ -2567,7 +2574,14 @@ class CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "full.docx"
             stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
+            with (
+                contextlib.redirect_stdout(stdout),
+                patch.object(
+                    cli_module,
+                    "build_default_text_translator",
+                    return_value=lambda text, *_: f"TRADUZIDO: {text}",
+                ),
+            ):
                 exit_code = main([
                     "generate-full-base-docx",
                     "--profile",

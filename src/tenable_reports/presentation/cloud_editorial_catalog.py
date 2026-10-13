@@ -215,11 +215,6 @@ SOURCE_UNAVAILABLE = (
     "Esta informação não estava disponível na fotografia considerada para este "
     "relatório."
 )
-TRANSLATION_UNAVAILABLE = (
-    "A tradução automática não pôde ser concluída; o texto original foi preservado."
-)
-
-
 def approved_cloud_editorial_paragraphs() -> tuple[str, ...]:
     """Textos genéricos preservados e aprovados para o relatório Cloud padrão."""
 
@@ -262,7 +257,6 @@ __all__ = [
     "REMEDIATION_PERFORMANCE",
     "PARTIAL_CORRECTABLE_COVERAGE",
     "SOURCE_UNAVAILABLE",
-    "TRANSLATION_UNAVAILABLE",
     "TOP_CORRECTABLE_CONTAINERS",
     "TOP_CORRECTABLE_VIRTUAL_MACHINES",
     "VULNERABILITY_AGING",
