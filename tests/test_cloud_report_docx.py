@@ -30,6 +30,7 @@ from tenable_reports.presentation.cloud_report_sections import (
     SEVERITY_FILLS,
 )
 from tenable_reports.presentation.full_base_report_docx import generate_full_base_report
+from tests.font_profile_helpers import assert_docx_uses_linux_fonts, linux_font_profile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +39,22 @@ OFFICIAL_TEMPLATE = ROOT / "templates/corporate/base-v1.docx"
 CLOUD_TEMPLATE = OFFICIAL_TEMPLATE
 PROFILE = ROOT / "clients/examples/client-profile.json"
 BASE_DATASET = ROOT / "tests/fixtures/report-dataset-phase5.json"
+
+
+def test_cloud_report_accepts_linux_font_profile(tmp_path: Path) -> None:
+    output = tmp_path / "linux-cloud.docx"
+
+    generate_cloud_report(
+        template_path=OFFICIAL_TEMPLATE,
+        dataset_path=_dataset(tmp_path),
+        profile=_profile(),
+        output_path=output,
+        variant=CloudReportVariant.EXPANDED,
+        mask_sensitive=True,
+        font_profile=linux_font_profile(),
+    )
+
+    assert_docx_uses_linux_fonts(output)
 
 
 def _all_text(path: Path) -> str:

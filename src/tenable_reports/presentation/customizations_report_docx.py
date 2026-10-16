@@ -16,6 +16,7 @@ from PIL import Image, ImageDraw, ImageFont
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation import base_report_docx as base
 from tenable_reports.presentation import editorial_catalog as editorial
+from tenable_reports.presentation.font_profiles import FontProfile
 from tenable_reports.presentation import full_base_report_docx as faithful
 from tenable_reports.presentation.source_filters import add_source_filter_note
 
@@ -1080,7 +1081,9 @@ def generate_customizations_report(
     profile: ClientProfile,
     output_path: str | Path,
     mask_sensitive: bool = False,
+    font_profile: FontProfile | None = None,
 ) -> CustomizationsRenderResult:
+    active_font_profile = base._resolve_font_profile(font_profile)
     template = Path(template_path)
     dataset_file = Path(dataset_path)
     output = Path(output_path)
@@ -1091,7 +1094,7 @@ def generate_customizations_report(
     document = Document(template)
     document.settings.odd_and_even_pages_header_footer = True
     report_shell = faithful._clear_body_after_cover_break(document)
-    faithful._configure_styles(document)
+    faithful._configure_styles(document, active_font_profile)
     period_label, period_range = base._period_labels(dataset["period"])
     base._replace_tokens(document, {"{{CLIENT_NAME}}": profile.display_name, "{{PERIOD_LABEL}}": period_label, "{{PERIOD_RANGE}}": period_range, "{{TEMPLATE_VERSION}}": CUSTOM_TEMPLATE_VERSION})
     _cover_title(document)
@@ -1148,6 +1151,7 @@ def generate_customizations_report(
     faithful._materialize_static_toc(document)
     faithful._justify_narrative_body(document)
     base._enable_field_updates(document)
+    base._apply_font_profile(document, active_font_profile)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)
     requested = tuple(profile.report.intelligence_modules)

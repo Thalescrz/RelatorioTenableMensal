@@ -13,6 +13,7 @@ from tenable_reports.presentation.tag_report_docx import (
     generate_tag_report,
     refresh_tag_temporal_comparison,
 )
+from tests.font_profile_helpers import assert_docx_uses_linux_fonts, linux_font_profile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -171,6 +172,21 @@ def _tag_dataset(
     path = tmp_path / "tag-dataset.json"
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
+
+
+def test_tag_report_accepts_linux_font_profile(tmp_path: Path) -> None:
+    output = tmp_path / "linux-tag.docx"
+
+    generate_tag_report(
+        template_path=TEMPLATE,
+        dataset_path=_tag_dataset(tmp_path),
+        profile=load_client_profile(PROFILE),
+        output_path=output,
+        mask_sensitive=True,
+        font_profile=linux_font_profile(),
+    )
+
+    assert_docx_uses_linux_fonts(output)
 
 
 def _profile(*, include_output: bool = False, show_filters: bool = False):

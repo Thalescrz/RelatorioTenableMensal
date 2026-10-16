@@ -18,6 +18,8 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Pt, RGBColor
 
 from tenable_reports.config.profile import ClientProfile
+from tenable_reports.infrastructure.runtime_platform import detect_runtime_platform
+from tenable_reports.presentation.font_profiles import FontProfile, resolve_font_profile
 
 
 TEMPLATE_VERSION = "base-docx-v0.1"
@@ -261,24 +263,68 @@ def _add_page_number(paragraph: Any) -> None:
     _set_run_font(run, size=8, color=MID_GRAY)
 
 
-def _configure_styles(document: DocxDocument) -> None:
+def _configure_styles(
+    document: DocxDocument,
+    font_profile: FontProfile | None = None,
+) -> None:
+    family = font_profile.document_family if font_profile is not None else "Calibri"
     normal = document.styles["Normal"]
-    normal.font.name = "Calibri"
-    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "Calibri")
+    normal.font.name = family
+    normal._element.rPr.rFonts.set(qn("w:eastAsia"), family)
     normal.font.size = Pt(9.5)
     normal.font.color.rgb = RGBColor.from_string(NAVY)
     normal.paragraph_format.space_after = Pt(5)
     normal.paragraph_format.line_spacing = 1.08
 
     heading = document.styles["Heading 1"]
-    heading.font.name = "Calibri"
-    heading._element.rPr.rFonts.set(qn("w:eastAsia"), "Calibri")
+    heading.font.name = family
+    heading._element.rPr.rFonts.set(qn("w:eastAsia"), family)
     heading.font.size = Pt(14)
     heading.font.bold = True
     heading.font.color.rgb = RGBColor.from_string(BLUE)
     heading.paragraph_format.space_before = Pt(10)
     heading.paragraph_format.space_after = Pt(6)
     heading.paragraph_format.keep_with_next = True
+
+
+def _resolve_font_profile(font_profile: FontProfile | None) -> FontProfile:
+    return font_profile or resolve_font_profile(detect_runtime_platform())
+
+
+def _apply_font_profile(document: DocxDocument, font_profile: FontProfile) -> None:
+    """Normaliza fontes textuais no pacote sem alterar o perfil Windows aprovado."""
+
+    if (
+        font_profile.document_family == "Calibri"
+        and font_profile.alternate_family == "Arial"
+    ):
+        return
+    document_aliases = {"calibri", "carlito", "times new roman"}
+    alternate_aliases = {"arial", "liberation sans"}
+    attributes = ("ascii", "hAnsi", "eastAsia", "cs")
+    theme_attributes = ("asciiTheme", "hAnsiTheme", "eastAsiaTheme", "csTheme")
+    for part in document.part.package.parts:
+        element = getattr(part, "element", None)
+        if element is None:
+            element = getattr(part, "_element", None)
+        if element is None or not hasattr(element, "xpath"):
+            continue
+        for fonts in element.xpath(".//w:rFonts"):
+            configured = {
+                str(value).casefold()
+                for attribute in attributes
+                if (value := fonts.get(qn(f"w:{attribute}")))
+            }
+            if configured & alternate_aliases:
+                family = font_profile.alternate_family
+            elif configured & document_aliases or not configured:
+                family = font_profile.document_family
+            else:
+                continue
+            for attribute in attributes:
+                fonts.set(qn(f"w:{attribute}"), family)
+            for attribute in theme_attributes:
+                fonts.attrib.pop(qn(f"w:{attribute}"), None)
 
 def _configure_page(section: Any) -> None:
     section.page_width = Cm(21)
@@ -734,9 +780,11 @@ def generate_base_report(
     profile: ClientProfile,
     output_path: str | Path,
     mask_sensitive: bool = False,
+    font_profile: FontProfile | None = None,
 ) -> BaseReportRenderResult:
     """Render a DOCX only from a profile and a materialised report dataset."""
 
+    active_font_profile = _resolve_font_profile(font_profile)
     template = Path(template_path)
     dataset_file = Path(dataset_path)
     output = Path(output_path)
@@ -785,6 +833,7 @@ def generate_base_report(
         f"Gerado a partir de {dataset_file.name}; template {TEMPLATE_VERSION}; "
         f"campos sensíveis {'mascarados' if mask_sensitive else 'conforme dataset'}."
     )
+    _apply_font_profile(document, active_font_profile)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)
     return BaseReportRenderResult(

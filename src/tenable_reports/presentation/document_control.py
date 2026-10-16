@@ -13,6 +13,7 @@ from tenable_reports.config.profile import (
     DocumentVersionControlConfig,
 )
 from tenable_reports.presentation import base_report_docx as base
+from tenable_reports.presentation.font_profiles import FontProfile
 
 
 ElementMover = Callable[[Any], Any]
@@ -28,6 +29,7 @@ def _heading(
     text: str,
     *,
     mover: ElementMover | None,
+    font_profile: FontProfile | None,
 ) -> Any:
     paragraph = document.add_paragraph(text, style="Heading 1")
     base._set_paragraph_bottom_border(paragraph, base.BLUE, size=8)
@@ -37,7 +39,11 @@ def _heading(
             size=14,
             color=base.NAVY,
             bold=True,
-            name="Calibri",
+            name=(
+                font_profile.document_family
+                if font_profile is not None
+                else "Calibri"
+            ),
         )
         base._set_language(run)
     _move(paragraph._p, mover)
@@ -51,7 +57,9 @@ def _title_table(
     rows: Sequence[Sequence[Any]],
     *,
     mover: ElementMover | None,
+    font_profile: FontProfile | None,
 ) -> Any:
+    family = font_profile.document_family if font_profile is not None else "Calibri"
     table = document.add_table(rows=2, cols=len(headers))
     table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -61,7 +69,13 @@ def _title_table(
     merged.text = title
     base._set_cell_shading(merged, base.BLUE)
     for run in merged.paragraphs[0].runs:
-        base._set_run_font(run, size=8, color=base.WHITE, bold=True)
+        base._set_run_font(
+            run,
+            size=8,
+            color=base.WHITE,
+            bold=True,
+            name=family,
+        )
     merged.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
     for index, header in enumerate(headers):
         cell = table.cell(1, index)
@@ -69,7 +83,13 @@ def _title_table(
         base._set_cell_shading(cell, base.LIGHT_BLUE)
         cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
         for run in cell.paragraphs[0].runs:
-            base._set_run_font(run, size=7.2, color=base.NAVY, bold=True)
+            base._set_run_font(
+                run,
+                size=7.2,
+                color=base.NAVY,
+                bold=True,
+                name=family,
+            )
     for values in rows:
         row = table.add_row()
         for index, value in enumerate(values):
@@ -77,7 +97,12 @@ def _title_table(
             for paragraph in row.cells[index].paragraphs:
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
                 for run in paragraph.runs:
-                    base._set_run_font(run, size=7.2, color=base.NAVY)
+                    base._set_run_font(
+                        run,
+                        size=7.2,
+                        color=base.NAVY,
+                        name=family,
+                    )
         base._prevent_row_split(row)
     _move(table._tbl, mover)
     return table
@@ -96,11 +121,13 @@ def append_document_control(
     recipients: Sequence[DistributionRecipient],
     mask_sensitive: bool = False,
     mover: ElementMover | None = None,
+    font_profile: FontProfile | None = None,
 ) -> Any:
     first_heading = _heading(
         document,
         "1. CONTROLE DE DOCUMENTO",
         mover=mover,
+        font_profile=font_profile,
     )
     _title_table(
         document,
@@ -108,6 +135,7 @@ def append_document_control(
         ("Ação", "Nome", "Data"),
         ((preparation.action, preparation.name, preparation.date),),
         mover=mover,
+        font_profile=font_profile,
     )
     _spacer(document, mover)
     _title_table(
@@ -122,6 +150,7 @@ def append_document_control(
             version_control.changed_by,
         ),),
         mover=mover,
+        font_profile=font_profile,
     )
     _spacer(document, mover)
     distribution_rows = tuple(
@@ -138,6 +167,7 @@ def append_document_control(
         ("Nome", "Organização", "E-mail"),
         distribution_rows,
         mover=mover,
+        font_profile=font_profile,
     )
     return first_heading
 

@@ -20,6 +20,7 @@ from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation import base_report_docx as base
 from tenable_reports.presentation.document_control import append_document_control
 from tenable_reports.presentation import editorial_catalog as copy
+from tenable_reports.presentation.font_profiles import FontProfile
 from tenable_reports.presentation.source_filters import add_source_filter_note
 from tenable_reports.presentation.translation import (
     TextTranslator,
@@ -226,12 +227,16 @@ def _append_official_back_cover(
     body.append(deepcopy(shell.back_cover_section))
 
 
-def _configure_styles(document: DocxDocument) -> None:
-    base._configure_styles(document)
+def _configure_styles(
+    document: DocxDocument,
+    font_profile: FontProfile | None = None,
+) -> None:
+    base._configure_styles(document, font_profile)
+    family = font_profile.document_family if font_profile is not None else "Calibri"
     for name, size in (("Heading 1", 14), ("Heading 2", 11), ("Heading 3", 10), ("Heading 4", 9)):
         style = document.styles[name]
-        style.font.name = "Calibri"
-        style._element.rPr.rFonts.set(qn("w:eastAsia"), "Calibri")
+        style.font.name = family
+        style._element.rPr.rFonts.set(qn("w:eastAsia"), family)
         style.font.size = Pt(size)
         style.font.bold = True
         style.font.color.rgb = RGBColor.from_string(base.NAVY)
@@ -1086,7 +1091,14 @@ def _summary_section(
         )
 
 
-def _body(document: DocxDocument, dataset: Mapping[str, Any], profile: ClientProfile, mask_sensitive: bool, translator: TextTranslator | None = None) -> int:
+def _body(
+    document: DocxDocument,
+    dataset: Mapping[str, Any],
+    profile: ClientProfile,
+    mask_sensitive: bool,
+    translator: TextTranslator | None = None,
+    font_profile: FontProfile | None = None,
+) -> int:
     period = dataset["period"]
     start, end = _period_dates(period)
     _toc_heading(document)
@@ -1097,6 +1109,7 @@ def _body(document: DocxDocument, dataset: Mapping[str, Any], profile: ClientPro
         version_control=profile.document_control.version_control,
         recipients=profile.document_control.distribution_recipients,
         mask_sensitive=mask_sensitive,
+        font_profile=font_profile,
     )
     _page_break_before(first_heading)
     _heading(document, "2. OBJETIVO")
@@ -1166,10 +1179,12 @@ def generate_full_base_report(
     assets_dir: str | Path | None = None,
     mask_sensitive: bool = False,
     translator: TextTranslator | None = None,
+    font_profile: FontProfile | None = None,
 ) -> FullBaseReportRenderResult:
     """Gera o relatório-base usando apenas texto editorial dos DOCX de referência."""
 
     del assets_dir  # A identidade visual já está incorporada ao template aprovado.
+    active_font_profile = base._resolve_font_profile(font_profile)
     template = Path(template_path)
     dataset_file = Path(dataset_path)
     output = Path(output_path)
@@ -1179,7 +1194,7 @@ def generate_full_base_report(
     _validate_dataset(dataset, profile)
     document = Document(template)
     report_shell = _clear_body_after_cover_break(document)
-    _configure_styles(document)
+    _configure_styles(document, active_font_profile)
     period_label, period_range = base._period_labels(dataset["period"])
     base._replace_tokens(document, {
         "{{CLIENT_NAME}}": profile.display_name,
@@ -1189,11 +1204,19 @@ def generate_full_base_report(
     })
     _sanitize_header_footer(document, profile.display_name)
     _sanitize_properties(document, title=FULL_REPORT_TITLE)
-    top_open_count = _body(document, dataset, profile, mask_sensitive, translator)
+    top_open_count = _body(
+        document,
+        dataset,
+        profile,
+        mask_sensitive,
+        translator,
+        active_font_profile,
+    )
     _append_official_back_cover(document, report_shell)
     _materialize_static_toc(document)
     _justify_narrative_body(document)
     base._enable_field_updates(document)
+    base._apply_font_profile(document, active_font_profile)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)
     return FullBaseReportRenderResult(

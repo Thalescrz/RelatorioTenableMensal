@@ -35,6 +35,7 @@ from tenable_reports.presentation.full_base_report_docx import (
     _vulnerability_details,
 )
 from tenable_reports.presentation.source_filters import add_source_filter_note
+from tenable_reports.presentation.font_profiles import FontProfile
 from tenable_reports.presentation.translation import TextTranslator
 from tenable_reports.presentation.monthly_visuals import (
     render_monthly_visual_bundle,
@@ -266,7 +267,9 @@ def generate_tag_report(
     output_path: str | Path,
     mask_sensitive: bool = False,
     translator: TextTranslator | None = None,
+    font_profile: FontProfile | None = None,
 ) -> TagReportRenderResult:
+    active_font_profile = base._resolve_font_profile(font_profile)
     template = Path(template_path)
     if not template.is_file():
         raise ValueError(f"Template Word não encontrado: {template}")
@@ -278,7 +281,7 @@ def generate_tag_report(
     # large table or chart is carried to the next page.
     document.settings.odd_and_even_pages_header_footer = False
     report_shell = _clear_body_after_cover_break(document)
-    _configure_styles(document)
+    _configure_styles(document, active_font_profile)
     period_label, period_range = base._period_labels(dataset["period"])
     tag_label = f"TAG {tag['category_name']} - {tag['value']}"
     base._replace_tokens(
@@ -310,6 +313,7 @@ def generate_tag_report(
     _materialize_static_toc(document)
     _justify_narrative_body(document)
     base._enable_field_updates(document)
+    base._apply_font_profile(document, active_font_profile)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)

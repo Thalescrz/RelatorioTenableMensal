@@ -21,6 +21,7 @@ from tenable_reports.presentation.full_base_report_docx import (
     _simple_table,
     generate_full_base_report,
 )
+from tests.font_profile_helpers import assert_docx_uses_linux_fonts, linux_font_profile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,6 +51,22 @@ def _cell_fill(cell) -> str | None:
 
 
 class FullBaseReportDocxTests(unittest.TestCase):
+    def test_full_report_accepts_linux_font_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "linux-full.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=FIXTURE,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+                font_profile=linux_font_profile(),
+            )
+
+            assert_docx_uses_linux_fonts(output)
+
     def test_full_report_justifies_narrative_text_without_justifying_headings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "justified-narrative.docx"
