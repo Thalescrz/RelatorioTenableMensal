@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 import tomllib
 import warnings
@@ -166,4 +167,53 @@ def test_libreoffice_version_uses_console_binary_without_window_on_windows(
 
     assert visual._libreoffice_version(executable, runner=runner) == "LibreOffice 26.2.4.2"
     assert observed["command"] == [str(console_executable), "--version"]
+    assert observed["creationflags"] == visual.subprocess.CREATE_NO_WINDOW
+
+
+def test_visual_render_uses_console_binary_without_window_on_windows(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from tools import capture_visual_baseline as visual
+
+    executable = tmp_path / "program" / "soffice.exe"
+    console_executable = executable.with_suffix(".com")
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"fixture")
+    console_executable.write_bytes(b"fixture")
+    document = tmp_path / "report.docx"
+    document.write_bytes(b"fixture")
+    observed = {}
+
+    monkeypatch.setattr(
+        visual,
+        "_load_render_prepare",
+        lambda _root: lambda source, target: shutil.copy2(source, target),
+    )
+
+    def render_pdf(_pdf, output, _dpi):
+        page = output / "page-001.png"
+        page.parent.mkdir(parents=True)
+        Image.new("RGB", (120, 160), "white").save(page)
+        return (page,)
+
+    monkeypatch.setattr(visual, "_load_pdf_renderer", lambda _root: render_pdf)
+    monkeypatch.setattr(visual.platform, "system", lambda: "Windows")
+
+    def runner(command, **kwargs):
+        observed["command"] = command
+        observed["creationflags"] = kwargs.get("creationflags")
+        output = Path(command[command.index("--outdir") + 1]) / "report.pdf"
+        output.write_bytes(b"%PDF fixture")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(visual.subprocess, "run", runner)
+
+    visual._render_document(
+        document_path=document,
+        output_root=tmp_path / "output",
+        soffice=executable,
+    )
+
+    assert observed["command"][0] == str(console_executable)
     assert observed["creationflags"] == visual.subprocess.CREATE_NO_WINDOW

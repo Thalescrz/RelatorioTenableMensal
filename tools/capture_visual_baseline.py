@@ -86,7 +86,7 @@ def _library_versions() -> dict[str, str]:
     return result
 
 
-def _libreoffice_version(soffice: Path, *, runner=subprocess.run) -> str:
+def _silent_soffice(soffice: Path) -> tuple[Path, int]:
     executable = soffice
     creationflags = 0
     if platform.system() == "Windows":
@@ -94,6 +94,11 @@ def _libreoffice_version(soffice: Path, *, runner=subprocess.run) -> str:
         if console_executable.is_file():
             executable = console_executable
         creationflags = subprocess.CREATE_NO_WINDOW
+    return executable, creationflags
+
+
+def _libreoffice_version(soffice: Path, *, runner=subprocess.run) -> str:
+    executable, creationflags = _silent_soffice(soffice)
     completed = runner(
         [str(executable), "--version"],
         check=True,
@@ -262,9 +267,10 @@ def _render_document(
     pdf_root.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="tenable-lo-") as user_profile:
         profile_uri = Path(user_profile).resolve().as_uri()
+        executable, creationflags = _silent_soffice(soffice)
         completed = subprocess.run(
             [
-                str(soffice),
+                str(executable),
                 "--headless",
                 f"-env:UserInstallation={profile_uri}",
                 "--convert-to",
@@ -276,7 +282,10 @@ def _render_document(
             check=False,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=180,
+            creationflags=creationflags,
         )
     pdf = pdf_root / f"{render_input.stem}.pdf"
     if completed.returncode != 0 or not pdf.is_file():
