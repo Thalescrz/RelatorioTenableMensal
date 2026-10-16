@@ -23,7 +23,7 @@ from tenable_reports.presentation.cloud_visuals import (
     render_severity_chart,
 )
 from tenable_reports.presentation.document_control import append_document_control
-from tenable_reports.presentation.font_profiles import FontProfile
+from tenable_reports.presentation.font_profiles import FontProfile, FontProfileError
 from tenable_reports.presentation.source_filters import format_source_filter_note
 from tenable_reports.presentation.translation import (
     TextTranslator,
@@ -67,6 +67,12 @@ class CloudDocumentBuilder:
             if self.font_profile is not None
             else "Calibri"
         )
+
+    @property
+    def image_font_profile(self) -> FontProfile:
+        if self.font_profile is None:
+            raise FontProfileError("FONT_PROFILE_INVALID")
+        return self.font_profile
 
     def _move(self, element: Any) -> Any:
         parent = element.getparent()
@@ -861,6 +867,7 @@ def render_executive_overview(
     chart = render_severity_chart(
         severity,
         Path(chart_dir) / "cloud-severity-overview.png",
+        font_profile=builder.image_font_profile,
     )
     builder.image(
         chart,
@@ -956,6 +963,7 @@ def render_vulnerability_aging(
     chart = render_aging_chart(
         aging,
         Path(chart_dir) / "cloud-vulnerability-aging.png",
+        font_profile=builder.image_font_profile,
     )
     builder.image(
         chart,
@@ -1069,6 +1077,7 @@ def render_monthly_evolution(
     chart = render_monthly_history_chart(
         history,
         Path(chart_dir) / "cloud-monthly-evolution.png",
+        font_profile=builder.image_font_profile,
     )
     if chart is None:
         builder.paragraph(copy.HISTORY_UNAVAILABLE, color=MID_GRAY)

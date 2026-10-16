@@ -49,6 +49,7 @@ def test_executive_bar_chart_keeps_bars_out_of_the_label_column(tmp_path: Path) 
             {"label": "Outra categoria", "change": 80},
         ),
         (("change", "Variação", "#2E59FC"),),
+        font_profile=linux_font_profile(),
     )
 
     with PilImage.open(output) as image:

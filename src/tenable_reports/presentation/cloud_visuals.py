@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
+
+from tenable_reports.presentation.font_profiles import FontProfile, load_image_font
 
 
 BLUE = "#2E59FC"
@@ -25,21 +27,6 @@ class HistoryPoint:
     period_id: str
     label: str
     value: int | None
-
-
-def _font(size: int, *, bold: bool = False) -> Any:
-    candidates = (
-        Path(r"C:\Windows\Fonts\arialbd.ttf")
-        if bold
-        else Path(r"C:\Windows\Fonts\arial.ttf"),
-        Path(r"C:\Windows\Fonts\calibrib.ttf")
-        if bold
-        else Path(r"C:\Windows\Fonts\calibri.ttf"),
-    )
-    for candidate in candidates:
-        if candidate.is_file():
-            return ImageFont.truetype(str(candidate), size=size)
-    return ImageFont.load_default()
 
 
 def _number(value: Any) -> int | None:
@@ -83,7 +70,11 @@ def normalize_history_series(
     )
 
 
-def _base_canvas(title: str) -> tuple[Image.Image, ImageDraw.ImageDraw]:
+def _base_canvas(
+    title: str,
+    *,
+    font_profile: FontProfile,
+) -> tuple[Image.Image, ImageDraw.ImageDraw]:
     image = Image.new("RGB", (1400, 720), "white")
     draw = ImageDraw.Draw(image)
     draw.rectangle((0, 0, 1400, 82), fill=NAVY)
@@ -91,7 +82,7 @@ def _base_canvas(title: str) -> tuple[Image.Image, ImageDraw.ImageDraw]:
     draw.text(
         (700, 42),
         title,
-        font=_font(32, bold=True),
+        font=load_image_font(font_profile.alternate, size=32, bold=True),
         fill="white",
         anchor="mm",
     )
@@ -103,13 +94,14 @@ def _bar_chart(
     *,
     title: str,
     rows: Sequence[tuple[str, int, str]],
+    font_profile: FontProfile,
 ) -> Path:
-    image, draw = _base_canvas(title)
+    image, draw = _base_canvas(title, font_profile=font_profile)
     left, top, right, bottom = 265, 145, 1325, 640
     max_value = max((value for _, value, _ in rows), default=1) or 1
-    label_font = _font(22, bold=True)
-    value_font = _font(20, bold=True)
-    tick_font = _font(17)
+    label_font = load_image_font(font_profile.alternate, size=22, bold=True)
+    value_font = load_image_font(font_profile.alternate, size=20, bold=True)
+    tick_font = load_image_font(font_profile.alternate, size=17)
     for tick in range(6):
         value = round(max_value * tick / 5)
         x = left + int((right - left) * tick / 5)
@@ -153,6 +145,8 @@ def _bar_chart(
 def render_severity_chart(
     severity_counts: Mapping[str, Any],
     path: str | Path,
+    *,
+    font_profile: FontProfile,
 ) -> Path:
     labels = {
         "CRITICAL": "Crítica",
@@ -172,12 +166,15 @@ def render_severity_chart(
         Path(path),
         title="Vulnerabilidades por severidade",
         rows=rows,
+        font_profile=font_profile,
     )
 
 
 def render_aging_chart(
     aging: Mapping[str, Any],
     path: str | Path,
+    *,
+    font_profile: FontProfile,
 ) -> Path:
     rows = [
         (label, _number(aging.get(key)) or 0, color)
@@ -193,22 +190,28 @@ def render_aging_chart(
         Path(path),
         title="Envelhecimento das vulnerabilidades abertas",
         rows=rows,
+        font_profile=font_profile,
     )
 
 
 def render_monthly_history_chart(
     history: Sequence[Mapping[str, Any]],
     path: str | Path,
+    *,
+    font_profile: FontProfile,
 ) -> Path | None:
     points = normalize_history_series(history)
     if sum(point.value is not None for point in points) < 1:
         return None
-    image, draw = _base_canvas("Evolução mensal das ocorrências")
+    image, draw = _base_canvas(
+        "Evolução mensal das ocorrências",
+        font_profile=font_profile,
+    )
     left, top, right, bottom = 120, 150, 1330, 610
     values = [point.value for point in points]
     max_value = max((value for value in values if value is not None), default=1) or 1
-    tick_font = _font(17)
-    label_font = _font(18, bold=True)
+    tick_font = load_image_font(font_profile.alternate, size=17)
+    label_font = load_image_font(font_profile.alternate, size=18, bold=True)
     for tick in range(6):
         value = round(max_value * tick / 5)
         y = bottom - int((bottom - top) * tick / 5)

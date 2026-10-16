@@ -11,12 +11,12 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 from tenable_reports.config.profile import ClientProfile
 from tenable_reports.presentation import base_report_docx as base
 from tenable_reports.presentation import editorial_catalog as editorial
-from tenable_reports.presentation.font_profiles import FontProfile
+from tenable_reports.presentation.font_profiles import FontProfile, load_image_font
 from tenable_reports.presentation import full_base_report_docx as faithful
 from tenable_reports.presentation.source_filters import add_source_filter_note
 
@@ -193,23 +193,24 @@ class CustomizationsRenderResult:
     omitted_modules: tuple[dict[str, str], ...]
 
 
-def _font(size: int, bold: bool = False) -> Any:
-    candidates = (
-        Path(r"C:\Windows\Fonts\calibrib.ttf") if bold else Path(r"C:\Windows\Fonts\calibri.ttf"),
-        Path(r"C:\Windows\Fonts\arialbd.ttf") if bold else Path(r"C:\Windows\Fonts\arial.ttf"),
-    )
-    for candidate in candidates:
-        if candidate.is_file():
-            return ImageFont.truetype(str(candidate), size=size)
-    return ImageFont.load_default()
-
-
-def _bar_chart(path: Path, title: str, rows: Sequence[Mapping[str, Any]], keys: Sequence[tuple[str, str, str]]) -> None:
+def _bar_chart(
+    path: Path,
+    title: str,
+    rows: Sequence[Mapping[str, Any]],
+    keys: Sequence[tuple[str, str, str]],
+    *,
+    font_profile: FontProfile,
+) -> None:
     row_height = max(88, 44 + len(keys) * 38)
     width, height = 1400, max(650, 210 + len(rows) * row_height)
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
-    draw.text((50, 38), title, font=_font(34, True), fill="#0B1F4A")
+    draw.text(
+        (50, 38),
+        title,
+        font=load_image_font(font_profile.document, size=34, bold=True),
+        fill="#0B1F4A",
+    )
     values = [
         int(row.get(key, 0) or 0)
         for row in rows
@@ -226,7 +227,12 @@ def _bar_chart(path: Path, title: str, rows: Sequence[Mapping[str, Any]], keys: 
     y = 130
     for row in rows:
         label = str(row.get("label") or row.get("month") or "")
-        draw.text((50, y + 16), label, font=_font(20, True), fill="#0B1F4A")
+        draw.text(
+            (50, y + 16),
+            label,
+            font=load_image_font(font_profile.document, size=20, bold=True),
+            fill="#0B1F4A",
+        )
         for key, caption, color in keys:
             value = int(row.get(key, 0) or 0)
             value_x = plot_left + int(
@@ -239,7 +245,7 @@ def _bar_chart(path: Path, title: str, rows: Sequence[Mapping[str, Any]], keys: 
             draw.text(
                 (1060, y),
                 f"{caption}: {value}",
-                font=_font(17),
+                font=load_image_font(font_profile.document, size=17),
                 fill="#0B1F4A",
             )
             y += 38
@@ -314,14 +320,16 @@ def _grouped_monthly_chart(
     title: str,
     rows: Sequence[Mapping[str, Any]],
     series: Sequence[tuple[str, str, str]],
+    *,
+    font_profile: FontProfile,
 ) -> None:
     width, height = 1500, 900
     background = "#292929"
     image = Image.new("RGB", (width, height), background)
     draw = ImageDraw.Draw(image)
-    title_font = _font(38, True)
-    label_font = _font(19, True)
-    small_font = _font(16)
+    title_font = load_image_font(font_profile.document, size=38, bold=True)
+    label_font = load_image_font(font_profile.document, size=19, bold=True)
+    small_font = load_image_font(font_profile.document, size=16)
     draw.text((width // 2, 38), title.upper(), font=title_font, fill="white", anchor="ma")
     left, top, right, bottom = 105, 150, width - 55, height - 205
     values = [_number(row.get(key)) for row in rows for key, _, _ in series]
@@ -375,13 +383,14 @@ def _monthly_line_chart(
     history: Sequence[Mapping[str, Any]],
     *,
     value_key: str,
+    font_profile: FontProfile,
 ) -> None:
     width, height = 1500, 800
     image = Image.new("RGB", (width, height), "#176783")
     draw = ImageDraw.Draw(image)
-    title_font = _font(38, True)
-    label_font = _font(18, True)
-    small_font = _font(16)
+    title_font = load_image_font(font_profile.document, size=38, bold=True)
+    label_font = load_image_font(font_profile.document, size=18, bold=True)
+    small_font = load_image_font(font_profile.document, size=16)
     draw.text((width // 2, 35), title.upper(), font=title_font, fill="white", anchor="ma")
     left, top, right, bottom = 120, 150, width - 70, height - 175
     values = [_number(item.get(value_key)) for item in history]
@@ -495,7 +504,14 @@ def _mirror_default_header_footer_on_even_pages(document: Any) -> None:
             )
 
 
-def _monthly_modules(document: Any, data: Mapping[str, Any], temp: Path, rendered: list[str]) -> None:
+def _monthly_modules(
+    document: Any,
+    data: Mapping[str, Any],
+    temp: Path,
+    rendered: list[str],
+    *,
+    font_profile: FontProfile,
+) -> None:
     views = _monthly_views(data)
     if not views:
         return
@@ -520,6 +536,7 @@ def _monthly_modules(document: Any, data: Mapping[str, Any], temp: Path, rendere
                 f"Comparativo de Vulnerabilidades Não Mitigadas {year}",
                 severity,
                 (*SEVERITY_SERIES, ("total", "Total Vulnerabilidades", "#B244A5")),
+                font_profile=font_profile,
             )
             _chart(
                 document,
@@ -532,6 +549,7 @@ def _monthly_modules(document: Any, data: Mapping[str, Any], temp: Path, rendere
             f"Volume de Vuln. Não Mitigadas {year}",
             history,
             value_key="non_mitigated",
+            font_profile=font_profile,
         )
         _chart(document, volume, f"Volume mensal de vulnerabilidades não mitigadas - {view_label}")
 
@@ -553,6 +571,7 @@ def _monthly_modules(document: Any, data: Mapping[str, Any], temp: Path, rendere
                 f"Comparativo de Vuln. Mitigadas {year}",
                 severity,
                 (*SEVERITY_SERIES, ("total", "Total de Vuln. Mitigadas", "#B244A5")),
+                font_profile=font_profile,
             )
             _chart(
                 document,
@@ -565,12 +584,20 @@ def _monthly_modules(document: Any, data: Mapping[str, Any], temp: Path, rendere
             f"Volume de Vuln. Mitigadas {year}",
             history,
             value_key="mitigated",
+            font_profile=font_profile,
         )
         _chart(document, volume, f"Volume mensal de vulnerabilidades mitigadas - {view_label}")
     rendered.append("vm_monthly_volume")
 
 
-def _scan_health(document: Any, data: Mapping[str, Any], temp: Path, rendered: list[str]) -> None:
+def _scan_health(
+    document: Any,
+    data: Mapping[str, Any],
+    temp: Path,
+    rendered: list[str],
+    *,
+    font_profile: FontProfile,
+) -> None:
     health = data.get("scan_auth_health")
     statuses = data.get("customization_statuses")
     known = isinstance(statuses, Mapping) and "scan_auth_health" in statuses
@@ -585,7 +612,13 @@ def _scan_health(document: Any, data: Mapping[str, Any], temp: Path, rendered: l
         return
     chart = temp / "scan-health.png"
     rows = [{"label": "", "success": health.get("success", 0), "failure": health.get("failure", 0)}]
-    _bar_chart(chart, "Integridade da varredura", rows, (("success", "Sucesso", "#00B050"), ("failure", "Falha", "#FF0000")))
+    _bar_chart(
+        chart,
+        "Integridade da varredura",
+        rows,
+        (("success", "Sucesso", "#00B050"), ("failure", "Falha", "#FF0000")),
+        font_profile=font_profile,
+    )
     _chart(document, chart, "Integridade da varredura por sucesso e falha de autenticação")
     rendered.append("scan_auth_health")
 
@@ -863,7 +896,14 @@ def _eol(
     rendered.append("vm_eol_software")
 
 
-def _executive(document: Any, data: Mapping[str, Any], temp: Path, rendered: list[str]) -> None:
+def _executive(
+    document: Any,
+    data: Mapping[str, Any],
+    temp: Path,
+    rendered: list[str],
+    *,
+    font_profile: FontProfile,
+) -> None:
     rows = data.get("vulnerability_evolution")
     if not isinstance(rows, list) or not rows:
         return
@@ -875,12 +915,25 @@ def _executive(document: Any, data: Mapping[str, Any], temp: Path, rendered: lis
     for text in EXECUTIVE_PARAGRAPHS:
         faithful._paragraph(document, text)
     chart = temp / "executive.png"
-    _bar_chart(chart, "Evolução de Vulnerabilidades", rows, (("change", "Variação", "#2E59FC"),))
+    _bar_chart(
+        chart,
+        "Evolução de Vulnerabilidades",
+        rows,
+        (("change", "Variação", "#2E59FC"),),
+        font_profile=font_profile,
+    )
     _chart(document, chart, "Evolução de vulnerabilidades e criticidade dos ativos")
     rendered.append("vm_executive_evolution")
 
 
-def _evolution(document: Any, data: Mapping[str, Any], temp: Path, rendered: list[str]) -> None:
+def _evolution(
+    document: Any,
+    data: Mapping[str, Any],
+    temp: Path,
+    rendered: list[str],
+    *,
+    font_profile: FontProfile,
+) -> None:
     views = _monthly_views(data)
     if not views:
         return
@@ -907,6 +960,7 @@ def _evolution(document: Any, data: Mapping[str, Any], temp: Path, rendered: lis
             ("mitigated", "Total Mitigadas", "#00B050"),
             ("new", "Vuln. Novas", "#FFF200"),
         ),
+        font_profile=font_profile,
     )
     document.add_page_break()
     spacer = document.add_paragraph()
@@ -925,6 +979,7 @@ def _evolution(document: Any, data: Mapping[str, Any], temp: Path, rendered: lis
             f"Comparativo de Vulnerabilidades Novas {year}",
             new_rows,
             (*SEVERITY_SERIES, ("total", "Total Novas", "#B244A5")),
+            font_profile=font_profile,
         )
         _chart(
             document,
@@ -1128,11 +1183,29 @@ def generate_customizations_report(
     with tempfile.TemporaryDirectory() as directory:
         temp = Path(directory)
         if _module_enabled(profile, "vm_monthly_evolution"):
-            _evolution(document, data, temp, rendered)
+            _evolution(
+                document,
+                data,
+                temp,
+                rendered,
+                font_profile=active_font_profile,
+            )
         if _module_enabled(profile, "vm_monthly_volume"):
-            _monthly_modules(document, data, temp, rendered)
+            _monthly_modules(
+                document,
+                data,
+                temp,
+                rendered,
+                font_profile=active_font_profile,
+            )
         if _module_enabled(profile, "scan_auth_health"):
-            _scan_health(document, data, temp, rendered)
+            _scan_health(
+                document,
+                data,
+                temp,
+                rendered,
+                font_profile=active_font_profile,
+            )
         if _module_enabled(profile, "vm_previous_period_delta"):
             _previous_period(document, data, dataset, profile, rendered)
         if _module_enabled(profile, "vm_plugin_family"):
@@ -1140,7 +1213,13 @@ def generate_customizations_report(
         if _module_enabled(profile, "vm_eol_software"):
             _eol(document, data, dataset, profile, mask_sensitive, rendered)
         if _module_enabled(profile, "vm_executive_evolution"):
-            _executive(document, data, temp, rendered)
+            _executive(
+                document,
+                data,
+                temp,
+                rendered,
+                font_profile=active_font_profile,
+            )
         if _module_enabled(profile, "cloud_container_images"):
             _containers(document, data, dataset, profile, mask_sensitive, rendered)
         if _module_enabled(profile, "vm_exploit_vector"):

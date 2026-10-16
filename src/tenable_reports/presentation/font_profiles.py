@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from PIL import ImageFont
+
 from tenable_reports.infrastructure.runtime_platform import (
     RuntimePlatform,
     RuntimePlatformInfo,
@@ -67,6 +69,24 @@ class FontProfile:
     @property
     def italic_path(self) -> Path:
         return self.document.italic
+
+
+def load_image_font(
+    face: FontFace,
+    *,
+    size: int,
+    bold: bool = False,
+    italic: bool = False,
+) -> ImageFont.FreeTypeFont:
+    """Carrega uma fonte bitmap verificada sem fallback dependente do host."""
+
+    if bold and italic:
+        raise FontProfileError("FONT_PROFILE_INVALID")
+    path = face.bold if bold else face.italic if italic else face.regular
+    try:
+        return ImageFont.truetype(str(path), size=size)
+    except (OSError, ValueError) as exc:
+        raise FontProfileError("FONT_PROFILE_INVALID", path=path.name) from exc
 
 
 def _read_manifest(path: Path) -> Mapping[str, Any]:
