@@ -15,8 +15,12 @@ from tenable_reports.infrastructure.runtime_platform import (
     RuntimePlatform,
     RuntimePlatformInfo,
 )
-from tools.validate_runtime_manifest import platform_key
-from tools.verify_offline_bundle import sha256_file, verify_offline_bundle
+if __package__:
+    from tools.validate_runtime_manifest import platform_key
+    from tools.verify_offline_bundle import sha256_file, verify_offline_bundle
+else:
+    from validate_runtime_manifest import platform_key
+    from verify_offline_bundle import sha256_file, verify_offline_bundle
 
 
 class OfflineBundleError(RuntimeError):

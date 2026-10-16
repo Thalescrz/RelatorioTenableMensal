@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -14,6 +17,23 @@ from tools.verify_offline_bundle import verify_offline_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 WINDOWS = RuntimePlatformInfo(RuntimePlatform.WINDOWS, "Windows", "x86_64")
+
+
+def test_bundle_builder_can_run_directly_from_repository_root() -> None:
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(ROOT / "src")
+
+    completed = subprocess.run(
+        [sys.executable, "tools/build_offline_bundle.py", "--help"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "--vendor-root" in completed.stdout
 
 
 def _source_tree(tmp_path: Path) -> Path:

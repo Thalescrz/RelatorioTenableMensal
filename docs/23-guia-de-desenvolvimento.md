@@ -6,8 +6,14 @@ mudança.
 
 ## Preparação
 
+`scripts/setup.ps1` e `scripts/setup.sh` pertencem ao bundle de produção e exigem
+payloads oficiais. Para desenvolver a partir do Git, crie uma `.venv` com Python
+compatível e instale o projeto editável; um exemplo para uma estação já preparada
+é:
+
 ```powershell
-.\scripts\setup.ps1
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
 $env:PYTHONPATH = (Join-Path $PWD 'src')
 .\.venv\Scripts\python.exe -m pytest -q
 ```
@@ -121,18 +127,40 @@ visual de `0` para VPR nulo. Testes precisam provar que mais instâncias não pa
 
 Não inicie export real, servidor ou cancelamento sem necessidade e autorização.
 
-## Mensal e Agendador do Windows
+## Mensal e agendadores por plataforma
 
 O serviço mensal deve permanecer testável com aplicação/repositório injetados. A
 CLI headless e a interface chamam o mesmo `STAGED_V1`; não crie um segundo
 orquestrador. Teste competência no fuso, chave idempotente, família existente e
 clientes ativos com credenciais prontas.
 
-O adaptador do Agendador usa lista de argumentos, `shell=False`, timeout curto e
-compara launcher/configuração antes de declarar sincronização. Salvar ou validar a
-política nunca invoca `schtasks.exe` nem cria lote. Aplicar, ativar e desativar
-exigem confirmação e devem ser testados com runner falso.
+O protocolo de agenda usa lista de argumentos, `shell=False`, timeout curto e
+compara launcher/configuração antes de declarar sincronização. No Windows, o
+adaptador chama `schtasks.exe`; no Linux, materializa unidades e usa `systemctl
+--user` para um timer do `systemd`. Não crie fallback por `cron`. Salvar ou validar
+a política nunca invoca o sistema nem cria lote. Aplicar, ativar e desativar exigem
+confirmação e devem ser testados com runner falso.
 Comandos reais devem exigir confirmação explícita.
+
+## Release offline e transferência
+
+`deploy/runtime-manifest.json` e os locks por plataforma são o contrato de versão.
+`tools/build_offline_bundle.py` aceita somente o layout oficial, valida assinatura,
+hash e licença e gera um pacote autocontido. `tools/verify_offline_bundle.py`
+revalida o resultado. Testes nunca devem baixar artefatos nem flexibilizar uma
+falha `BLOCKED`. A release suporta Windows x86_64 com `windows-calibri-v1` e Ubuntu
+Server 24.04 x86_64 com `linux-carlito-v1`.
+
+O fluxo `deployment-export`/`deployment-import` deve permanecer em duas fases. O
+dry-run valida schema, hashes, espaço, identidade e `MAIN`; a aplicação exige a
+frase exata `IMPORT <transfer_id>`, restaura em staging e só depois promove. Novos
+campos persistidos exigem teste de exportação, rebase de caminhos e rollback. O
+pacote nunca contém credenciais.
+
+Para homologar uma release, cubra instaladores sem rede, preflight, comandos de
+agenda com doubles e os quatro DOCX sanitizados. Windows e Linux possuem baselines
+visuais independentes; não aceite igualdade de hash de DOCX como substituto da
+renderização com o LibreOffice fixado.
 
 No período manual explícito, datas da interface são inclusivas e o domínio recebe
 o fim exclusivo. Se esse fim for exatamente a meia-noite posterior ao dia corrente,

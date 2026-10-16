@@ -26,6 +26,21 @@ controle documental.
 - `Output` ausente por padrão;
 - campos dinâmicos expressos por tokens `{{...}}`.
 
+## Perfis tipográficos por plataforma
+
+O shell é semanticamente único, mas a tipografia é materializada pelo perfil de
+runtime. Windows x86_64 usa `windows-calibri-v1`, com Calibri e Arial obtidas de
+fonte licenciada; Ubuntu Server 24.04 x86_64 usa `linux-carlito-v1`, com Carlito e
+Liberation Sans redistribuíveis. O pacote offline valida os arquivos e suas
+licenças/hashes antes da instalação. Fonte ausente bloqueia o preflight: o gerador
+não escolhe outra família silenciosamente.
+
+A baseline visual Windows preserva o resultado aprovado. A baseline Linux é uma
+referência separada, pois a métrica de Carlito pode produzir quebras de linha e
+paginação próprias. Toda mudança no shell ou no perfil exige geração dos quatro
+tipos de relatório, renderização pelo LibreOffice fixado e comparação visual por
+plataforma.
+
 Os PNG em `assets/` foram extraídos dos materiais fornecidos pelo usuário e são usados somente para identidade visual do relatório.
 
 ## Reconstrução

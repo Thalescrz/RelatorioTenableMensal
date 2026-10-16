@@ -383,13 +383,33 @@ esses controles sejam projetados e implementados.
 
 ## Ambiente e comandos seguros
 
-Preparação e inicialização local no Windows:
+Implantações de produção usam bundles offline específicos para Windows x86_64 e
+Ubuntu Server 24.04 x86_64. Eles incluem Python, LibreOffice, PostgreSQL, wheels e
+fontes autorizadas, validam SHA-256 e instalam sem acesso à internet. O runtime
+seleciona `windows-calibri-v1` ou `linux-carlito-v1`; fonte ausente não recebe
+fallback silencioso. O instalador não inicia coleta, servidor ou agenda.
+
+Inicialização após instalar um bundle Windows verificado:
 
 ```powershell
 .\scripts\setup.ps1
-.\scripts\bootstrap_postgresql.ps1
 .\scripts\run_web.ps1
 ```
+
+No Linux:
+
+```bash
+sudo ./scripts/setup.sh --install-root /opt/tenable-reports
+/opt/tenable-reports/scripts/run_web.sh
+```
+
+O pacote é criado com `tools/build_offline_bundle.py` e conferido com
+`tools/verify_offline_bundle.py`. Binários oficiais e fontes proprietárias ficam
+fora do Git; ausência de assinatura, hash ou prova de licença bloqueia a release.
+Estado operacional é movido somente por `deployment-export` e
+`deployment-import`, com dry-run obrigatório e confirmação `IMPORT <transfer_id>`;
+segredos são reprovisionados no destino. Consulte
+[docs/25](docs/25-implantacao-windows-linux.md).
 
 O painel fica em `http://127.0.0.1:8765`. Encerre o servidor no mesmo terminal com
 `Ctrl+C`. Iniciar a interface não autoriza coleta real; execuções continuam
@@ -441,6 +461,8 @@ A ajuda da CLI pode ser consultada sem iniciar coleta:
   validação.
 - [Integração Tenable Cloud e licenciamento](docs/24-integracao-apis-tenable-cloud-e-licenciamento.md):
   contrato GraphQL, fontes, retomada, licenciamento e protocolo de validação.
+- [Implantação Windows e Linux](docs/25-implantacao-windows-linux.md): matriz,
+  bundle offline, instaladores, diagnóstico e transferência controlada.
 - [Template corporativo](templates/corporate/README.md): contrato do shell DOCX.
 - [Instruções para agentes](AGENTS.md): regras globais, complementadas pelos
   `AGENTS.md` de cada diretório.

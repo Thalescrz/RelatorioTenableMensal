@@ -27,13 +27,31 @@ relatório.
 
 ## Começar
 
-No Windows, abra o PowerShell na raiz do projeto:
+Para produção, use o ZIP offline específico da plataforma. Ele inclui as versões
+fixadas de Python, LibreOffice, PostgreSQL, wheels e fontes autorizadas; depois de
+montado, instala tudo sem acesso à internet. O runtime detecta o sistema e aplica
+`windows-calibri-v1` no Windows x86_64 ou `linux-carlito-v1` no Ubuntu Server
+24.04 x86_64. Consulte o
+[guia de implantação Windows e Linux](docs/25-implantacao-windows-linux.md) antes
+de instalar ou transferir uma instância.
+
+No Windows, após extrair um bundle verificado, abra PowerShell elevado na raiz:
 
 ```powershell
 .\scripts\setup.ps1
-.\scripts\bootstrap_postgresql.ps1
 .\scripts\run_web.ps1
 ```
+
+No Linux, após extrair o bundle verificado:
+
+```bash
+sudo ./scripts/setup.sh --install-root /opt/tenable-reports
+/opt/tenable-reports/scripts/run_web.sh
+```
+
+Os instaladores são idempotentes e não iniciam coleta, interface nem agenda. Um
+clone do Git é um ambiente de desenvolvimento e não contém os payloads oficiais da
+release; por isso não substitui o bundle de produção.
 
 O painel abre em `http://127.0.0.1:8765`. Nele é possível cadastrar clientes,
 manter o catálogo operacional de analistas responsáveis, testar APIs, buscar TAGs,
@@ -188,9 +206,10 @@ O executor faseado aceita retentativa seletiva de qualquer um dos três componen
 uma retentativa manual abre uma única janela explícita de 10 horas.
 
 No painel Admin, **Automação mensal** salva e valida a política sem iniciar coleta.
-**Sincronizar tarefa**, **Ativar** e **Desativar** alteram o Agendador de Tarefas do
-Windows somente após confirmação. O comando headless é `run-monthly-batch`; sua
-chave `automatic-monthly:<carteira>:<competência>` impede lote mensal duplicado.
+**Sincronizar tarefa**, **Ativar** e **Desativar** alteram o Agendador de Tarefas no
+Windows ou um timer de usuário do `systemd` no Linux, sempre após confirmação. Não
+é usado `cron`. O comando headless é `run-monthly-batch`; sua chave
+`automatic-monthly:<carteira>:<competência>` impede lote mensal duplicado.
 
 ## Cloud Security
 

@@ -40,6 +40,30 @@ da interface, de Word ou de uma resposta HTTP específica.
 - `templates`: template corporativo e ativos visuais.
 - `data`: execução, staging e documentos publicados; ignorado pelo Git.
 
+## Plataforma, runtime e implantação
+
+A fronteira `infrastructure/runtime_platform.py` detecta sistema e arquitetura e
+seleciona o perfil de fontes, comandos e integração de agenda. A matriz vigente é
+Windows x86_64 com `windows-calibri-v1` e Ubuntu Server 24.04 x86_64 com
+`linux-carlito-v1`. A apresentação recebe um perfil explícito; não decide a fonte
+por conta própria nem aceita substituição silenciosa.
+
+`deploy/runtime-manifest.json`, os locks por plataforma e os layouts do bundle
+fixam Python, LibreOffice, PostgreSQL, wheels e fontes. A release é construída por
+`tools/build_offline_bundle.py`, validada por `tools/verify_offline_bundle.py` e
+executada sem acesso à internet. Os scripts de setup validam o manifesto antes de
+instalar e não iniciam coleta, servidor ou agenda.
+
+O agendamento depende do protocolo comum de plataforma: Agendador de Tarefas no
+Windows e timer de usuário do `systemd` no Linux. Ambos chamam o mesmo caso de uso
+`run-monthly-batch`; não há orquestradores mensais divergentes.
+
+Para mudança de máquina, `deployment-export` reúne dump PostgreSQL, configurações
+sem segredos, documentos, manifestos e identidade `MAIN`. `deployment-import`
+valida em dry-run, exige `IMPORT <transfer_id>`, restaura em staging, rebaseia
+caminhos controlados e só então promove com rollback coordenado. Credenciais nunca
+entram no pacote de transferência.
+
 ## Fluxo de uma execução
 
 1. O modo de execução resolve o intervalo `[início, fim)` no fuso do cliente.

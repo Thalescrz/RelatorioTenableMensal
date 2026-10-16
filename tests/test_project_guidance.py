@@ -18,6 +18,7 @@ REQUIRED_FILES = (
     "docs/22-guia-operacional.md",
     "docs/23-guia-de-desenvolvimento.md",
     "docs/24-integracao-apis-tenable-cloud-e-licenciamento.md",
+    "docs/25-implantacao-windows-linux.md",
     "AGENTS.md",
     "src/tenable_reports/AGENTS.md",
     "tests/AGENTS.md",
@@ -266,5 +267,38 @@ class ProjectGuidanceTests(unittest.TestCase):
             "fila sequencial",
         ):
             self.assertIn(required, documentation)
+
+    def test_current_guidance_documents_cover_offline_cross_platform_deployment(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        documentation = "\n".join(
+            (project_root / relative).read_text(encoding="utf-8")
+            for relative in (
+                "README.md",
+                "CONTEXTO.md",
+                "docs/20-arquitetura-e-fluxo-de-dados.md",
+                "docs/22-guia-operacional.md",
+                "docs/23-guia-de-desenvolvimento.md",
+                "docs/25-implantacao-windows-linux.md",
+                "templates/corporate/README.md",
+            )
+        )
+
+        for required in (
+            "Windows x86_64",
+            "Ubuntu Server 24.04 x86_64",
+            "windows-calibri-v1",
+            "linux-carlito-v1",
+            "build_offline_bundle.py",
+            "verify_offline_bundle.py",
+            "deployment-export",
+            "deployment-import",
+            "IMPORT <transfer_id>",
+            "systemd",
+            "sem acesso à internet",
+            "não inicia coleta",
+        ):
+            self.assertIn(required, documentation)
+
+
 if __name__ == "__main__":
     unittest.main()
