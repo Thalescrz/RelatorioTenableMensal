@@ -1,0 +1,11 @@
+[Unit]
+Description=Relatorios Tenable - execucao mensal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={working_directory}
+ExecStart={exec_start}
+NoNewPrivileges=true
+PrivateTmp=true

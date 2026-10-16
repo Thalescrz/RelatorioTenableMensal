@@ -87,6 +87,44 @@ class UnavailableMonthlyScheduler:
         raise RuntimeError(self.message)
 
 
+class ExternalScheduler:
+    """Descreve uma agenda deliberadamente gerenciada fora da aplicação."""
+
+    backend = SchedulerBackend.EXTERNAL
+
+    def __init__(self, *, command: str) -> None:
+        self.command = command
+
+    def query(self, config: MonthlyScheduleConfig) -> SchedulerState:
+        return SchedulerState(
+            status=(
+                SchedulerStatus.SYNCHRONIZED
+                if config.enabled
+                else SchedulerStatus.DISABLED
+            ),
+            enabled=config.enabled,
+            backend=self.backend,
+            message="O ciclo mensal é gerenciado por um agendador externo.",
+            command=self.command,
+        )
+
+    @staticmethod
+    def _read_only() -> SchedulerState:
+        raise RuntimeError(
+            "O agendador externo é somente informativo; altere-o fora da aplicação."
+        )
+
+    def apply(self, config: MonthlyScheduleConfig) -> SchedulerState:
+        del config
+        return self._read_only()
+
+    def set_enabled(
+        self, config: MonthlyScheduleConfig, enabled: bool
+    ) -> SchedulerState:
+        del config, enabled
+        return self._read_only()
+
+
 def select_monthly_scheduler(
     *,
     project_root: Path,
@@ -131,6 +169,7 @@ def select_monthly_scheduler(
 
 __all__ = [
     "MonthlyScheduler",
+    "ExternalScheduler",
     "SchedulerBackend",
     "SchedulerState",
     "SchedulerStatus",

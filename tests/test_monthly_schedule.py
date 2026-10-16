@@ -3,6 +3,7 @@ from __future__ import annotations
 from tenable_reports.config.monthly_schedule import MonthlyScheduleConfig
 from tenable_reports.application.monthly_schedule import MonthlyScheduleService
 from tenable_reports.infrastructure.monthly_scheduler import (
+    ExternalScheduler,
     SchedulerBackend,
     SchedulerState,
     SchedulerStatus,
@@ -159,3 +160,38 @@ def test_scheduler_selector_preserves_windows_backend(tmp_path) -> None:
     )
 
     assert isinstance(scheduler, WindowsTaskScheduler)
+
+
+def test_scheduler_selector_uses_systemd_backend_on_linux(tmp_path) -> None:
+    from tenable_reports.infrastructure.systemd_user_timer_scheduler import (
+        SystemdUserTimerScheduler,
+    )
+
+    scheduler = select_monthly_scheduler(
+        project_root=tmp_path,
+        config_path=tmp_path / "orchestration" / "clients.json",
+        platform_info=RuntimePlatformInfo(
+            platform=RuntimePlatform.LINUX,
+            system_name="Linux",
+            architecture="x86_64",
+        ),
+    )
+
+    assert isinstance(scheduler, SystemdUserTimerScheduler)
+
+
+def test_external_scheduler_describes_command_but_never_mutates_host() -> None:
+    scheduler = ExternalScheduler(command="comando-mensal-controlado")
+    config = MonthlyScheduleConfig.from_mapping({"enabled": True})
+
+    state = scheduler.query(config)
+
+    assert state.backend is SchedulerBackend.EXTERNAL
+    assert state.status is SchedulerStatus.SYNCHRONIZED
+    assert state.command == "comando-mensal-controlado"
+    try:
+        scheduler.apply(config)
+    except RuntimeError as exc:
+        assert "extern" in str(exc).lower()
+    else:
+        raise AssertionError("agendador externo tentou aplicar alterações")
