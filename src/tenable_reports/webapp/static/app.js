@@ -1,6 +1,7 @@
 const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue, mergeSavedClient, conflictingJobsByClient } = window.TenableClientSelection;
 const { filterPortfolioByFamily, toggleFamilyFilter } = window.TenableBatchFamilyFilters;
 const { scheduleView } = window.TenableMonthlySchedule;
+const { environmentView } = window.TenableEnvironmentStatus;
 const { copyRecipients, addRecipient, removeRecipient } = window.TenableDocumentDistribution;
 const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, standardDistributionDraft: undefined, clientDistributionDraft: [], connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, monthlySchedule: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: null, batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
 const { createLatestRequestGuard, reportExecutionCopy } = window.TenableReportRequestGuard;
@@ -1351,6 +1352,41 @@ async function loadMonthlySchedule() {
   }
 }
 
+function renderEnvironmentStatus(payload) {
+  const view = environmentView(payload);
+  $("#environment-loading").classList.add("hidden");
+  $("#environment-status-content").classList.remove("hidden");
+  $("#environment-overall-status").textContent = view.overallLabel;
+  $("#environment-overall-status").dataset.status = view.overallStatus;
+  $("#environment-publication-status").textContent = view.publicationLabel;
+  $("#environment-components").innerHTML = view.components.map(item => `
+    <article class="environment-component" data-status="${escapeHtml(item.status)}">
+      <div><strong>${escapeHtml(item.label)}</strong><span>${escapeHtml(item.detail)}</span></div>
+      <em>${escapeHtml(item.statusLabel)}</em>
+    </article>
+  `).join("");
+  $("#environment-issues").innerHTML = view.issues.length
+    ? view.issues.map(issue => `
+      <article class="environment-issue" data-status="${escapeHtml(issue.status)}">
+        <strong>${escapeHtml(issue.code)}</strong>
+        <p>${escapeHtml(issue.message)}</p>
+        <small>${escapeHtml(issue.remediation)}</small>
+      </article>
+    `).join("")
+    : '<p class="environment-ready-copy">Nenhuma pendência de ambiente foi identificada.</p>';
+}
+
+async function loadEnvironmentStatus() {
+  $("#environment-loading").classList.remove("hidden");
+  $("#environment-loading").textContent = "Verificando o ambiente local…";
+  $("#environment-status-content").classList.add("hidden");
+  try {
+    renderEnvironmentStatus(await api("/api/admin/environment-status"));
+  } catch (error) {
+    $("#environment-loading").textContent = `Não foi possível consultar o ambiente: ${error.message}`;
+  }
+}
+
 function selectAdminTab(name) {
   document.querySelectorAll("[data-admin-tab]").forEach(button => {
     const selected = button.dataset.adminTab === name;
@@ -1360,8 +1396,10 @@ function selectAdminTab(name) {
   $("#admin-monthly-panel").classList.toggle("hidden", name !== "monthly");
   $("#admin-backfill-panel").classList.toggle("hidden", name !== "backfill");
   $("#admin-document-control-panel").classList.toggle("hidden", name !== "document-control");
+  $("#admin-environment-panel").classList.toggle("hidden", name !== "environment");
   if (name === "monthly") void loadMonthlySchedule();
   else if (name === "backfill") void analyzeBackfill();
+  else if (name === "environment") void loadEnvironmentStatus();
   else loadDocumentControlAdmin();
 }
 

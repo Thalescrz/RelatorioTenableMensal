@@ -20,6 +20,11 @@ from uuid import UUID
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from tenable_reports.application.environment_preflight import (
+    CapabilityStatus,
+    PreflightIssue,
+    RuntimeCapabilities,
+)
 from tenable_reports.application.report_registry import InMemoryReportRegistry
 from tenable_reports.application.web_batches_memory import (
     InMemoryWebBatchRepository,
@@ -57,6 +62,16 @@ from tenable_reports.domain.web_batches import (
     WebBatchJob,
 )
 from tenable_reports.domain.report_reference import READY_STATUS, ReportCandidate, ReportOrigin, reference_key_for_candidate
+from tenable_reports.infrastructure.libreoffice import LibreOfficeInstallation
+from tenable_reports.infrastructure.monthly_scheduler import (
+    SchedulerBackend,
+    SchedulerState,
+    SchedulerStatus,
+)
+from tenable_reports.infrastructure.runtime_platform import (
+    RuntimePlatform,
+    RuntimePlatformInfo,
+)
 from tenable_reports.webapp.server import (
     DashboardApplication,
     DashboardConfigStore,
@@ -457,6 +472,133 @@ class _ArchiveDashboardDatabase:
 
 
 class WebDashboardTests(unittest.TestCase):
+    def test_environment_status_admin_ui_loads_read_only_assets(self) -> None:
+        static = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "tenable_reports"
+            / "webapp"
+            / "static"
+        )
+        html = (static / "index.html").read_text(encoding="utf-8")
+        javascript = (static / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('id="admin-environment-tab"', html)
+        self.assertIn('id="admin-environment-panel"', html)
+        self.assertIn('/static/environment_status.js', html)
+        self.assertIn('/api/admin/environment-status', javascript)
+        self.assertNotIn('id="environment-install', html)
+        self.assertNotIn('id="environment-fix', html)
+
+    def test_environment_status_provider_failure_returns_generic_error(self) -> None:
+        def fail_with_secret():
+            raise RuntimeError("password=fixture-secret host=private.example")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+                environment_status_provider=fail_with_secret,
+            )
+            client = LocalClient(app)
+            try:
+                status, payload = client.request(
+                    "GET", "/api/admin/environment-status"
+                )
+            finally:
+                client.close()
+                app.jobs.close()
+
+        self.assertEqual(status, HTTPStatus.SERVICE_UNAVAILABLE)
+        serialized = json.dumps(payload)
+        self.assertNotIn("fixture-secret", serialized)
+        self.assertNotIn("private.example", serialized)
+
+    def test_environment_status_endpoint_returns_only_sanitized_capabilities(self) -> None:
+        capabilities = RuntimeCapabilities(
+            platform=RuntimePlatformInfo(
+                platform=RuntimePlatform.WINDOWS,
+                system_name="Windows",
+                architecture="x86_64",
+            ),
+            platform_status=CapabilityStatus.READY,
+            font_status=CapabilityStatus.READY,
+            font_profile_id="windows-calibri-v1",
+            libreoffice_status=CapabilityStatus.READY,
+            libreoffice=LibreOfficeInstallation(
+                executable=Path("C:/private/credential-path/soffice.exe"),
+                version="26.2.4.2",
+                source="portable",
+            ),
+            postgresql_status=CapabilityStatus.READY,
+            database_configured=True,
+            storage_status=CapabilityStatus.READY,
+            storage_roots_checked=2,
+            timezone_status=CapabilityStatus.READY,
+            scheduler_status=CapabilityStatus.WARNING,
+            issues=(
+                PreflightIssue(
+                    code="SCHEDULER_UNAVAILABLE",
+                    component="scheduler",
+                    status=CapabilityStatus.WARNING,
+                    message="O agendamento requer atenção.",
+                    remediation="Revise o backend configurado.",
+                ),
+            ),
+        )
+
+        class SecretScheduler:
+            backend = SchedulerBackend.WINDOWS_TASK_SCHEDULER
+
+            def query(self, _config):
+                return SchedulerState(
+                    backend=self.backend,
+                    status=SchedulerStatus.DIVERGENT,
+                    enabled=True,
+                    message="password=fixture-secret client=fixture-client",
+                    command="--credentials C:/private/credential-path/client.env",
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+                monthly_schedule_service=SimpleNamespace(
+                    scheduler=SecretScheduler()
+                ),
+                environment_status_provider=lambda: capabilities,
+            )
+            client = LocalClient(app)
+            try:
+                status, payload = client.request(
+                    "GET", "/api/admin/environment-status"
+                )
+            finally:
+                client.close()
+                app.jobs.close()
+
+        self.assertEqual(status, HTTPStatus.OK)
+        self.assertEqual(payload["platform"]["id"], "windows")
+        self.assertEqual(payload["platform"]["architecture"], "x86_64")
+        self.assertEqual(payload["font_profile"]["id"], "windows-calibri-v1")
+        self.assertEqual(payload["libreoffice"]["version"], "26.2.4.2")
+        self.assertEqual(payload["postgresql"]["status"], "READY")
+        self.assertEqual(payload["storage"]["roots_checked"], 2)
+        self.assertEqual(payload["scheduler"]["status"], "WARNING")
+        self.assertEqual(payload["scheduler"]["state"], "DIVERGENT")
+        self.assertEqual(
+            payload["scheduler"]["backend"], "WINDOWS_TASK_SCHEDULER"
+        )
+        serialized = json.dumps(payload)
+        self.assertNotIn("fixture-secret", serialized)
+        self.assertNotIn("fixture-client", serialized)
+        self.assertNotIn("credential-path", serialized)
+        self.assertNotIn("--credentials", serialized)
+
     def test_default_monthly_schedule_uses_selected_platform_backend(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
