@@ -1,39 +1,42 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 import subprocess
 import xml.etree.ElementTree as ET
 
 from tenable_reports.config.monthly_schedule import MonthlyScheduleConfig
+from tenable_reports.infrastructure.monthly_scheduler import (
+    SchedulerBackend,
+    SchedulerState,
+    SchedulerStatus,
+)
 
 
-class WindowsTaskStatus(StrEnum):
-    MISSING = "MISSING"
-    SYNCHRONIZED = "SYNCHRONIZED"
-    DISABLED = "DISABLED"
-    DIVERGENT = "DIVERGENT"
-    ERROR = "ERROR"
+WindowsTaskStatus = SchedulerStatus
 
 
-@dataclass(frozen=True, slots=True)
-class WindowsTaskState:
-    status: WindowsTaskStatus
-    enabled: bool | None = None
-    message: str | None = None
-    command: str | None = None
+class WindowsTaskState(SchedulerState):
+    __slots__ = ()
 
-    def to_mapping(self) -> dict[str, object]:
-        return {
-            "status": self.status.value,
-            "enabled": self.enabled,
-            "message": self.message,
-            "command": self.command,
-        }
+    def __init__(
+        self,
+        status: WindowsTaskStatus,
+        enabled: bool | None = None,
+        message: str | None = None,
+        command: str | None = None,
+    ) -> None:
+        super().__init__(
+            status=status,
+            enabled=enabled,
+            message=message,
+            command=command,
+            backend=SchedulerBackend.WINDOWS_TASK_SCHEDULER,
+        )
 
 
 class WindowsTaskScheduler:
+    backend = SchedulerBackend.WINDOWS_TASK_SCHEDULER
+
     def __init__(self, *, project_root: Path, config_path: Path, runner=subprocess.run) -> None:
         self.project_root = project_root.resolve()
         self.config_path = config_path.resolve()

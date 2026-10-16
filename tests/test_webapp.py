@@ -457,6 +457,27 @@ class _ArchiveDashboardDatabase:
 
 
 class WebDashboardTests(unittest.TestCase):
+    def test_default_monthly_schedule_uses_selected_platform_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            scheduler = Mock()
+            with patch(
+                "tenable_reports.webapp.server.select_monthly_scheduler",
+                return_value=scheduler,
+            ) as selector:
+                app = DashboardApplication(
+                    project_root=root,
+                    config_path=root / "orchestration" / "clients.json",
+                    batch_repository=InMemoryWebBatchRepository(),
+                )
+            app.jobs.close()
+
+        self.assertIs(app.monthly_schedule.scheduler, scheduler)
+        selector.assert_called_once_with(
+            project_root=root.resolve(),
+            config_path=(root / "orchestration" / "clients.json").resolve(),
+        )
+
     def test_state_uses_one_dashboard_snapshot_and_forwards_active_count(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

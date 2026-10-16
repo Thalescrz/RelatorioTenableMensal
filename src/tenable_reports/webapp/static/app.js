@@ -1326,6 +1326,7 @@ function renderMonthlySchedule(payload) {
     ...(state.monthlySchedule || {}),
     ...payload,
     config: { ...(state.monthlySchedule?.config || {}), ...(payload.config || {}) },
+    scheduler: payload.scheduler || state.monthlySchedule?.scheduler,
     windows_task: payload.windows_task || state.monthlySchedule?.windows_task,
   };
   const view = scheduleView(state.monthlySchedule);
@@ -1338,7 +1339,7 @@ function renderMonthlySchedule(payload) {
   $("#monthly-eligible-copy").textContent = view.eligibleClientCopy;
   $("#monthly-enabled").checked = Boolean(state.monthlySchedule.config?.enabled);
   $("#monthly-start-time").value = state.monthlySchedule.config?.local_start_time || "00:05";
-  $("#monthly-toggle-button").textContent = state.monthlySchedule.config?.enabled ? "Desativar tarefa" : "Ativar tarefa";
+  $("#monthly-toggle-button").textContent = state.monthlySchedule.config?.enabled ? "Desativar automação" : "Ativar automação";
 }
 
 async function loadMonthlySchedule() {
@@ -1382,7 +1383,7 @@ function loadDocumentControlAdmin() {
 
 async function runMonthlyScheduleAction(button, action) {
   const confirmation = state.monthlySchedule?.confirmation || "SINCRONIZAR AUTOMACAO MENSAL";
-  if (!window.confirm("Esta ação altera a tarefa mensal do Windows. Deseja continuar?")) return;
+  if (!window.confirm("Esta ação altera o agendamento mensal. Deseja continuar?")) return;
   button.disabled = true;
   try {
     renderMonthlySchedule(await api(`/api/admin/monthly-schedule/${action}`, {

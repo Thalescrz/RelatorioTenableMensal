@@ -127,6 +127,7 @@ from tenable_reports.infrastructure.postgresql import (
     SCHEMA_NAME,
 )
 from tenable_reports.infrastructure.runtime_platform import detect_runtime_platform
+from tenable_reports.infrastructure.monthly_scheduler import select_monthly_scheduler
 from tenable_reports.infrastructure.report_registry_postgresql import PostgresReportRegistry
 from tenable_reports.infrastructure.report_components_postgresql import (
     PostgresReportComponentRepository,
@@ -143,7 +144,6 @@ from tenable_reports.infrastructure.web_batches_postgresql import (
 from tenable_reports.infrastructure.web_batch_components_postgresql import (
     PostgresRemoteComponentRepository,
 )
-from tenable_reports.infrastructure.windows_task_scheduler import WindowsTaskScheduler
 from tenable_reports.domain.report_reference import READY_STATUS, reference_key_for_candidate
 from tenable_reports.domain.report_components import (
     ComponentAttempt,
@@ -2908,7 +2908,7 @@ class DashboardApplication:
         self.config = DashboardConfigStore(project_root=self.project_root, config_path=config_path)
         self.monthly_schedule = monthly_schedule_service or MonthlyScheduleService(
             store=self.config,
-            scheduler=WindowsTaskScheduler(
+            scheduler=select_monthly_scheduler(
                 project_root=self.project_root,
                 config_path=self.config.config_path,
             ),
