@@ -14,6 +14,12 @@ from pathlib import Path
 from docx import Document
 from docx.oxml.ns import qn
 
+from tenable_reports.infrastructure.libreoffice import (
+    OfficeRenderer,
+    resolve_libreoffice,
+)
+from tenable_reports.infrastructure.runtime_platform import detect_runtime_platform
+
 
 def _staticize_part(part: object) -> int:
     element = getattr(part, "element", None)
@@ -66,9 +72,22 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("input", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--render-pdf-dir", type=Path)
+    parser.add_argument("--libreoffice", type=Path)
     args = parser.parse_args()
     removed = prepare(args.input, args.output)
     print(f"render_copy={args.output.resolve()} field_markers_removed={removed}")
+    if args.render_pdf_dir is not None:
+        platform = detect_runtime_platform()
+        installation = resolve_libreoffice(
+            platform,
+            explicit_path=args.libreoffice,
+        )
+        rendered = OfficeRenderer(
+            installation,
+            platform=platform,
+        ).render_docx(args.output, args.render_pdf_dir)
+        print(f"render_pdf={rendered.resolve()}")
     return 0
 
 

@@ -43,6 +43,87 @@ from tests.test_report_main_backfill import valid_run as valid_backfill_run
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_environment_status_json_is_sanitized_and_does_not_require_tenable(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "status": "WARNING",
+        "official_publication_ready": True,
+        "platform": {
+            "id": "windows",
+            "architecture": "x86_64",
+            "status": "READY",
+        },
+        "font_profile": {"status": "READY", "id": "windows-calibri-v1"},
+        "libreoffice": {
+            "status": "READY",
+            "version": "26.2.4.2",
+            "source": "portable",
+        },
+        "postgresql": {"status": "READY", "configured": True},
+        "storage": {"status": "READY", "roots_checked": 1},
+        "timezone": {"status": "READY"},
+        "scheduler": {"status": "WARNING"},
+        "issues": [],
+    }
+    capabilities = SimpleNamespace(to_dict=lambda: payload)
+    stdout = io.StringIO()
+
+    with (
+        patch.object(
+            cli_module,
+            "run_environment_preflight",
+            return_value=capabilities,
+        ),
+        patch.object(
+            cli_module,
+            "_load_database_config",
+            return_value=SimpleNamespace(password="do-not-print"),
+        ),
+        contextlib.redirect_stdout(stdout),
+    ):
+        result = main(
+            [
+                "environment-status",
+                "--json",
+                "--root",
+                str(tmp_path),
+            ]
+        )
+
+    rendered = stdout.getvalue()
+    assert result == 0
+    assert json.loads(rendered)["libreoffice"]["version"] == "26.2.4.2"
+    assert "do-not-print" not in rendered
+    assert "TENABLE_" not in rendered
+
+
+def test_blocked_preflight_stops_official_run_before_tenable_handler() -> None:
+    handler = Mock(side_effect=AssertionError("Tenable não pode ser chamado"))
+    preflight = Mock(side_effect=RuntimeError("FONT_PROFILE_INVALID"))
+    stderr = io.StringIO()
+    stdout = io.StringIO()
+
+    with (
+        patch.object(cli_module, "command_run_client", handler),
+        patch.object(cli_module, "_require_official_environment", preflight),
+        contextlib.redirect_stdout(stdout),
+        contextlib.redirect_stderr(stderr),
+    ):
+        result = main(
+            [
+                "run-client",
+                "--profile",
+                "sanitized-profile.json",
+                "--confirm-live-api",
+            ]
+        )
+
+    assert result == 2
+    preflight.assert_called_once()
+    handler.assert_not_called()
+
+
 class CliTests(unittest.TestCase):
     def test_component_publication_records_only_changed_state_as_next_attempt(
         self,

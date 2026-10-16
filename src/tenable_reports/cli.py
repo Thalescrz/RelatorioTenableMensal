@@ -14,6 +14,10 @@ from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
 
 from tenable_reports.application.execution_control import FileExecutionControl
+from tenable_reports.application.environment_preflight import (
+    CapabilityStatus,
+    run_environment_preflight,
+)
 from tenable_reports.application.collect import (
     AssetExportRequest,
     VulnerabilityExportRequest,
@@ -114,6 +118,7 @@ from tenable_reports.application.report_dataset import (
     load_report_dataset_inputs,
 )
 from tenable_reports.infrastructure.jsonl_io import resolve_jsonl_artifact
+from tenable_reports.infrastructure.runtime_platform import detect_runtime_platform
 from tenable_reports.application.tag_report_dataset import (
     build_tag_report_datasets_from_snapshot,
 )
@@ -603,6 +608,82 @@ def _load_database_config(
             )
         return None
     return DatabaseConfig.from_environment()
+
+
+_OFFICIAL_ENVIRONMENT_COMMANDS = frozenset(
+    {
+        "build-client",
+        "collect-client",
+        "collect-component",
+        "collect-monthly",
+        "orchestrate",
+        "resume-was",
+        "retry-cloud",
+        "retry-components",
+        "run-client",
+        "run-monthly-batch",
+    }
+)
+
+
+def _preflight_configuration(
+    args: argparse.Namespace,
+) -> tuple[Path, tuple[Path, ...], DatabaseConfig | None, Path | None]:
+    root = Path(getattr(args, "project_root", ".") or ".").resolve()
+    database_env_file = getattr(args, "database_env_file", None)
+    output_root = getattr(args, "output_root", None)
+    if args.command in {"orchestrate", "run-monthly-batch"}:
+        orchestration_path = Path(args.config)
+        if not orchestration_path.is_absolute():
+            orchestration_path = (root / orchestration_path).resolve()
+        orchestration = load_orchestration_config(orchestration_path)
+        database_env_file = orchestration.database_env_file
+        output_root = orchestration.output_root
+    database = _load_database_config(database_env_file, required=False)
+    configured_roots = getattr(args, "persistent_roots", None)
+    if configured_roots:
+        roots = tuple(
+            path if path.is_absolute() else (root / path).resolve()
+            for path in (Path(item) for item in configured_roots)
+        )
+    else:
+        storage = Path(output_root or "data")
+        roots = (
+            storage if storage.is_absolute() else (root / storage).resolve(),
+        )
+    explicit_office = getattr(args, "libreoffice", None)
+    return (
+        root,
+        roots,
+        database,
+        Path(explicit_office) if explicit_office else None,
+    )
+
+
+def _runtime_capabilities_for_args(
+    args: argparse.Namespace,
+    *,
+    diagnostic_only: bool,
+):
+    root, roots, database, explicit_office = _preflight_configuration(args)
+    return run_environment_preflight(
+        platform_info=detect_runtime_platform(),
+        persistent_roots=roots,
+        database_config=database,
+        explicit_libreoffice=explicit_office,
+        portable_libreoffice=(
+            root / "vendor" / "libreoffice" / "program" / "soffice.exe"
+        ),
+        scheduler_status=CapabilityStatus.WARNING,
+        diagnostic_only=diagnostic_only,
+    )
+
+
+def _require_official_environment(args: argparse.Namespace) -> None:
+    _runtime_capabilities_for_args(
+        args,
+        diagnostic_only=False,
+    ).require_official_publication()
 
 
 def _history_repository(
@@ -5578,6 +5659,25 @@ def command_database_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_environment_status(args: argparse.Namespace) -> int:
+    capabilities = _runtime_capabilities_for_args(
+        args,
+        diagnostic_only=True,
+    )
+    payload = capabilities.to_dict()
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        print(f"Ambiente: {payload['status']}")
+        print(
+            "Publicação oficial: "
+            + ("disponível" if payload["official_publication_ready"] else "bloqueada")
+        )
+        for issue in payload["issues"]:
+            print(f"- {issue['code']}: {issue['message']}")
+    return 0
+
+
 def command_import_web_batch_recovery(args: argparse.Namespace) -> int:
     plan = plan_web_batch_recovery(args.snapshot)
     status = "DRY_RUN"
@@ -6417,6 +6517,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     database_status.set_defaults(handler=command_database_status)
 
+    environment_status = subparsers.add_parser(
+        "environment-status",
+        help="Diagnostica plataforma, fontes, LibreOffice, banco e armazenamento.",
+    )
+    environment_status.add_argument("--root", dest="project_root", default=".")
+    environment_status.add_argument(
+        "--database-env-file",
+        default="credentials/database.env",
+    )
+    environment_status.add_argument(
+        "--persistent-root",
+        dest="persistent_roots",
+        action="append",
+        help="Raiz persistente a validar; pode ser repetida. Padrão: data.",
+    )
+    environment_status.add_argument("--libreoffice")
+    environment_status.add_argument("--json", action="store_true")
+    environment_status.set_defaults(handler=command_environment_status)
+
     import_recovery = subparsers.add_parser(
         "import-web-batch-recovery",
         help="Importa uma vez um snapshot legado de lote web interrompido.",
@@ -6504,6 +6623,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     _configure_logging(args.verbose)
     try:
+        requires_preflight = args.command in _OFFICIAL_ENVIRONMENT_COMMANDS
+        if getattr(args, "dry_run", False):
+            requires_preflight = False
+        if hasattr(args, "confirm_live_api") and not args.confirm_live_api:
+            requires_preflight = False
+        if requires_preflight:
+            _require_official_environment(args)
         return int(args.handler(args))
     except (
         ProfileError,

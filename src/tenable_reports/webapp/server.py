@@ -24,6 +24,10 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from tenable_reports.application.execution_control import FileExecutionControl
+from tenable_reports.application.environment_preflight import (
+    CapabilityStatus,
+    run_environment_preflight,
+)
 from tenable_reports.application.monthly_schedule import MonthlyScheduleService
 from tenable_reports.application.failures import sanitize_failure_message
 from tenable_reports.application.web_batches import (
@@ -122,6 +126,7 @@ from tenable_reports.infrastructure.postgresql import (
     PostgresOperationsRepository,
     SCHEMA_NAME,
 )
+from tenable_reports.infrastructure.runtime_platform import detect_runtime_platform
 from tenable_reports.infrastructure.report_registry_postgresql import PostgresReportRegistry
 from tenable_reports.infrastructure.report_components_postgresql import (
     PostgresReportComponentRepository,
@@ -2897,6 +2902,7 @@ class DashboardApplication:
         component_retry_enqueuer: Callable[..., Mapping[str, Any]] | None = None,
         require_durable_batches: bool = False,
         monthly_schedule_service: MonthlyScheduleService | None = None,
+        environment_preflight: Callable[[], None] | None = None,
     ) -> None:
         self.project_root = project_root.resolve()
         self.config = DashboardConfigStore(project_root=self.project_root, config_path=config_path)
@@ -2950,6 +2956,7 @@ class DashboardApplication:
                 self.database.database
             )
         self.require_durable_batches = bool(require_durable_batches)
+        self.environment_preflight = environment_preflight
         if self.batch_repository is not None:
             eligible_client_count = sum(
                 bool(row.get("enabled")) and bool(row.get("credentials_ready"))
@@ -3938,6 +3945,8 @@ class DashboardApplication:
         request: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
         run_scope = str(request.get("run_scope") or "single").strip().lower()
+        if self.environment_preflight is not None:
+            self.environment_preflight()
         if run_scope not in {"single", "all"}:
             raise ValueError("Escopo de execucao invalido.")
         request_mode = str(request.get("mode") or "manual").strip().lower()
@@ -5321,6 +5330,36 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         self.app = app
 
 
+def _dashboard_environment_guard(
+    project_root: Path,
+    config_path: Path,
+) -> Callable[[], None]:
+    def require_ready() -> None:
+        config = load_orchestration_config(config_path)
+        load_dotenv_file(config.database_env_file, override=True)
+        database = (
+            DatabaseConfig.from_environment()
+            if DatabaseConfig.is_configured()
+            else None
+        )
+        run_environment_preflight(
+            platform_info=detect_runtime_platform(),
+            persistent_roots=(config.output_root,),
+            database_config=database,
+            portable_libreoffice=(
+                project_root
+                / "vendor"
+                / "libreoffice"
+                / "program"
+                / "soffice.exe"
+            ),
+            scheduler_status=CapabilityStatus.WARNING,
+            diagnostic_only=False,
+        )
+
+    return require_ready
+
+
 def serve_dashboard(
     *,
     project_root: str | Path,
@@ -5339,6 +5378,7 @@ def serve_dashboard(
         project_root=root,
         config_path=config,
         require_durable_batches=True,
+        environment_preflight=_dashboard_environment_guard(root, config),
     )
     server = DashboardHTTPServer((host, port), app)
     url = f"http://{host}:{port}"

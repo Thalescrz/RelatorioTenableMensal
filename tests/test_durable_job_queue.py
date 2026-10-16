@@ -3216,6 +3216,46 @@ def test_dashboard_application_groups_generate_all_in_one_durable_batch(tmp_path
     }
 
 
+def test_dashboard_preflight_blocks_before_creating_durable_batch(tmp_path) -> None:
+    repository = InMemoryWebBatchRepository()
+    runner_calls: list[list[str]] = []
+
+    def runner(command, cwd, progress_callback=None):
+        runner_calls.append(command)
+        raise AssertionError("A coleta não pode iniciar com preflight bloqueado.")
+
+    def blocked_preflight() -> None:
+        raise RuntimeError("FONT_PROFILE_INVALID")
+
+    app = DashboardApplication(
+        project_root=tmp_path,
+        config_path=tmp_path / "orchestration" / "clients.json",
+        runner=runner,
+        batch_repository=repository,
+        environment_preflight=blocked_preflight,
+    )
+    app.config.add_client(
+        {
+            "client_id": "client-preflight",
+            "display_name": "Cliente de teste",
+            "access_key": "fixture-access",
+            "secret_key": "fixture-secret",
+        }
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="FONT_PROFILE_INVALID"):
+            app.enqueue_jobs(
+                ["client-preflight"],
+                {"mode": "manual", "days": 30, "run_scope": "single"},
+            )
+    finally:
+        app.jobs.close()
+
+    assert repository.list_batches() == ()
+    assert runner_calls == []
+
+
 def test_dashboard_application_ignores_manual_reference_from_request(
     tmp_path,
 ) -> None:
