@@ -64,6 +64,35 @@ def test_windows_explicit_libreoffice_precedes_portable_path(tmp_path: Path) -> 
     assert commands == [[str(explicit.resolve()), "--version"]]
 
 
+def test_windows_version_probe_uses_hidden_console_binary(tmp_path: Path) -> None:
+    executable = tmp_path / "program" / "soffice.exe"
+    console_executable = executable.with_suffix(".com")
+    executable.parent.mkdir()
+    executable.write_bytes(b"fixture")
+    console_executable.write_bytes(b"fixture")
+    observed: dict[str, object] = {}
+
+    def run(command, **kwargs):
+        observed["command"] = [str(item) for item in command]
+        observed["kwargs"] = kwargs
+        return SimpleNamespace(
+            returncode=0,
+            stdout=f"LibreOffice {EXPECTED_VERSION} build-id\n",
+            stderr="",
+        )
+
+    installation = resolve_libreoffice(
+        _platform(RuntimePlatform.WINDOWS),
+        explicit_path=executable,
+        runner=run,
+        which=lambda _: None,
+    )
+
+    assert installation.executable == executable.resolve()
+    assert observed["command"] == [str(console_executable.resolve()), "--version"]
+    assert observed["kwargs"]["creationflags"] == subprocess.CREATE_NO_WINDOW
+
+
 def test_linux_libreoffice_is_resolved_from_path(tmp_path: Path) -> None:
     discovered = tmp_path / "bin" / "soffice"
     discovered.parent.mkdir()
