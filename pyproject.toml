@@ -16,11 +16,24 @@ dependencies = [
 
 [tool.setuptools.package-data]
 tenable_reports = [
+  "assets/fonts/*.json",
+  "assets/fonts/*.md",
+  "assets/fonts/carlito/*.ttf",
+  "assets/fonts/liberation-sans/*.ttf",
   "catalogs/*.json",
   "infrastructure/postgresql_migrations/*.sql",
   "webapp/static/*.html",
   "webapp/static/*.css",
   "webapp/static/*.js",
+]
+
+[tool.setuptools.data-files]
+"share/tenable-reports/templates/corporate" = [
+  "templates/corporate/*.docx",
+  "templates/corporate/*.md",
+]
+"share/tenable-reports/templates/corporate/assets" = [
+  "templates/corporate/assets/*.png",
 ]
 
 [project.scripts]
