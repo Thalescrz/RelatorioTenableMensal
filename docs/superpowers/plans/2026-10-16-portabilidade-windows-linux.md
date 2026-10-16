@@ -17,6 +17,8 @@
 - Os pacotes oficiais iniciais usam Python 3.14.5, PostgreSQL 18 e LibreOffice 26.2.4.2.
 - O perfil Windows continua usando Calibri e as ocorrencias atuais de Arial; essas fontes nao entram no Git.
 - O perfil Linux usa Carlito e Liberation Sans com arquivos, licencas e hashes versionados.
+- Os artefatos oficiais de deploy sao offline: toda dependencia redistribuivel fica no pacote e a instalacao nao faz download nem solicita etapas manuais depois de iniciada com os privilegios requeridos.
+- Dependencias proprietarias nao redistribuiveis sao aceitas somente quando um payload licenciado e fornecido na montagem; ausencia invalida o pacote, sem fallback visual.
 - Ausencia ou divergencia de fonte/LibreOffice bloqueia a geracao oficial antes de qualquer chamada Tenable.
 - Periodos, metricas, historico, `MAIN`, retries, idempotencia e textos editoriais nao mudam por plataforma.
 - A interface permanece em loopback; este plano nao abre firewall, nao liga `0.0.0.0` e nao adiciona exposicao publica.
@@ -408,6 +410,9 @@
 
 **Files:**
 - Create: `deploy/runtime-manifest.json`
+- Create: `deploy/offline-bundle.schema.json`
+- Create: `deploy/windows/bundle-layout.json`
+- Create: `deploy/linux/bundle-layout.json`
 - Create: `requirements/lock/windows-py314.txt`
 - Create: `requirements/lock/linux-py314.txt`
 - Modify: `scripts/setup.ps1`
@@ -415,41 +420,44 @@
 - Create: `scripts/bootstrap_postgresql.sh`
 - Create: `scripts/run_web.sh`
 - Create: `scripts/run_monthly_orchestration.sh`
+- Create: `tools/build_offline_bundle.py`
+- Create: `tools/verify_offline_bundle.py`
 - Create: `tools/validate_runtime_manifest.py`
 - Create: `tests/test_runtime_manifest.py`
+- Create: `tests/test_offline_bundle.py`
 - Create: `tests/test_deployment_scripts.py`
 - Modify: `pyproject.toml`
 
 **Interfaces:**
 - Consumes: preflight da Task 6 e systemd da Task 8.
-- Produces: bootstraps idempotentes, locks com hashes e `validate_runtime_manifest(root: Path, platform: RuntimePlatformInfo) -> RuntimeManifestResult`.
+- Produces: bootstraps idempotentes, locks com hashes, `build_offline_bundle(...)`, `verify_offline_bundle(...)` e `validate_runtime_manifest(root: Path, platform: RuntimePlatformInfo) -> RuntimeManifestResult`.
 
-- [ ] **Step 1: Escrever testes de manifesto, locks, shell seguro e package-data**
+- [ ] **Step 1: Escrever testes de manifesto, pacote offline, locks, shell seguro e package-data**
 
-  Cobrir versoes exatas, SHA-256, quoting de caminhos com espaco, segunda execucao idempotente, ausencia de segredo e inclusao de templates/fontes no wheel.
+  Cobrir versoes exatas, SHA-256, assinaturas, rejeicao de payload ausente/adulterado, proibicao de download no instalador, quoting de caminhos com espaco, instalacao silenciosa simulada, segunda execucao idempotente, ausencia de segredo e inclusao de templates/fontes no wheel.
 
 - [ ] **Step 2: Confirmar falha**
 
-  Run: `.\.venv\Scripts\python.exe -m pytest -q tests/test_runtime_manifest.py tests/test_deployment_scripts.py tests/test_project_guidance.py`
+  Run: `.\.venv\Scripts\python.exe -m pytest -q tests/test_runtime_manifest.py tests/test_offline_bundle.py tests/test_deployment_scripts.py tests/test_project_guidance.py`
   Expected: FAIL por artefatos ausentes.
 
-- [ ] **Step 3: Gerar locks e manifesto sem embutir dependencias proprietarias**
+- [ ] **Step 3: Gerar locks, manifesto e montador dos pacotes offline**
 
-  Calibri/Arial sao requisitos verificados no Windows. Fontes Linux acompanham licencas. LibreOffice usa fonte oficial e SHA-256; pacote offline so e produzido quando a licenca permitir.
+  Incluir Python, LibreOffice, PostgreSQL, wheels, dependencias nativas e fontes redistribuiveis no bundle da plataforma. Calibri/Arial exigem payload licenciado ou instalacao Windows licenciada validada na montagem. O montador falha fechado quando qualquer payload, licenca, assinatura ou hash obrigatorio estiver ausente.
 
-- [ ] **Step 4: Atualizar PowerShell e implementar Bash**
+- [ ] **Step 4: Atualizar PowerShell e implementar Bash sem acesso de rede**
 
-  Ambos criam venv, instalam pelo lock, validam assets, banco e preflight, mas nao iniciam servidor, coleta ou agenda. O bootstrap Linux privilegiado habilita linger somente mediante confirmacao explicita.
+  Ambos consomem somente `vendor/`, criam venv, instalam pelo lock/wheelhouse, instalam LibreOffice e PostgreSQL silenciosamente, validam assets, banco e preflight, mas nao iniciam servidor, coleta ou agenda. O bootstrap Linux privilegiado recebe a opcao de linger no comando inicial e nao abre prompt durante a execucao.
 
 - [ ] **Step 5: Validar sintaxe e comportamento simulado**
 
   Run Windows: `powershell.exe -NoProfile -File scripts\setup.ps1 -WhatIf`
   Run Linux CI: `bash -n scripts/setup.sh scripts/bootstrap_postgresql.sh scripts/run_web.sh scripts/run_monthly_orchestration.sh`
-  Expected: nenhum efeito real em `-WhatIf`; Bash sem erro de sintaxe.
+  Expected: nenhum efeito real em `-WhatIf`; Bash sem erro de sintaxe; nenhum instalador contem comando de download ou dependencia de internet.
 
 - [ ] **Step 6: Executar testes**
 
-  Run: `.\.venv\Scripts\python.exe -m pytest -q tests/test_runtime_manifest.py tests/test_deployment_scripts.py tests/test_project_guidance.py`
+  Run: `.\.venv\Scripts\python.exe -m pytest -q tests/test_runtime_manifest.py tests/test_offline_bundle.py tests/test_deployment_scripts.py tests/test_project_guidance.py`
   Expected: PASS.
 
 - [ ] **Step 7: Commit**
@@ -514,7 +522,7 @@
 
 - [ ] **Step 1: Atualizar documentacao sem reescrever historico**
 
-  Descrever requisitos, bootstraps, perfis tipograficos, preflight, systemd, locks, transferencia, rollback pela tag e proibicao de exposicao publica.
+  Descrever montagem e instalacao dos pacotes offline, requisitos de privilegio, excecao para materiais proprietarios licenciados, perfis tipograficos, preflight, systemd, locks, transferencia, rollback pela tag e proibicao de exposicao publica.
 
 - [ ] **Step 2: Executar homologacao Windows completa**
 

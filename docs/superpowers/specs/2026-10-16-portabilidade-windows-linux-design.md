@@ -212,12 +212,34 @@ Ambos validam ou instalam a versao oficial do Python, criam ambiente virtual,
 instalam dependencias a partir do lock da plataforma, verificam assets e executam o
 preflight. Instaladores nao imprimem segredos e nao iniciam coleta.
 
+O artefato oficial de deploy e offline e autossuficiente para a plataforma alvo.
+Ele inclui os instaladores ou pacotes locais de Python, LibreOffice, PostgreSQL,
+dependencias nativas, wheels Python, fontes redistribuiveis e assets da aplicacao.
+O bootstrap nao baixa componentes durante a instalacao e nao aceita um runtime
+preexistente como substituto silencioso para o componente homologado. O operador
+inicia uma unica instalacao elevada quando a plataforma exigir privilegios; depois
+disso o processo e nao interativo, idempotente e valida cada payload por SHA-256
+antes de executa-lo.
+
+Uma ferramenta separada de montagem de release preenche `vendor/` a partir de
+fontes oficiais, verifica assinatura e hash e produz pacotes distintos para
+Windows x64 e Ubuntu Server 24.04 LTS x64. Binarios grandes permanecem fora do Git,
+mas obrigatoriamente dentro do pacote de deploy entregue. Um pacote sem qualquer
+dependencia redistribuivel exigida e invalido e o instalador deve falhar antes de
+alterar o host.
+
+Materiais proprietarios que nao possam ser redistribuidos, como uma fonte Microsoft
+licenciada, nao sao copiados para o pacote. O Windows deve fornece-los por uma
+instalacao licenciada ou por um payload licenciado disponibilizado pelo proprio
+operador durante a montagem do pacote. A ausencia bloqueia a montagem/instalacao;
+nao existe download, substituicao de fonte nem aceite silencioso durante o deploy.
+
 Locks separados por plataforma registram versoes e hashes de todas as dependencias
 Python. Um manifesto de runtime registra Python, Pillow, python-docx, docxcompose,
-psycopg, tzdata, LibreOffice, PostgreSQL e fontes. Pacotes externos baixados pelo
-bootstrap precisam de URL oficial e SHA-256; um pacote de release offline pode
-inclui-los quando a licenca permitir, mas binarios grandes nao entram
-automaticamente no Git.
+psycopg, tzdata, LibreOffice, PostgreSQL e fontes. Cada dependencia externa possui
+origem oficial, nome do payload local, SHA-256, assinatura quando aplicavel e regra
+de instalacao silenciosa. Binarios grandes nao entram automaticamente no Git, mas
+o montador recusa produzir o pacote offline se algum payload obrigatorio faltar.
 
 Templates, imagens corporativas, migrations, arquivos estaticos e fontes Linux
 devem fazer parte do artefato instalavel. Um wheel ou pacote que omita o shell DOCX
@@ -301,8 +323,9 @@ A entrega e aceita quando:
 - Windows agenda pela mesma tarefa e confirmacao vigentes;
 - Linux cria, consulta, ativa e desativa o timer systemd da conta dedicada;
 - o modo manual funciona mesmo quando o agendador esta indisponivel;
-- uma instalacao limpa pode ser preparada somente com o codigo e as dependencias
-  licenciadas obtidas pelo bootstrap;
+- uma instalacao limpa pode ser preparada por um unico pacote offline, sem download
+  ou instalacao manual, contendo todas as dependencias redistribuiveis e os
+  materiais licenciados previamente validados durante a montagem;
 - uma migracao controlada preserva PostgreSQL, documentos, hashes, historico e
   referencias `MAIN` sem copiar segredos para o Git;
 - os guias vigentes descrevem instalacao, upgrade, backup, restauracao, diagnostico
