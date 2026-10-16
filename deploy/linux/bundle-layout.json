@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "platform": "linux-x86_64",
+  "required_files": [
+    "python/Python-3.14.5.tar.xz",
+    "python/Python-3.14.5.tar.xz.asc",
+    "libreoffice/LibreOffice_26.2.4.2_Linux_x86-64_deb.tar.gz",
+    "libreoffice/LibreOffice_26.2.4.2_Linux_x86-64_deb.tar.gz.asc",
+    "postgresql/postgresql-18-offline-debs.tar",
+    "native/ubuntu-24.04-x86_64-build-deps.tar",
+    "fonts/linux/Carlito-Regular.ttf",
+    "fonts/linux/Carlito-Bold.ttf",
+    "fonts/linux/Carlito-Italic.ttf",
+    "fonts/linux/LiberationSans-Regular.ttf",
+    "fonts/linux/LiberationSans-Bold.ttf",
+    "fonts/linux/LiberationSans-Italic.ttf",
+    "fonts/linux/LICENSES.md"
+  ],
+  "required_globs": [
+    "wheelhouse/*.whl",
+    "application/*.whl"
+  ],
+  "signature_requirements": [
+    {"path": "python/Python-3.14.5.tar.xz", "kind": "detached"},
+    {"path": "libreoffice/LibreOffice_26.2.4.2_Linux_x86-64_deb.tar.gz", "kind": "detached"}
+  ]
+}

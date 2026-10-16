@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/tenable-reports/offline-bundle.schema.json",
+  "title": "Tenable Reports Offline Bundle",
+  "type": "object",
+  "required": ["schema_version", "platform", "files"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {"const": 1},
+    "platform": {"enum": ["windows-x86_64", "linux-x86_64"]},
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "size", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "size": {"type": "integer", "minimum": 0},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "platform": "windows-x86_64",
+  "required_files": [
+    "python/python-3.14.5-amd64.exe",
+    "libreoffice/LibreOffice_26.2.4.2_Win_x86-64.msi",
+    "postgresql/postgresql-18-windows-x64.exe",
+    "fonts/windows/calibri.ttf",
+    "fonts/windows/calibrib.ttf",
+    "fonts/windows/calibrii.ttf",
+    "fonts/windows/arial.ttf",
+    "fonts/windows/arialbd.ttf",
+    "fonts/windows/ariali.ttf",
+    "fonts/windows/license-proof.json"
+  ],
+  "required_globs": [
+    "wheelhouse/*.whl",
+    "application/*.whl"
+  ],
+  "signature_requirements": [
+    {"path": "python/python-3.14.5-amd64.exe", "kind": "authenticode"},
+    {"path": "libreoffice/LibreOffice_26.2.4.2_Win_x86-64.msi", "kind": "authenticode"},
+    {"path": "postgresql/postgresql-18-windows-x64.exe", "kind": "authenticode"}
+  ],
+  "licensed_payload": "fonts/windows/license-proof.json"
+}

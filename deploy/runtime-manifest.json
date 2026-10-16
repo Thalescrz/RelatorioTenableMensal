@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "python_version": "3.14.5",
+  "libreoffice_version": "26.2.4.2",
+  "postgresql_version": "18",
+  "platforms": [
+    "windows-x86_64",
+    "linux-x86_64"
+  ],
+  "font_profiles": {
+    "windows-x86_64": "windows-calibri-v1",
+    "linux-x86_64": "linux-carlito-v1"
+  },
+  "locks": {
+    "windows-x86_64": "requirements/lock/windows-py314.txt",
+    "linux-x86_64": "requirements/lock/linux-py314.txt"
+  },
+  "payload_integrity": "bundle-manifest-sha256",
+  "hash_algorithm": "SHA-256",
+  "components": [
+    {
+      "id": "python",
+      "version": "3.14.5",
+      "required": true,
+      "official_origin": "python.org"
+    },
+    {
+      "id": "libreoffice",
+      "version": "26.2.4.2",
+      "required": true,
+      "official_origin": "libreoffice.org"
+    },
+    {
+      "id": "postgresql",
+      "version": "18",
+      "required": true,
+      "official_origin": "postgresql.org"
+    },
+    {
+      "id": "python-wheels",
+      "version": "platform-lock",
+      "required": true,
+      "official_origin": "pypi.org"
+    },
+    {
+      "id": "fonts",
+      "version": "font-manifest-v1",
+      "required": true,
+      "official_origin": "licensed-or-redistributable"
+    }
+  ]
+}
