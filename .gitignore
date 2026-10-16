@@ -18,6 +18,7 @@ htmlcov/
 .venv/
 .tmp/
 .worktrees/
+.visual-qa/
 *.log
 *.sqlite
 *.sqlite3
