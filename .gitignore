@@ -31,6 +31,8 @@ artifacts/
 data/
 outputs/
 reports_generated/
+deployment-transfers/
+*.tenable-transfer.zip
 clients/managed/
 orchestration/clients.json
 orchestration/analysts.json

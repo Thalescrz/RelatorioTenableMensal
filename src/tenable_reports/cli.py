@@ -18,6 +18,12 @@ from tenable_reports.application.environment_preflight import (
     CapabilityStatus,
     run_environment_preflight,
 )
+from tenable_reports.application.deployment_transfer import (
+    apply_deployment_import,
+    create_deployment_export,
+    plan_deployment_export,
+    plan_deployment_import,
+)
 from tenable_reports.application.collect import (
     AssetExportRequest,
     VulnerabilityExportRequest,
@@ -220,6 +226,9 @@ from tenable_reports.infrastructure.postgresql import (
     PostgresOperationsRepository,
     PostgresSnapshotRepository,
     provision_postgresql,
+)
+from tenable_reports.infrastructure.postgresql_backup import (
+    PostgreSQLBackupManager,
 )
 from tenable_reports.infrastructure.report_registry_postgresql import (
     PostgresReportRegistry,
@@ -5624,6 +5633,126 @@ def command_run_monthly_batch(args: argparse.Namespace) -> int:
     return 1 if incomplete else 0
 
 
+def _deployment_identity(project_root: Path, *, create: bool) -> str | None:
+    path = project_root / "data" / ".deployment-identity"
+    if path.is_file():
+        identity = path.read_text(encoding="utf-8").strip()
+        if identity:
+            return identity
+    if not create:
+        return None
+    identity = uuid.uuid4().hex
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(identity + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return identity
+
+
+def _deployment_runtime_versions(project_root: Path) -> dict[str, str]:
+    manifest_path = project_root / "deploy" / "runtime-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("RUNTIME_MANIFEST_INVALID") from exc
+    return {
+        "application": "0.1.0",
+        "python": str(manifest.get("python_version") or ""),
+        "libreoffice": str(manifest.get("libreoffice_version") or ""),
+        "postgresql": str(manifest.get("postgresql_version") or ""),
+    }
+
+
+def _export_backup_manager(config: DatabaseConfig) -> PostgreSQLBackupManager:
+    admin = DatabaseAdminConfig(
+        host=config.host,
+        port=config.port,
+        database="postgres",
+        user=config.user,
+        password=config.password,
+        sslmode=config.sslmode,
+        connect_timeout=config.connect_timeout,
+    )
+    return PostgreSQLBackupManager(application=config, admin=admin)
+
+
+def command_deployment_export(args: argparse.Namespace) -> int:
+    root = Path(args.project_root).resolve()
+    config = _load_database_config(args.database_env_file, required=True)
+    if config is None:
+        raise EnvironmentError("Configuracao PostgreSQL ausente.")
+    database = _export_backup_manager(config)
+    identity = _deployment_identity(root, create=True)
+    if identity is None:  # pragma: no cover - defesa adicional
+        raise RuntimeError("TRANSFER_IDENTITY_INVALID")
+    plan = plan_deployment_export(
+        project_root=root,
+        destination=args.destination,
+        database_snapshot=database.inventory(),
+        source_identity=identity,
+        runtime_versions=_deployment_runtime_versions(root),
+        include_staging=bool(args.include_staging),
+    )
+    result = create_deployment_export(plan, database=database)
+    print(json.dumps({
+        "status": result.status,
+        "archive": result.destination.name,
+        "transfer_id": result.transfer_id,
+        "file_count": result.file_count,
+        "reprovision_required": list(plan.reprovision_required),
+    }, ensure_ascii=False))
+    return 0
+
+
+def command_deployment_import(args: argparse.Namespace) -> int:
+    root = Path(args.project_root).resolve()
+    plan = plan_deployment_import(
+        archive=args.archive,
+        project_root=root,
+        destination_identity=_deployment_identity(root, create=False),
+        supported_schema_versions=tuple(
+            path.name
+            for path in sorted(
+                (
+                    Path(__file__).resolve().parent
+                    / "infrastructure"
+                    / "postgresql_migrations"
+                ).glob("*.sql")
+            )
+        ),
+    )
+    if not args.apply:
+        print(json.dumps({
+            "status": "DRY_RUN",
+            "transfer_id": plan.manifest.transfer_id,
+            "file_count": len(plan.manifest.files),
+            "required_bytes": plan.required_bytes,
+            "confirmation_phrase": plan.confirmation_phrase,
+            "reprovision_required": list(plan.manifest.reprovision_required),
+        }, ensure_ascii=False))
+        return 0
+    config = _load_database_config(args.database_env_file, required=True)
+    if config is None:
+        raise EnvironmentError("Configuracao PostgreSQL ausente.")
+    load_dotenv_file(args.admin_env_file, override=False)
+    database = PostgreSQLBackupManager(
+        application=config,
+        admin=DatabaseAdminConfig.from_environment(),
+    )
+    result = apply_deployment_import(
+        plan,
+        database=database,
+        confirmation=str(args.confirmation or ""),
+    )
+    print(json.dumps({
+        "status": result.status,
+        "transfer_id": result.transfer_id,
+        "imported_files": result.imported_files,
+        "reprovision_required": list(plan.manifest.reprovision_required),
+    }, ensure_ascii=False))
+    return 0
+
+
 def command_database_bootstrap(args: argparse.Namespace) -> int:
     load_dotenv_file(args.database_env_file, override=True)
     load_dotenv_file(args.admin_env_file, override=False)
@@ -6486,6 +6615,50 @@ def build_parser() -> argparse.ArgumentParser:
     orchestrate.set_defaults(apply_retention=True)
     orchestrate.add_argument("--confirm-live-api", action="store_true")
     orchestrate.set_defaults(handler=command_orchestrate)
+
+    deployment_export = subparsers.add_parser(
+        "deployment-export",
+        help="Cria pacote operacional offline sem copiar credenciais.",
+    )
+    deployment_export.add_argument("--project-root", default=".")
+    deployment_export.add_argument("--destination", required=True)
+    deployment_export.add_argument(
+        "--database-env-file", default="credentials/database.env"
+    )
+    deployment_export.add_argument(
+        "--include-staging",
+        action="store_true",
+        help="Inclui staging recuperável sob analysis_artifacts.",
+    )
+    deployment_export.set_defaults(handler=command_deployment_export)
+
+    deployment_import = subparsers.add_parser(
+        "deployment-import",
+        help="Valida ou aplica um pacote operacional em duas fases.",
+    )
+    deployment_import.add_argument("--project-root", default=".")
+    deployment_import.add_argument("--archive", required=True)
+    deployment_import.add_argument(
+        "--database-env-file", default="credentials/database.env"
+    )
+    deployment_import.add_argument(
+        "--admin-env-file", default="credentials/postgresql-admin.env"
+    )
+    deployment_import.add_argument("--confirm", dest="confirmation")
+    deployment_import_mode = deployment_import.add_mutually_exclusive_group()
+    deployment_import_mode.add_argument(
+        "--dry-run",
+        dest="apply",
+        action="store_false",
+        help="Valida integralmente sem escrever (padrão).",
+    )
+    deployment_import_mode.add_argument(
+        "--apply",
+        dest="apply",
+        action="store_true",
+        help="Aplica após confirmação exata mostrada pelo dry-run.",
+    )
+    deployment_import.set_defaults(apply=False, handler=command_deployment_import)
 
     database_bootstrap = subparsers.add_parser(
         "database-bootstrap",

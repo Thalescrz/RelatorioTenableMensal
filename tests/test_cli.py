@@ -43,6 +43,20 @@ from tests.test_report_main_backfill import valid_run as valid_backfill_run
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_deployment_import_parser_defaults_to_read_only_dry_run() -> None:
+    args = cli_module.build_parser().parse_args(
+        ["deployment-import", "--archive", "transfer.zip"]
+    )
+
+    assert args.apply is False
+    assert args.confirmation is None
+
+
+def test_deployment_export_and_import_commands_are_not_official_report_runs() -> None:
+    assert "deployment-export" not in cli_module._OFFICIAL_ENVIRONMENT_COMMANDS
+    assert "deployment-import" not in cli_module._OFFICIAL_ENVIRONMENT_COMMANDS
+
+
 def test_environment_status_json_is_sanitized_and_does_not_require_tenable(
     tmp_path: Path,
 ) -> None:
