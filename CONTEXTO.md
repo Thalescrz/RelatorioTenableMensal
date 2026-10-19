@@ -1,7 +1,7 @@
 # Contexto do projeto
 
-**Atualizado em:** 2026-10-13  
-**Base verificada:** `b90104a` (`main` no início deste ciclo)  
+**Atualizado em:** 2026-10-19  
+**Base verificada:** `48878db` (`codex/portabilidade-windows-linux-implementacao` antes desta complementação)  
 **Natureza:** resumo versionado; estado operacional transitório fica fora deste arquivo
 
 ## Finalidade
@@ -410,6 +410,24 @@ O pacote é criado com `tools/build_offline_bundle.py` e conferido com
 fora do Git. Payload Windows parcial, divergente ou sem autorização bloqueia a
 release; sem payload, o manifesto registra `windows-calibri-v1` como requisito do
 host e o instalador valida as fontes antes de prosseguir.
+Os instaladores Windows exigem Authenticode válido e correspondência exata do
+assunto e do SHA-256 do certificado fixados no layout. O código do pacote vem
+somente de arquivos rastreados no índice Git e das raízes aprovadas, excluindo
+arquivos ignorados ou locais. Índice vazio ou parcial e arquivo rastreado ausente
+do checkout bloqueiam a construção, inclusive em sparse checkout incompleto.
+No Linux, Python é verificado pelo bundle Sigstore oficial com o endereço exato do
+certificado restrito ao domínio institucional e sem versionar o signatário;
+LibreOffice usa assinatura destacada e exige `VALIDSIG` do fingerprint TDF
+fixado. Os instaladores Windows e Linux só declaram conclusão quando
+`environment-status --require-ready` confirma a aptidão para publicação. Uma
+instalação limpa sem rede em contêiner Ubuntu 24.04 concluiu duas execuções
+idempotentes e confirmou Python 3.14.5, LibreOffice 26.2.4.2, PostgreSQL 18.6,
+migrations e `linux-carlito-v1`. Isso ainda não substitui a homologação do timer e
+dos quatro DOCX em Ubuntu Server/VM com `systemd`; instalação Windows limpa também
+permanece pendente.
+O SHA-256 do ZIP final deve ser entregue por canal independente ou previamente
+confiável, pois o manifesto autocontido detecta alteração, mas não autentica sozinho
+a origem do pacote completo.
 Estado operacional é movido somente por `deployment-export` e
 `deployment-import`, com dry-run obrigatório e confirmação `IMPORT <transfer_id>`;
 segredos são reprovisionados no destino. Consulte

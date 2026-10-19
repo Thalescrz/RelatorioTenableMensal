@@ -11,7 +11,12 @@ from tenable_reports.infrastructure.runtime_platform import (
     RuntimePlatform,
     RuntimePlatformInfo,
 )
-from tools.build_offline_bundle import OfflineBundleError, build_offline_bundle
+from tools.build_offline_bundle import (
+    OfflineBundleError,
+    _copy_source,
+    _default_signature_verifier,
+    build_offline_bundle,
+)
 from tools.verify_offline_bundle import verify_offline_bundle
 
 
@@ -36,6 +41,266 @@ def test_bundle_builder_can_run_directly_from_repository_root() -> None:
     assert "--vendor-root" in completed.stdout
 
 
+def test_default_signature_verifier_uses_identity_from_bundle_limited_to_domain(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifact = tmp_path / "Python-3.14.5.tar.xz"
+    bundle = tmp_path / "Python-3.14.5.tar.xz.sigstore"
+    artifact.write_bytes(b"official artifact")
+    bundle.write_text("official verification material", encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def run_verifier(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, "OK: Python-3.14.5.tar.xz\n", "")
+
+    monkeypatch.setattr(subprocess, "run", run_verifier)
+    monkeypatch.setattr(
+        "tools.build_offline_bundle._sigstore_email_identity",
+        lambda _bundle, _domain: "artifact-signer@python.invalid",
+    )
+
+    verified = _default_signature_verifier(
+        artifact,
+        {
+            "kind": "sigstore",
+            "cert_identity_email_domain": "python.invalid",
+            "cert_oidc_issuer": "https://github.com/login/oauth",
+        },
+    )
+
+    assert verified
+    assert commands == [
+        [
+            sys.executable,
+            "-m",
+            "sigstore",
+            "verify",
+            "identity",
+            "--offline",
+            "--bundle",
+            str(bundle),
+            "--cert-identity",
+            "artifact-signer@python.invalid",
+            "--cert-oidc-issuer",
+            "https://github.com/login/oauth",
+            str(artifact),
+        ]
+    ]
+
+
+def test_default_signature_verifier_uses_pinned_detached_keyring(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifact = tmp_path / "LibreOffice.tar.gz"
+    signature = tmp_path / "LibreOffice.tar.gz.asc"
+    keyring = tmp_path / "tdf-release-keyring.gpg"
+    artifact.write_bytes(b"official artifact")
+    signature.write_text("official detached signature", encoding="utf-8")
+    keyring.write_bytes(b"pinned release keyring")
+    commands: list[list[str]] = []
+
+    def run_verifier(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            (
+                "[GNUPG:] VALIDSIG "
+                "C2839ECAD9408FBE9531C3E9F434A1EFAFEEAEA3 "
+                "2026-10-01 0 4 0 1 10 00 "
+                "C2839ECAD9408FBE9531C3E9F434A1EFAFEEAEA3\n"
+            ),
+            "Good signature",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run_verifier)
+
+    verified = _default_signature_verifier(
+        artifact,
+        {
+            "kind": "detached",
+            "keyring": "tdf-release-keyring.gpg",
+            "key_fingerprint": "C2839ECAD9408FBE9531C3E9F434A1EFAFEEAEA3",
+        },
+    )
+
+    assert verified
+    assert commands == [
+        [
+            "gpgv",
+            "--status-fd",
+            "1",
+            "--keyring",
+            str(keyring),
+            str(signature),
+            str(artifact),
+        ]
+    ]
+
+
+def test_default_signature_verifier_rejects_unexpected_detached_key(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifact = tmp_path / "LibreOffice.tar.gz"
+    signature = tmp_path / "LibreOffice.tar.gz.asc"
+    keyring = tmp_path / "tdf-release-keyring.gpg"
+    artifact.write_bytes(b"official artifact")
+    signature.write_text("detached signature", encoding="utf-8")
+    keyring.write_bytes(b"release keyring")
+
+    def run_verifier(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            (
+                "[GNUPG:] VALIDSIG "
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "
+                "2026-10-01 0 4 0 1 10 00 "
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n"
+            ),
+            "Good signature",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run_verifier)
+
+    assert not _default_signature_verifier(
+        artifact,
+        {
+            "kind": "detached",
+            "keyring": "tdf-release-keyring.gpg",
+            "key_fingerprint": "C2839ECAD9408FBE9531C3E9F434A1EFAFEEAEA3",
+        },
+    )
+
+
+def test_default_signature_verifier_binds_authenticode_path_as_parameter(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifact = tmp_path / "signed installer.exe"
+    artifact.write_bytes(b"signed")
+    commands: list[list[str]] = []
+    environments: list[dict[str, str]] = []
+    program_files = tmp_path / "Program Files"
+    windows_root = tmp_path / "Windows"
+    monkeypatch.setenv("PROGRAMFILES", str(program_files))
+    monkeypatch.setenv("WINDIR", str(windows_root))
+    monkeypatch.setenv("PSModulePath", "incompatible-powershell-modules")
+
+    def run_verifier(command: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        environments.append(kwargs["env"])
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "Status": "Valid",
+                    "Subject": "CN=Official Publisher, O=Official Publisher, C=US",
+                    "CertificateSha256": "A" * 64,
+                }
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run_verifier)
+
+    verified = _default_signature_verifier(
+        artifact,
+        {
+            "kind": "authenticode",
+            "signer_subject": "CN=Official Publisher, O=Official Publisher, C=US",
+            "certificate_sha256": "A" * 64,
+        },
+    )
+
+    assert verified
+    assert commands == [
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            (
+                "& { param([string] $ArtifactPath) "
+                "$Signature = Get-AuthenticodeSignature -LiteralPath $ArtifactPath; "
+                "$CertificateSha256 = if ($Signature.SignerCertificate) { "
+                "$Signature.SignerCertificate.GetCertHashString("
+                "[System.Security.Cryptography.HashAlgorithmName]::SHA256) "
+                "} else { '' }; "
+                "[pscustomobject]@{ Status = [string] $Signature.Status; "
+                "Subject = [string] $Signature.SignerCertificate.Subject; "
+                "CertificateSha256 = $CertificateSha256 } | "
+                "ConvertTo-Json -Compress }"
+            ),
+            str(artifact),
+        ]
+    ]
+    assert environments[0]["PSModulePath"] == os.pathsep.join(
+        (
+            str(program_files / "WindowsPowerShell" / "Modules"),
+            str(
+                windows_root
+                / "system32"
+                / "WindowsPowerShell"
+                / "v1.0"
+                / "Modules"
+            ),
+        )
+    )
+
+
+def test_default_signature_verifier_rejects_unexpected_authenticode_signer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    artifact = tmp_path / "signed installer.exe"
+    artifact.write_bytes(b"signed")
+
+    def run_verifier(command: list[str], **_kwargs) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "Status": "Valid",
+                    "Subject": "CN=Different Publisher, O=Different Publisher, C=US",
+                    "CertificateSha256": "B" * 64,
+                }
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(subprocess, "run", run_verifier)
+
+    assert not _default_signature_verifier(
+        artifact,
+        {
+            "kind": "authenticode",
+            "signer_subject": "CN=Official Publisher, O=Official Publisher, C=US",
+            "certificate_sha256": "A" * 64,
+        },
+    )
+
+
+def _initialize_git_source(source: Path) -> None:
+    subprocess.run(
+        ["git", "init", "--quiet", str(source)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "add", "--all"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def _source_tree(tmp_path: Path) -> Path:
     source = tmp_path / "source"
     (source / "deploy" / "windows").mkdir(parents=True)
@@ -46,10 +311,17 @@ def _source_tree(tmp_path: Path) -> Path:
         "deploy/runtime-manifest.json",
         "deploy/offline-bundle.schema.json",
         "deploy/windows/bundle-layout.json",
+        "src/tenable_reports/assets/fonts/font-manifest.json",
+        "tools/windows_font_installation.py",
     ):
         target = source / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes((ROOT / relative).read_bytes())
     (source / "scripts" / "setup.ps1").write_text("# offline\n", encoding="utf-8")
+    (source / "scripts" / "bootstrap_postgresql.ps1").write_text(
+        "# offline database bootstrap\n",
+        encoding="utf-8",
+    )
     (source / "scripts" / "setup.sh").write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n",
         encoding="utf-8",
@@ -70,6 +342,10 @@ def _source_tree(tmp_path: Path) -> Path:
     (source / "orchestration" / "clients.example.json").write_text(
         '{"clients":[]}', encoding="utf-8"
     )
+    (source / "orchestration" / "document-control.example.json").write_text(
+        '{}', encoding="utf-8"
+    )
+    _initialize_git_source(source)
     return source
 
 
@@ -100,6 +376,85 @@ def _vendor_tree(tmp_path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"synthetic wheel")
     return vendor
+
+
+def test_source_copy_does_not_traverse_unrelated_large_directories(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = _source_tree(tmp_path)
+    included = source / "src" / "package" / "module.py"
+    excluded_root = source / "deployment-transfers"
+    excluded = excluded_root / "payloads" / "large.bin"
+    excluded.parent.mkdir(parents=True)
+    excluded.write_bytes(b"must not be traversed")
+    (source / ".gitignore").write_text(
+        "deployment-transfers/\n*.db\n*.log\n*.egg-info/\n",
+        encoding="utf-8",
+    )
+    ignored = (
+        source / "src" / "package" / "cache.db",
+        source / "src" / "package" / "release.log",
+        source / "src" / "package.egg-info" / "PKG-INFO",
+    )
+    for path in ignored:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("must not be copied\n", encoding="utf-8")
+    _initialize_git_source(source)
+    destination = tmp_path / "bundle"
+    original_scandir = os.scandir
+
+    def guarded_scandir(path):
+        candidate = Path(path)
+        if candidate == excluded_root or excluded_root in candidate.parents:
+            raise AssertionError("unrelated deployment payload tree was traversed")
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+
+    _copy_source(source, destination, platform=WINDOWS)
+
+    assert (destination / "src" / "package" / "module.py").is_file()
+    assert not (destination / "deployment-transfers").exists()
+    for path in ignored:
+        assert not (destination / path.relative_to(source)).exists()
+
+
+def test_source_copy_rejects_empty_or_partial_git_index(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "deploy" / "windows").mkdir(parents=True)
+    (source / "deploy" / "windows" / "bundle-layout.json").write_text(
+        '{"platform":"windows-x86_64"}',
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "init", "--quiet", str(source)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    try:
+        _copy_source(source, tmp_path / "bundle", platform=WINDOWS)
+    except OfflineBundleError as exc:
+        assert exc.code == "SOURCE_GIT_INDEX_INCOMPLETE"
+    else:
+        raise AssertionError("índice Git vazio foi aceito")
+
+
+def test_source_copy_rejects_tracked_file_missing_from_worktree(tmp_path: Path) -> None:
+    source = _source_tree(tmp_path)
+    missing = source / "scripts" / "setup.ps1"
+    missing.unlink()
+
+    try:
+        _copy_source(source, tmp_path / "bundle", platform=WINDOWS)
+    except OfflineBundleError as exc:
+        assert exc.code == "SOURCE_TRACKED_FILE_MISSING"
+        assert exc.detail == "scripts/setup.ps1"
+    else:
+        raise AssertionError("arquivo rastreado ausente foi aceito")
 
 
 def _add_optional_windows_font_payload(vendor: Path) -> Path:
@@ -247,7 +602,7 @@ def test_bundle_build_rejects_font_payload_that_differs_from_approved_manifest(
     font_manifest = (
         source / "src" / "tenable_reports" / "assets" / "fonts" / "font-manifest.json"
     )
-    font_manifest.parent.mkdir(parents=True)
+    font_manifest.parent.mkdir(parents=True, exist_ok=True)
     font_manifest.write_bytes(
         (ROOT / "src" / "tenable_reports" / "assets" / "fonts" / "font-manifest.json").read_bytes()
     )

@@ -40,6 +40,21 @@ referência de nomes, sem colocar a senha real no arquivo de exemplo. A instala�
 não inicia coleta, interface ou agenda. Procedimento completo, matriz e limitações
 estão no [guia de implantação](25-implantacao-windows-linux.md).
 
+O instalador Linux é não interativo e encerra com falha se o diagnóstico final não
+estiver apto à publicação. Para repetir essa validação manualmente, use:
+
+```bash
+/opt/tenable-reports/.venv/bin/python -m tenable_reports \
+  environment-status --json --require-ready \
+  --root /opt/tenable-reports \
+  --database-env-file /opt/tenable-reports/credentials/database.env \
+  --persistent-root /opt/tenable-reports/data \
+  --libreoffice /opt/libreoffice26.2/program/soffice
+```
+
+Um `WARNING` exclusivamente do agendador não bloqueia a geração manual; qualquer
+`official_publication_ready: false` retorna código `2` e precisa ser corrigido.
+
 ### Driver PostgreSQL no Windows
 
 A aplicação prefere o driver binário do `psycopg`. Quando uma política do Windows

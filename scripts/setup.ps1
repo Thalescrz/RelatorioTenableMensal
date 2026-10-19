@@ -195,6 +195,6 @@ if (-not (Test-Path -LiteralPath (Join-Path $stateRoot "database-bootstrap.ok"))
     New-Item -ItemType File -Force -Path (Join-Path $stateRoot "database-bootstrap.ok") | Out-Null
 }
 
-& $venvPython -m tenable_reports environment-status --json --root $projectRoot --database-env-file (Join-Path $projectRoot "credentials\database.env") --persistent-root (Join-Path $projectRoot "data") --libreoffice (Join-Path $officeRoot "program\soffice.exe")
+& $venvPython -m tenable_reports environment-status --json --require-ready --root $projectRoot --database-env-file (Join-Path $projectRoot "credentials\database.env") --persistent-root (Join-Path $projectRoot "data") --libreoffice (Join-Path $officeRoot "program\soffice.exe")
 if ($LASTEXITCODE -ne 0) { throw "ENVIRONMENT_PREFLIGHT_FAILED" }
 Write-Output "OFFLINE_SETUP_COMPLETE platform=windows-x86_64 root=$projectRoot"

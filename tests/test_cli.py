@@ -112,6 +112,51 @@ def test_environment_status_json_is_sanitized_and_does_not_require_tenable(
     assert "TENABLE_" not in rendered
 
 
+def test_environment_status_require_ready_returns_nonzero_when_blocked(
+    tmp_path: Path,
+) -> None:
+    payload = {
+        "status": "BLOCKED",
+        "official_publication_ready": False,
+        "platform": {"id": "linux", "architecture": "x86_64", "status": "READY"},
+        "font_profile": {"status": "READY", "id": "linux-carlito-v1"},
+        "libreoffice": {"status": "BLOCKED", "version": None, "source": None},
+        "postgresql": {"status": "READY", "configured": True},
+        "storage": {"status": "READY", "roots_checked": 1},
+        "timezone": {"status": "READY"},
+        "scheduler": {"status": "WARNING"},
+        "issues": [{"code": "LIBREOFFICE_EXECUTION_FAILED", "message": "blocked"}],
+    }
+    capabilities = SimpleNamespace(to_dict=lambda: payload)
+    stdout = io.StringIO()
+
+    with (
+        patch.object(
+            cli_module,
+            "run_environment_preflight",
+            return_value=capabilities,
+        ),
+        patch.object(
+            cli_module,
+            "_load_database_config",
+            return_value=SimpleNamespace(password="do-not-print"),
+        ),
+        contextlib.redirect_stdout(stdout),
+    ):
+        result = main(
+            [
+                "environment-status",
+                "--json",
+                "--require-ready",
+                "--root",
+                str(tmp_path),
+            ]
+        )
+
+    assert result == 2
+    assert json.loads(stdout.getvalue())["status"] == "BLOCKED"
+
+
 def test_blocked_preflight_stops_official_run_before_tenable_handler() -> None:
     handler = Mock(side_effect=AssertionError("Tenable não pode ser chamado"))
     preflight = Mock(side_effect=RuntimeError("FONT_PROFILE_INVALID"))

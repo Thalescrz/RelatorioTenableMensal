@@ -5804,6 +5804,8 @@ def command_environment_status(args: argparse.Namespace) -> int:
         )
         for issue in payload["issues"]:
             print(f"- {issue['code']}: {issue['message']}")
+    if args.require_ready and not payload["official_publication_ready"]:
+        return 2
     return 0
 
 
@@ -6707,6 +6709,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     environment_status.add_argument("--libreoffice")
     environment_status.add_argument("--json", action="store_true")
+    environment_status.add_argument(
+        "--require-ready",
+        action="store_true",
+        help="Retorna código diferente de zero quando a publicação oficial está bloqueada.",
+    )
     environment_status.set_defaults(handler=command_environment_status)
 
     import_recovery = subparsers.add_parser(

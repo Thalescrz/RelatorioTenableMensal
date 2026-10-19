@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tools.validate_project_guidance import validate_guidance
@@ -124,6 +126,27 @@ class ProjectGuidanceTests(unittest.TestCase):
         runtime.write_text("[Ausente](arquivo.md)\n", encoding="utf-8")
 
         self.assertEqual(validate_guidance(self.root), ())
+
+    def test_ignores_offline_release_copies(self) -> None:
+        self.write_minimum_valid_tree()
+        release_copy = (
+            self.root
+            / "deployment-transfers/releases/linux/tenable-reports/docs/README.md"
+        )
+        release_copy.parent.mkdir(parents=True)
+        release_copy.write_text("[Ausente](../tests/AGENTS.md)\n", encoding="utf-8")
+
+        excluded_root = self.root / "deployment-transfers"
+        original_scandir = os.scandir
+
+        def guarded_scandir(path):
+            candidate = Path(path)
+            if candidate == excluded_root or excluded_root in candidate.parents:
+                raise AssertionError("offline release directory was traversed")
+            return original_scandir(path)
+
+        with mock.patch("os.scandir", side_effect=guarded_scandir):
+            self.assertEqual(validate_guidance(self.root), ())
 
     def test_ignores_links_inside_fenced_code_blocks(self) -> None:
         self.write_minimum_valid_tree()

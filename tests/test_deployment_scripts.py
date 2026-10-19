@@ -90,11 +90,14 @@ def test_windows_setup_preserves_quoted_paths_and_isolates_database_bootstrap() 
     assert 'INSTALLLOCATION=`"$officeRoot`"' in script
     assert 'Start-Process -FilePath "powershell.exe"' in script
     assert '"-KeepAdminPassword"' in script
+    assert "environment-status --json --require-ready" in script
 
 
 def test_linux_setup_can_enable_linger_without_starting_the_monthly_timer() -> None:
     script = (ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
 
+    assert "export DEBIAN_FRONTEND=noninteractive" in script
+    assert "--require-ready" in script
     assert "--enable-linger-for" in script
     assert 'loginctl enable-linger -- "$linger_user"' in script
     assert "systemctl --user enable" not in script

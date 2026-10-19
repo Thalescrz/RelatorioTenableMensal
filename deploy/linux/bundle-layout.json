@@ -3,9 +3,10 @@
   "platform": "linux-x86_64",
   "required_files": [
     "python/Python-3.14.5.tar.xz",
-    "python/Python-3.14.5.tar.xz.asc",
+    "python/Python-3.14.5.tar.xz.sigstore",
     "libreoffice/LibreOffice_26.2.4.2_Linux_x86-64_deb.tar.gz",
     "libreoffice/LibreOffice_26.2.4.2_Linux_x86-64_deb.tar.gz.asc",
+    "libreoffice/tdf-release-keyring.gpg",
     "postgresql/postgresql-18-offline-debs.tar",
     "native/ubuntu-24.04-x86_64-build-deps.tar",
     "fonts/linux/Carlito-Regular.ttf",
@@ -21,7 +22,17 @@
     "application/*.whl"
   ],
   "signature_requirements": [
-    {"path": "python/Python-3.14.5.tar.xz", "kind": "detached"},
-    {"path": "libreoffice/LibreOffice_26.2.4.2_Linux_x86-64_deb.tar.gz", "kind": "detached"}
+    {
+      "path": "python/Python-3.14.5.tar.xz",
+      "kind": "sigstore",
+      "cert_identity_email_domain": "python.org",
+      "cert_oidc_issuer": "https://github.com/login/oauth"
+    },
+    {
+      "path": "libreoffice/LibreOffice_26.2.4.2_Linux_x86-64_deb.tar.gz",
+      "kind": "detached",
+      "keyring": "tdf-release-keyring.gpg",
+      "key_fingerprint": "C2839ECAD9408FBE9531C3E9F434A1EFAFEEAEA3"
+    }
   ]
 }

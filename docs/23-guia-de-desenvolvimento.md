@@ -147,6 +147,8 @@ Comandos reais devem exigir confirmação explícita.
 `deploy/runtime-manifest.json` e os locks por plataforma são o contrato de versão.
 `tools/build_offline_bundle.py` aceita somente o layout oficial, valida assinatura,
 hash e licença e gera um pacote autocontido para as dependências redistribuíveis.
+No Windows, `Valid` isoladamente não basta: assunto e SHA-256 do certificado
+Authenticode devem corresponder ao publicador fixado para cada payload no layout.
 No Windows, o manifesto declara `windows-calibri-v1` como requisito do host; a
 ausência total do payload proprietário é válida, mas qualquer presença o torna um
 grupo opcional tudo-ou-nada, sujeito a hashes e prova de autorização. No Linux,
@@ -155,13 +157,42 @@ revalida o resultado. Testes nunca devem baixar artefatos nem flexibilizar uma
 falha `BLOCKED`. A release suporta Windows x86_64 com `windows-calibri-v1` e Ubuntu
 Server 24.04 x86_64 com `linux-carlito-v1`.
 
+Na construção Linux, o Python usa o bundle Sigstore oficial, emissor OIDC fixado e
+o endereço exato extraído do certificado, aceito somente no domínio institucional;
+não versione o endereço individual do signatário. O LibreOffice usa `gpgv` com chaveiro TDF
+explícito e exige que `VALIDSIG` corresponda ao fingerprint fixado. O host de build precisa de `sigstore==4.5.0` e
+`gpgv`, mas esses verificadores não são dependências do host de produção depois de
+o ZIP estar pronto. Ao copiar o código, use somente os caminhos retornados por
+`git ls-files` e aplique também a enumeração positiva de raízes. A construção deve
+falhar fechada fora de um checkout Git; não volte a percorrer a árvore inteira,
+pois isso pode incluir arquivos ignorados ou não revisados.
+O construtor também deve rejeitar índice vazio ou parcial e qualquer arquivo
+rastreado permitido que não esteja presente no worktree. Um sparse checkout não
+pode resultar em release `READY` sem todos os arquivos mínimos comuns e específicos
+da plataforma.
+Pelo mesmo motivo, `validate_project_guidance.py` poda `deployment-transfers` antes
+da travessia: os Markdown extraídos dentro de uma release são cópias de
+distribuição, não fontes documentais adicionais do repositório.
+
+Os checksums internos do bundle comprovam integridade, não a origem do ZIP que os
+contém. Registre o SHA-256 final e o publique por canal independente ou previamente
+confiável junto da entrega.
+
+Os `scripts/setup.ps1` e `scripts/setup.sh` devem terminar com
+`environment-status --require-ready`. Um preflight bloqueado nunca pode imprimir
+conclusão de instalação; avisos não bloqueantes, como agendador ainda não ativado,
+continuam permitidos. O payload nativo Ubuntu deve ser produzido em uma imagem
+limpa e declarar explicitamente também as bibliotecas de execução do LibreOffice e
+o OpenSSL do PostgreSQL, sem depender do que já estiver instalado no host de build.
+
 O fluxo `deployment-export`/`deployment-import` deve permanecer em duas fases. O
 dry-run valida schema, hashes, espaço, identidade e `MAIN`; a aplicação exige a
 frase exata `IMPORT <transfer_id>`, restaura em staging e só depois promove. Novos
 campos persistidos exigem teste de exportação, rebase de caminhos e rollback. O
 pacote nunca contém credenciais.
 
-Para homologar uma release, cubra instaladores sem rede, preflight, comandos de
+Para homologar uma release, cubra instaladores sem rede, repetição idempotente,
+preflight com falha fechada, comandos de
 agenda com doubles e os quatro DOCX sanitizados. Windows e Linux possuem baselines
 visuais independentes; não aceite igualdade de hash de DOCX como substituto da
 renderização com o LibreOffice fixado.

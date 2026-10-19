@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 bundle_root="$(cd -- "$script_dir/.." && pwd -P)"
@@ -137,7 +138,7 @@ if [[ ! -f "$state_root/database-bootstrap.ok" ]]; then
   touch -- "$state_root/database-bootstrap.ok"
 fi
 
-"$venv_python" -m tenable_reports environment-status --json --root "$project_root" --database-env-file "$project_root/credentials/database.env" --persistent-root "$project_root/data" --libreoffice /opt/libreoffice26.2/program/soffice
+"$venv_python" -m tenable_reports environment-status --json --require-ready --root "$project_root" --database-env-file "$project_root/credentials/database.env" --persistent-root "$project_root/data" --libreoffice /opt/libreoffice26.2/program/soffice
 if [[ -n "$linger_user" ]]; then
   id "$linger_user" >/dev/null 2>&1 || { printf 'LINGER_USER_NOT_FOUND\n' >&2; exit 1; }
   loginctl enable-linger -- "$linger_user"

@@ -558,3 +558,18 @@
 - [ ] Repetir a suite completa na branch e, depois do merge, na `main`.
 - [ ] Publicar `main` somente depois das homologacoes Windows e Linux registradas.
 - [ ] Manter a tag de baseline no remoto; uma reversao usa `git revert` dos commits/merge, nunca `reset --hard` nem force-push.
+
+## Registro de complementação em 2026-10-19
+
+- [x] O código do bundle passou a ser copiado somente do índice Git e das raízes
+  aprovadas, sem incluir arquivos ignorados, locais ou releases anteriores.
+- [x] Índice vazio ou parcial, sparse checkout incompleto e arquivo rastreado
+  permitido ausente agora bloqueiam a construção.
+- [x] Assinaturas Windows foram fixadas pelo assunto e SHA-256 do certificado; a
+  assinatura LibreOffice no Linux foi fixada pelo fingerprint TDF esperado.
+- [x] Os instaladores Windows e Linux passaram a falhar fechados com
+  `environment-status --require-ready` antes de anunciar conclusão.
+- [x] A instalação Linux sem rede foi exercitada duas vezes em contêiner Ubuntu
+  24.04 limpo e confirmou idempotência.
+- [ ] Permanecem pendentes a instalação em Windows limpo e a homologação Linux em
+  VM/servidor com `systemd`, timer real e inspeção visual dos quatro DOCX.

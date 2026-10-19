@@ -28,14 +28,32 @@ por plataforma em `requirements/lock`. A interface permanece vinculada somente a
 
 Os binários grandes e as fontes proprietárias não ficam no Git. O mantenedor da
 release prepara, fora do repositório, um diretório de fornecedor com os arquivos
-oficiais descritos em `deploy/windows-x86_64/bundle-layout.json` ou
-`deploy/linux-x86_64/bundle-layout.json`. O pacote Windows exige assinaturas
-Authenticode válidas. Ele pode ser montado sem fontes Microsoft e então declara
+oficiais descritos em `deploy/windows/bundle-layout.json` ou
+`deploy/linux/bundle-layout.json`. O pacote Windows exige assinaturas
+Authenticode válidas e correspondência exata com o assunto e o SHA-256 do
+certificado oficial fixados no layout para Python, LibreOffice e PostgreSQL. Uma
+assinatura válida de outro publicador é rejeitada. Ele pode ser montado sem fontes
+Microsoft e então declara
 `windows-calibri-v1` em `host_requirements`. Se um único arquivo do payload de
 recuperação for fornecido, o grupo inteiro e `license-proof.json` tornam-se
 obrigatórios. O Linux exige os
 artefatos e assinaturas/hashes previstos no layout, inclusive os pacotes nativos
-do Ubuntu Server 24.04.
+do Ubuntu Server 24.04. O tarball Python é validado pelo bundle Sigstore oficial,
+com emissor OIDC fixado. O endereço exato do signatário é extraído do certificado
+do próprio bundle, sem ser versionado, e só é aceito quando pertence ao domínio
+institucional previsto. O LibreOffice é validado por assinatura destacada com o
+chaveiro TDF fixado pelo
+fingerprint `C2839ECAD9408FBE9531C3E9F434A1EFAFEEAEA3`.
+
+O ambiente que monta a release Linux precisa ter `sigstore==4.5.0` e `gpgv`. Essas
+ferramentas pertencem à fase de construção; a máquina que instala o ZIP pronto não
+precisa de acesso à internet nem de Sigstore/GnuPG. A cópia do código é derivada
+somente do índice Git e então limitada às raízes permitidas. Arquivos ignorados,
+credenciais locais, artefatos não rastreados e releases anteriores não entram no
+pacote; por isso, a construção exige um checkout Git válido. A release também é
+bloqueada quando o índice está vazio ou incompleto, ou quando um arquivo rastreado
+das raízes permitidas não está materializado no checkout. Isso impede que um
+checkout parcial ou esparso seja publicado como pacote completo.
 
 No Windows:
 
@@ -70,6 +88,10 @@ Arquivo obrigatório ausente, adulterado ou não autorizado deixa a release em
 deve contornar essa proteção. Verifique o pacote novamente no destino antes de
 executar o instalador.
 
+O manifesto interno detecta alteração depois da construção, mas não substitui a
+autenticidade do canal que entrega o próprio ZIP. Distribua o arquivo por canal
+protegido e publique seu SHA-256 por um meio independente ou previamente confiável.
+
 ## Instalar no Windows
 
 Extraia o ZIP em uma pasta local e abra PowerShell elevado nela:
@@ -96,6 +118,9 @@ com `WINDOWS_FONT_REQUIREMENT_UNMET` antes de liberar a aplicação. Marcadores 
 não inicia coleta, não cria agenda e não inicia a interface. A janela de console
 do LibreOffice não é usada pelo runtime; as sondagens e renderizações Windows
 preferem `soffice.com` com `CREATE_NO_WINDOW`.
+Ao final, o instalador executa `environment-status --require-ready`. Qualquer
+bloqueio de fonte, LibreOffice, PostgreSQL, armazenamento ou fuso encerra a
+instalação com código diferente de zero e impede a mensagem de conclusão.
 
 Inicie a interface quando desejar:
 
@@ -118,9 +143,15 @@ sudo ./scripts/setup.sh --install-root /opt/tenable-reports \
   --enable-linger-for tenable-reports
 ```
 
-O instalador usa somente o conteúdo do pacote: instala os `.deb` nativos,
+O instalador usa somente o conteúdo do pacote: instala os `.deb` nativos em modo
+não interativo,
 compila o Python empacotado, instala LibreOffice/PostgreSQL/fontes, cria a `.venv`
-com `--no-index` e prepara a aplicação. Ele não inicia coleta, interface ou timer.
+com `--no-index` e prepara a aplicação. O conjunto nativo inclui explicitamente as
+bibliotecas de execução do LibreOffice e o OpenSSL necessário ao PostgreSQL. O
+preflight final usa `--require-ready`: qualquer bloqueio de fonte, LibreOffice,
+PostgreSQL, armazenamento ou fuso encerra a instalação com código diferente de
+zero. Aviso de agendador ainda não ativado não bloqueia a geração manual. O
+instalador não inicia coleta, interface ou timer.
 Inicie a interface local com:
 
 ```bash
@@ -140,7 +171,8 @@ nenhuma dessas ações executa uma coleta imediatamente.
 Antes da primeira operação, abra **Admin → Diagnóstico do ambiente** ou execute:
 
 ```text
-python -m tenable_reports environment-status --project-root <raiz-instalada>
+python -m tenable_reports environment-status --json --require-ready \
+  --root <raiz-instalada>
 ```
 
 Confirme plataforma, perfil de fontes, versão do LibreOffice, conexão PostgreSQL,
@@ -208,10 +240,20 @@ visual, com inspeção de capa, sumário, controle de documento, gráficos, tabe
 contracapa. Os instaladores, manifestos, locks, regras de integridade e scripts
 Linux possuem testes automatizados.
 
-A instalação completa em uma máquina Windows limpa e a execução em um host Ubuntu
-Server 24.04 limpo ainda dependem da montagem dos payloads oficiais de release e
-devem ser realizadas antes de publicar o primeiro ZIP. Essa pendência não deve ser
-descrita como homologação real concluída. O pacote atual falha de forma fechada
-quando os artefatos obrigatórios não estão presentes; no Windows, a ausência do
-payload proprietário é aceita apenas porque as fontes do host serão validadas na
-instalação.
+Os payloads redistribuíveis oficiais foram montados e verificados: Authenticode com
+certificado exato no Windows; Sigstore para Python no Linux; chave TDF conferida
+pelo fingerprint fixado para LibreOffice; hashes e
+manifesto do bundle nas duas plataformas. Em um contêiner limpo derivado de Ubuntu
+24.04, sem rede, o instalador Linux concluiu duas execuções consecutivas, aplicou
+as migrations e confirmou Python 3.14.5, LibreOffice 26.2.4.2, PostgreSQL 18.6 e o
+perfil `linux-carlito-v1`. A segunda execução comprovou a idempotência do fluxo.
+
+Essa evidência de contêiner não substitui a homologação em Ubuntu Server/VM com
+`systemd`: o contêiner não oferece um gerenciador de serviços real, então a subida
+do PostgreSQL foi adaptada somente para o ensaio e o agendador permaneceu em
+`WARNING`. Antes da primeira publicação Linux, ainda é obrigatório validar o timer
+e inspecionar visualmente os quatro DOCX em uma VM/servidor limpo. A instalação
+completa em uma máquina Windows limpa também permanece pendente; o funcionamento
+editorial no Windows atual e o bundle verificado não devem ser descritos como essa
+homologação. A ausência do payload proprietário continua aceita apenas porque as
+fontes licenciadas do host são validadas antes de liberar a aplicação.

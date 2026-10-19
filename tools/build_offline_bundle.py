@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import shutil
 import stat
 import subprocess
+import sys
 import zipfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Callable
@@ -38,7 +41,7 @@ class OfflineBundleResult:
     file_count: int
 
 
-SignatureVerifier = Callable[[Path, str], bool]
+SignatureVerifier = Callable[[Path, Mapping[str, object]], bool]
 
 
 _SOURCE_FILES = {
@@ -72,6 +75,28 @@ _EXCLUDED_PARTS = {
     "data",
     "outputs",
     "reports_generated",
+}
+_REQUIRED_TRACKED_SOURCE_FILES = {
+    "deploy/offline-bundle.schema.json",
+    "deploy/runtime-manifest.json",
+    "orchestration/clients.example.json",
+    "orchestration/document-control.example.json",
+}
+_PLATFORM_REQUIRED_TRACKED_SOURCE_FILES = {
+    RuntimePlatform.WINDOWS: {
+        "deploy/windows/bundle-layout.json",
+        "requirements/lock/windows-py314.txt",
+        "scripts/bootstrap_postgresql.ps1",
+        "scripts/setup.ps1",
+        "src/tenable_reports/assets/fonts/font-manifest.json",
+        "tools/windows_font_installation.py",
+    },
+    RuntimePlatform.LINUX: {
+        "deploy/linux/bundle-layout.json",
+        "requirements/lock/linux-py314.txt",
+        "scripts/bootstrap_postgresql.sh",
+        "scripts/setup.sh",
+    },
 }
 
 
@@ -139,21 +164,107 @@ def _validate_vendor(
             raise OfflineBundleError("LICENSE_PROOF_REQUIRED")
     for requirement in layout.get("signature_requirements", []):
         relative = _safe_relative(str(requirement.get("path") or ""))
-        kind = str(requirement.get("kind") or "")
-        if not signature_verifier(vendor_root / relative, kind):
+        if not signature_verifier(vendor_root / relative, requirement):
             raise OfflineBundleError(
                 "PAYLOAD_SIGNATURE_INVALID", detail=relative.as_posix()
             )
 
 
-def _default_signature_verifier(path: Path, kind: str) -> bool:
+def _default_signature_verifier(
+    path: Path,
+    requirement: Mapping[str, object],
+) -> bool:
+    kind = str(requirement.get("kind") or "")
     if kind == "authenticode" and os.name == "nt":
+        expected_subject = str(requirement.get("signer_subject") or "").strip()
+        expected_certificate_sha256 = str(
+            requirement.get("certificate_sha256") or ""
+        ).strip().upper()
+        if not expected_subject or len(expected_certificate_sha256) != 64:
+            return False
+        powershell_environment = os.environ.copy()
+        program_files = Path(
+            powershell_environment.get("PROGRAMFILES", r"C:\Program Files")
+        )
+        windows_root = Path(
+            powershell_environment.get("WINDIR", r"C:\Windows")
+        )
+        powershell_environment["PSModulePath"] = os.pathsep.join(
+            (
+                str(program_files / "WindowsPowerShell" / "Modules"),
+                str(
+                    windows_root
+                    / "system32"
+                    / "WindowsPowerShell"
+                    / "v1.0"
+                    / "Modules"
+                ),
+            )
+        )
         completed = subprocess.run(
             [
                 "powershell.exe",
                 "-NoProfile",
                 "-Command",
-                "param($p) (Get-AuthenticodeSignature -LiteralPath $p).Status",
+                (
+                    "& { param([string] $ArtifactPath) "
+                    "$Signature = Get-AuthenticodeSignature -LiteralPath $ArtifactPath; "
+                    "$CertificateSha256 = if ($Signature.SignerCertificate) { "
+                    "$Signature.SignerCertificate.GetCertHashString("
+                    "[System.Security.Cryptography.HashAlgorithmName]::SHA256) "
+                    "} else { '' }; "
+                    "[pscustomobject]@{ Status = [string] $Signature.Status; "
+                    "Subject = [string] $Signature.SignerCertificate.Subject; "
+                    "CertificateSha256 = $CertificateSha256 } | "
+                    "ConvertTo-Json -Compress }"
+                ),
+                str(path),
+            ],
+            shell=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+            env=powershell_environment,
+        )
+        if completed.returncode != 0:
+            return False
+        try:
+            signature = json.loads(completed.stdout)
+        except (TypeError, json.JSONDecodeError):
+            return False
+        return (
+            signature.get("Status") == "Valid"
+            and str(signature.get("Subject") or "").strip() == expected_subject
+            and str(signature.get("CertificateSha256") or "").strip().upper()
+            == expected_certificate_sha256
+        )
+    if kind == "sigstore":
+        bundle = path.with_name(path.name + ".sigstore")
+        identity_domain = str(
+            requirement.get("cert_identity_email_domain") or ""
+        )
+        issuer = str(requirement.get("cert_oidc_issuer") or "")
+        if not bundle.is_file() or not identity_domain or not issuer:
+            return False
+        identity = _sigstore_email_identity(bundle, identity_domain)
+        if not identity:
+            return False
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sigstore",
+                "verify",
+                "identity",
+                "--offline",
+                "--bundle",
+                str(bundle),
+                "--cert-identity",
+                identity,
+                "--cert-oidc-issuer",
+                issuer,
                 str(path),
             ],
             shell=False,
@@ -163,17 +274,79 @@ def _default_signature_verifier(path: Path, kind: str) -> bool:
             errors="replace",
             timeout=60,
         )
-        return completed.returncode == 0 and completed.stdout.strip() == "Valid"
+        return completed.returncode == 0
     if kind == "detached":
         signature = path.with_name(path.name + ".asc")
+        keyring_name = str(requirement.get("keyring") or "")
+        expected_fingerprint = str(
+            requirement.get("key_fingerprint") or ""
+        ).strip().upper()
+        keyring = path.parent / keyring_name
+        if (
+            not signature.is_file()
+            or not keyring_name
+            or not keyring.is_file()
+            or len(expected_fingerprint) != 40
+            or any(character not in "0123456789ABCDEF" for character in expected_fingerprint)
+        ):
+            return False
         completed = subprocess.run(
-            ["gpgv", str(signature), str(path)],
+            [
+                "gpgv",
+                "--status-fd",
+                "1",
+                "--keyring",
+                str(keyring),
+                str(signature),
+                str(path),
+            ],
             shell=False,
             capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
-        return completed.returncode == 0
+        if completed.returncode != 0:
+            return False
+        for line in completed.stdout.splitlines():
+            fields = line.split()
+            if len(fields) < 3 or fields[:2] != ["[GNUPG:]", "VALIDSIG"]:
+                continue
+            valid_fingerprints = {fields[2].upper(), fields[-1].upper()}
+            if expected_fingerprint in valid_fingerprints:
+                return True
+        return False
     return False
+
+
+def _sigstore_email_identity(bundle: Path, allowed_domain: str) -> str | None:
+    try:
+        from cryptography import x509
+        from cryptography.x509.oid import ExtensionOID
+    except ImportError:
+        return None
+
+    try:
+        payload = json.loads(bundle.read_text(encoding="utf-8"))
+        encoded = payload["verificationMaterial"]["certificate"]["rawBytes"]
+        certificate = x509.load_der_x509_certificate(
+            base64.b64decode(encoded, validate=True)
+        )
+        subject_alternative_names = certificate.extensions.get_extension_for_oid(
+            ExtensionOID.SUBJECT_ALTERNATIVE_NAME
+        ).value
+        identities = subject_alternative_names.get_values_for_type(x509.RFC822Name)
+    except (KeyError, TypeError, ValueError, x509.ExtensionNotFound):
+        return None
+
+    normalized_domain = allowed_domain.casefold().strip().lstrip("@")
+    matches = [
+        identity
+        for identity in identities
+        if identity.rpartition("@")[2].casefold() == normalized_domain
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _source_allowed(path: Path, source_root: Path) -> bool:
@@ -238,10 +411,60 @@ def _validate_font_payloads(
                 )
 
 
-def _copy_source(source_root: Path, destination: Path) -> None:
-    for path in sorted(source_root.rglob("*")):
-        if not path.is_file() or not _source_allowed(path, source_root):
+def _copy_source(
+    source_root: Path,
+    destination: Path,
+    *,
+    platform: RuntimePlatformInfo | None = None,
+) -> None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(source_root), "ls-files", "-z"],
+            shell=False,
+            capture_output=True,
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise OfflineBundleError("SOURCE_GIT_INDEX_REQUIRED") from exc
+    if completed.returncode != 0:
+        raise OfflineBundleError("SOURCE_GIT_INDEX_REQUIRED")
+
+    files: list[Path] = []
+    tracked_paths: set[str] = set()
+    for raw in completed.stdout.split(b"\0"):
+        if not raw:
             continue
+        try:
+            relative_raw = raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise OfflineBundleError("SOURCE_GIT_INDEX_INVALID") from exc
+        relative = _safe_relative(PurePosixPath(relative_raw).as_posix())
+        relative_posix = relative.as_posix()
+        tracked_paths.add(relative_posix)
+        path = source_root / relative
+        if not _source_allowed(path, source_root):
+            continue
+        if not path.is_file():
+            raise OfflineBundleError(
+                "SOURCE_TRACKED_FILE_MISSING",
+                detail=relative_posix,
+            )
+        files.append(path)
+
+    required_paths = set(_REQUIRED_TRACKED_SOURCE_FILES)
+    if platform is not None:
+        required_paths.update(
+            _PLATFORM_REQUIRED_TRACKED_SOURCE_FILES[platform.platform]
+        )
+    missing_required = sorted(required_paths - tracked_paths)
+    if missing_required:
+        raise OfflineBundleError(
+            "SOURCE_GIT_INDEX_INCOMPLETE",
+            detail=missing_required[0],
+        )
+
+    for path in sorted(files, key=lambda item: item.relative_to(source_root).as_posix()):
         target = destination / path.relative_to(source_root)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
@@ -318,7 +541,7 @@ def build_offline_bundle(
         raise OfflineBundleError("DESTINATION_EXISTS")
     release_root.mkdir(parents=True)
     try:
-        _copy_source(source, bundle_root)
+        _copy_source(source, bundle_root, platform=platform)
         shutil.copytree(vendor, bundle_root / "vendor")
         _write_bootstrap_checksums(bundle_root)
         files = _manifest_files(bundle_root)
