@@ -28,8 +28,10 @@ relatório.
 ## Começar
 
 Para produção, use o ZIP offline específico da plataforma. Ele inclui as versões
-fixadas de Python, LibreOffice, PostgreSQL, wheels e fontes autorizadas; depois de
-montado, instala tudo sem acesso à internet. O runtime detecta o sistema e aplica
+fixadas de Python, LibreOffice, PostgreSQL e wheels, além das fontes abertas do
+Linux. No Windows, valida primeiro Calibri e Arial já licenciadas no sistema e usa
+um payload autorizado opcional somente se precisar recuperá-las. Depois de
+montado, o pacote instala tudo sem acesso à internet. O runtime detecta o sistema e aplica
 `windows-calibri-v1` no Windows x86_64 ou `linux-carlito-v1` no Ubuntu Server
 24.04 x86_64. Consulte o
 [guia de implantação Windows e Linux](docs/25-implantacao-windows-linux.md) antes

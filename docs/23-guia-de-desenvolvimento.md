@@ -146,7 +146,11 @@ Comandos reais devem exigir confirmação explícita.
 
 `deploy/runtime-manifest.json` e os locks por plataforma são o contrato de versão.
 `tools/build_offline_bundle.py` aceita somente o layout oficial, valida assinatura,
-hash e licença e gera um pacote autocontido. `tools/verify_offline_bundle.py`
+hash e licença e gera um pacote autocontido para as dependências redistribuíveis.
+No Windows, o manifesto declara `windows-calibri-v1` como requisito do host; a
+ausência total do payload proprietário é válida, mas qualquer presença o torna um
+grupo opcional tudo-ou-nada, sujeito a hashes e prova de autorização. No Linux,
+Carlito e Liberation Sans continuam obrigatórias no bundle. `tools/verify_offline_bundle.py`
 revalida o resultado. Testes nunca devem baixar artefatos nem flexibilizar uma
 falha `BLOCKED`. A release suporta Windows x86_64 com `windows-calibri-v1` e Ubuntu
 Server 24.04 x86_64 com `linux-carlito-v1`.

@@ -4,14 +4,7 @@
   "required_files": [
     "python/python-3.14.5-amd64.exe",
     "libreoffice/LibreOffice_26.2.4.2_Win_x86-64.msi",
-    "postgresql/postgresql-18-windows-x64.exe",
-    "fonts/windows/calibri.ttf",
-    "fonts/windows/calibrib.ttf",
-    "fonts/windows/calibrii.ttf",
-    "fonts/windows/arial.ttf",
-    "fonts/windows/arialbd.ttf",
-    "fonts/windows/ariali.ttf",
-    "fonts/windows/license-proof.json"
+    "postgresql/postgresql-18-windows-x64.exe"
   ],
   "required_globs": [
     "wheelhouse/*.whl",
@@ -22,5 +15,21 @@
     {"path": "libreoffice/LibreOffice_26.2.4.2_Win_x86-64.msi", "kind": "authenticode"},
     {"path": "postgresql/postgresql-18-windows-x64.exe", "kind": "authenticode"}
   ],
-  "licensed_payload": "fonts/windows/license-proof.json"
+  "host_requirements": [
+    "windows-calibri-v1"
+  ],
+  "optional_payload_groups": [
+    {
+      "id": "windows-font-recovery",
+      "files": [
+        "fonts/windows/calibri.ttf",
+        "fonts/windows/calibrib.ttf",
+        "fonts/windows/calibrii.ttf",
+        "fonts/windows/arial.ttf",
+        "fonts/windows/arialbd.ttf",
+        "fonts/windows/ariali.ttf"
+      ],
+      "license_proof": "fonts/windows/license-proof.json"
+    }
+  ]
 }

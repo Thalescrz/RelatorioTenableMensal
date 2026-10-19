@@ -141,15 +141,16 @@ if (-not (Test-Path -LiteralPath (Join-Path $stateRoot "postgresql-18.ok"))) {
     New-Item -ItemType File -Force -Path (Join-Path $stateRoot "postgresql-18.ok") | Out-Null
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $stateRoot "fonts-windows-calibri-v1.ok"))) {
-    $fontSource = Join-Path $projectRoot "vendor\fonts\windows"
-    $fontRegistry = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
-    foreach ($fontName in @("calibri.ttf", "calibrib.ttf", "calibrii.ttf", "arial.ttf", "arialbd.ttf", "ariali.ttf")) {
-        Copy-Item -LiteralPath (Join-Path $fontSource $fontName) -Destination (Join-Path $env:WINDIR "Fonts\$fontName") -Force
-        New-ItemProperty -Path $fontRegistry -Name "Tenable Reports $fontName" -Value $fontName -PropertyType String -Force | Out-Null
-    }
-    New-Item -ItemType File -Force -Path (Join-Path $stateRoot "fonts-windows-calibri-v1.ok") | Out-Null
-}
+$fontManifest = Join-Path $projectRoot "src\tenable_reports\assets\fonts\font-manifest.json"
+$fontSource = Join-Path $projectRoot "vendor\fonts\windows"
+$fontTool = Join-Path $projectRoot "tools\windows_font_installation.py"
+& $python $fontTool `
+    --manifest $fontManifest `
+    --system-font-root (Join-Path $env:WINDIR "Fonts") `
+    --payload-root $fontSource `
+    --apply
+if ($LASTEXITCODE -ne 0) { throw "WINDOWS_FONT_REQUIREMENT_UNMET" }
+New-Item -ItemType File -Force -Path (Join-Path $stateRoot "fonts-windows-calibri-v1.ok") | Out-Null
 
 if (-not (Test-Path -LiteralPath $venvPython)) {
     & $python -m venv (Join-Path $projectRoot ".venv")

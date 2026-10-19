@@ -18,7 +18,7 @@
 - O perfil Windows continua usando Calibri e as ocorrencias atuais de Arial; essas fontes nao entram no Git.
 - O perfil Linux usa Carlito e Liberation Sans com arquivos, licencas e hashes versionados.
 - Os artefatos oficiais de deploy sao offline: toda dependencia redistribuivel fica no pacote e a instalacao nao faz download nem solicita etapas manuais depois de iniciada com os privilegios requeridos.
-- Dependencias proprietarias nao redistribuiveis sao aceitas somente quando um payload licenciado e fornecido na montagem; ausencia invalida o pacote, sem fallback visual.
+- Dependencias proprietarias nao redistribuiveis usam primeiro a instalacao licenciada do host Windows. Um payload licenciado e opcional para recuperacao, mas deve ser completo, autorizado e validado; ausencia de ambas as fontes bloqueia o setup, sem fallback visual.
 - Ausencia ou divergencia de fonte/LibreOffice bloqueia a geracao oficial antes de qualquer chamada Tenable.
 - Periodos, metricas, historico, `MAIN`, retries, idempotencia e textos editoriais nao mudam por plataforma.
 - A interface permanece em loopback; este plano nao abre firewall, nao liga `0.0.0.0` e nao adiciona exposicao publica.
@@ -443,7 +443,7 @@
 
 - [ ] **Step 3: Gerar locks, manifesto e montador dos pacotes offline**
 
-  Incluir Python, LibreOffice, PostgreSQL, wheels, dependencias nativas e fontes redistribuiveis no bundle da plataforma. Calibri/Arial exigem payload licenciado ou instalacao Windows licenciada validada na montagem. O montador falha fechado quando qualquer payload, licenca, assinatura ou hash obrigatorio estiver ausente.
+  Incluir Python, LibreOffice, PostgreSQL, wheels, dependencias nativas e fontes redistribuiveis no bundle da plataforma. Calibri/Arial usam a instalacao Windows licenciada validada no setup; um payload licenciado e opcional, tudo-ou-nada. O montador falha fechado quando qualquer payload obrigatorio, assinatura ou hash estiver ausente e rejeita payload proprietario parcial ou sem autorizacao.
 
 - [ ] **Step 4: Atualizar PowerShell e implementar Bash sem acesso de rede**
 

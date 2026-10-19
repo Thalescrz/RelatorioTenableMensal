@@ -8,6 +8,11 @@
   "properties": {
     "schema_version": {"const": 1},
     "platform": {"enum": ["windows-x86_64", "linux-x86_64"]},
+    "host_requirements": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
     "files": {
       "type": "array",
       "items": {

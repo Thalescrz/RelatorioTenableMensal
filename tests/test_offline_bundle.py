@@ -102,6 +102,25 @@ def _vendor_tree(tmp_path: Path) -> Path:
     return vendor
 
 
+def _add_optional_windows_font_payload(vendor: Path) -> Path:
+    font_root = vendor / "fonts" / "windows"
+    font_root.mkdir(parents=True, exist_ok=True)
+    for filename in (
+        "calibri.ttf",
+        "calibrib.ttf",
+        "calibrii.ttf",
+        "arial.ttf",
+        "arialbd.ttf",
+        "ariali.ttf",
+    ):
+        (font_root / filename).write_bytes(f"synthetic:{filename}".encode("utf-8"))
+    (font_root / "license-proof.json").write_text(
+        json.dumps({"redistribution_authorized": True}),
+        encoding="utf-8",
+    )
+    return font_root
+
+
 def test_offline_bundle_records_hashes_and_detects_tampering(tmp_path: Path) -> None:
     source = _source_tree(tmp_path)
     vendor = _vendor_tree(tmp_path)
@@ -140,6 +159,7 @@ def test_bundle_build_fails_before_copy_when_payload_or_license_is_missing(
 ) -> None:
     source = _source_tree(tmp_path)
     vendor = _vendor_tree(tmp_path)
+    _add_optional_windows_font_payload(vendor)
     (vendor / "fonts" / "windows" / "license-proof.json").unlink()
     destination = tmp_path / "release"
 
@@ -156,6 +176,50 @@ def test_bundle_build_fails_before_copy_when_payload_or_license_is_missing(
     else:
         raise AssertionError("bundle incompleto foi aceito")
     assert not destination.exists()
+
+
+def test_windows_bundle_without_proprietary_fonts_declares_host_requirement(
+    tmp_path: Path,
+) -> None:
+    source = _source_tree(tmp_path)
+    vendor = _vendor_tree(tmp_path)
+    font_root = vendor / "fonts" / "windows"
+    assert not font_root.exists()
+
+    result = build_offline_bundle(
+        source_root=source,
+        vendor_root=vendor,
+        destination=tmp_path / "release",
+        platform=WINDOWS,
+        signature_verifier=lambda _path, _kind: True,
+    )
+
+    manifest = json.loads(
+        (result.bundle_root / "bundle-manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["host_requirements"] == ["windows-calibri-v1"]
+    assert not (result.bundle_root / "vendor" / "fonts" / "windows").exists()
+
+
+def test_windows_bundle_rejects_partial_optional_font_payload(tmp_path: Path) -> None:
+    source = _source_tree(tmp_path)
+    vendor = _vendor_tree(tmp_path)
+    font_root = vendor / "fonts" / "windows"
+    font_root.mkdir(parents=True)
+    (font_root / "calibri.ttf").write_bytes(b"partial")
+
+    try:
+        build_offline_bundle(
+            source_root=source,
+            vendor_root=vendor,
+            destination=tmp_path / "release",
+            platform=WINDOWS,
+            signature_verifier=lambda _path, _kind: True,
+        )
+    except OfflineBundleError as exc:
+        assert exc.code == "OPTIONAL_PAYLOAD_INCOMPLETE"
+    else:
+        raise AssertionError("payload opcional parcial foi aceito")
 
 
 def test_bundle_build_rejects_failed_required_signature(tmp_path: Path) -> None:
@@ -188,6 +252,7 @@ def test_bundle_build_rejects_font_payload_that_differs_from_approved_manifest(
         (ROOT / "src" / "tenable_reports" / "assets" / "fonts" / "font-manifest.json").read_bytes()
     )
     vendor = _vendor_tree(tmp_path)
+    _add_optional_windows_font_payload(vendor)
 
     try:
         build_offline_bundle(

@@ -49,7 +49,11 @@ Windows x86_64 com `windows-calibri-v1` e Ubuntu Server 24.04 x86_64 com
 por conta própria nem aceita substituição silenciosa.
 
 `deploy/runtime-manifest.json`, os locks por plataforma e os layouts do bundle
-fixam Python, LibreOffice, PostgreSQL, wheels e fontes. A release é construída por
+fixam Python, LibreOffice, PostgreSQL, wheels e fontes. No Windows, o bundle declara
+`windows-calibri-v1` como requisito do host: o setup aceita primeiro os arquivos
+licenciados já instalados e recorre a um payload opcional somente quando ele for
+completo, autorizado e compatível com os hashes aprovados. No Linux, Carlito e
+Liberation Sans permanecem dentro do pacote. A release é construída por
 `tools/build_offline_bundle.py`, validada por `tools/verify_offline_bundle.py` e
 executada sem acesso à internet. Os scripts de setup validam o manifesto antes de
 instalar e não iniciam coleta, servidor ou agenda.

@@ -95,8 +95,9 @@ O perfil `windows-calibri-v1` preserva o comportamento visual de referencia:
   ate que uma mudanca editorial seja aprovada;
 - caminhos reais dos arquivos sao resolvidos pelo Windows e validados antes da
   geracao;
-- Calibri e Arial nao sao copiadas para o repositorio; a instalacao exige fontes
-  licenciadas no host.
+- Calibri e Arial nao sao copiadas para o repositorio. A instalacao valida primeiro
+  as fontes licenciadas no host e so usa um payload opcional quando o conjunto for
+  completo, autorizado e compativel com os hashes aprovados.
 
 O perfil `linux-carlito-v1` usa arquivos versionados e redistribuiveis:
 
@@ -229,10 +230,12 @@ dependencia redistribuivel exigida e invalido e o instalador deve falhar antes d
 alterar o host.
 
 Materiais proprietarios que nao possam ser redistribuidos, como uma fonte Microsoft
-licenciada, nao sao copiados para o pacote. O Windows deve fornece-los por uma
-instalacao licenciada ou por um payload licenciado disponibilizado pelo proprio
-operador durante a montagem do pacote. A ausencia bloqueia a montagem/instalacao;
-nao existe download, substituicao de fonte nem aceite silencioso durante o deploy.
+licenciada, nao sao obrigatorios no pacote. O Windows deve fornece-los pela
+instalacao licenciada do host; o bundle registra esse requisito e o setup valida os
+hashes antes de prosseguir. Um payload licenciado pode ser disponibilizado pelo
+operador como recuperacao opcional, mas passa a ser tudo-ou-nada e exige prova de
+autorizacao. A ausencia simultanea de host valido e payload autorizado bloqueia a
+instalacao; nao existe download nem substituicao silenciosa durante o deploy.
 
 Locks separados por plataforma registram versoes e hashes de todas as dependencias
 Python. Um manifesto de runtime registra Python, Pillow, python-docx, docxcompose,

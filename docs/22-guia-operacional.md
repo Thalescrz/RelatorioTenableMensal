@@ -16,7 +16,10 @@ outro ciclo ou de interpretar um documento histórico.
 ## Instalação inicial
 
 O pacote de produção contém Python 3.14.5, LibreOffice 26.2.4.2, PostgreSQL 18,
-wheels travados e fontes autorizadas. Não instale dependências manualmente. Depois
+wheels travados e as fontes abertas do Linux. No Windows, o instalador valida
+Calibri e Arial já presentes; só instala um payload opcional quando o host não
+possuir o conjunto aprovado e o pacote trouxer arquivos completos e autorizados.
+Não instale dependências manualmente. Depois
 de extrair um bundle Windows, abra PowerShell elevado na raiz:
 
 ```powershell

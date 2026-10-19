@@ -385,7 +385,9 @@ esses controles sejam projetados e implementados.
 
 Implantações de produção usam bundles offline específicos para Windows x86_64 e
 Ubuntu Server 24.04 x86_64. Eles incluem Python, LibreOffice, PostgreSQL, wheels e
-fontes autorizadas, validam SHA-256 e instalam sem acesso à internet. O runtime
+as fontes abertas do Linux, validam SHA-256 e instalam sem acesso à internet. No
+Windows, Calibri e Arial são validadas primeiro no host licenciado; um payload
+completo, autorizado e de hashes conhecidos é apenas recuperação opcional. O runtime
 seleciona `windows-calibri-v1` ou `linux-carlito-v1`; fonte ausente não recebe
 fallback silencioso. O instalador não inicia coleta, servidor ou agenda.
 
@@ -405,7 +407,9 @@ sudo ./scripts/setup.sh --install-root /opt/tenable-reports
 
 O pacote é criado com `tools/build_offline_bundle.py` e conferido com
 `tools/verify_offline_bundle.py`. Binários oficiais e fontes proprietárias ficam
-fora do Git; ausência de assinatura, hash ou prova de licença bloqueia a release.
+fora do Git. Payload Windows parcial, divergente ou sem autorização bloqueia a
+release; sem payload, o manifesto registra `windows-calibri-v1` como requisito do
+host e o instalador valida as fontes antes de prosseguir.
 Estado operacional é movido somente por `deployment-export` e
 `deployment-import`, com dry-run obrigatório e confirmação `IMPORT <transfer_id>`;
 segredos são reprovisionados no destino. Consulte

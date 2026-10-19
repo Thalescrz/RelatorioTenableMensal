@@ -108,9 +108,25 @@ def _validate_vendor(
         pattern = _safe_relative(str(raw)).as_posix()
         if not any(path.is_file() for path in vendor_root.glob(pattern)):
             raise OfflineBundleError("REQUIRED_PAYLOAD_MISSING", detail=pattern)
-    license_path = layout.get("licensed_payload")
-    if license_path:
-        proof = vendor_root / _safe_relative(str(license_path))
+    for group in layout.get("optional_payload_groups", []):
+        files = tuple(
+            _safe_relative(str(raw)) for raw in group.get("files", [])
+        )
+        license_relative = _safe_relative(str(group.get("license_proof") or ""))
+        if not any(
+            (vendor_root / relative).is_file()
+            for relative in files + (license_relative,)
+        ):
+            continue
+        missing = tuple(
+            relative for relative in files if not (vendor_root / relative).is_file()
+        )
+        if missing:
+            raise OfflineBundleError(
+                "OPTIONAL_PAYLOAD_INCOMPLETE",
+                detail=missing[0].as_posix(),
+            )
+        proof = vendor_root / license_relative
         try:
             authorized = bool(
                 json.loads(proof.read_text(encoding="utf-8")).get(
@@ -202,6 +218,10 @@ def _validate_font_payloads(
     profile_id = runtime_manifest["font_profiles"][key]
     profile = font_manifest["profiles"][profile_id]
     platform_directory = "windows" if platform.platform is RuntimePlatform.WINDOWS else "linux"
+    if platform.platform is RuntimePlatform.WINDOWS:
+        payload_root = vendor_root / "fonts" / platform_directory
+        if not payload_root.is_dir() or not any(payload_root.iterdir()):
+            return
     for family in profile["families"].values():
         for face in family["faces"].values():
             filename = Path(str(face["file"])).name
@@ -305,6 +325,7 @@ def build_offline_bundle(
         manifest = {
             "schema_version": 1,
             "platform": key,
+            "host_requirements": list(layout.get("host_requirements", [])),
             "files": files,
         }
         (bundle_root / "bundle-manifest.json").write_text(

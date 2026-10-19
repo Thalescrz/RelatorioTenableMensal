@@ -2,7 +2,9 @@
 
 Este guia define o pacote de produção reproduzível. O pacote de release é diferente
 de um clone do repositório: ele contém a aplicação, Python, LibreOffice,
-PostgreSQL, wheels travados e fontes autorizadas para a plataforma. Depois que o
+PostgreSQL, wheels travados e todas as fontes abertas exigidas no Linux. No Windows,
+Calibri e Arial vêm preferencialmente do próprio host licenciado; um payload
+autorizado pode acompanhar o pacote apenas como recuperação. Depois que o
 ZIP oficial foi montado, a instalação ocorre sem acesso à internet e não exige que
 o operador procure ou instale dependências separadamente.
 
@@ -28,7 +30,10 @@ Os binários grandes e as fontes proprietárias não ficam no Git. O mantenedor 
 release prepara, fora do repositório, um diretório de fornecedor com os arquivos
 oficiais descritos em `deploy/windows-x86_64/bundle-layout.json` ou
 `deploy/linux-x86_64/bundle-layout.json`. O pacote Windows exige assinaturas
-Authenticode válidas e prova de licença das fontes Microsoft. O Linux exige os
+Authenticode válidas. Ele pode ser montado sem fontes Microsoft e então declara
+`windows-calibri-v1` em `host_requirements`. Se um único arquivo do payload de
+recuperação for fornecido, o grupo inteiro e `license-proof.json` tornam-se
+obrigatórios. O Linux exige os
 artefatos e assinaturas/hashes previstos no layout, inclusive os pacotes nativos
 do Ubuntu Server 24.04.
 
@@ -60,7 +65,8 @@ export PYTHONPATH="$PWD/src"
 
 O construtor valida origem, assinatura quando aplicável, licença, tamanho e
 SHA-256. Em seguida cria `bundle-manifest.json`, `bundle-manifest.sha256` e o ZIP.
-Arquivo ausente, adulterado ou não autorizado deixa a release em `BLOCKED`; não se
+Arquivo obrigatório ausente, adulterado ou não autorizado deixa a release em
+`BLOCKED`; um payload Windows parcial também é rejeitado. Não se
 deve contornar essa proteção. Verifique o pacote novamente no destino antes de
 executar o instalador.
 
@@ -80,8 +86,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup.ps1 `
 ```
 
 O instalador verifica o manifesto antes de copiar, instala silenciosamente Python,
-LibreOffice, PostgreSQL, fontes e wheels, prepara o banco e restringe os arquivos
-de credencial. Marcadores em `.install-state` tornam a execução idempotente. Ele
+LibreOffice, PostgreSQL e wheels, prepara o banco e restringe os arquivos de
+credencial. Para `windows-calibri-v1`, compara primeiro Calibri e Arial em
+`%WINDIR%\Fonts` com os hashes aprovados. Se estiverem válidas, não as copia nem
+altera seu registro. Se faltarem ou divergirem, instala automaticamente o payload
+opcional completo e autorizado; sem nenhuma das duas fontes válidas, interrompe
+com `WINDOWS_FONT_REQUIREMENT_UNMET` antes de liberar a aplicação. Marcadores em
+`.install-state` tornam a execução idempotente. Ele
 não inicia coleta, não cria agenda e não inicia a interface. A janela de console
 do LibreOffice não é usada pelo runtime; as sondagens e renderizações Windows
 preferem `soffice.com` com `CREATE_NO_WINDOW`.
@@ -201,5 +212,6 @@ A instalação completa em uma máquina Windows limpa e a execução em um host 
 Server 24.04 limpo ainda dependem da montagem dos payloads oficiais de release e
 devem ser realizadas antes de publicar o primeiro ZIP. Essa pendência não deve ser
 descrita como homologação real concluída. O pacote atual falha de forma fechada
-quando esses artefatos ou a prova de licença das fontes Windows não estão
-presentes.
+quando os artefatos obrigatórios não estão presentes; no Windows, a ausência do
+payload proprietário é aceita apenas porque as fontes do host serão validadas na
+instalação.

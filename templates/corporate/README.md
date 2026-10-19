@@ -29,10 +29,11 @@ controle documental.
 ## Perfis tipográficos por plataforma
 
 O shell é semanticamente único, mas a tipografia é materializada pelo perfil de
-runtime. Windows x86_64 usa `windows-calibri-v1`, com Calibri e Arial obtidas de
-fonte licenciada; Ubuntu Server 24.04 x86_64 usa `linux-carlito-v1`, com Carlito e
-Liberation Sans redistribuíveis. O pacote offline valida os arquivos e suas
-licenças/hashes antes da instalação. Fonte ausente bloqueia o preflight: o gerador
+runtime. Windows x86_64 usa `windows-calibri-v1`, validando primeiro Calibri e
+Arial já licenciadas no host e aceitando payload opcional somente quando completo,
+autorizado e compatível com os hashes aprovados. Ubuntu Server 24.04 x86_64 usa
+`linux-carlito-v1`, com Carlito e Liberation Sans redistribuíveis dentro do pacote.
+Fonte ausente bloqueia o preflight: o gerador
 não escolhe outra família silenciosamente.
 
 A baseline visual Windows preserva o resultado aprovado. A baseline Linux é uma
