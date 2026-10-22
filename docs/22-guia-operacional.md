@@ -2,10 +2,8 @@
 
 ## Pré-requisitos
 
-- Windows com PowerShell;
-- Python 3.11 ou superior;
-- PostgreSQL local acessível;
-- LibreOffice para inspeção visual automatizada dos DOCX;
+- bundle offline verificado para Windows x86_64 ou Ubuntu Server 24.04 x86_64;
+- privilégio administrativo somente durante a instalação;
 - chaves Tenable VM/WAS individuais para cada cliente;
 - token de conta de serviço Cloud quando esse produto estiver habilitado.
 
@@ -17,18 +15,45 @@ outro ciclo ou de interpretar um documento histórico.
 
 ## Instalação inicial
 
-Na raiz do projeto:
+O pacote de produção contém Python 3.14.5, LibreOffice 26.2.4.2, PostgreSQL 18,
+wheels travados e as fontes abertas do Linux. No Windows, o instalador valida
+Calibri e Arial já presentes; só instala um payload opcional quando o host não
+possuir o conjunto aprovado e o pacote trouxer arquivos completos e autorizados.
+Não instale dependências manualmente. Depois
+de extrair um bundle Windows, abra PowerShell elevado na raiz:
 
 ```powershell
 .\scripts\setup.ps1
-.\scripts\bootstrap_postgresql.ps1
 ```
 
-O segundo comando solicita a senha administrativa do PostgreSQL de forma oculta,
-cria ou atualiza o banco e grava somente a credencial limitada da aplicação no
-arquivo local apropriado. Use
+No Ubuntu Server 24.04 x86_64:
+
+```bash
+sudo ./scripts/setup.sh --install-root /opt/tenable-reports
+```
+
+Ambos os instaladores validam o manifesto, trabalham sem acesso à internet e são
+idempotentes. Eles instalam o runtime completo, preparam o banco e gravam somente
+a credencial limitada da aplicação no arquivo local apropriado. Use
 [credentials/database.env.example](../credentials/database.env.example) como
-referência de nomes, sem colocar a senha real no arquivo de exemplo.
+referência de nomes, sem colocar a senha real no arquivo de exemplo. A instalação
+não inicia coleta, interface ou agenda. Procedimento completo, matriz e limitações
+estão no [guia de implantação](25-implantacao-windows-linux.md).
+
+O instalador Linux é não interativo e encerra com falha se o diagnóstico final não
+estiver apto à publicação. Para repetir essa validação manualmente, use:
+
+```bash
+/opt/tenable-reports/.venv/bin/python -m tenable_reports \
+  environment-status --json --require-ready \
+  --root /opt/tenable-reports \
+  --database-env-file /opt/tenable-reports/credentials/database.env \
+  --persistent-root /opt/tenable-reports/data \
+  --libreoffice /opt/libreoffice26.2/program/soffice
+```
+
+Um `WARNING` exclusivamente do agendador não bloqueia a geração manual; qualquer
+`official_publication_ready: false` retorna código `2` e precisa ser corrigido.
 
 ### Driver PostgreSQL no Windows
 
@@ -53,9 +78,16 @@ instalação local do PostgreSQL antes de iniciar uma operação.
 
 ## Iniciar a interface
 
+No Windows:
+
 ```powershell
-cd C:\Codex\RelatorioTenableMensalv2
 powershell.exe -ExecutionPolicy Bypass -File ".\scripts\run_web.ps1"
+```
+
+No Linux:
+
+```bash
+./scripts/run_web.sh
 ```
 
 O painel local fica em `http://127.0.0.1:8765`. Se uma alteração recente não
@@ -356,14 +388,26 @@ a chamada idempotente: repetir o script acompanha ou retorna a mesma família.
 
 No painel **Admin → Automação mensal**:
 
-1. ajuste e salve o horário; isso não cria lote nem altera o Windows;
+1. ajuste e salve o horário; isso não cria lote nem altera o agendador;
 2. use **Validar sem executar** e confira competência e clientes elegíveis;
 3. use **Sincronizar tarefa** somente após a confirmação exibida;
 4. ative ou desative a tarefa separadamente.
 
-O script executado é `scripts/run_monthly_orchestration.ps1`; a instalação manual
-continua disponível em `scripts/install_monthly_task.ps1`. VM, WAS e Cloud usam a
+No Windows, o adaptador usa o Agendador de Tarefas e
+`scripts/run_monthly_orchestration.ps1`. No Linux, usa um timer de usuário do
+`systemd`; não usa `cron`. O timer pode continuar sem sessão aberta quando o
+administrador instalar com `--enable-linger-for <usuário>`. VM, WAS e Cloud usam a
 mesma política 10h + 10h + 10h condicional do botão **Gerar todos**.
+
+## Backup e transferência entre máquinas
+
+Use `deployment-export` para criar fora do projeto um pacote com dump PostgreSQL,
+configurações sem segredos, documentos, manifestos e referências `MAIN`. No
+destino, execute primeiro `deployment-import --dry-run`; nenhuma escrita é feita.
+Somente depois de validar todas as contagens, aplique com `--apply --confirm
+"IMPORT <transfer_id>"`. Chaves e senhas nunca seguem no arquivo e devem ser
+reprovisionadas localmente. Não copie o banco ou `data` manualmente. O procedimento
+completo está em [Implantação Windows e Linux](25-implantacao-windows-linux.md).
 
 ## Acompanhar progresso
 
@@ -429,12 +473,18 @@ catálogo oficial. Se nenhuma linha exibida tiver correspondência, a coluna int
 é omitida. Isso não significa falha da coleta WAS e não deve ser interpretado como
 categoria OWASP ausente.
 
-Nas tabelas **OWASP Top 10**, valide as colunas **Severidade** e **VPR** com os
-dados WAS já preservados. O primeiro item deve possuir o maior VPR da categoria;
+Nas tabelas **OWASP Top 10:2025**, valide as colunas **Severidade** e **VPR** com os
+dados WAS e o catálogo de detalhes de plugins já preservados. O primeiro item deve
+possuir o maior VPR da categoria;
 a quantidade de instâncias não define mais a ordem principal. Em igualdade de VPR,
 a aplicação usa severidade, instâncias e Plugin ID como desempates determinísticos.
 VPR ausente aparece como `0` no Word, mas continua nulo no dataset e é posicionado
 depois de qualquer VPR real.
+
+Se a consulta de detalhe do plugin falhar, a execução registra
+`WAS_PLUGIN_CATALOG_UNAVAILABLE`; classificações de 2021 não são promovidas para
+2025 como fallback. Corrija a causa e repita o componente WAS antes de publicar
+uma seção OWASP que dependa desses plugins.
 
 ### Componentes e retentativas
 

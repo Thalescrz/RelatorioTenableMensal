@@ -18,6 +18,7 @@ htmlcov/
 .venv/
 .tmp/
 .worktrees/
+.visual-qa/
 *.log
 *.sqlite
 *.sqlite3
@@ -30,6 +31,8 @@ artifacts/
 data/
 outputs/
 reports_generated/
+deployment-transfers/
+*.tenable-transfer.zip
 clients/managed/
 orchestration/clients.json
 orchestration/analysts.json

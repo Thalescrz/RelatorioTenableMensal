@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import statistics
 import tempfile
 import unittest
 import zipfile
@@ -11,6 +12,7 @@ from pathlib import Path
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
+from PIL import Image as PilImage
 
 from tenable_reports.config.profile import load_client_profile
 from tenable_reports.presentation import base_report_docx as base
@@ -21,11 +23,14 @@ from tenable_reports.presentation.full_base_report_docx import (
     _simple_table,
     generate_full_base_report,
 )
+from tests.font_profile_helpers import assert_docx_uses_linux_fonts, linux_font_profile
+from tests.docx_table_assertions import assert_all_body_table_cells_centered
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "templates/corporate/base-v1.docx"
 ASSETS = ROOT / "templates/corporate/assets"
+PORTABLE_COVER_PATTERN = ASSETS / "brand-pattern-cover.png"
 FIXTURE = ROOT / "tests/fixtures/report-dataset-phase5.json"
 PROFILE = ROOT / "clients/examples/client-profile.json"
 
@@ -50,6 +55,212 @@ def _cell_fill(cell) -> str | None:
 
 
 class FullBaseReportDocxTests(unittest.TestCase):
+    def test_full_report_accepts_linux_font_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "linux-full.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=FIXTURE,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+                font_profile=linux_font_profile(),
+            )
+
+            assert_docx_uses_linux_fonts(output)
+
+    def test_full_report_centers_every_body_table_cell(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "centered-tables.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=FIXTURE,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+            )
+
+            assert_all_body_table_cells_centered(Document(output))
+
+    def test_linux_report_uses_portable_cover_artwork_and_balanced_back_cover(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "linux-back-cover.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=FIXTURE,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+                font_profile=linux_font_profile(),
+            )
+
+            document = Document(output)
+            back_cover = [
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.style is not None
+                and paragraph.style.style_id == "BackCoverBody"
+            ]
+            drawing_names = [
+                tuple(paragraph._p.xpath(".//wp:docPr/@name"))
+                for paragraph in back_cover
+            ]
+            logo_index = drawing_names.index(("Imagem 13",))
+            pattern_index = drawing_names.index(("Imagem 23",))
+            footer_index = next(
+                index
+                for index in range(pattern_index + 1, len(back_cover))
+                if drawing_names[index]
+            )
+            top_spacers = back_cover[:logo_index]
+            footer_spacers = back_cover[pattern_index + 1 : footer_index]
+            middle_spacers = [
+                paragraph
+                for paragraph in back_cover[logo_index + 1 : pattern_index]
+                if not paragraph.text.strip()
+                and not paragraph._p.xpath(".//w:drawing | .//w:pict")
+            ]
+            self.assertEqual(len(top_spacers), 4)
+            self.assertEqual(len(footer_spacers), 13)
+            self.assertEqual(
+                {
+                    paragraph.paragraph_format.line_spacing.pt
+                    for paragraph in top_spacers
+                },
+                {12.5},
+            )
+            self.assertEqual(
+                {
+                    paragraph.paragraph_format.line_spacing.pt
+                    for paragraph in middle_spacers
+                },
+                {9.0},
+            )
+            self.assertEqual(
+                {
+                    paragraph.paragraph_format.line_spacing.pt
+                    for paragraph in footer_spacers
+                },
+                {16.0},
+            )
+            message = next(
+                paragraph
+                for paragraph in back_cover
+                if "SUA MELHOR ALIADA" in paragraph.text
+            )
+            self.assertEqual(
+                message.text.splitlines(),
+                [
+                    "SUA MELHOR ALIADA ",
+                    "NA JORNADA DA PROTEÇÃO",
+                    "DIGITAL.",
+                ],
+            )
+            logo_anchor = back_cover[logo_index]._p.xpath(".//wp:anchor")[0]
+            self.assertEqual(
+                len(logo_anchor.xpath("./wp:wrapTopAndBottom")),
+                1,
+                "o slogan deve começar abaixo da logomarca, sem contorná-la",
+            )
+            self.assertFalse(logo_anchor.xpath("./wp:wrapSquare"))
+
+            cover_blip = document._element.body.xpath(
+                './/wp:docPr[@name="Picture 8"]/ancestor::w:drawing//a:blip'
+            )[0]
+            back_cover_blip = document._element.body.xpath(
+                './/wp:docPr[@name="Imagem 23"]/ancestor::w:drawing//a:blip'
+            )[0]
+            cover_relation = cover_blip.get(qn("r:embed"))
+            back_cover_relation = back_cover_blip.get(qn("r:embed"))
+            self.assertNotEqual(cover_relation, back_cover_relation)
+            self.assertTrue(
+                str(document.part.related_parts[cover_relation].partname).endswith(
+                    ".png"
+                )
+            )
+            self.assertEqual(
+                document.part.related_parts[cover_relation].blob,
+                PORTABLE_COVER_PATTERN.read_bytes(),
+            )
+
+            with PilImage.open(PORTABLE_COVER_PATTERN) as pattern:
+                source = pattern.convert("RGBA")
+            white = PilImage.new("RGBA", source.size, "white")
+            white.alpha_composite(source)
+            effective_cover = white.convert("RGB").resize(
+                (510, 129),
+                PilImage.Resampling.LANCZOS,
+            )
+            visible_pixels = [
+                pixel
+                for pixel in effective_cover.get_flattened_data()
+                if 255 - min(pixel) > 20
+            ]
+            self.assertTrue(visible_pixels)
+            self.assertLessEqual(
+                statistics.median(pixel[0] for pixel in visible_pixels),
+                100,
+            )
+            self.assertLessEqual(
+                statistics.median(pixel[1] for pixel in visible_pixels),
+                140,
+            )
+            self.assertEqual(
+                statistics.median(pixel[2] for pixel in visible_pixels),
+                255,
+            )
+
+            with zipfile.ZipFile(output) as package:
+                document_xml = package.read("word/document.xml").decode("utf-8")
+            self.assertNotIn("obrigado pela atenção.", document_xml.casefold())
+
+    def test_linux_report_spaces_back_cover_contact_columns_evenly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "linux-back-cover-contacts.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=FIXTURE,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+                font_profile=linux_font_profile(),
+            )
+
+            document = Document(output)
+            contacts = next(
+                table
+                for table in document.tables
+                if "FORTALEZA" in "\n".join(cell.text for cell in table.row_cells(0))
+                and "PORTUGAL" in "\n".join(cell.text for cell in table.row_cells(0))
+            )
+            widths = [
+                int(column.get(qn("w:w")))
+                for column in contacts._tbl.tblGrid.findall(qn("w:gridCol"))
+            ]
+            centers = (
+                widths[0] / 2,
+                widths[0] + widths[1] / 2,
+                widths[0] + widths[1] + widths[2] / 2,
+            )
+
+            self.assertAlmostEqual(
+                centers[1] - centers[0],
+                centers[2] - centers[1],
+                delta=1,
+                msg="os três contatos devem manter o mesmo intervalo horizontal",
+            )
+            table_width = contacts._tbl.tblPr.find(qn("w:tblW"))
+            self.assertIsNotNone(table_width)
+            self.assertEqual(int(table_width.get(qn("w:w"))), sum(widths))
+
     def test_full_report_justifies_narrative_text_without_justifying_headings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "justified-narrative.docx"
@@ -640,7 +851,7 @@ class FullBaseReportDocxTests(unittest.TestCase):
                     "top_resurfaced_vulnerabilities": {**common, "states": ["REOPENED"], "date_fields": ["Resurfaced Date"], "rule": "Agrupar por Plugin ID ressurgido"},
                     "was_applications": {**common, "states": ["OPEN", "REOPENED"], "date_fields": ["Last Seen"], "rule": "Agrupar por aplicação WEB"},
                     "was_top_vulnerabilities": {**common, "states": ["OPEN", "REOPENED"], "date_fields": ["Last Seen"], "rule": "Agrupar por Plugin ID WEB"},
-                    "was_owasp": {**common, "states": ["OPEN", "REOPENED"], "date_fields": ["Last Seen"], "rule": "Agrupar pela categoria OWASP 2021"},
+                    "was_owasp": {**common, "states": ["OPEN", "REOPENED"], "date_fields": ["Last Seen"], "rule": "Agrupar pela categoria OWASP 2025"},
                     "top_web_vulnerabilities": {**common, "states": ["OPEN", "REOPENED"], "date_fields": ["Last Seen"], "rule": "Hosts por Plugin ID WEB"},
                     "by_operating_system": {**common, "validation_queries": [
                         {"label": "Não mitigadas", "states": ["OPEN", "REOPENED"], "date_fields": ["Last Seen"]},
@@ -699,7 +910,7 @@ class FullBaseReportDocxTests(unittest.TestCase):
             for marker in (
                 "Resumo geral do período",
                 "Plugin ID = 900001",
-                "OWASP 2021 = A01",
+                "OWASP 2025 = A01",
                 "Faixas de CVSS v3",
                 "Faixas calculadas desde First Seen",
                 "Flags individuais de framework",
@@ -707,6 +918,9 @@ class FullBaseReportDocxTests(unittest.TestCase):
                 "State = Resurfaced; Severity = Critical, High, Medium, Low; Resurfaced Date = 01/07/2026 a 31/07/2026",
             ):
                 self.assertIn(marker, text)
+            self.assertIn("A10 - Mishandling of Exceptional Conditions", text)
+            self.assertIn("6.3.1. OWASP Top 10:2025", text)
+            self.assertNotIn("A10 - Server-Side Request Forgery", text)
 
             owasp_table = next(
                 table
@@ -815,6 +1029,37 @@ class FullBaseReportDocxTests(unittest.TestCase):
             self.assertEqual(
                 text.count("Neste mês não foram identificadas vulnerabilidades relacionadas a esta categoria OWASP."),
                 10,
+            )
+
+    def test_unavailable_owasp_2025_catalog_is_not_presented_as_zero_findings(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            dataset = json.loads(FIXTURE.read_text(encoding="utf-8"))
+            dataset.setdefault("was", {})["owasp_2025_coverage"] = {
+                "status": "UNAVAILABLE",
+                "plugin_ids_total": 4,
+                "plugin_ids_observed": 0,
+            }
+            dataset_path = Path(directory) / "owasp-unavailable.json"
+            dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+            output = Path(directory) / "owasp-unavailable.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=dataset_path,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+            )
+
+            text = all_document_text(Document(output))
+            self.assertIn(
+                "A classificação OWASP Top 10:2025 não estava disponível",
+                text,
+            )
+            self.assertNotIn(
+                "Neste mês não foram identificadas vulnerabilidades relacionadas a esta categoria OWASP.",
+                text,
             )
 
     def test_empty_framework_does_not_add_an_orphan_validation_note(self) -> None:

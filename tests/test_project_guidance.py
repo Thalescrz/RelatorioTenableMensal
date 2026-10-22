@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tools.validate_project_guidance import validate_guidance
@@ -18,6 +20,7 @@ REQUIRED_FILES = (
     "docs/22-guia-operacional.md",
     "docs/23-guia-de-desenvolvimento.md",
     "docs/24-integracao-apis-tenable-cloud-e-licenciamento.md",
+    "docs/25-implantacao-windows-linux.md",
     "AGENTS.md",
     "src/tenable_reports/AGENTS.md",
     "tests/AGENTS.md",
@@ -123,6 +126,27 @@ class ProjectGuidanceTests(unittest.TestCase):
         runtime.write_text("[Ausente](arquivo.md)\n", encoding="utf-8")
 
         self.assertEqual(validate_guidance(self.root), ())
+
+    def test_ignores_offline_release_copies(self) -> None:
+        self.write_minimum_valid_tree()
+        release_copy = (
+            self.root
+            / "deployment-transfers/releases/linux/tenable-reports/docs/README.md"
+        )
+        release_copy.parent.mkdir(parents=True)
+        release_copy.write_text("[Ausente](../tests/AGENTS.md)\n", encoding="utf-8")
+
+        excluded_root = self.root / "deployment-transfers"
+        original_scandir = os.scandir
+
+        def guarded_scandir(path):
+            candidate = Path(path)
+            if candidate == excluded_root or excluded_root in candidate.parents:
+                raise AssertionError("offline release directory was traversed")
+            return original_scandir(path)
+
+        with mock.patch("os.scandir", side_effect=guarded_scandir):
+            self.assertEqual(validate_guidance(self.root), ())
 
     def test_ignores_links_inside_fenced_code_blocks(self) -> None:
         self.write_minimum_valid_tree()
@@ -266,5 +290,38 @@ class ProjectGuidanceTests(unittest.TestCase):
             "fila sequencial",
         ):
             self.assertIn(required, documentation)
+
+    def test_current_guidance_documents_cover_offline_cross_platform_deployment(self) -> None:
+        project_root = Path(__file__).resolve().parents[1]
+        documentation = "\n".join(
+            (project_root / relative).read_text(encoding="utf-8")
+            for relative in (
+                "README.md",
+                "CONTEXTO.md",
+                "docs/20-arquitetura-e-fluxo-de-dados.md",
+                "docs/22-guia-operacional.md",
+                "docs/23-guia-de-desenvolvimento.md",
+                "docs/25-implantacao-windows-linux.md",
+                "templates/corporate/README.md",
+            )
+        )
+
+        for required in (
+            "Windows x86_64",
+            "Ubuntu Server 24.04 x86_64",
+            "windows-calibri-v1",
+            "linux-carlito-v1",
+            "build_offline_bundle.py",
+            "verify_offline_bundle.py",
+            "deployment-export",
+            "deployment-import",
+            "IMPORT <transfer_id>",
+            "systemd",
+            "sem acesso à internet",
+            "não inicia coleta",
+        ):
+            self.assertIn(required, documentation)
+
+
 if __name__ == "__main__":
     unittest.main()

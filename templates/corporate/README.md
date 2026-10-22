@@ -17,7 +17,9 @@ controle documental.
 - cabeçalho e rodapé internos oficiais, com cliente dinâmico;
 - estilos semânticos de título;
 - texto narrativo do corpo justificado, sem alterar o alinhamento próprio de
-  títulos, listas, notas, tabelas, gráficos e páginas institucionais;
+  títulos, listas, notas, gráficos e páginas institucionais;
+- todas as células das tabelas de dados do corpo centralizadas horizontal e
+  verticalmente, sem modificar as tabelas estruturais de cabeçalho e rodapé;
 - sumário materializado e navegável após a capa, criado a partir de `Heading 1` a
   `Heading 3` sem depender de atualização manual no Word;
 - oito seções principais do relatório-base numeradas explicitamente de `1` a `8`;
@@ -26,7 +28,41 @@ controle documental.
 - `Output` ausente por padrão;
 - campos dinâmicos expressos por tokens `{{...}}`.
 
-Os PNG em `assets/` foram extraídos dos materiais fornecidos pelo usuário e são usados somente para identidade visual do relatório.
+## Perfis tipográficos por plataforma
+
+O shell é semanticamente único, mas a tipografia é materializada pelo perfil de
+runtime. Windows x86_64 usa `windows-calibri-v1`, validando primeiro Calibri e
+Arial já licenciadas no host e aceitando payload opcional somente quando completo,
+autorizado e compatível com os hashes aprovados. Ubuntu Server 24.04 x86_64 usa
+`linux-carlito-v1`, com Carlito e Liberation Sans redistribuíveis dentro do pacote.
+Fonte ausente bloqueia o preflight: o gerador
+não escolhe outra família silenciosamente.
+
+A baseline visual Windows preserva o resultado aprovado. A baseline Linux é uma
+referência separada, pois a métrica de Carlito pode produzir quebras de linha e
+paginação próprias. Toda mudança no shell ou no perfil exige geração dos quatro
+tipos de relatório, renderização pelo LibreOffice fixado e comparação visual por
+plataforma.
+
+Na materialização com `linux-carlito-v1`, o EMF decorativo da capa é substituído
+por `assets/brand-pattern-cover.png`, rasterização da mesma arte na dimensão
+efetiva de exibição, com fundo branco opaco e traço azul corporativo reforçado.
+Essa forma evita tanto a interpretação verde/roxa da paleta EMF pelo LibreOffice
+Linux quanto a dessaturação acinzentada causada pela redução de um traço de um
+pixel. A contracapa usa espaçadores de 12,5 pt antes da logomarca, 9 pt no bloco
+central e 16 pt antes dos contatos. A mensagem institucional recebe uma quebra
+controlada antes de `DIGITAL.`, e a logomarca usa contorno acima/abaixo para que a
+frase comece inteira na linha seguinte. A seção final possui cabeçalhos e rodapés
+vazios próprios nas variantes padrão, primeira e par, impedindo que os elementos
+internos sejam herdados na contracapa. O pequeno texto decorativo que o LibreOffice
+Linux recortava fora da página é omitido nesse perfil. A tabela institucional usa
+três colunas com centros equidistantes, aproximando Portugal do mesmo ritmo visual
+de Fortaleza e Belém. Essas regras mantêm mensagem, contatos e identidade em uma
+única página sem alterar o perfil
+`windows-calibri-v1`.
+
+Os PNG em `assets/` foram extraídos ou rasterizados dos materiais fornecidos pelo
+usuário e são usados somente para identidade visual do relatório.
 
 ## Reconstrução
 

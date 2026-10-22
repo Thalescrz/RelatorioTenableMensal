@@ -14,6 +14,16 @@ from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
 
 from tenable_reports.application.execution_control import FileExecutionControl
+from tenable_reports.application.environment_preflight import (
+    CapabilityStatus,
+    run_environment_preflight,
+)
+from tenable_reports.application.deployment_transfer import (
+    apply_deployment_import,
+    create_deployment_export,
+    plan_deployment_export,
+    plan_deployment_import,
+)
 from tenable_reports.application.collect import (
     AssetExportRequest,
     VulnerabilityExportRequest,
@@ -114,6 +124,7 @@ from tenable_reports.application.report_dataset import (
     load_report_dataset_inputs,
 )
 from tenable_reports.infrastructure.jsonl_io import resolve_jsonl_artifact
+from tenable_reports.infrastructure.runtime_platform import detect_runtime_platform
 from tenable_reports.application.tag_report_dataset import (
     build_tag_report_datasets_from_snapshot,
 )
@@ -215,6 +226,9 @@ from tenable_reports.infrastructure.postgresql import (
     PostgresOperationsRepository,
     PostgresSnapshotRepository,
     provision_postgresql,
+)
+from tenable_reports.infrastructure.postgresql_backup import (
+    PostgreSQLBackupManager,
 )
 from tenable_reports.infrastructure.report_registry_postgresql import (
     PostgresReportRegistry,
@@ -603,6 +617,82 @@ def _load_database_config(
             )
         return None
     return DatabaseConfig.from_environment()
+
+
+_OFFICIAL_ENVIRONMENT_COMMANDS = frozenset(
+    {
+        "build-client",
+        "collect-client",
+        "collect-component",
+        "collect-monthly",
+        "orchestrate",
+        "resume-was",
+        "retry-cloud",
+        "retry-components",
+        "run-client",
+        "run-monthly-batch",
+    }
+)
+
+
+def _preflight_configuration(
+    args: argparse.Namespace,
+) -> tuple[Path, tuple[Path, ...], DatabaseConfig | None, Path | None]:
+    root = Path(getattr(args, "project_root", ".") or ".").resolve()
+    database_env_file = getattr(args, "database_env_file", None)
+    output_root = getattr(args, "output_root", None)
+    if args.command in {"orchestrate", "run-monthly-batch"}:
+        orchestration_path = Path(args.config)
+        if not orchestration_path.is_absolute():
+            orchestration_path = (root / orchestration_path).resolve()
+        orchestration = load_orchestration_config(orchestration_path)
+        database_env_file = orchestration.database_env_file
+        output_root = orchestration.output_root
+    database = _load_database_config(database_env_file, required=False)
+    configured_roots = getattr(args, "persistent_roots", None)
+    if configured_roots:
+        roots = tuple(
+            path if path.is_absolute() else (root / path).resolve()
+            for path in (Path(item) for item in configured_roots)
+        )
+    else:
+        storage = Path(output_root or "data")
+        roots = (
+            storage if storage.is_absolute() else (root / storage).resolve(),
+        )
+    explicit_office = getattr(args, "libreoffice", None)
+    return (
+        root,
+        roots,
+        database,
+        Path(explicit_office) if explicit_office else None,
+    )
+
+
+def _runtime_capabilities_for_args(
+    args: argparse.Namespace,
+    *,
+    diagnostic_only: bool,
+):
+    root, roots, database, explicit_office = _preflight_configuration(args)
+    return run_environment_preflight(
+        platform_info=detect_runtime_platform(),
+        persistent_roots=roots,
+        database_config=database,
+        explicit_libreoffice=explicit_office,
+        portable_libreoffice=(
+            root / "vendor" / "libreoffice" / "program" / "soffice.exe"
+        ),
+        scheduler_status=CapabilityStatus.WARNING,
+        diagnostic_only=diagnostic_only,
+    )
+
+
+def _require_official_environment(args: argparse.Namespace) -> None:
+    _runtime_capabilities_for_args(
+        args,
+        diagnostic_only=False,
+    ).require_official_publication()
 
 
 def _history_repository(
@@ -5543,6 +5633,126 @@ def command_run_monthly_batch(args: argparse.Namespace) -> int:
     return 1 if incomplete else 0
 
 
+def _deployment_identity(project_root: Path, *, create: bool) -> str | None:
+    path = project_root / "data" / ".deployment-identity"
+    if path.is_file():
+        identity = path.read_text(encoding="utf-8").strip()
+        if identity:
+            return identity
+    if not create:
+        return None
+    identity = uuid.uuid4().hex
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(identity + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return identity
+
+
+def _deployment_runtime_versions(project_root: Path) -> dict[str, str]:
+    manifest_path = project_root / "deploy" / "runtime-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("RUNTIME_MANIFEST_INVALID") from exc
+    return {
+        "application": "0.1.0",
+        "python": str(manifest.get("python_version") or ""),
+        "libreoffice": str(manifest.get("libreoffice_version") or ""),
+        "postgresql": str(manifest.get("postgresql_version") or ""),
+    }
+
+
+def _export_backup_manager(config: DatabaseConfig) -> PostgreSQLBackupManager:
+    admin = DatabaseAdminConfig(
+        host=config.host,
+        port=config.port,
+        database="postgres",
+        user=config.user,
+        password=config.password,
+        sslmode=config.sslmode,
+        connect_timeout=config.connect_timeout,
+    )
+    return PostgreSQLBackupManager(application=config, admin=admin)
+
+
+def command_deployment_export(args: argparse.Namespace) -> int:
+    root = Path(args.project_root).resolve()
+    config = _load_database_config(args.database_env_file, required=True)
+    if config is None:
+        raise EnvironmentError("Configuracao PostgreSQL ausente.")
+    database = _export_backup_manager(config)
+    identity = _deployment_identity(root, create=True)
+    if identity is None:  # pragma: no cover - defesa adicional
+        raise RuntimeError("TRANSFER_IDENTITY_INVALID")
+    plan = plan_deployment_export(
+        project_root=root,
+        destination=args.destination,
+        database_snapshot=database.inventory(),
+        source_identity=identity,
+        runtime_versions=_deployment_runtime_versions(root),
+        include_staging=bool(args.include_staging),
+    )
+    result = create_deployment_export(plan, database=database)
+    print(json.dumps({
+        "status": result.status,
+        "archive": result.destination.name,
+        "transfer_id": result.transfer_id,
+        "file_count": result.file_count,
+        "reprovision_required": list(plan.reprovision_required),
+    }, ensure_ascii=False))
+    return 0
+
+
+def command_deployment_import(args: argparse.Namespace) -> int:
+    root = Path(args.project_root).resolve()
+    plan = plan_deployment_import(
+        archive=args.archive,
+        project_root=root,
+        destination_identity=_deployment_identity(root, create=False),
+        supported_schema_versions=tuple(
+            path.name
+            for path in sorted(
+                (
+                    Path(__file__).resolve().parent
+                    / "infrastructure"
+                    / "postgresql_migrations"
+                ).glob("*.sql")
+            )
+        ),
+    )
+    if not args.apply:
+        print(json.dumps({
+            "status": "DRY_RUN",
+            "transfer_id": plan.manifest.transfer_id,
+            "file_count": len(plan.manifest.files),
+            "required_bytes": plan.required_bytes,
+            "confirmation_phrase": plan.confirmation_phrase,
+            "reprovision_required": list(plan.manifest.reprovision_required),
+        }, ensure_ascii=False))
+        return 0
+    config = _load_database_config(args.database_env_file, required=True)
+    if config is None:
+        raise EnvironmentError("Configuracao PostgreSQL ausente.")
+    load_dotenv_file(args.admin_env_file, override=False)
+    database = PostgreSQLBackupManager(
+        application=config,
+        admin=DatabaseAdminConfig.from_environment(),
+    )
+    result = apply_deployment_import(
+        plan,
+        database=database,
+        confirmation=str(args.confirmation or ""),
+    )
+    print(json.dumps({
+        "status": result.status,
+        "transfer_id": result.transfer_id,
+        "imported_files": result.imported_files,
+        "reprovision_required": list(plan.manifest.reprovision_required),
+    }, ensure_ascii=False))
+    return 0
+
+
 def command_database_bootstrap(args: argparse.Namespace) -> int:
     load_dotenv_file(args.database_env_file, override=True)
     load_dotenv_file(args.admin_env_file, override=False)
@@ -5575,6 +5785,27 @@ def command_database_status(args: argparse.Namespace) -> int:
     database = PostgresDatabase(config)
     database.apply_migrations()
     print(json.dumps({"status": "complete", **database.status()}, ensure_ascii=False))
+    return 0
+
+
+def command_environment_status(args: argparse.Namespace) -> int:
+    capabilities = _runtime_capabilities_for_args(
+        args,
+        diagnostic_only=True,
+    )
+    payload = capabilities.to_dict()
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        print(f"Ambiente: {payload['status']}")
+        print(
+            "Publicação oficial: "
+            + ("disponível" if payload["official_publication_ready"] else "bloqueada")
+        )
+        for issue in payload["issues"]:
+            print(f"- {issue['code']}: {issue['message']}")
+    if args.require_ready and not payload["official_publication_ready"]:
+        return 2
     return 0
 
 
@@ -6387,6 +6618,50 @@ def build_parser() -> argparse.ArgumentParser:
     orchestrate.add_argument("--confirm-live-api", action="store_true")
     orchestrate.set_defaults(handler=command_orchestrate)
 
+    deployment_export = subparsers.add_parser(
+        "deployment-export",
+        help="Cria pacote operacional offline sem copiar credenciais.",
+    )
+    deployment_export.add_argument("--project-root", default=".")
+    deployment_export.add_argument("--destination", required=True)
+    deployment_export.add_argument(
+        "--database-env-file", default="credentials/database.env"
+    )
+    deployment_export.add_argument(
+        "--include-staging",
+        action="store_true",
+        help="Inclui staging recuperável sob analysis_artifacts.",
+    )
+    deployment_export.set_defaults(handler=command_deployment_export)
+
+    deployment_import = subparsers.add_parser(
+        "deployment-import",
+        help="Valida ou aplica um pacote operacional em duas fases.",
+    )
+    deployment_import.add_argument("--project-root", default=".")
+    deployment_import.add_argument("--archive", required=True)
+    deployment_import.add_argument(
+        "--database-env-file", default="credentials/database.env"
+    )
+    deployment_import.add_argument(
+        "--admin-env-file", default="credentials/postgresql-admin.env"
+    )
+    deployment_import.add_argument("--confirm", dest="confirmation")
+    deployment_import_mode = deployment_import.add_mutually_exclusive_group()
+    deployment_import_mode.add_argument(
+        "--dry-run",
+        dest="apply",
+        action="store_false",
+        help="Valida integralmente sem escrever (padrão).",
+    )
+    deployment_import_mode.add_argument(
+        "--apply",
+        dest="apply",
+        action="store_true",
+        help="Aplica após confirmação exata mostrada pelo dry-run.",
+    )
+    deployment_import.set_defaults(apply=False, handler=command_deployment_import)
+
     database_bootstrap = subparsers.add_parser(
         "database-bootstrap",
         help="Cria o papel, o banco e o schema PostgreSQL com menor privilegio.",
@@ -6416,6 +6691,30 @@ def build_parser() -> argparse.ArgumentParser:
         "--database-env-file", default="credentials/database.env"
     )
     database_status.set_defaults(handler=command_database_status)
+
+    environment_status = subparsers.add_parser(
+        "environment-status",
+        help="Diagnostica plataforma, fontes, LibreOffice, banco e armazenamento.",
+    )
+    environment_status.add_argument("--root", dest="project_root", default=".")
+    environment_status.add_argument(
+        "--database-env-file",
+        default="credentials/database.env",
+    )
+    environment_status.add_argument(
+        "--persistent-root",
+        dest="persistent_roots",
+        action="append",
+        help="Raiz persistente a validar; pode ser repetida. Padrão: data.",
+    )
+    environment_status.add_argument("--libreoffice")
+    environment_status.add_argument("--json", action="store_true")
+    environment_status.add_argument(
+        "--require-ready",
+        action="store_true",
+        help="Retorna código diferente de zero quando a publicação oficial está bloqueada.",
+    )
+    environment_status.set_defaults(handler=command_environment_status)
 
     import_recovery = subparsers.add_parser(
         "import-web-batch-recovery",
@@ -6504,6 +6803,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     _configure_logging(args.verbose)
     try:
+        requires_preflight = args.command in _OFFICIAL_ENVIRONMENT_COMMANDS
+        if getattr(args, "dry_run", False):
+            requires_preflight = False
+        if hasattr(args, "confirm_live_api") and not args.confirm_live_api:
+            requires_preflight = False
+        if requires_preflight:
+            _require_official_environment(args)
         return int(args.handler(args))
     except (
         ProfileError,

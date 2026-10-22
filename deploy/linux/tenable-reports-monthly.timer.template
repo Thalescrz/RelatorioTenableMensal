@@ -1,0 +1,11 @@
+[Unit]
+Description=Relatorios Tenable - agenda mensal
+
+[Timer]
+OnCalendar={on_calendar}
+Persistent=true
+AccuracySec=1min
+Unit=tenable-reports-monthly.service
+
+[Install]
+WantedBy=timers.target

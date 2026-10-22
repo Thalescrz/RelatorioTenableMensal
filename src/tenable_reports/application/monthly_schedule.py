@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from tenable_reports.application.monthly_batch import MonthlyBatchRequest, monthly_idempotency_key
 from tenable_reports.config.monthly_schedule import MonthlyScheduleConfig
+from tenable_reports.infrastructure.monthly_scheduler import SchedulerBackend
 
 
 MONTHLY_SCHEDULE_CONFIRMATION = "SINCRONIZAR AUTOMACAO MENSAL"
@@ -46,11 +47,20 @@ class MonthlyScheduleService:
             "eligible_client_count": len(eligible),
         }
 
+    @staticmethod
+    def _scheduler_payload(state: Any) -> dict[str, Any]:
+        mapping = state.to_mapping()
+        payload: dict[str, Any] = {"scheduler": mapping}
+        if mapping.get("backend") == SchedulerBackend.WINDOWS_TASK_SCHEDULER.value:
+            payload["windows_task"] = mapping
+        return payload
+
     def status(self) -> dict[str, Any]:
         config = self.store.monthly_schedule()
+        state = self.scheduler.query(config)
         return {
             "config": config.to_mapping(),
-            "windows_task": self.scheduler.query(config).to_mapping(),
+            **self._scheduler_payload(state),
             "confirmation": MONTHLY_SCHEDULE_CONFIRMATION,
             **self._preview(config),
         }
@@ -75,7 +85,11 @@ class MonthlyScheduleService:
         self._confirm(confirmation)
         config = self.store.monthly_schedule()
         state = self.scheduler.apply(config)
-        return {"config": config.to_mapping(), "windows_task": state.to_mapping(), **self._preview(config)}
+        return {
+            "config": config.to_mapping(),
+            **self._scheduler_payload(state),
+            **self._preview(config),
+        }
 
     def set_enabled(self, enabled: bool, confirmation: str) -> dict[str, Any]:
         self._confirm(confirmation)
@@ -83,4 +97,8 @@ class MonthlyScheduleService:
         config = replace(current, enabled=bool(enabled))
         state = self.scheduler.set_enabled(config, bool(enabled))
         self.store.save_monthly_schedule(config)
-        return {"config": config.to_mapping(), "windows_task": state.to_mapping(), **self._preview(config)}
+        return {
+            "config": config.to_mapping(),
+            **self._scheduler_payload(state),
+            **self._preview(config),
+        }

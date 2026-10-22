@@ -24,6 +24,11 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 from tenable_reports.application.execution_control import FileExecutionControl
+from tenable_reports.application.environment_preflight import (
+    CapabilityStatus,
+    RuntimeCapabilities,
+    run_environment_preflight,
+)
 from tenable_reports.application.monthly_schedule import MonthlyScheduleService
 from tenable_reports.application.failures import sanitize_failure_message
 from tenable_reports.application.web_batches import (
@@ -122,6 +127,12 @@ from tenable_reports.infrastructure.postgresql import (
     PostgresOperationsRepository,
     SCHEMA_NAME,
 )
+from tenable_reports.infrastructure.runtime_platform import detect_runtime_platform
+from tenable_reports.infrastructure.monthly_scheduler import (
+    SchedulerBackend,
+    SchedulerStatus,
+    select_monthly_scheduler,
+)
 from tenable_reports.infrastructure.report_registry_postgresql import PostgresReportRegistry
 from tenable_reports.infrastructure.report_components_postgresql import (
     PostgresReportComponentRepository,
@@ -138,7 +149,6 @@ from tenable_reports.infrastructure.web_batches_postgresql import (
 from tenable_reports.infrastructure.web_batch_components_postgresql import (
     PostgresRemoteComponentRepository,
 )
-from tenable_reports.infrastructure.windows_task_scheduler import WindowsTaskScheduler
 from tenable_reports.domain.report_reference import READY_STATUS, reference_key_for_candidate
 from tenable_reports.domain.report_components import (
     ComponentAttempt,
@@ -2897,12 +2907,14 @@ class DashboardApplication:
         component_retry_enqueuer: Callable[..., Mapping[str, Any]] | None = None,
         require_durable_batches: bool = False,
         monthly_schedule_service: MonthlyScheduleService | None = None,
+        environment_preflight: Callable[[], None] | None = None,
+        environment_status_provider: Callable[[], RuntimeCapabilities] | None = None,
     ) -> None:
         self.project_root = project_root.resolve()
         self.config = DashboardConfigStore(project_root=self.project_root, config_path=config_path)
         self.monthly_schedule = monthly_schedule_service or MonthlyScheduleService(
             store=self.config,
-            scheduler=WindowsTaskScheduler(
+            scheduler=select_monthly_scheduler(
                 project_root=self.project_root,
                 config_path=self.config.config_path,
             ),
@@ -2950,6 +2962,8 @@ class DashboardApplication:
                 self.database.database
             )
         self.require_durable_batches = bool(require_durable_batches)
+        self.environment_preflight = environment_preflight
+        self.environment_status_provider = environment_status_provider
         if self.batch_repository is not None:
             eligible_client_count = sum(
                 bool(row.get("enabled")) and bool(row.get("credentials_ready"))
@@ -3052,6 +3066,36 @@ class DashboardApplication:
         if self._cleanup_status_recorder is None and self.database is not None:
             operations = PostgresOperationsRepository(self.database.database)
             self._cleanup_status_recorder = operations.record_cleanup_status
+
+    def environment_status(self) -> dict[str, Any]:
+        if self.environment_status_provider is None:
+            raise RuntimeError("Diagnóstico do ambiente indisponível.")
+        capabilities = self.environment_status_provider()
+        payload = capabilities.to_dict()
+        scheduler = self.monthly_schedule.scheduler
+        try:
+            scheduler_state = scheduler.query(self.config.monthly_schedule())
+            state = scheduler_state.to_mapping()
+            backend = state.get("backend")
+            actual_status = state.get("status")
+            enabled = state.get("enabled")
+        except Exception:
+            raw_backend = getattr(scheduler, "backend", SchedulerBackend.EXTERNAL)
+            backend = (
+                raw_backend.value
+                if isinstance(raw_backend, SchedulerBackend)
+                else str(raw_backend)
+            )
+            actual_status = SchedulerStatus.ERROR.value
+            enabled = None
+        scheduler_capability = payload.get("scheduler") or {}
+        payload["scheduler"] = {
+            "status": scheduler_capability.get("status", CapabilityStatus.WARNING.value),
+            "backend": backend,
+            "state": actual_status,
+            "enabled": enabled,
+        }
+        return payload
 
     def backfill_plan(self) -> MainBackfillPlan:
         if self.report_registry is None or self._backfill_state_provider is None:
@@ -3938,6 +3982,8 @@ class DashboardApplication:
         request: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
         run_scope = str(request.get("run_scope") or "single").strip().lower()
+        if self.environment_preflight is not None:
+            self.environment_preflight()
         if run_scope not in {"single", "all"}:
             raise ValueError("Escopo de execucao invalido.")
         request_mode = str(request.get("mode") or "manual").strip().lower()
@@ -4517,6 +4563,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "client_selection.js",
                 "batch_family_filters.js",
                 "monthly_schedule.js",
+                "environment_status.js",
                 "report_request_guard.js",
                 "dashboard_refresh.js",
                 "client_card.js",
@@ -4671,6 +4718,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json_error(
                     HTTPStatus.SERVICE_UNAVAILABLE,
                     _safe_error(str(exc), limit=500),
+                )
+            return
+        if parsed.path == "/api/admin/environment-status":
+            try:
+                self._json(HTTPStatus.OK, self.app.environment_status())
+            except Exception:
+                self._json_error(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "Não foi possível consultar o diagnóstico do ambiente.",
                 )
             return
         match = re.fullmatch(r"/api/clients/([^/]+)/reports", parsed.path)
@@ -5321,6 +5377,68 @@ class DashboardHTTPServer(ThreadingHTTPServer):
         self.app = app
 
 
+def _dashboard_environment_capabilities(
+    project_root: Path,
+    config_path: Path,
+) -> RuntimeCapabilities:
+    config = load_orchestration_config(config_path)
+    load_dotenv_file(config.database_env_file, override=True)
+    database = (
+        DatabaseConfig.from_environment()
+        if DatabaseConfig.is_configured()
+        else None
+    )
+    platform = detect_runtime_platform()
+    scheduler = select_monthly_scheduler(
+        project_root=project_root,
+        config_path=config_path,
+        platform_info=platform,
+    )
+    try:
+        scheduler_state = scheduler.query(
+            DashboardConfigStore(
+                project_root=project_root,
+                config_path=config_path,
+            ).monthly_schedule()
+        )
+        scheduler_status = (
+            CapabilityStatus.READY
+            if scheduler_state.status
+            in {SchedulerStatus.SYNCHRONIZED, SchedulerStatus.DISABLED}
+            else CapabilityStatus.WARNING
+        )
+    except Exception:
+        scheduler_status = CapabilityStatus.WARNING
+    office_name = (
+        "soffice.exe"
+        if platform.platform.value == "windows"
+        else "soffice"
+    )
+    return run_environment_preflight(
+        platform_info=platform,
+        persistent_roots=(config.output_root,),
+        database_config=database,
+        portable_libreoffice=(
+            project_root / "vendor" / "libreoffice" / "program" / office_name
+        ),
+        scheduler_status=scheduler_status,
+        diagnostic_only=True,
+    )
+
+
+def _dashboard_environment_guard(
+    project_root: Path,
+    config_path: Path,
+) -> Callable[[], None]:
+    def require_ready() -> None:
+        _dashboard_environment_capabilities(
+            project_root,
+            config_path,
+        ).require_official_publication()
+
+    return require_ready
+
+
 def serve_dashboard(
     *,
     project_root: str | Path,
@@ -5339,6 +5457,11 @@ def serve_dashboard(
         project_root=root,
         config_path=config,
         require_durable_batches=True,
+        environment_preflight=_dashboard_environment_guard(root, config),
+        environment_status_provider=lambda: _dashboard_environment_capabilities(
+            root,
+            config,
+        ),
     )
     server = DashboardHTTPServer((host, port), app)
     url = f"http://{host}:{port}"

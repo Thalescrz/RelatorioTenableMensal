@@ -14,6 +14,7 @@ from tenable_reports.presentation.base_report_docx import (
     create_base_template,
     generate_base_report,
 )
+from tests.font_profile_helpers import assert_docx_uses_linux_fonts, linux_font_profile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,23 @@ def all_text(document):
 
 
 class BaseReportDocxTests(unittest.TestCase):
+    def test_base_report_accepts_linux_font_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            template = Path(directory) / "base-v1.docx"
+            output = Path(directory) / "linux.docx"
+            create_base_template(template, assets_dir=ASSETS)
+
+            generate_base_report(
+                template_path=template,
+                dataset_path=FIXTURE,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                mask_sensitive=True,
+                font_profile=linux_font_profile(),
+            )
+
+            assert_docx_uses_linux_fonts(output)
+
     def test_template_and_sanitised_proof_follow_contract(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             template = Path(directory) / "base-v1.docx"

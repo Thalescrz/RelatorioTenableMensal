@@ -7,6 +7,11 @@
 
 ## Estado atual — 2026-08-28
 
+> **Atualização vigente em 2026-10-22:** a seção OWASP dos novos relatórios usa
+> OWASP Top 10:2025 a partir do detalhe oficial de cada plugin WAS. O catálogo
+> preserva o ano de cada associação e não relabela dados 2021. Consulte
+> [Catálogo de dados e métricas](21-catalogo-de-dados-e-metricas.md).
+
 WAS continua geral, opcional e independente de VM; ausência de produto, permissão
 ou achados não bloqueia os documentos VM. TAGs não filtram VM ou WAS gerais. As
 TAGs selecionadas agora podem gerar relatórios operacionais VM próprios, e o

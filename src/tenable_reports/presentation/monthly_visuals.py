@@ -5,10 +5,11 @@ from typing import Any, Mapping, Sequence
 
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Cm
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 from tenable_reports.presentation import base_report_docx as base
 from tenable_reports.presentation import full_base_report_docx as faithful
+from tenable_reports.presentation.font_profiles import FontProfile, load_image_font
 
 
 SEVERITY_SERIES = (
@@ -17,21 +18,6 @@ SEVERITY_SERIES = (
     ("medium", "Média", "#FFF200"),
     ("low", "Baixa", "#70AD47"),
 )
-
-
-def _font(size: int, bold: bool = False) -> Any:
-    candidates = (
-        Path(r"C:\Windows\Fonts\calibrib.ttf")
-        if bold
-        else Path(r"C:\Windows\Fonts\calibri.ttf"),
-        Path(r"C:\Windows\Fonts\arialbd.ttf")
-        if bold
-        else Path(r"C:\Windows\Fonts\arial.ttf"),
-    )
-    for candidate in candidates:
-        if candidate.is_file():
-            return ImageFont.truetype(str(candidate), size=size)
-    return ImageFont.load_default()
 
 
 def _optional_number(value: Any) -> int | None:
@@ -110,13 +96,15 @@ def _grouped_monthly_chart(
     title: str,
     rows: Sequence[Mapping[str, Any]],
     series: Sequence[tuple[str, str, str]],
+    *,
+    font_profile: FontProfile,
 ) -> None:
     width, height = 1500, 900
     image = Image.new("RGB", (width, height), "#292929")
     draw = ImageDraw.Draw(image)
-    title_font = _font(38, True)
-    label_font = _font(19, True)
-    small_font = _font(16)
+    title_font = load_image_font(font_profile.document, size=38, bold=True)
+    label_font = load_image_font(font_profile.document, size=19, bold=True)
+    small_font = load_image_font(font_profile.document, size=16)
     draw.text((width // 2, 38), title.upper(), font=title_font, fill="white", anchor="ma")
     left, top, right, bottom = 105, 150, width - 55, height - 205
     values = [
@@ -165,13 +153,14 @@ def _monthly_line_chart(
     history: Sequence[Mapping[str, Any]],
     *,
     value_key: str,
+    font_profile: FontProfile,
 ) -> None:
     width, height = 1500, 800
     image = Image.new("RGB", (width, height), "#176783")
     draw = ImageDraw.Draw(image)
-    title_font = _font(38, True)
-    label_font = _font(18, True)
-    small_font = _font(16)
+    title_font = load_image_font(font_profile.document, size=38, bold=True)
+    label_font = load_image_font(font_profile.document, size=18, bold=True)
+    small_font = load_image_font(font_profile.document, size=16)
     draw.text((width // 2, 35), title.upper(), font=title_font, fill="white", anchor="ma")
     left, top, right, bottom = 120, 150, width - 70, height - 175
     values = [
@@ -217,6 +206,8 @@ def render_monthly_visual_bundle(
     rows: Sequence[Mapping[str, Any]],
     output_dir: str | Path,
     scope_label: str,
+    *,
+    font_profile: FontProfile,
 ) -> int:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -247,6 +238,7 @@ def render_monthly_visual_bundle(
             ("mitigated", "Total Mitigadas", "#00B050"),
             ("new", "Vuln. Novas", "#FFF200"),
         ),
+        font_profile=font_profile,
     )
     _add_chart(document, evolution, f"Evolução mensal de vulnerabilidades - {scope_label}")
 
@@ -259,10 +251,10 @@ def render_monthly_visual_bundle(
     render_monthly_table(document, rows, "non_mitigated_by_severity", "non_mitigated")
     non_mitigated_rows = _severity_rows(rows, nested_key="non_mitigated_by_severity", total_key="non_mitigated")
     non_mitigated_comparison = output / "tag-non-mitigated-comparison.png"
-    _grouped_monthly_chart(non_mitigated_comparison, f"Comparativo de Vulnerabilidades Não Mitigadas {year}", non_mitigated_rows, (*SEVERITY_SERIES, ("total", "Total Vulnerabilidades", "#B244A5")))
+    _grouped_monthly_chart(non_mitigated_comparison, f"Comparativo de Vulnerabilidades Não Mitigadas {year}", non_mitigated_rows, (*SEVERITY_SERIES, ("total", "Total Vulnerabilidades", "#B244A5")), font_profile=font_profile)
     _add_chart(document, non_mitigated_comparison, f"Comparativo mensal de vulnerabilidades não mitigadas - {scope_label}")
     non_mitigated_volume = output / "tag-non-mitigated-volume.png"
-    _monthly_line_chart(non_mitigated_volume, f"Volume de Vuln. Não Mitigadas {year}", rows, value_key="non_mitigated")
+    _monthly_line_chart(non_mitigated_volume, f"Volume de Vuln. Não Mitigadas {year}", rows, value_key="non_mitigated", font_profile=font_profile)
     _add_chart(document, non_mitigated_volume, f"Volume mensal de vulnerabilidades não mitigadas - {scope_label}")
 
     faithful._heading(document, "4.3. Vulnerabilidades Mitigadas", 2)
@@ -274,10 +266,10 @@ def render_monthly_visual_bundle(
     render_monthly_table(document, rows, "mitigated_by_severity", "mitigated")
     mitigated_rows = _severity_rows(rows, nested_key="mitigated_by_severity", total_key="mitigated")
     mitigated_comparison = output / "tag-mitigated-comparison.png"
-    _grouped_monthly_chart(mitigated_comparison, f"Comparativo de Vulnerabilidades Mitigadas {year}", mitigated_rows, (*SEVERITY_SERIES, ("total", "Total Mitigadas", "#B244A5")))
+    _grouped_monthly_chart(mitigated_comparison, f"Comparativo de Vulnerabilidades Mitigadas {year}", mitigated_rows, (*SEVERITY_SERIES, ("total", "Total Mitigadas", "#B244A5")), font_profile=font_profile)
     _add_chart(document, mitigated_comparison, f"Comparativo mensal de vulnerabilidades mitigadas - {scope_label}")
     mitigated_volume = output / "tag-mitigated-volume.png"
-    _monthly_line_chart(mitigated_volume, f"Volume de Vuln. Mitigadas {year}", rows, value_key="mitigated")
+    _monthly_line_chart(mitigated_volume, f"Volume de Vuln. Mitigadas {year}", rows, value_key="mitigated", font_profile=font_profile)
     _add_chart(document, mitigated_volume, f"Volume mensal de vulnerabilidades mitigadas - {scope_label}")
 
     faithful._heading(document, "4.4. Vulnerabilidades Novas", 2)
@@ -298,6 +290,7 @@ def render_monthly_visual_bundle(
         f"Comparativo de Vulnerabilidades Novas {year}",
         new_rows,
         (*SEVERITY_SERIES, ("total", "Total Novas", "#B244A5")),
+        font_profile=font_profile,
     )
     _add_chart(
         document,

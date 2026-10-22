@@ -12,7 +12,9 @@ uma descrição de fase antiga.
 3. [Design da solução](../DESIGN.md): arquitetura e invariantes estruturais.
 4. Guias `19` a `24`: contratos vigentes de produto, dados, operação e
    desenvolvimento.
-5. Documentos `01` a `18` e registros em `superpowers`: evolução histórica e
+5. [Implantação Windows e Linux](25-implantacao-windows-linux.md): pacote offline,
+   instalação, agendamento, diagnóstico e transferência de estado.
+6. Documentos `01` a `18` e registros em `superpowers`: evolução histórica e
    decisões de cada ciclo.
 
 ## Guias vigentes
@@ -30,6 +32,8 @@ uma descrição de fase antiga.
   testes, alterações seguras e validação dos documentos.
 - [Integração Tenable Cloud e licenciamento](24-integracao-apis-tenable-cloud-e-licenciamento.md):
   contrato GraphQL, fontes, retry, retomada e limites de leitura de licenças.
+- [Implantação Windows e Linux](25-implantacao-windows-linux.md): matriz suportada,
+  bundle offline, instaladores e migração controlada.
 
 ## Referências históricas
 

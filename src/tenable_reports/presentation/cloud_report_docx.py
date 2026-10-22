@@ -14,7 +14,6 @@ from docx import Document
 from docx.document import Document as DocxDocument
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt, RGBColor
 
 from tenable_reports.application.cloud_report_dataset import (
     load_cloud_report_dataset,
@@ -42,6 +41,7 @@ from tenable_reports.presentation.cloud_report_sections import (
     render_vulnerability_aging,
 )
 from tenable_reports.presentation.translation import TextTranslator
+from tenable_reports.presentation.font_profiles import FontProfile
 from tenable_reports.presentation import base_report_docx as base
 from tenable_reports.presentation import full_base_report_docx as faithful
 
@@ -226,43 +226,6 @@ def _set_update_fields(document: DocxDocument) -> None:
     update_fields.set(qn("w:val"), "true")
 
 
-def _configure_heading_styles(document: DocxDocument) -> None:
-    for level, size in ((1, 14), (2, 11), (3, 10), (4, 9)):
-        style = document.styles[f"Heading {level}"]
-        style.font.name = "Calibri"
-        style._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Calibri")
-        style.font.size = Pt(size)
-        style.font.bold = True
-        style.font.color.rgb = RGBColor.from_string("0B1F4A")
-        style.paragraph_format.space_before = Pt(8)
-        style.paragraph_format.space_after = Pt(4)
-        style.paragraph_format.keep_with_next = True
-    normal = document.styles["Normal"]
-    normal.font.name = "Calibri"
-    normal._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), "Calibri")
-    normal.font.size = Pt(9)
-    normal.paragraph_format.space_after = Pt(6)
-    normal.paragraph_format.line_spacing = 1.08
-
-
-def _force_calibri(element: Any) -> None:
-    for run in element.xpath(".//w:r"):
-        properties = run.get_or_add_rPr()
-        fonts = properties.find(qn("w:rFonts"))
-        if fonts is None:
-            fonts = OxmlElement("w:rFonts")
-            properties.insert(0, fonts)
-        for attribute in ("ascii", "hAnsi", "eastAsia", "cs"):
-            fonts.set(qn(f"w:{attribute}"), "Calibri")
-
-
-def _normalize_document_fonts(document: DocxDocument) -> None:
-    _force_calibri(document._element)
-    for section in document.sections:
-        for container in (section.header, section.footer):
-            _force_calibri(container._element)
-
-
 def _sanitize_properties(document: DocxDocument, profile: ClientProfile) -> None:
     properties = document.core_properties
     properties.author = "ITProtect"
@@ -314,7 +277,9 @@ def generate_cloud_report(
     variant: CloudReportVariant | str = CloudReportVariant.EXPANDED,
     translator: TextTranslator | None = None,
     mask_sensitive: bool = False,
+    font_profile: FontProfile | None = None,
 ) -> CloudReportRenderResult:
+    active_font_profile = base._resolve_font_profile(font_profile)
     template = Path(template_path)
     dataset_source = Path(dataset_path)
     output = Path(output_path)
@@ -325,7 +290,7 @@ def generate_cloud_report(
 
     document = Document(template)
     report_shell = faithful._clear_body_after_cover_break(document)
-    faithful._configure_styles(document)
+    faithful._configure_styles(document, active_font_profile)
     period_label, period_range = base._period_labels(dataset["period"])
     base._replace_tokens(
         document,
@@ -342,7 +307,11 @@ def generate_cloud_report(
     faithful._toc_heading(document)
     faithful._toc_field(document)
     anchor = document.add_paragraph("{{CLOUD_CONTENT_START}}")
-    builder = CloudDocumentBuilder(document=document, anchor=anchor)
+    builder = CloudDocumentBuilder(
+        document=document,
+        anchor=anchor,
+        font_profile=active_font_profile,
+    )
     rendered_sections = list(STANDARD_SECTION_IDS)
     omitted_sections: list[str] = []
 
@@ -426,11 +395,18 @@ def generate_cloud_report(
         render_conclusion(builder)
 
         anchor._element.getparent().remove(anchor._element)
-        faithful._append_official_back_cover(document, report_shell)
+        faithful._append_official_back_cover(
+            document,
+            report_shell,
+            active_font_profile,
+            template.parent / "assets" / "brand-pattern-cover.png",
+        )
         faithful._materialize_static_toc(document)
         faithful._justify_narrative_body(document)
         base._enable_field_updates(document)
         _sanitize_properties(document, profile)
+        base._apply_font_profile(document, active_font_profile)
+        base._center_body_table_content(document)
         output.parent.mkdir(parents=True, exist_ok=True)
         document.save(output)
 

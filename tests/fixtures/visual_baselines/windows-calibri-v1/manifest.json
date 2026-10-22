@@ -1,0 +1,294 @@
+{
+  "schema_version": "visual-baseline-v1",
+  "profile": "windows-calibri-v1",
+  "environment": {
+    "architecture": "AMD64",
+    "font_families": [
+      "Calibri",
+      "Arial"
+    ],
+    "libraries": {
+      "Pillow": "12.3.0",
+      "docxcompose": "1.4.1",
+      "python-docx": "1.2.0"
+    },
+    "libreoffice": "LibreOffice 26.2.4.2 0229ac93fcf0d7cbc6376066c6f35021cef002dc",
+    "platform": "Windows",
+    "python": "3.14.5"
+  },
+  "reports": [
+    {
+      "kind": "general",
+      "normalized_docx_sha256": "a24ae0d40299a7d3a32243b4891965aa3ea93d24599da16479b6e15fa8361b08",
+      "page_count": 15,
+      "pages": [
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "3737c04c0c00800c"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "cac3030303030373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca431b230b333363"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca43034d77630973"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca491b1b5b1b1b73"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "c82b230123230b73"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca41012301231371"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca6b032333532323"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca43030303030773"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "cac1031313031373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "cac1030123010373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca430b1313010373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca43636971090973"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca41000b09710b23"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "caa5a5d2c0428ee0"
+        }
+      ]
+    },
+    {
+      "kind": "customizations",
+      "normalized_docx_sha256": "208f162576f1ccdeddb08ed3862bf22d6cbe9c884709ecf68d30d339b4c1a04d",
+      "page_count": 12,
+      "pages": [
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "3732c50c1cc0200c"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "cac0100003030373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "cac0101003031373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "c04b5b535b5b4b63"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "c04b5b635b5b4301"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "c8435b635b5b5b73"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "c04b5b635b5b7343"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "c8435b635b5b5373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca43032b0b0b1363"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca43033313632773"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "c24b0b13030f0f73"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "caa5350000030e63"
+        }
+      ]
+    },
+    {
+      "kind": "tag",
+      "normalized_docx_sha256": "694b6e79466796c36a0300d3ff48afd67b6817fc48821609dc47ca71a74930a0",
+      "page_count": 7,
+      "pages": [
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "3737c00c0c00800c"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "cac0101007030373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "c85b13035d770363"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca63091b1b5b1b63"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "cac1032301230373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "c823330123012373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "caa5a5d2c0428ee0"
+        }
+      ]
+    },
+    {
+      "kind": "cloud",
+      "normalized_docx_sha256": "4ae63b0f533b3d42efe18dd782f834c4a416d25381a348fefbf706c802ff26b6",
+      "page_count": 15,
+      "pages": [
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "3737c02c0c90200c"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "cac8030303030373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca43030343333363"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "cac0101000000773"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca63630726634b73"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca67272763636363"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca13132727272763"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca43232323230373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca5b230323032373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca4b636363435b5b"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "ca434b0b33234363"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "cac40b7b07076b63"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "cac0101002003633"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "cac0100003230373"
+        },
+        {
+          "width": 1191,
+          "height": 1684,
+          "dhash": "caa5a5d2c0428ee0"
+        }
+      ]
+    }
+  ]
+}

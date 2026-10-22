@@ -2,7 +2,19 @@ from __future__ import annotations
 
 from tenable_reports.config.monthly_schedule import MonthlyScheduleConfig
 from tenable_reports.application.monthly_schedule import MonthlyScheduleService
+from tenable_reports.infrastructure.monthly_scheduler import (
+    ExternalScheduler,
+    SchedulerBackend,
+    SchedulerState,
+    SchedulerStatus,
+    select_monthly_scheduler,
+)
+from tenable_reports.infrastructure.runtime_platform import (
+    RuntimePlatform,
+    RuntimePlatformInfo,
+)
 from tenable_reports.infrastructure.windows_task_scheduler import (
+    WindowsTaskScheduler,
     WindowsTaskState,
     WindowsTaskStatus,
 )
@@ -86,3 +98,100 @@ def test_apply_requires_explicit_confirmation() -> None:
         assert "SINCRONIZAR AUTOMACAO MENSAL" in str(exc)
     else:
         raise AssertionError("aplicação sem confirmação aceita")
+
+
+def test_windows_status_adds_generic_payload_and_preserves_legacy_payload() -> None:
+    result = MonthlyScheduleService(store=_Store(), scheduler=_Scheduler()).status()
+
+    assert result["scheduler"] == result["windows_task"]
+    assert (
+        result["scheduler"]["backend"]
+        == SchedulerBackend.WINDOWS_TASK_SCHEDULER.value
+    )
+
+
+def test_apply_and_toggle_publish_both_windows_payloads_after_confirmation() -> None:
+    store = _Store()
+    scheduler = _Scheduler()
+    service = MonthlyScheduleService(store=store, scheduler=scheduler)
+
+    applied = service.apply("SINCRONIZAR AUTOMACAO MENSAL")
+    enabled = service.set_enabled(True, "SINCRONIZAR AUTOMACAO MENSAL")
+    disabled = service.set_enabled(False, "SINCRONIZAR AUTOMACAO MENSAL")
+
+    assert applied["scheduler"] == applied["windows_task"]
+    assert enabled["scheduler"] == enabled["windows_task"]
+    assert disabled["scheduler"] == disabled["windows_task"]
+    assert scheduler.calls == [
+        ("apply", MonthlyScheduleConfig.from_mapping({})),
+        ("set_enabled", True),
+        ("set_enabled", False),
+    ]
+    assert store.config.enabled is False
+
+
+class _SystemdScheduler(_Scheduler):
+    def query(self, config):
+        self.calls.append(("query", config))
+        return SchedulerState(
+            backend=SchedulerBackend.SYSTEMD_USER_TIMER,
+            status=SchedulerStatus.MISSING,
+        )
+
+
+def test_non_windows_status_does_not_publish_windows_legacy_field() -> None:
+    result = MonthlyScheduleService(
+        store=_Store(), scheduler=_SystemdScheduler()
+    ).status()
+
+    assert result["scheduler"]["backend"] == SchedulerBackend.SYSTEMD_USER_TIMER.value
+    assert "windows_task" not in result
+
+
+def test_scheduler_selector_preserves_windows_backend(tmp_path) -> None:
+    scheduler = select_monthly_scheduler(
+        project_root=tmp_path,
+        config_path=tmp_path / "orchestration" / "clients.json",
+        platform_info=RuntimePlatformInfo(
+            platform=RuntimePlatform.WINDOWS,
+            system_name="Windows",
+            architecture="x86_64",
+        ),
+    )
+
+    assert isinstance(scheduler, WindowsTaskScheduler)
+
+
+def test_scheduler_selector_uses_systemd_backend_on_linux(tmp_path) -> None:
+    from tenable_reports.infrastructure.systemd_user_timer_scheduler import (
+        SystemdUserTimerScheduler,
+    )
+
+    scheduler = select_monthly_scheduler(
+        project_root=tmp_path,
+        config_path=tmp_path / "orchestration" / "clients.json",
+        platform_info=RuntimePlatformInfo(
+            platform=RuntimePlatform.LINUX,
+            system_name="Linux",
+            architecture="x86_64",
+        ),
+    )
+
+    assert isinstance(scheduler, SystemdUserTimerScheduler)
+
+
+def test_external_scheduler_describes_command_but_never_mutates_host() -> None:
+    scheduler = ExternalScheduler(command="comando-mensal-controlado")
+    config = MonthlyScheduleConfig.from_mapping({"enabled": True})
+
+    state = scheduler.query(config)
+
+    assert state.backend is SchedulerBackend.EXTERNAL
+    assert state.status is SchedulerStatus.SYNCHRONIZED
+    assert state.command == "comando-mensal-controlado"
+    try:
+        scheduler.apply(config)
+    except RuntimeError as exc:
+        assert "extern" in str(exc).lower()
+    else:
+        raise AssertionError("agendador externo tentou aplicar alterações")

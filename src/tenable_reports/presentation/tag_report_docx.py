@@ -35,6 +35,7 @@ from tenable_reports.presentation.full_base_report_docx import (
     _vulnerability_details,
 )
 from tenable_reports.presentation.source_filters import add_source_filter_note
+from tenable_reports.presentation.font_profiles import FontProfile
 from tenable_reports.presentation.translation import TextTranslator
 from tenable_reports.presentation.monthly_visuals import (
     render_monthly_visual_bundle,
@@ -205,6 +206,7 @@ def _temporal_comparison(
     tag: Mapping[str, Any],
     *,
     mask_sensitive: bool,
+    font_profile: FontProfile,
 ) -> bool:
     if not bool(tag.get("include_temporal_comparison", False)):
         return False
@@ -247,6 +249,7 @@ def _temporal_comparison(
             rows,
             directory,
             scope_label,
+            font_profile=font_profile,
         )
         comparison = dataset.get("tag_comparison")
         if isinstance(comparison, Mapping):
@@ -266,7 +269,9 @@ def generate_tag_report(
     output_path: str | Path,
     mask_sensitive: bool = False,
     translator: TextTranslator | None = None,
+    font_profile: FontProfile | None = None,
 ) -> TagReportRenderResult:
+    active_font_profile = base._resolve_font_profile(font_profile)
     template = Path(template_path)
     if not template.is_file():
         raise ValueError(f"Template Word não encontrado: {template}")
@@ -278,7 +283,7 @@ def generate_tag_report(
     # large table or chart is carried to the next page.
     document.settings.odd_and_even_pages_header_footer = False
     report_shell = _clear_body_after_cover_break(document)
-    _configure_styles(document)
+    _configure_styles(document, active_font_profile)
     period_label, period_range = base._period_labels(dataset["period"])
     tag_label = f"TAG {tag['category_name']} - {tag['value']}"
     base._replace_tokens(
@@ -305,11 +310,19 @@ def generate_tag_report(
         dataset,
         tag,
         mask_sensitive=mask_sensitive,
+        font_profile=active_font_profile,
     )
-    _append_official_back_cover(document, report_shell)
+    _append_official_back_cover(
+        document,
+        report_shell,
+        active_font_profile,
+        template.parent / "assets" / "brand-pattern-cover.png",
+    )
     _materialize_static_toc(document)
     _justify_narrative_body(document)
     base._enable_field_updates(document)
+    base._apply_font_profile(document, active_font_profile)
+    base._center_body_table_content(document)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)
@@ -332,9 +345,11 @@ def refresh_tag_temporal_comparison(
     profile: ClientProfile,
     output_path: str | Path,
     mask_sensitive: bool = False,
+    font_profile: FontProfile | None = None,
 ) -> TagReportRenderResult:
     """Replace only section 4 while preserving the approved technical body."""
 
+    active_font_profile = base._resolve_font_profile(font_profile)
     source = Path(source_path)
     if not source.is_file():
         raise ValueError(f"Relatório por TAG não encontrado: {source}")
@@ -381,6 +396,7 @@ def refresh_tag_temporal_comparison(
         dataset,
         tag,
         mask_sensitive=mask_sensitive,
+        font_profile=active_font_profile,
     )
     added_nodes = [child for child in body if id(child) not in existing_nodes]
     for child in added_nodes:
@@ -389,6 +405,8 @@ def refresh_tag_temporal_comparison(
     _materialize_static_toc(document)
     _justify_narrative_body(document)
     base._enable_field_updates(document)
+    base._apply_font_profile(document, active_font_profile)
+    base._center_body_table_content(document)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)

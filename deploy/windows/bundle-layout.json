@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "platform": "windows-x86_64",
+  "required_files": [
+    "python/python-3.14.5-amd64.exe",
+    "libreoffice/LibreOffice_26.2.4.2_Win_x86-64.msi",
+    "postgresql/postgresql-18-windows-x64.exe"
+  ],
+  "required_globs": [
+    "wheelhouse/*.whl",
+    "application/*.whl"
+  ],
+  "signature_requirements": [
+    {
+      "path": "python/python-3.14.5-amd64.exe",
+      "kind": "authenticode",
+      "signer_subject": "CN=Python Software Foundation, O=Python Software Foundation, L=Beaverton, S=Oregon, C=US",
+      "certificate_sha256": "AC8CC2214C07821C12EEC20C7FC5EE99A29D49BFD076137A849B29DBCABE85CB"
+    },
+    {
+      "path": "libreoffice/LibreOffice_26.2.4.2_Win_x86-64.msi",
+      "kind": "authenticode",
+      "signer_subject": "E=info@documentfoundation.org, CN=The Document Foundation, O=The Document Foundation, OU=LibreOffice Build Team, L=Berlin, S=Berlin, C=DE",
+      "certificate_sha256": "1B35BAEDA16C7F257E31553C8E14318FC2FD5A7178D598D0F641D157961E483D"
+    },
+    {
+      "path": "postgresql/postgresql-18-windows-x64.exe",
+      "kind": "authenticode",
+      "signer_subject": "CN=EnterpriseDB Corporation, O=EnterpriseDB Corporation, L=Wilmington, S=Delaware, C=US",
+      "certificate_sha256": "558B34D97944A53CEFC13C031EA46845BE00F0B9BB87F47DC3110EAEE07F82D3"
+    }
+  ],
+  "host_requirements": [
+    "windows-calibri-v1"
+  ],
+  "optional_payload_groups": [
+    {
+      "id": "windows-font-recovery",
+      "files": [
+        "fonts/windows/calibri.ttf",
+        "fonts/windows/calibrib.ttf",
+        "fonts/windows/calibrii.ttf",
+        "fonts/windows/arial.ttf",
+        "fonts/windows/arialbd.ttf",
+        "fonts/windows/ariali.ttf"
+      ],
+      "license_proof": "fonts/windows/license-proof.json"
+    }
+  ]
+}

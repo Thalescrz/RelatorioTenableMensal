@@ -1,7 +1,7 @@
 # Contexto do projeto
 
-**Atualizado em:** 2026-10-13  
-**Base verificada:** `b90104a` (`main` no início deste ciclo)  
+**Atualizado em:** 2026-10-22  
+**Base verificada:** `48878db` (`codex/portabilidade-windows-linux-implementacao` antes desta complementação)  
 **Natureza:** resumo versionado; estado operacional transitório fica fora deste arquivo
 
 ## Finalidade
@@ -209,9 +209,11 @@ Lista de Distribuição. Na renderização, as linhas globais aparecem primeiro 
 adicionais do cliente são anexados nas linhas seguintes. A personalização não
 substitui nem edita o padrão global.
 
-Nas três tabelas do Controle de Documento, os títulos e cabeçalhos permanecem
-centralizados e todas as células de conteúdo usam alinhamento justificado. O
-padrão vale para todo relatório que incorpora o componente compartilhado.
+Nas três tabelas do Controle de Documento, títulos, cabeçalhos e células de
+conteúdo usam alinhamento central horizontal e vertical. O mesmo padrão vale para
+todas as tabelas de dados no corpo dos relatórios Geral, Customizações, TAG e
+Cloud. Tabelas estruturais de cabeçalho e rodapé mantêm o alinhamento próprio do
+shell corporativo.
 
 Os relatórios Geral e Cloud usam o mesmo componente de controle documental. O
 padrão global fica em `orchestration/document-control.json`; os adicionais ficam no
@@ -254,10 +256,17 @@ destinatários globais ao reutilizar um dataset já coletado.
 - Indicadores de explorabilidade permanecem segregados pelo framework definido;
   um indicador geral não substitui os demais.
 - Nas tabelas OWASP Top 10, cada Plugin ID exibe a maior severidade e o maior VPR
-  observados dentro da categoria. As linhas são ordenadas por VPR decrescente;
+  observados dentro da categoria OWASP Top 10:2025 retornada pelo detalhe oficial
+  do plugin WAS. O catálogo preserva as associações por ano; a aplicação não
+  relabela uma categoria de 2021 como se fosse 2025. As linhas são ordenadas por
+  VPR decrescente;
   severidade, quantidade de instâncias e Plugin ID são apenas critérios de
   desempate. Plugin sem VPR permanece nulo no dataset e aparece como `0` somente
-  na apresentação.
+  na apresentação. Metadados já obtidos ficam no catálogo PostgreSQL isolado por
+  cliente e tenant, evitando repetir a consulta de detalhe nos meses seguintes.
+  A cobertura fica explícita como `COMPLETE`, `PARTIAL`, `UNAVAILABLE` ou
+  `NO_DATA`; indisponibilidade do catálogo não é publicada como ausência de
+  vulnerabilidades.
 
 As fórmulas, populações e regras de ausência estão no
 [catálogo de dados e métricas](docs/21-catalogo-de-dados-e-metricas.md).
@@ -321,12 +330,13 @@ catálogo. Arquivos raw, chunks e datasets intermediários só são removidos de
 publicação validada e persistência do histórico necessário. Falhas preservam os
 artefatos recuperáveis conforme a política de retenção.
 
-Nos quatro documentos oficiais — Geral, Customizações, TAG e Cloud — somente o
-texto narrativo do corpo usa alinhamento justificado. Títulos, sumário, listas,
-notas de fonte, tabelas, gráficos, capa, cabeçalho, rodapé e contracapa preservam o
-alinhamento específico do componente. A republicação editorial pode aplicar esse
-padrão aos conjuntos `MAIN` de uma única competência sem nova coleta e sem alterar
-dados, tabelas, imagens ou a referência `MAIN`.
+Nos quatro documentos oficiais — Geral, Customizações, TAG e Cloud — o texto
+narrativo do corpo usa alinhamento justificado e todas as células das tabelas de
+dados do corpo usam centralização horizontal e vertical. Títulos, sumário, listas,
+notas de fonte, gráficos, capa, cabeçalho, rodapé e contracapa preservam o
+alinhamento específico do componente. A republicação editorial pode aplicar o
+padrão narrativo aos conjuntos `MAIN` de uma única competência sem nova coleta e
+sem alterar dados, tabelas, imagens ou a referência `MAIN`.
 
 Para cada `run_id` `MAIN`, a republicação editorial usa exclusivamente o caminho
 de manifesto autoritativo registrado no PostgreSQL. Cópias físicas antigas com o
@@ -383,13 +393,72 @@ esses controles sejam projetados e implementados.
 
 ## Ambiente e comandos seguros
 
-Preparação e inicialização local no Windows:
+Implantações de produção usam bundles offline específicos para Windows x86_64 e
+Ubuntu Server 24.04 x86_64. Eles incluem Python, LibreOffice, PostgreSQL, wheels e
+as fontes abertas do Linux, validam SHA-256 e instalam sem acesso à internet. No
+Windows, Calibri e Arial são validadas primeiro no host licenciado; um payload
+completo, autorizado e de hashes conhecidos é apenas recuperação opcional. O runtime
+seleciona `windows-calibri-v1` ou `linux-carlito-v1`; fonte ausente não recebe
+fallback silencioso. O instalador não inicia coleta, servidor ou agenda.
+
+Inicialização após instalar um bundle Windows verificado:
 
 ```powershell
 .\scripts\setup.ps1
-.\scripts\bootstrap_postgresql.ps1
 .\scripts\run_web.ps1
 ```
+
+No Linux:
+
+```bash
+sudo ./scripts/setup.sh --install-root /opt/tenable-reports
+/opt/tenable-reports/scripts/run_web.sh
+```
+
+O pacote é criado com `tools/build_offline_bundle.py` e conferido com
+`tools/verify_offline_bundle.py`. Binários oficiais e fontes proprietárias ficam
+fora do Git. Payload Windows parcial, divergente ou sem autorização bloqueia a
+release; sem payload, o manifesto registra `windows-calibri-v1` como requisito do
+host e o instalador valida as fontes antes de prosseguir.
+Os instaladores Windows exigem Authenticode válido e correspondência exata do
+assunto e do SHA-256 do certificado fixados no layout. O código do pacote vem
+somente de arquivos rastreados no índice Git e das raízes aprovadas, excluindo
+arquivos ignorados ou locais. Índice vazio ou parcial e arquivo rastreado ausente
+do checkout bloqueiam a construção, inclusive em sparse checkout incompleto.
+No Linux, Python é verificado pelo bundle Sigstore oficial com o endereço exato do
+certificado restrito ao domínio institucional e sem versionar o signatário;
+LibreOffice usa assinatura destacada e exige `VALIDSIG` do fingerprint TDF
+fixado. Os instaladores Windows e Linux só declaram conclusão quando
+`environment-status --require-ready` confirma a aptidão para publicação. Uma
+instalação limpa sem rede em contêiner Ubuntu 24.04 com `systemd` como PID 1
+concluiu duas execuções idempotentes e confirmou Python 3.14.5, LibreOffice
+26.2.4.2, PostgreSQL 18.6, as 15 migrations e `linux-carlito-v1`. Os quatro tipos
+de relatório sanitizados também foram gerados e renderizados pelo LibreOffice do
+próprio Linux: Geral com 15 páginas, Inteligência e Customizações com 12, TAG com
+7 e Cloud com 15. As 49 páginas foram inspecionadas visualmente. Para compensar a
+métrica de Carlito sem alterar a baseline Windows, o perfil Linux usa uma versão
+PNG da arte EMF na dimensão efetiva de exibição, com fundo branco opaco e traço
+azul corporativo reforçado para não perder saturação na redução, distribui os
+espaçadores da contracapa em 12,5 pt,
+9 pt e 16 pt conforme o bloco, quebra a mensagem institucional antes de
+`DIGITAL.` e configura a logomarca com contorno acima/abaixo para que `SUA MELHOR
+ALIADA` comece integralmente abaixo da imagem. A tabela de contatos usa três
+colunas com centros equidistantes, evitando que Portugal fique isolado à direita.
+A seção final também recebe
+cabeçalhos e rodapés vazios próprios para impedir a herança do corpo em páginas
+pares. O pequeno texto decorativo que o LibreOffice Linux recortava fora da página
+é omitido. O conteúdo institucional e os dados de contato permanecem na mesma
+contracapa. O timer de usuário continua em `WARNING` porque não foi
+configurado neste ensaio; a
+homologação final em Ubuntu Server/VM e a instalação em uma máquina Windows limpa
+permanecem pendentes.
+O SHA-256 do ZIP final deve ser entregue por canal independente ou previamente
+confiável, pois o manifesto autocontido detecta alteração, mas não autentica sozinho
+a origem do pacote completo.
+Estado operacional é movido somente por `deployment-export` e
+`deployment-import`, com dry-run obrigatório e confirmação `IMPORT <transfer_id>`;
+segredos são reprovisionados no destino. Consulte
+[docs/25](docs/25-implantacao-windows-linux.md).
 
 O painel fica em `http://127.0.0.1:8765`. Encerre o servidor no mesmo terminal com
 `Ctrl+C`. Iniciar a interface não autoriza coleta real; execuções continuam
@@ -441,6 +510,8 @@ A ajuda da CLI pode ser consultada sem iniciar coleta:
   validação.
 - [Integração Tenable Cloud e licenciamento](docs/24-integracao-apis-tenable-cloud-e-licenciamento.md):
   contrato GraphQL, fontes, retomada, licenciamento e protocolo de validação.
+- [Implantação Windows e Linux](docs/25-implantacao-windows-linux.md): matriz,
+  bundle offline, instaladores, diagnóstico e transferência controlada.
 - [Template corporativo](templates/corporate/README.md): contrato do shell DOCX.
 - [Instruções para agentes](AGENTS.md): regras globais, complementadas pelos
   `AGENTS.md` de cada diretório.

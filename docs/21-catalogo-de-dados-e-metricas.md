@@ -89,7 +89,7 @@ essa convenção é apenas visual e não altera ranking, faixas VPR ou históric
 O modelo WEB conserva:
 
 - aplicação, URI afetada e identificadores de origem;
-- plugin, CVEs, referências e classificação OWASP;
+- plugin, CVEs, CWEs, referências e classificações OWASP versionadas;
 - sinopse, descrição e solução;
 - output, prova e payload quando disponibilizados e autorizados;
 - método HTTP, parâmetro de entrada e dados de serviço;
@@ -97,11 +97,15 @@ O modelo WEB conserva:
 - CVSS v3 e VPR.
 
 Ausência de licença, permissão ou achados WAS não deve invalidar o dataset VM.
-`plugin_family` é opcional no export de findings. Quando ausente, a aplicação busca
-o mesmo Plugin ID no catálogo oficial WAS e só persiste uma família confirmada. Na
+`plugin_family`, CWE e a taxonomia OWASP vigente podem não estar completos no
+export de findings. A aplicação consulta o detalhe oficial do mesmo Plugin ID em
+`GET /was/v2/plugins/{plugin_id}` e persiste os metadados confirmados, isolados por
+cliente e tenant. Na
 tabela compacta, a coluna **Família** aparece apenas se ao menos uma das linhas
 exibidas possuir valor real; se nenhuma tiver correspondência, a coluna é omitida.
-Classificação OWASP continua em sua seção própria e nunca preenche essa coluna.
+Classificação OWASP continua em sua seção própria e nunca preenche essa coluna. O
+catálogo conserva pares `ano + categoria`; somente os pares do ano 2025 alimentam
+o OWASP Top 10 atual, sem reinterpretar classificações legadas de 2021.
 
 Quando há ativos normalizados, mas nenhum finding VM, o dataset conserva todos os
 indicadores em zero e inclui o aviso de qualidade
@@ -218,12 +222,16 @@ snapshot Cloud ausente.
 - Top 5 VM: ranking local de findings não mitigados usando VPR, severidade e ativos
   afetados, seguido do detalhamento com Plugin ID antes do VPR e conjunto de hosts.
 - Top 5 WAS: ranking equivalente no conjunto WEB suportado.
-- OWASP Top 10: distribuição apenas dos achados que possuem classificação mapeável.
+- OWASP Top 10: distribuição apenas dos achados que possuem classificação 2025
+  confirmada no detalhe oficial do plugin Tenable.
   Cada linha agrupa um Plugin ID dentro da categoria e apresenta nome, maior
   severidade, maior VPR e quantidade de instâncias. A ordenação é por VPR
   decrescente; em empate, usa maior severidade, mais instâncias e menor Plugin ID.
   Valores nulos de VPR ficam depois dos valores reais e aparecem como `0` somente
-  no DOCX. Categorias sem ocorrências recebem a mensagem mensal de ausência.
+  no DOCX. `owasp_2025_coverage` diferencia cobertura `COMPLETE`, `PARTIAL`,
+  `UNAVAILABLE` e `NO_DATA`; uma falha de catálogo nunca é apresentada como zero.
+  Categorias sem ocorrências recebem a mensagem mensal de ausência somente dentro
+  da cobertura comprovada.
 
 ## Métricas Cloud
 

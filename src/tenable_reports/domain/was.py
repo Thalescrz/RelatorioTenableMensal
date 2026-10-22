@@ -27,8 +27,11 @@ class NormalizedWasFinding:
     plugin_name: str | None
     plugin_family: str | None
     cves: tuple[str, ...]
+    cwes: tuple[str, ...]
     references: tuple[str, ...]
     owasp_2021: tuple[str, ...]
+    owasp_2025: tuple[str, ...]
+    owasp_detail_observed: bool
     synopsis: str | None
     description: str | None
     solution: str | None
@@ -49,15 +52,18 @@ class NormalizedWasFinding:
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
-        for key in ("cves", "references", "owasp_2021"):
+        for key in ("cves", "cwes", "references", "owasp_2021", "owasp_2025"):
             data[key] = list(data[key])
         return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "NormalizedWasFinding":
         values = dict(data)
-        for key in ("cves", "references", "owasp_2021"):
+        for key in ("cves", "cwes", "references", "owasp_2021", "owasp_2025"):
             values[key] = tuple(values.get(key) or ())
+        values["owasp_detail_observed"] = bool(
+            values.get("owasp_detail_observed", False)
+        )
         return cls(**values)
 
 
@@ -120,6 +126,23 @@ def _strings(value: Any) -> tuple[str, ...]:
     return tuple(sorted({str(item).strip() for item in values if item is not None and str(item).strip()}, key=str.casefold))
 
 
+def _canonical_owasp_category(value: Any) -> str | None:
+    match = re.search(r"\bA0?(10|[1-9])\b", str(value or "").upper())
+    return f"A{int(match.group(1)):02d}" if match else None
+
+
+def _versioned_owasp_categories(record: Mapping[str, Any], year: str) -> tuple[str, ...]:
+    raw = _first(record, ("plugin.owasp", "definition.owasp", "owasp"))
+    values = raw if isinstance(raw, (list, tuple)) else ()
+    categories = {
+        category
+        for item in values
+        if isinstance(item, Mapping) and str(item.get("year") or "").strip() == year
+        if (category := _canonical_owasp_category(item.get("category"))) is not None
+    }
+    return tuple(sorted(categories))
+
+
 def _application_uri(url: str | None, fqdn: str | None) -> str | None:
     if url:
         parsed = urlsplit(url)
@@ -162,8 +185,14 @@ def normalize_was_findings(
             plugin_name=_text(_first(record, ("plugin.name", "definition.name"))),
             plugin_family=_text(_first(record, ("plugin.family", "definition.family"))),
             cves=_strings(_first(record, ("plugin.cve", "definition.cve"))),
+            cwes=_strings(_first(record, ("plugin.cwe", "definition.cwe", "cwe"))),
             references=_strings(_first(record, ("plugin.see_also", "definition.see_also"))),
             owasp_2021=_strings(_first(record, ("plugin.owasp_2021", "definition.owasp_2021"))),
+            owasp_2025=_versioned_owasp_categories(record, "2025"),
+            owasp_detail_observed=any(
+                isinstance(_path(record, path), (list, tuple))
+                for path in ("plugin.owasp", "definition.owasp", "owasp")
+            ),
             synopsis=_text(_first(record, ("plugin.synopsis", "definition.synopsis"))),
             description=_text(_first(record, ("plugin.description", "definition.description"))),
             solution=_text(_first(record, ("plugin.solution", "definition.solution"))),
@@ -265,11 +294,10 @@ def build_was_report_data(
     ))
     owasp: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
     for item in open_rows:
-        for label in item.owasp_2021:
-            match = re.search(r"\bA0?(10|[1-9])\b", label.upper())
-            if not match:
+        for label in item.owasp_2025:
+            category = _canonical_owasp_category(label)
+            if category is None:
                 continue
-            category = f"A{int(match.group(1)):02d}"
             row = owasp[category].setdefault(item.plugin_id, {
                 "plugin_id": item.plugin_id,
                 "name": item.plugin_name,
@@ -287,8 +315,26 @@ def build_was_report_data(
                 row["vpr_score"] = item.vpr_score
             row["instances"] += 1
     availability = "AVAILABLE" if collected and rows else "NO_DATA" if collected else "NOT_COLLECTED"
+    open_plugin_ids = {item.plugin_id for item in open_rows}
+    observed_plugin_ids = {
+        item.plugin_id for item in open_rows if item.owasp_detail_observed
+    }
+    if not open_plugin_ids:
+        owasp_coverage_status = "NO_DATA"
+    elif observed_plugin_ids == open_plugin_ids:
+        owasp_coverage_status = "COMPLETE"
+    elif observed_plugin_ids:
+        owasp_coverage_status = "PARTIAL"
+    else:
+        owasp_coverage_status = "UNAVAILABLE"
     was = {
         "availability": availability,
+        "owasp_catalog_version": "2025",
+        "owasp_2025_coverage": {
+            "status": owasp_coverage_status,
+            "plugin_ids_total": len(open_plugin_ids),
+            "plugin_ids_observed": len(observed_plugin_ids),
+        },
         "applications": application_rows,
         "top_vulnerabilities": top_rows[:top_limit],
         "owasp": {

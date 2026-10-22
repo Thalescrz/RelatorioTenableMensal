@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "profiles": {
+    "windows-calibri-v1": {
+      "families": {
+        "document": {
+          "family": "Calibri",
+          "faces": {
+            "regular": {
+              "file": "calibri.ttf",
+              "sha256": "57e93ff143572bcc092c1f56202d43ddc07bb119aa104c6d7af163470fb551f6"
+            },
+            "bold": {
+              "file": "calibrib.ttf",
+              "sha256": "0a8296747536ead27d5f48f67e911cc3b207742b3f704e66995251d12fd422e5"
+            },
+            "italic": {
+              "file": "calibrii.ttf",
+              "sha256": "7f150e9eabe5db3e1b0f9469dca5c96176bc2fbb306dc9d48b7029dc69c52763"
+            }
+          }
+        },
+        "alternate": {
+          "family": "Arial",
+          "faces": {
+            "regular": {
+              "file": "arial.ttf",
+              "sha256": "b3658eadae55e682b5f69eb64c439c1ecc8f196c0bb8d4756d145d13bc86476a"
+            },
+            "bold": {
+              "file": "arialbd.ttf",
+              "sha256": "e8f4e3baf6cc35fed6fcce3a540e8b39e8f6cda1d22a28f2ec8f526fef7a43f5"
+            },
+            "italic": {
+              "file": "ariali.ttf",
+              "sha256": "86b32db9a06f9694e2a3760c42e5117bcdc5cc1255bb5186ca8ce0305e22f288"
+            }
+          }
+        }
+      }
+    },
+    "linux-carlito-v1": {
+      "families": {
+        "document": {
+          "family": "Carlito",
+          "faces": {
+            "regular": {
+              "file": "carlito/Carlito-Regular.ttf",
+              "sha256": "f6418f708baede9789daef5d458c0f53d2a888af9820e8062934e504fedc6595"
+            },
+            "bold": {
+              "file": "carlito/Carlito-Bold.ttf",
+              "sha256": "bb5d20f79b82599ec72983597437373a80f2d2085fa91fc144fd74e876a594db"
+            },
+            "italic": {
+              "file": "carlito/Carlito-Italic.ttf",
+              "sha256": "0b019225e58d702bfedcbd35c21696769f8ee115cb6343f84c2f240312450d1c"
+            }
+          }
+        },
+        "alternate": {
+          "family": "Liberation Sans",
+          "faces": {
+            "regular": {
+              "file": "liberation-sans/LiberationSans-Regular.ttf",
+              "sha256": "76d04c18ea243f426b7de1f3ad208e927008f961dc5945e5aad352d0dfde8ee8"
+            },
+            "bold": {
+              "file": "liberation-sans/LiberationSans-Bold.ttf",
+              "sha256": "788abee4c806d660e8aee46689dd8540cd4bb98da03dcc9d171ce3efd99a9173"
+            },
+            "italic": {
+              "file": "liberation-sans/LiberationSans-Italic.ttf",
+              "sha256": "e5bae5c4cde31f22142753855f4f8fb86da6ff39955ed3c0a11248b0d16948b0"
+            }
+          }
+        }
+      }
+    }
+  }
+}

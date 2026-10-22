@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -38,7 +39,15 @@ MARKDOWN_LINK = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
 SCAFFOLD_MARKER = re.compile(r"\b(?:TODO|TBD|FILL\s+IN)\b")
 IGNORED_LINK_PREFIXES = ("#", "http://", "https://", "mailto:", "app://")
 IGNORED_MARKDOWN_PARTS = frozenset(
-    {".git", ".venv", ".tmp", "data", "credentials", "node_modules"}
+    {
+        ".git",
+        ".venv",
+        ".tmp",
+        "data",
+        "credentials",
+        "deployment-transfers",
+        "node_modules",
+    }
 )
 FENCED_CODE_START = re.compile(r"^[ \t]*(?P<fence>`{3,}|~{3,})")
 
@@ -173,12 +182,25 @@ def _validate_local_links(root: Path, path: Path, text: str) -> list[GuidanceIss
 
 
 def _iter_markdown_files(root: Path) -> tuple[Path, ...]:
-    files = (
-        path
-        for path in root.rglob("*.md")
-        if path.is_file()
-        and not IGNORED_MARKDOWN_PARTS.intersection(path.relative_to(root).parts)
-    )
+    files: list[Path] = []
+    for current, directory_names, filenames in os.walk(
+        root,
+        topdown=True,
+        followlinks=False,
+    ):
+        current_path = Path(current)
+        directory_names[:] = sorted(
+            name
+            for name in directory_names
+            if name not in IGNORED_MARKDOWN_PARTS
+            and not (current_path / name).is_symlink()
+        )
+        files.extend(
+            current_path / filename
+            for filename in sorted(filenames)
+            if filename.casefold().endswith(".md")
+            and (current_path / filename).is_file()
+        )
     return tuple(sorted(files, key=lambda path: path.relative_to(root).as_posix()))
 
 

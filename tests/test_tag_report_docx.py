@@ -9,10 +9,13 @@ from docx import Document
 from docx.oxml.ns import qn
 
 from tenable_reports.config.profile import load_client_profile
+from tenable_reports.presentation import monthly_visuals
 from tenable_reports.presentation.tag_report_docx import (
     generate_tag_report,
     refresh_tag_temporal_comparison,
 )
+from tests.font_profile_helpers import assert_docx_uses_linux_fonts, linux_font_profile
+from tests.docx_table_assertions import assert_all_body_table_cells_centered
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -171,6 +174,35 @@ def _tag_dataset(
     path = tmp_path / "tag-dataset.json"
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
+
+
+def test_tag_report_accepts_linux_font_profile(tmp_path: Path) -> None:
+    output = tmp_path / "linux-tag.docx"
+
+    generate_tag_report(
+        template_path=TEMPLATE,
+        dataset_path=_tag_dataset(tmp_path),
+        profile=load_client_profile(PROFILE),
+        output_path=output,
+        mask_sensitive=True,
+        font_profile=linux_font_profile(),
+    )
+
+    assert_docx_uses_linux_fonts(output)
+
+
+def test_tag_report_centers_every_body_table_cell(tmp_path: Path) -> None:
+    output = tmp_path / "centered-tables.docx"
+
+    generate_tag_report(
+        template_path=TEMPLATE,
+        dataset_path=_tag_dataset(tmp_path),
+        profile=load_client_profile(PROFILE),
+        output_path=output,
+        mask_sensitive=True,
+    )
+
+    assert_all_body_table_cells_centered(Document(output))
 
 
 def _profile(*, include_output: bool = False, show_filters: bool = False):
@@ -374,6 +406,40 @@ def test_enabled_tag_comparison_renders_tables_and_six_charts(tmp_path: Path) ->
     with zipfile.ZipFile(result.output_path) as package:
         document_xml = package.read("word/document.xml").decode("utf-8")
     assert "Comparativo de Vulnerabilidades Novas 2026 por severidade e total" in document_xml
+
+
+def test_tag_charts_use_the_injected_linux_font_profile(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    observed_families: list[str] = []
+    original_loader = monthly_visuals.load_image_font
+
+    def record_font(face, *, size, bold=False, italic=False):
+        observed_families.append(face.family)
+        return original_loader(
+            face,
+            size=size,
+            bold=bold,
+            italic=italic,
+        )
+
+    monkeypatch.setattr(monthly_visuals, "load_image_font", record_font)
+
+    generate_tag_report(
+        template_path=TEMPLATE,
+        dataset_path=_tag_dataset(
+            tmp_path,
+            with_history=True,
+            include_comparison=True,
+        ),
+        profile=_profile(),
+        output_path=tmp_path / "tag-linux-charts.docx",
+        font_profile=linux_font_profile(),
+    )
+
+    assert observed_families
+    assert set(observed_families) == {"Carlito"}
 
 
 def test_tag_comparison_renders_controlled_scope_notice(tmp_path: Path) -> None:

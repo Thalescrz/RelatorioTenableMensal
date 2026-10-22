@@ -95,8 +95,9 @@ O perfil `windows-calibri-v1` preserva o comportamento visual de referencia:
   ate que uma mudanca editorial seja aprovada;
 - caminhos reais dos arquivos sao resolvidos pelo Windows e validados antes da
   geracao;
-- Calibri e Arial nao sao copiadas para o repositorio; a instalacao exige fontes
-  licenciadas no host.
+- Calibri e Arial nao sao copiadas para o repositorio. A instalacao valida primeiro
+  as fontes licenciadas no host e so usa um payload opcional quando o conjunto for
+  completo, autorizado e compativel com os hashes aprovados.
 
 O perfil `linux-carlito-v1` usa arquivos versionados e redistribuiveis:
 
@@ -212,12 +213,36 @@ Ambos validam ou instalam a versao oficial do Python, criam ambiente virtual,
 instalam dependencias a partir do lock da plataforma, verificam assets e executam o
 preflight. Instaladores nao imprimem segredos e nao iniciam coleta.
 
+O artefato oficial de deploy e offline e autossuficiente para a plataforma alvo.
+Ele inclui os instaladores ou pacotes locais de Python, LibreOffice, PostgreSQL,
+dependencias nativas, wheels Python, fontes redistribuiveis e assets da aplicacao.
+O bootstrap nao baixa componentes durante a instalacao e nao aceita um runtime
+preexistente como substituto silencioso para o componente homologado. O operador
+inicia uma unica instalacao elevada quando a plataforma exigir privilegios; depois
+disso o processo e nao interativo, idempotente e valida cada payload por SHA-256
+antes de executa-lo.
+
+Uma ferramenta separada de montagem de release preenche `vendor/` a partir de
+fontes oficiais, verifica assinatura e hash e produz pacotes distintos para
+Windows x64 e Ubuntu Server 24.04 LTS x64. Binarios grandes permanecem fora do Git,
+mas obrigatoriamente dentro do pacote de deploy entregue. Um pacote sem qualquer
+dependencia redistribuivel exigida e invalido e o instalador deve falhar antes de
+alterar o host.
+
+Materiais proprietarios que nao possam ser redistribuidos, como uma fonte Microsoft
+licenciada, nao sao obrigatorios no pacote. O Windows deve fornece-los pela
+instalacao licenciada do host; o bundle registra esse requisito e o setup valida os
+hashes antes de prosseguir. Um payload licenciado pode ser disponibilizado pelo
+operador como recuperacao opcional, mas passa a ser tudo-ou-nada e exige prova de
+autorizacao. A ausencia simultanea de host valido e payload autorizado bloqueia a
+instalacao; nao existe download nem substituicao silenciosa durante o deploy.
+
 Locks separados por plataforma registram versoes e hashes de todas as dependencias
 Python. Um manifesto de runtime registra Python, Pillow, python-docx, docxcompose,
-psycopg, tzdata, LibreOffice, PostgreSQL e fontes. Pacotes externos baixados pelo
-bootstrap precisam de URL oficial e SHA-256; um pacote de release offline pode
-inclui-los quando a licenca permitir, mas binarios grandes nao entram
-automaticamente no Git.
+psycopg, tzdata, LibreOffice, PostgreSQL e fontes. Cada dependencia externa possui
+origem oficial, nome do payload local, SHA-256, assinatura quando aplicavel e regra
+de instalacao silenciosa. Binarios grandes nao entram automaticamente no Git, mas
+o montador recusa produzir o pacote offline se algum payload obrigatorio faltar.
 
 Templates, imagens corporativas, migrations, arquivos estaticos e fontes Linux
 devem fazer parte do artefato instalavel. Um wheel ou pacote que omita o shell DOCX
@@ -301,8 +326,9 @@ A entrega e aceita quando:
 - Windows agenda pela mesma tarefa e confirmacao vigentes;
 - Linux cria, consulta, ativa e desativa o timer systemd da conta dedicada;
 - o modo manual funciona mesmo quando o agendador esta indisponivel;
-- uma instalacao limpa pode ser preparada somente com o codigo e as dependencias
-  licenciadas obtidas pelo bootstrap;
+- uma instalacao limpa pode ser preparada por um unico pacote offline, sem download
+  ou instalacao manual, contendo todas as dependencias redistribuiveis e os
+  materiais licenciados previamente validados durante a montagem;
 - uma migracao controlada preserva PostgreSQL, documentos, hashes, historico e
   referencias `MAIN` sem copiar segredos para o Git;
 - os guias vigentes descrevem instalacao, upgrade, backup, restauracao, diagnostico

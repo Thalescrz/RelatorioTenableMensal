@@ -45,6 +45,7 @@ def was_record(
             "solution": "Solucao de fixture.",
             "see_also": ["https://example.invalid/advisory"],
             "owasp_2021": ["A03:2021-Injection"],
+            "owasp": [{"year": "2025", "category": "A5"}],
             "vpr_v2": {"score": vpr_score} if vpr_score is not None else {},
         },
         "state": state,
@@ -72,6 +73,7 @@ class WasNormalizationTests(unittest.TestCase):
         self.assertEqual(finding.source_asset_id, "application-1")
         self.assertEqual(finding.application_uri, "https://app.example.invalid")
         self.assertEqual(finding.owasp_2021, ("A03:2021-Injection",))
+        self.assertEqual(finding.owasp_2025, ("A05",))
         self.assertEqual(finding.vpr_score, 9.1)
 
     def test_top5_only_contains_open_findings_inside_period(self) -> None:
@@ -93,7 +95,8 @@ class WasNormalizationTests(unittest.TestCase):
         self.assertEqual(population["fixed"], 1)
         self.assertEqual(len(top), 1)
         self.assertEqual(top[0]["finding_instances"], 1)
-        self.assertEqual(was["owasp"]["A03"][0]["instances"], 1)
+        self.assertEqual(was["owasp"]["A05"][0]["instances"], 1)
+        self.assertNotIn("A03", was["owasp"])
 
     def test_owasp_rows_include_risk_and_are_ordered_by_vpr(self) -> None:
         records = [
@@ -144,7 +147,7 @@ class WasNormalizationTests(unittest.TestCase):
             top_limit=5,
         )
 
-        rows = was["owasp"]["A03"]
+        rows = was["owasp"]["A05"]
         self.assertEqual(
             [row["plugin_id"] for row in rows],
             [980020, 980010, 980030],
@@ -164,11 +167,31 @@ class WasNormalizationTests(unittest.TestCase):
         self.assertEqual(top, ())
         self.assertEqual(population["input"], 0)
 
+    def test_owasp_2025_coverage_distinguishes_partial_catalog_from_no_findings(self) -> None:
+        classified = was_record("classified", plugin_id=980001)
+        unclassified = was_record("detail-unavailable", plugin_id=980002)
+        unclassified["plugin"].pop("owasp")
+        normalized = normalize_was_findings(
+            [classified, unclassified], client_id="client-fixture"
+        )
+
+        was, _, _ = build_was_report_data(
+            normalized.findings,
+            period=self.period,
+            collected=True,
+            include_info_severity=False,
+            top_limit=5,
+        )
+
+        self.assertEqual(was["owasp_2025_coverage"]["status"], "PARTIAL")
+        self.assertEqual(was["owasp_2025_coverage"]["plugin_ids_total"], 2)
+        self.assertEqual(was["owasp_2025_coverage"]["plugin_ids_observed"], 1)
+
     def test_normalizes_tenant_owasp_categories_without_leading_zero(self) -> None:
         records = []
         for index in range(1, 11):
             record = was_record(f"owasp-{index}", plugin_id=980000 + index)
-            record["plugin"]["owasp_2021"] = [f"A{index}"]
+            record["plugin"]["owasp"] = [{"year": "2025", "category": f"A{index}"}]
             records.append(record)
         normalized = normalize_was_findings(records, client_id="client-fixture")
         was, _, _ = build_was_report_data(
@@ -179,6 +202,7 @@ class WasNormalizationTests(unittest.TestCase):
             top_limit=5,
         )
         self.assertEqual(sorted(was["owasp"]), [f"A{index:02d}" for index in range(1, 11)])
+        self.assertEqual(was["owasp_catalog_version"], "2025")
 
     def test_application_writes_compressed_was_artifact_with_storage_metrics(self) -> None:
         profile = load_client_profile(
@@ -294,13 +318,20 @@ class WasNormalizationTests(unittest.TestCase):
         repository = MemoryPluginCatalogRepository()
 
         class PluginClient:
-            def list_was_plugins(self, *, wanted_plugin_ids: set[int]):
-                self.requested = wanted_plugin_ids
-                return [{
+            requested: list[int]
+
+            def __init__(self) -> None:
+                self.requested = []
+
+            def get_was_plugin_details(self, plugin_id: int):
+                self.requested.append(plugin_id)
+                return {
                     "plugin_id": 980001,
                     "name": "Finding WEB de fixture",
                     "family": {"name": "Web Servers"},
-                }]
+                    "cwe": ["79"],
+                    "owasp": [{"year": "2025", "category": "A05"}],
+                }
 
         client = PluginClient()
         with tempfile.TemporaryDirectory() as directory:
@@ -313,8 +344,11 @@ class WasNormalizationTests(unittest.TestCase):
             )
 
             stored = list(iter_jsonl_objects(result.findings_path))
-            self.assertEqual(client.requested, {980001})
+            self.assertEqual(client.requested, [980001])
             self.assertEqual(stored[0]["plugin_family"], "Web Servers")
+            self.assertEqual(stored[0]["cwes"], ["79"])
+            self.assertEqual(stored[0]["owasp_2025"], ["A05"])
+            self.assertTrue(stored[0]["owasp_detail_observed"])
             self.assertIsNone(warning)
 
 

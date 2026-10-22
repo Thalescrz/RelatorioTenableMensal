@@ -4,6 +4,7 @@ import subprocess
 from pathlib import Path
 
 from tenable_reports.config.monthly_schedule import MonthlyScheduleConfig
+from tenable_reports.infrastructure.monthly_scheduler import SchedulerBackend
 from tenable_reports.infrastructure.windows_task_scheduler import (
     WindowsTaskScheduler,
     WindowsTaskStatus,
@@ -42,6 +43,36 @@ def test_apply_uses_argument_list_and_never_shell(tmp_path: Path) -> None:
     )
     scheduler.apply(MonthlyScheduleConfig.from_mapping({"enabled": True}))
     command, kwargs = runner.calls[0]
-    assert command[:2] == ["schtasks.exe", "/Create"]
+    assert command == [
+        "schtasks.exe",
+        "/Create",
+        "/TN",
+        "Relatorios Tenable - Mensal",
+        "/SC",
+        "MONTHLY",
+        "/D",
+        "1",
+        "/ST",
+        "00:05",
+        "/TR",
+        scheduler.task_command(),
+        "/F",
+    ]
     assert kwargs["shell"] is False
     assert "00:05" in command
+
+
+def test_windows_task_state_exposes_generic_backend_without_changing_legacy_status(
+    tmp_path: Path,
+) -> None:
+    runner = Runner(subprocess.CompletedProcess([], 1, "", "ERROR: not found"))
+    scheduler = WindowsTaskScheduler(
+        project_root=tmp_path,
+        config_path=tmp_path / "orchestration" / "clients.json",
+        runner=runner,
+    )
+
+    mapping = scheduler.query(MonthlyScheduleConfig.from_mapping({})).to_mapping()
+
+    assert mapping["backend"] == SchedulerBackend.WINDOWS_TASK_SCHEDULER.value
+    assert mapping["status"] == WindowsTaskStatus.MISSING.value

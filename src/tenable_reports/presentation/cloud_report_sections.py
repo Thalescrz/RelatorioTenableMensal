@@ -23,6 +23,7 @@ from tenable_reports.presentation.cloud_visuals import (
     render_severity_chart,
 )
 from tenable_reports.presentation.document_control import append_document_control
+from tenable_reports.presentation.font_profiles import FontProfile, FontProfileError
 from tenable_reports.presentation.source_filters import format_source_filter_note
 from tenable_reports.presentation.translation import (
     TextTranslator,
@@ -57,6 +58,21 @@ SEVERITY_LABELS = {
 class CloudDocumentBuilder:
     document: DocxDocument
     anchor: Any
+    font_profile: FontProfile | None = None
+
+    @property
+    def document_family(self) -> str:
+        return (
+            self.font_profile.document_family
+            if self.font_profile is not None
+            else "Calibri"
+        )
+
+    @property
+    def image_font_profile(self) -> FontProfile:
+        if self.font_profile is None:
+            raise FontProfileError("FONT_PROFILE_INVALID")
+        return self.font_profile
 
     def _move(self, element: Any) -> Any:
         parent = element.getparent()
@@ -76,7 +92,7 @@ class CloudDocumentBuilder:
         keep_with_next: bool = False,
         space_before: float = 0,
         space_after: float = 6,
-        font_name: str = "Calibri",
+        font_name: str | None = None,
     ) -> Any:
         paragraph = self.document.add_paragraph()
         paragraph.alignment = align
@@ -86,8 +102,9 @@ class CloudDocumentBuilder:
         paragraph.paragraph_format.keep_with_next = keep_with_next
         run = paragraph.add_run(str(text))
         run.bold = bold
-        run.font.name = font_name
-        run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), font_name)
+        family = font_name or self.document_family
+        run.font.name = family
+        run._element.get_or_add_rPr().rFonts.set(qn("w:eastAsia"), family)
         run.font.size = Pt(size)
         run.font.color.rgb = RGBColor.from_string(color)
         self._move(paragraph._p)
@@ -109,7 +126,7 @@ class CloudDocumentBuilder:
                 size=sizes.get(level, 9),
                 color=base.NAVY,
                 bold=True,
-                name="Calibri",
+                name=self.document_family,
             )
             base._set_language(run)
         if level == 1:
@@ -128,7 +145,13 @@ class CloudDocumentBuilder:
         paragraph = self.document.add_paragraph()
         paragraph.alignment = align
         run = paragraph.add_run(str(text))
-        base._set_run_font(run, size=9, color=color, bold=bold)
+        base._set_run_font(
+            run,
+            size=9,
+            color=color,
+            bold=bold,
+            name=self.document_family,
+        )
         base._set_language(run)
         self._move(paragraph._p)
         return paragraph
@@ -148,6 +171,7 @@ class CloudDocumentBuilder:
                 size=size,
                 color=base.NAVY,
                 bold=True,
+                name=self.document_family,
             )
             base._set_language(run)
         self._move(paragraph._p)
@@ -227,7 +251,7 @@ class CloudDocumentBuilder:
                 size=7.5,
                 color=NAVY if band is not None else WHITE,
                 bold=True,
-                name="Calibri",
+                name=self.document_family,
             )
         for row_index, values in enumerate(rows):
             row = table.add_row()
@@ -247,7 +271,12 @@ class CloudDocumentBuilder:
                     else WD_ALIGN_PARAGRAPH.CENTER
                 )
                 run = paragraph.add_run("" if value is None else str(value))
-                base._set_run_font(run, size=7.2, color=NAVY, name="Calibri")
+                base._set_run_font(
+                    run,
+                    size=7.2,
+                    color=NAVY,
+                    name=self.document_family,
+                )
         self._move(table._tbl)
         return table
 
@@ -267,7 +296,7 @@ class CloudDocumentBuilder:
                 size=8,
                 color=MID_GRAY,
                 align=WD_ALIGN_PARAGRAPH.LEFT,
-                font_name="Calibri",
+                font_name=self.document_family,
                 space_before=2,
                 space_after=6,
             )
@@ -309,6 +338,7 @@ def render_document_control(
         recipients=profile.document_control.distribution_recipients,
         mask_sensitive=mask_sensitive,
         mover=builder._move,
+        font_profile=builder.font_profile,
     )
     builder.heading("2. OBJETIVO", 1)
     builder.paragraph(copy.OBJECTIVE)
@@ -837,6 +867,7 @@ def render_executive_overview(
     chart = render_severity_chart(
         severity,
         Path(chart_dir) / "cloud-severity-overview.png",
+        font_profile=builder.image_font_profile,
     )
     builder.image(
         chart,
@@ -932,6 +963,7 @@ def render_vulnerability_aging(
     chart = render_aging_chart(
         aging,
         Path(chart_dir) / "cloud-vulnerability-aging.png",
+        font_profile=builder.image_font_profile,
     )
     builder.image(
         chart,
@@ -1045,6 +1077,7 @@ def render_monthly_evolution(
     chart = render_monthly_history_chart(
         history,
         Path(chart_dir) / "cloud-monthly-evolution.png",
+        font_profile=builder.image_font_profile,
     )
     if chart is None:
         builder.paragraph(copy.HISTORY_UNAVAILABLE, color=MID_GRAY)

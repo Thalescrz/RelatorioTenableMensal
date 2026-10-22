@@ -15,9 +15,44 @@ from tenable_reports.presentation.customizations_report_docx import (
     _bar_chart,
     generate_customizations_report,
 )
+from tests.font_profile_helpers import assert_docx_uses_linux_fonts, linux_font_profile
+from tests.docx_table_assertions import assert_all_body_table_cells_centered
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_customizations_report_accepts_linux_font_profile(tmp_path: Path) -> None:
+    output = tmp_path / "linux-customizations.docx"
+
+    generate_customizations_report(
+        template_path=ROOT / "templates/corporate/base-v1.docx",
+        dataset_path=ROOT / "tests/fixtures/report-dataset-phase5.json",
+        profile=load_client_profile(
+            ROOT / "clients/examples/client-profile-all-customizations.json"
+        ),
+        output_path=output,
+        mask_sensitive=True,
+        font_profile=linux_font_profile(),
+    )
+
+    assert_docx_uses_linux_fonts(output)
+
+
+def test_customizations_report_centers_every_body_table_cell(tmp_path: Path) -> None:
+    output = tmp_path / "centered-tables.docx"
+
+    generate_customizations_report(
+        template_path=ROOT / "templates/corporate/base-v1.docx",
+        dataset_path=ROOT / "tests/fixtures/report-dataset-phase5.json",
+        profile=load_client_profile(
+            ROOT / "clients/examples/client-profile-all-customizations.json"
+        ),
+        output_path=output,
+        mask_sensitive=True,
+    )
+
+    assert_all_body_table_cells_centered(Document(output))
 
 
 def test_executive_bar_chart_keeps_bars_out_of_the_label_column(tmp_path: Path) -> None:
@@ -31,6 +66,7 @@ def test_executive_bar_chart_keeps_bars_out_of_the_label_column(tmp_path: Path) 
             {"label": "Outra categoria", "change": 80},
         ),
         (("change", "Variação", "#2E59FC"),),
+        font_profile=linux_font_profile(),
     )
 
     with PilImage.open(output) as image:
@@ -139,6 +175,37 @@ def test_customizations_report_uses_official_cover_and_back_cover_shell() -> Non
         assert "PORTUGAL" in text
         with zipfile.ZipFile(output) as package:
             assert package.read("word/document.xml").count(b"<wp:anchor") >= 10
+
+
+def test_customizations_back_cover_does_not_inherit_body_header_or_footer() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "custom-isolated-back-cover.docx"
+        generate_customizations_report(
+            template_path=ROOT / "templates/corporate/base-v1.docx",
+            dataset_path=ROOT / "tests/fixtures/report-dataset-phase5.json",
+            profile=load_client_profile(
+                ROOT / "clients/examples/client-profile-all-customizations.json"
+            ),
+            output_path=output,
+            mask_sensitive=True,
+        )
+
+        final_section = Document(output).sections[-1]
+        for container in (
+            final_section.header,
+            final_section.first_page_header,
+            final_section.even_page_header,
+            final_section.footer,
+            final_section.first_page_footer,
+            final_section.even_page_footer,
+        ):
+            assert not container.is_linked_to_previous
+            assert not container.tables
+            assert not container._element.xpath(".//w:drawing | .//w:pict")
+            assert not "".join(
+                text_node.text or ""
+                for text_node in container._element.xpath(".//w:t")
+            ).strip()
 
 
 def test_customizations_report_has_one_numbered_top_level_and_numbered_modules() -> None:

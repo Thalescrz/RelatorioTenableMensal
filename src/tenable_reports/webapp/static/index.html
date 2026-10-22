@@ -380,13 +380,14 @@
       <button id="admin-monthly-tab" class="admin-tab active" data-admin-tab="monthly" role="tab" aria-selected="true" type="button">Automação mensal</button>
       <button id="admin-backfill-tab" class="admin-tab" data-admin-tab="backfill" role="tab" aria-selected="false" type="button">Referências históricas</button>
       <button id="admin-document-control-tab" class="admin-tab" data-admin-tab="document-control" role="tab" aria-selected="false" type="button">Controle de documento</button>
+      <button id="admin-environment-tab" class="admin-tab" data-admin-tab="environment" role="tab" aria-selected="false" type="button">Ambiente</button>
     </div>
     <section id="admin-monthly-panel" class="admin-tab-panel" role="tabpanel">
       <div id="monthly-loading" class="loading">Carregando configuração mensal…</div>
       <form id="monthly-schedule-form" class="monthly-schedule-form hidden">
         <div class="monthly-status-grid">
           <div><span>Política salva</span><strong id="monthly-policy-status">—</strong></div>
-          <div><span>Tarefa Windows</span><strong id="monthly-task-status">—</strong></div>
+          <div><span>Agendador mensal</span><strong id="monthly-task-status">—</strong></div>
           <div><span>Próxima execução</span><strong id="monthly-next-run">—</strong></div>
           <div><span>Competência</span><strong id="monthly-competence">—</strong></div>
         </div>
@@ -399,8 +400,8 @@
         <div class="monthly-actions">
           <button class="button ghost" id="monthly-save-button" type="submit">Salvar política</button>
           <button class="button ghost" id="monthly-validate-button" type="button">Validar sem executar</button>
-          <button class="button ghost" id="monthly-apply-button" type="button">Sincronizar tarefa</button>
-          <button class="button primary" id="monthly-toggle-button" type="button">Ativar tarefa</button>
+          <button class="button ghost" id="monthly-apply-button" type="button">Sincronizar agendamento</button>
+          <button class="button primary" id="monthly-toggle-button" type="button">Ativar automação</button>
         </div>
       </form>
     </section>
@@ -464,11 +465,23 @@
       </section>
       <button class="button primary full" id="save-document-control" type="button">Salvar Controle de Documento padrão</button>
     </section>
+    <section id="admin-environment-panel" class="admin-tab-panel hidden" role="tabpanel">
+      <div id="environment-loading" class="loading">Verificando o ambiente local…</div>
+      <div id="environment-status-content" class="environment-status-content hidden">
+        <div class="environment-summary">
+          <div><span>Estado geral</span><strong id="environment-overall-status">—</strong></div>
+          <div><span>Publicação oficial</span><strong id="environment-publication-status">—</strong></div>
+        </div>
+        <div id="environment-components" class="environment-components"></div>
+        <div id="environment-issues" class="environment-issues"></div>
+      </div>
+    </section>
   </dialog>
 
   <script src="/static/client_selection.js" defer></script>
   <script src="/static/batch_family_filters.js" defer></script>
   <script src="/static/monthly_schedule.js" defer></script>
+  <script src="/static/environment_status.js" defer></script>
   <script src="/static/report_request_guard.js" defer></script>
   <script src="/static/dashboard_refresh.js" defer></script>
   <script src="/static/client_card.js" defer></script>

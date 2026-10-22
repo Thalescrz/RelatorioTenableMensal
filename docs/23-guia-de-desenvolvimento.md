@@ -6,8 +6,14 @@ mudança.
 
 ## Preparação
 
+`scripts/setup.ps1` e `scripts/setup.sh` pertencem ao bundle de produção e exigem
+payloads oficiais. Para desenvolver a partir do Git, crie uma `.venv` com Python
+compatível e instale o projeto editável; um exemplo para uma estação já preparada
+é:
+
 ```powershell
-.\scripts\setup.ps1
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
 $env:PYTHONPATH = (Join-Path $PWD 'src')
 .\.venv\Scripts\python.exe -m pytest -q
 ```
@@ -106,33 +112,92 @@ Qualquer nova lista de propriedades seletivas precisa ser validada contra payloa
 completo no tenant antes de virar padrão. O fallback seletivo é restrito às falhas
 de contrato já previstas; não mascare autenticação, limite de taxa ou timeout.
 
-O export WAS não é obrigado a trazer `plugin.family`. Resolva famílias somente por
-Plugin ID no endpoint paginado `/was/v2/plugins`, persista o resultado isolado por
-cliente e tenant e trate essa consulta como enriquecimento em melhor esforço. Não
-use OWASP como substituto. Cubra por teste os dois esquemas da tabela: com a coluna
+O export WAS não é obrigado a trazer `plugin.family`, CWE ou OWASP 2025. Resolva
+esses metadados somente por Plugin ID em `GET /was/v2/plugins/{plugin_id}` e
+persista o resultado isolado por cliente e tenant. O campo `owasp` do detalhe deve
+ser armazenado como pares versionados `ano + categoria`; nunca converta
+`plugin.owasp_2021` em OWASP 2025. Metadados detalhados já catalogados não devem
+ser consultados novamente. Cubra por teste os dois esquemas da tabela: com a coluna
 **Família** quando houver ao menos uma correspondência real e sem ela quando não
 houver nenhuma.
 
-O agrupamento OWASP pertence ao domínio WAS. Ele deve conservar maior severidade e
-maior VPR por Plugin ID em cada categoria e ordenar por VPR decrescente antes de
+O agrupamento OWASP 2025 pertence ao domínio WAS. Ele deve conservar maior
+severidade e maior VPR por Plugin ID em cada categoria e ordenar por VPR decrescente antes de
 chegar à apresentação. O DOCX apenas traduz a severidade e aplica a convenção
 visual de `0` para VPR nulo. Testes precisam provar que mais instâncias não passam
 à frente de um VPR maior e que valores nulos permanecem por último.
 
 Não inicie export real, servidor ou cancelamento sem necessidade e autorização.
 
-## Mensal e Agendador do Windows
+## Mensal e agendadores por plataforma
 
 O serviço mensal deve permanecer testável com aplicação/repositório injetados. A
 CLI headless e a interface chamam o mesmo `STAGED_V1`; não crie um segundo
 orquestrador. Teste competência no fuso, chave idempotente, família existente e
 clientes ativos com credenciais prontas.
 
-O adaptador do Agendador usa lista de argumentos, `shell=False`, timeout curto e
-compara launcher/configuração antes de declarar sincronização. Salvar ou validar a
-política nunca invoca `schtasks.exe` nem cria lote. Aplicar, ativar e desativar
-exigem confirmação e devem ser testados com runner falso.
+O protocolo de agenda usa lista de argumentos, `shell=False`, timeout curto e
+compara launcher/configuração antes de declarar sincronização. No Windows, o
+adaptador chama `schtasks.exe`; no Linux, materializa unidades e usa `systemctl
+--user` para um timer do `systemd`. Não crie fallback por `cron`. Salvar ou validar
+a política nunca invoca o sistema nem cria lote. Aplicar, ativar e desativar exigem
+confirmação e devem ser testados com runner falso.
 Comandos reais devem exigir confirmação explícita.
+
+## Release offline e transferência
+
+`deploy/runtime-manifest.json` e os locks por plataforma são o contrato de versão.
+`tools/build_offline_bundle.py` aceita somente o layout oficial, valida assinatura,
+hash e licença e gera um pacote autocontido para as dependências redistribuíveis.
+No Windows, `Valid` isoladamente não basta: assunto e SHA-256 do certificado
+Authenticode devem corresponder ao publicador fixado para cada payload no layout.
+No Windows, o manifesto declara `windows-calibri-v1` como requisito do host; a
+ausência total do payload proprietário é válida, mas qualquer presença o torna um
+grupo opcional tudo-ou-nada, sujeito a hashes e prova de autorização. No Linux,
+Carlito e Liberation Sans continuam obrigatórias no bundle. `tools/verify_offline_bundle.py`
+revalida o resultado. Testes nunca devem baixar artefatos nem flexibilizar uma
+falha `BLOCKED`. A release suporta Windows x86_64 com `windows-calibri-v1` e Ubuntu
+Server 24.04 x86_64 com `linux-carlito-v1`.
+
+Na construção Linux, o Python usa o bundle Sigstore oficial, emissor OIDC fixado e
+o endereço exato extraído do certificado, aceito somente no domínio institucional;
+não versione o endereço individual do signatário. O LibreOffice usa `gpgv` com chaveiro TDF
+explícito e exige que `VALIDSIG` corresponda ao fingerprint fixado. O host de build precisa de `sigstore==4.5.0` e
+`gpgv`, mas esses verificadores não são dependências do host de produção depois de
+o ZIP estar pronto. Ao copiar o código, use somente os caminhos retornados por
+`git ls-files` e aplique também a enumeração positiva de raízes. A construção deve
+falhar fechada fora de um checkout Git; não volte a percorrer a árvore inteira,
+pois isso pode incluir arquivos ignorados ou não revisados.
+O construtor também deve rejeitar índice vazio ou parcial e qualquer arquivo
+rastreado permitido que não esteja presente no worktree. Um sparse checkout não
+pode resultar em release `READY` sem todos os arquivos mínimos comuns e específicos
+da plataforma.
+Pelo mesmo motivo, `validate_project_guidance.py` poda `deployment-transfers` antes
+da travessia: os Markdown extraídos dentro de uma release são cópias de
+distribuição, não fontes documentais adicionais do repositório.
+
+Os checksums internos do bundle comprovam integridade, não a origem do ZIP que os
+contém. Registre o SHA-256 final e o publique por canal independente ou previamente
+confiável junto da entrega.
+
+Os `scripts/setup.ps1` e `scripts/setup.sh` devem terminar com
+`environment-status --require-ready`. Um preflight bloqueado nunca pode imprimir
+conclusão de instalação; avisos não bloqueantes, como agendador ainda não ativado,
+continuam permitidos. O payload nativo Ubuntu deve ser produzido em uma imagem
+limpa e declarar explicitamente também as bibliotecas de execução do LibreOffice e
+o OpenSSL do PostgreSQL, sem depender do que já estiver instalado no host de build.
+
+O fluxo `deployment-export`/`deployment-import` deve permanecer em duas fases. O
+dry-run valida schema, hashes, espaço, identidade e `MAIN`; a aplicação exige a
+frase exata `IMPORT <transfer_id>`, restaura em staging e só depois promove. Novos
+campos persistidos exigem teste de exportação, rebase de caminhos e rollback. O
+pacote nunca contém credenciais.
+
+Para homologar uma release, cubra instaladores sem rede, repetição idempotente,
+preflight com falha fechada, comandos de
+agenda com doubles e os quatro DOCX sanitizados. Windows e Linux possuem baselines
+visuais independentes; não aceite igualdade de hash de DOCX como substituto da
+renderização com o LibreOffice fixado.
 
 No período manual explícito, datas da interface são inclusivas e o domínio recebe
 o fim exclusivo. Se esse fim for exatamente a meia-noite posterior ao dia corrente,
@@ -392,7 +457,13 @@ O template `templates/corporate/base-v1.docx` preserva a capa e a contracapa do
 documento oficial, mas substitui cliente, período, cabeçalho interno e metadados por
 valores controlados. Não reconstrua essas páginas com elementos aproximados. O
 conteúdo geral, customizado, por TAG ou Cloud deve ser inserido entre as duas páginas
-oficiais. Após a capa, o sumário é materializado com parágrafos `toc 1` a `toc 3` e
+oficiais. Ao recolocar a contracapa, a seção final deve possuir variantes vazias e
+não vinculadas de cabeçalho e rodapé (`default`, `first` e `even`), para que a
+identidade interna do corpo não apareça na página institucional quando a paginação
+final for par. No perfil Linux, preserve intervalos horizontais equivalentes entre
+os centros das três colunas de contatos da contracapa; uma terceira coluna mais
+larga desloca Portugal para a direita no LibreOffice. Após a capa, o sumário é
+materializado com parágrafos `toc 1` a `toc 3` e
 hiperlinks internos para os respectivos títulos; não depende de atualização do
 Word. `SUMÁRIO` usa `TOC Heading`, fica fora da própria lista, e seções/subseções
 usam `Heading 1` a `Heading 3` com números explícitos. `Heading 4` pode estruturar
@@ -424,9 +495,14 @@ automação do Word.
 
 O alinhamento justificado é restrito aos parágrafos narrativos do corpo. O helper
 compartilhado deve ignorar capa e contracapa, títulos, sumário, listas, notas de
-fonte em tipografia secundária, tabelas, gráficos e qualquer alinhamento explícito
-do componente. Os geradores Geral, Customizações, TAG e Cloud aplicam a mesma regra
-antes de salvar; a republicação aplica a regra novamente para documentos antigos.
+fonte em tipografia secundária, gráficos e qualquer alinhamento explícito do
+componente. Em seguida, os geradores Geral, Customizações, TAG e Cloud aplicam uma
+segunda regra compartilhada a todas as tabelas de dados do corpo: cada célula fica
+centralizada horizontal e verticalmente, inclusive em tabelas aninhadas. Não
+percorra tabelas estruturais de cabeçalho ou rodapé, pois elas preservam a
+geometria do shell corporativo. A republicação narrativa aplica somente a regra de
+justificação aos documentos antigos; a centralização integral das tabelas exige
+regeneração pelo gerador vigente.
 
 Rótulos integrais de severidade/faixa em tabelas destacadas usam a paleta aprovada:
 `CRITICAL`, `HIGH`, `MEDIUM` e `LOW`. A classificação deve ser estrita;

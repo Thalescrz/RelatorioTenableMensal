@@ -5,12 +5,16 @@ import hashlib
 import importlib.util
 import json
 import shutil
-import subprocess
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
 from tenable_reports.config.profile import load_client_profile
+from tenable_reports.infrastructure.libreoffice import (
+    OfficeRenderer,
+    resolve_libreoffice,
+)
+from tenable_reports.infrastructure.runtime_platform import detect_runtime_platform
 from tenable_reports.presentation.cloud_report_docx import (
     CloudReportVariant,
     generate_cloud_report,
@@ -421,21 +425,6 @@ def sanitized_cloud_dataset() -> dict[str, Any]:
     }
 
 
-def _find_libreoffice(explicit: Path | None = None) -> Path:
-    candidates = (
-        explicit,
-        Path("C:/Codex/LibreOfficePortable/App/libreoffice/program/soffice.exe"),
-        Path("C:/Program Files/LibreOffice/program/soffice.exe"),
-    )
-    for candidate in candidates:
-        if candidate is not None and candidate.is_file():
-            return candidate.resolve()
-    discovered = shutil.which("soffice")
-    if discovered:
-        return Path(discovered).resolve()
-    raise FileNotFoundError("LibreOffice não encontrado para a validação visual.")
-
-
 def _qa_toolkit():
     source = ROOT / "tools" / "docx_inventory.py"
     spec = importlib.util.spec_from_file_location(
@@ -456,30 +445,18 @@ def _render_qa(
     libreoffice: Path | None,
 ) -> None:
     qa_toolkit = _qa_toolkit()
-    executable = _find_libreoffice(libreoffice)
+    platform = detect_runtime_platform()
+    installation = resolve_libreoffice(
+        platform,
+        explicit_path=libreoffice,
+    )
+    renderer = OfficeRenderer(installation, platform=platform)
     for document in documents:
         docx = Path(document["path"])
         pdf = output_root / f"{docx.stem}.pdf"
-        if pdf.is_file():
-            pdf.unlink()
-        subprocess.run(
-            [
-                str(executable),
-                "--headless",
-                "--convert-to",
-                "pdf",
-                "--outdir",
-                str(output_root),
-                str(docx),
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        if not pdf.is_file():
-            raise RuntimeError(f"LibreOffice não gerou o PDF esperado: {pdf}")
+        rendered_pdf = renderer.render_docx(docx, output_root)
+        if rendered_pdf != pdf:
+            raise RuntimeError("LIBREOFFICE_RENDER_OUTPUT_MISMATCH")
         qa_root = (output_root / f"qa-{document['variant']}").resolve()
         if not qa_root.is_relative_to(output_root.resolve()):
             raise RuntimeError("Diretório de QA fora da saída permitida.")

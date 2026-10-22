@@ -9,9 +9,10 @@ from tenable_reports.config.profile import (
     DocumentVersionControlConfig,
 )
 from tenable_reports.presentation.document_control import append_document_control
+from tests.font_profile_helpers import linux_font_profile
 
 
-def test_document_control_justifies_every_body_cell() -> None:
+def test_document_control_centers_every_body_cell() -> None:
     document = Document()
 
     append_document_control(
@@ -33,6 +34,7 @@ def test_document_control_justifies_every_body_cell() -> None:
                 email="destinatario@example.invalid",
             ),
         ),
+        font_profile=linux_font_profile(),
     )
 
     assert len(document.tables) == 3
@@ -48,8 +50,17 @@ def test_document_control_justifies_every_body_cell() -> None:
             for paragraph in cell.paragraphs
         )
         assert all(
-            paragraph.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
+            paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER
             for row in table.rows[2:]
             for cell in row.cells
             for paragraph in cell.paragraphs
         )
+    assert {
+        run.font.name
+        for table in document.tables
+        for row in table.rows
+        for cell in row.cells
+        for paragraph in cell.paragraphs
+        for run in paragraph.runs
+        if run.text
+    } == {"Carlito"}
