@@ -135,8 +135,9 @@ def normalize_was_collection_with_catalog(
         warning = {
             "code": "WAS_PLUGIN_CATALOG_UNAVAILABLE",
             "message": (
-                "Catalogo de plugins WAS indisponivel; o relatorio segue sem a "
-                "coluna Familia quando nao houver correspondencia."
+                "Catalogo de detalhes dos plugins WAS indisponivel; o relatorio "
+                "segue sem Familia, CWE ou classificacao OWASP 2025 quando nao "
+                "houver correspondencia previamente preservada."
             ),
             "error_type": type(exc).__name__,
         }

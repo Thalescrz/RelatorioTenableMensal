@@ -15,6 +15,7 @@ from tenable_reports.presentation.tag_report_docx import (
     refresh_tag_temporal_comparison,
 )
 from tests.font_profile_helpers import assert_docx_uses_linux_fonts, linux_font_profile
+from tests.docx_table_assertions import assert_all_body_table_cells_centered
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -188,6 +189,20 @@ def test_tag_report_accepts_linux_font_profile(tmp_path: Path) -> None:
     )
 
     assert_docx_uses_linux_fonts(output)
+
+
+def test_tag_report_centers_every_body_table_cell(tmp_path: Path) -> None:
+    output = tmp_path / "centered-tables.docx"
+
+    generate_tag_report(
+        template_path=TEMPLATE,
+        dataset_path=_tag_dataset(tmp_path),
+        profile=load_client_profile(PROFILE),
+        output_path=output,
+        mask_sensitive=True,
+    )
+
+    assert_all_body_table_cells_centered(Document(output))
 
 
 def _profile(*, include_output: bool = False, show_filters: bool = False):

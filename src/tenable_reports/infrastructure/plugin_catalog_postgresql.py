@@ -29,11 +29,12 @@ class PostgresPluginCatalogRepository:
                     insert into {SCHEMA_NAME}.plugin_catalog (
                         client_id, tenant_id, plugin_id, name, normalized_name,
                         family, synopsis, description, solution, reference_values,
-                        cves, cvss2_base_score, cvss3_base_score, vpr_score,
+                        cves, cwes, owasp_categories,
+                        cvss2_base_score, cvss3_base_score, vpr_score,
                         exploitable, exploit_frameworks, provenance, observed_at
                     ) values (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s::timestamptz
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s::timestamptz
                     )
                     on conflict (client_id, tenant_id, plugin_id) do update set
                         name = coalesce(excluded.name, {SCHEMA_NAME}.plugin_catalog.name),
@@ -52,6 +53,14 @@ class PostgresPluginCatalogRepository:
                         cves = case
                             when excluded.cves <> '[]'::jsonb then excluded.cves
                             else {SCHEMA_NAME}.plugin_catalog.cves
+                        end,
+                        cwes = case
+                            when excluded.cwes <> '[]'::jsonb then excluded.cwes
+                            else {SCHEMA_NAME}.plugin_catalog.cwes
+                        end,
+                        owasp_categories = case
+                            when excluded.owasp_categories <> '[]'::jsonb then excluded.owasp_categories
+                            else {SCHEMA_NAME}.plugin_catalog.owasp_categories
                         end,
                         cvss2_base_score = coalesce(excluded.cvss2_base_score, {SCHEMA_NAME}.plugin_catalog.cvss2_base_score),
                         cvss3_base_score = coalesce(excluded.cvss3_base_score, {SCHEMA_NAME}.plugin_catalog.cvss3_base_score),
@@ -77,6 +86,11 @@ class PostgresPluginCatalogRepository:
                         item.solution,
                         _jsonb(list(item.references)),
                         _jsonb(list(item.cves)),
+                        _jsonb(list(item.cwes)),
+                        _jsonb([
+                            {"year": year, "category": category}
+                            for year, category in item.owasp_categories
+                        ]),
                         item.cvss2_base_score,
                         item.cvss3_base_score,
                         item.vpr_score,
@@ -100,7 +114,8 @@ class PostgresPluginCatalogRepository:
                 f"""
                 select client_id, tenant_id, plugin_id, name, normalized_name,
                        family, synopsis, description, solution, reference_values,
-                       cves, cvss2_base_score, cvss3_base_score, vpr_score,
+                       cves, cwes, owasp_categories,
+                       cvss2_base_score, cvss3_base_score, vpr_score,
                        exploitable, exploit_frameworks, provenance, observed_at
                 from {SCHEMA_NAME}.plugin_catalog
                 where client_id = %s and tenant_id = %s and normalized_name = %s
@@ -108,30 +123,7 @@ class PostgresPluginCatalogRepository:
                 """,
                 (client_id, tenant_id, normalize_plugin_name(name)),
             ).fetchall()
-        return tuple(PluginCatalogEntry(
-            client_id=str(row[0]),
-            tenant_id=str(row[1]),
-            plugin_id=int(row[2]),
-            name=str(row[3]) if row[3] is not None else None,
-            normalized_name=str(row[4]),
-            family=str(row[5]) if row[5] is not None else None,
-            synopsis=str(row[6]) if row[6] is not None else None,
-            description=str(row[7]) if row[7] is not None else None,
-            solution=str(row[8]) if row[8] is not None else None,
-            references=tuple(str(item) for item in (row[9] or ())),
-            cves=tuple(str(item) for item in (row[10] or ())),
-            cvss2_base_score=float(row[11]) if row[11] is not None else None,
-            cvss3_base_score=float(row[12]) if row[12] is not None else None,
-            vpr_score=float(row[13]) if row[13] is not None else None,
-            exploitable=bool(row[14]) if row[14] is not None else None,
-            exploit_frameworks=tuple(str(item) for item in (row[15] or ())),
-            provenance=dict(row[16] or {}),
-            observed_at=(
-                row[17].isoformat()
-                if hasattr(row[17], "isoformat")
-                else str(row[17])
-            ),
-        ) for row in rows)
+        return tuple(self._entry_from_row(row) for row in rows)
 
     def find_by_plugin_ids(
         self,
@@ -148,7 +140,8 @@ class PostgresPluginCatalogRepository:
                 f"""
                 select client_id, tenant_id, plugin_id, name, normalized_name,
                        family, synopsis, description, solution, reference_values,
-                       cves, cvss2_base_score, cvss3_base_score, vpr_score,
+                       cves, cwes, owasp_categories,
+                       cvss2_base_score, cvss3_base_score, vpr_score,
                        exploitable, exploit_frameworks, provenance, observed_at
                 from {SCHEMA_NAME}.plugin_catalog
                 where client_id = %s and tenant_id = %s
@@ -173,15 +166,26 @@ class PostgresPluginCatalogRepository:
             solution=str(row[8]) if row[8] is not None else None,
             references=tuple(str(item) for item in (row[9] or ())),
             cves=tuple(str(item) for item in (row[10] or ())),
-            cvss2_base_score=float(row[11]) if row[11] is not None else None,
-            cvss3_base_score=float(row[12]) if row[12] is not None else None,
-            vpr_score=float(row[13]) if row[13] is not None else None,
-            exploitable=bool(row[14]) if row[14] is not None else None,
-            exploit_frameworks=tuple(str(item) for item in (row[15] or ())),
-            provenance=dict(row[16] or {}),
+            cwes=tuple(str(item) for item in (row[11] or ())),
+            owasp_categories=tuple(sorted(
+                (
+                    str(item.get("year")),
+                    str(item.get("category")),
+                )
+                for item in (row[12] or ())
+                if isinstance(item, dict)
+                and item.get("year") is not None
+                and item.get("category") is not None
+            )),
+            cvss2_base_score=float(row[13]) if row[13] is not None else None,
+            cvss3_base_score=float(row[14]) if row[14] is not None else None,
+            vpr_score=float(row[15]) if row[15] is not None else None,
+            exploitable=bool(row[16]) if row[16] is not None else None,
+            exploit_frameworks=tuple(str(item) for item in (row[17] or ())),
+            provenance=dict(row[18] or {}),
             observed_at=(
-                row[17].isoformat()
-                if hasattr(row[17], "isoformat")
-                else str(row[17])
+                row[19].isoformat()
+                if hasattr(row[19], "isoformat")
+                else str(row[19])
             ),
         )

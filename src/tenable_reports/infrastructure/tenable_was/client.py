@@ -108,6 +108,14 @@ class TenableWasClient(TenableVmClient):
                     return [item for item in value if isinstance(item, dict)]
         raise ApiError("Resposta dos filtros WAS possui formato inesperado.")
 
+    def get_was_plugin_details(self, plugin_id: int) -> dict[str, Any]:
+        """Return the authoritative detail record for one WAS plugin."""
+
+        data = self.request("GET", f"/was/v2/plugins/{int(plugin_id)}").json()
+        if not isinstance(data, dict):
+            raise ApiError("Resposta do detalhe do plugin WAS possui formato inesperado.")
+        return data
+
     def list_was_plugins(
         self,
         *,

@@ -95,7 +95,7 @@ def _title_table(
         for index, value in enumerate(values):
             row.cells[index].text = "" if value is None else str(value)
             for paragraph in row.cells[index].paragraphs:
-                paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 for run in paragraph.runs:
                     base._set_run_font(
                         run,

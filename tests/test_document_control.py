@@ -12,7 +12,7 @@ from tenable_reports.presentation.document_control import append_document_contro
 from tests.font_profile_helpers import linux_font_profile
 
 
-def test_document_control_justifies_every_body_cell() -> None:
+def test_document_control_centers_every_body_cell() -> None:
     document = Document()
 
     append_document_control(
@@ -50,7 +50,7 @@ def test_document_control_justifies_every_body_cell() -> None:
             for paragraph in cell.paragraphs
         )
         assert all(
-            paragraph.alignment == WD_ALIGN_PARAGRAPH.JUSTIFY
+            paragraph.alignment == WD_ALIGN_PARAGRAPH.CENTER
             for row in table.rows[2:]
             for cell in row.cells
             for paragraph in cell.paragraphs

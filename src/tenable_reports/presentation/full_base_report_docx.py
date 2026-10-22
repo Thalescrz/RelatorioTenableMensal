@@ -210,6 +210,8 @@ def _clear_body_after_cover_break(
 def _append_official_back_cover(
     document: DocxDocument,
     shell: OfficialReportShell,
+    font_profile: FontProfile | None = None,
+    portable_cover_pattern: str | Path | None = None,
 ) -> None:
     body = document._element.body
     body_section = body.find(qn("w:sectPr"))
@@ -225,6 +227,165 @@ def _append_official_back_cover(
     for node in shell.back_cover_nodes:
         body.append(deepcopy(node))
     body.append(deepcopy(shell.back_cover_section))
+    _isolate_official_back_cover_header_footer(document)
+    _adapt_official_back_cover_for_profile(
+        document,
+        font_profile,
+        portable_cover_pattern,
+    )
+
+
+def _isolate_official_back_cover_header_footer(document: DocxDocument) -> None:
+    """Prevent body branding from leaking into the official back cover."""
+
+    final_section = document.sections[-1]
+    for container in (
+        final_section.header,
+        final_section.first_page_header,
+        final_section.even_page_header,
+        final_section.footer,
+        final_section.first_page_footer,
+        final_section.even_page_footer,
+    ):
+        container.is_linked_to_previous = False
+        for child in list(container._element):
+            container._element.remove(child)
+        container._element.append(OxmlElement("w:p"))
+
+
+def _adapt_official_back_cover_for_profile(
+    document: DocxDocument,
+    font_profile: FontProfile | None,
+    portable_cover_pattern: str | Path | None,
+) -> None:
+    """Keep official cover artwork and back-cover geometry stable on Linux."""
+
+    if font_profile is None or font_profile.profile_id != "linux-carlito-v1":
+        return
+
+    # LibreOffice on Linux resolves the legacy EMF palette from the cover as
+    # theme accents, producing green and purple strokes.  Use the rasterized
+    # version of that exact corporate artwork to preserve both geometry and
+    # the approved blue.
+    cover_blips = document._element.body.xpath(
+        './/wp:docPr[@name="Picture 8"]/ancestor::w:drawing//a:blip'
+    )
+    if len(cover_blips) != 1:
+        raise ValueError(
+            "O elemento gráfico oficial da capa não foi localizado de forma "
+            "inequívoca."
+        )
+    pattern_path = (
+        Path(portable_cover_pattern)
+        if portable_cover_pattern is not None
+        else None
+    )
+    if pattern_path is None or not pattern_path.is_file():
+        raise ValueError(
+            "A arte portátil da capa não foi localizada para o perfil Linux."
+        )
+    cover_relation, _ = document.part.get_or_add_image(str(pattern_path))
+    cover_blips[0].set(qn("r:embed"), cover_relation)
+
+    back_cover = [
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.style is not None
+        and paragraph.style.style_id == "BackCoverBody"
+    ]
+    drawing_names = [
+        tuple(paragraph._p.xpath(".//wp:docPr/@name"))
+        for paragraph in back_cover
+    ]
+    try:
+        logo_index = drawing_names.index(("Imagem 13",))
+        pattern_index = drawing_names.index(("Imagem 23",))
+        footer_index = next(
+            index
+            for index in range(pattern_index + 1, len(back_cover))
+            if drawing_names[index]
+        )
+    except (StopIteration, ValueError) as exc:
+        raise ValueError(
+            "A geometria oficial da contracapa não pôde ser identificada."
+        ) from exc
+
+    logo_anchors = back_cover[logo_index]._p.xpath(".//wp:anchor")
+    if len(logo_anchors) != 1:
+        raise ValueError(
+            "A logomarca oficial da contracapa não foi localizada de forma "
+            "inequívoca."
+        )
+    logo_wrap_square = logo_anchors[0].xpath("./wp:wrapSquare")
+    if len(logo_wrap_square) != 1:
+        raise ValueError(
+            "O contorno da logomarca oficial da contracapa não pôde ser "
+            "identificado."
+        )
+    logo_wrap_square[0].getparent().replace(
+        logo_wrap_square[0],
+        OxmlElement("wp:wrapTopAndBottom"),
+    )
+
+    contact_tables = [
+        table
+        for table in document.tables
+        if table.rows
+        and "FORTALEZA" in "\n".join(cell.text for cell in table.row_cells(0))
+        and "PORTUGAL" in "\n".join(cell.text for cell in table.row_cells(0))
+    ]
+    if len(contact_tables) != 1:
+        raise ValueError(
+            "A tabela de contatos da contracapa não foi localizada de forma "
+            "inequívoca."
+        )
+    contact_table = contact_tables[0]
+    grid_columns = contact_table._tbl.tblGrid.findall(qn("w:gridCol"))
+    if len(grid_columns) != 3:
+        raise ValueError("A tabela de contatos da contracapa deve ter três colunas.")
+    balanced_width = grid_columns[0].get(qn("w:w"))
+    if balanced_width is None:
+        raise ValueError("A largura da primeira coluna de contatos está ausente.")
+    grid_columns[2].set(qn("w:w"), balanced_width)
+    for row in contact_table._tbl.findall(qn("w:tr")):
+        cells = row.findall(qn("w:tc"))
+        if len(cells) != 3:
+            raise ValueError("A tabela de contatos contém uma linha incompatível.")
+        cell_width = cells[2].find(f"{qn('w:tcPr')}/{qn('w:tcW')}")
+        if cell_width is None:
+            raise ValueError("A largura da coluna de Portugal está ausente.")
+        cell_width.set(qn("w:w"), balanced_width)
+    table_width = contact_table._tbl.tblPr.find(qn("w:tblW"))
+    if table_width is None:
+        raise ValueError("A largura da tabela de contatos está ausente.")
+    table_width.set(
+        qn("w:w"),
+        str(sum(int(column.get(qn("w:w"))) for column in grid_columns)),
+    )
+
+    for index, paragraph in enumerate(back_cover):
+        if not paragraph.text.strip() and not paragraph._p.xpath(
+            ".//w:drawing | .//w:pict"
+        ):
+            paragraph.paragraph_format.space_before = Pt(0)
+            paragraph.paragraph_format.space_after = Pt(0)
+            if index < logo_index:
+                paragraph.paragraph_format.line_spacing = Pt(12.5)
+            elif pattern_index < index < footer_index:
+                paragraph.paragraph_format.line_spacing = Pt(16)
+            else:
+                paragraph.paragraph_format.line_spacing = Pt(9)
+        if "SUA MELHOR ALIADA" in paragraph.text.upper():
+            for run in paragraph.runs:
+                run.text = run.text.replace(
+                    "NA JORNADA DA PROTEÇÃO DIGITAL.",
+                    "NA JORNADA DA PROTEÇÃO\nDIGITAL.",
+                )
+        for text_node in paragraph._p.xpath(".//w:t"):
+            if " ".join(str(text_node.text or "").split()).casefold() == (
+                "obrigado pela atenção."
+            ):
+                text_node.text = ""
 
 
 def _configure_styles(
@@ -916,13 +1077,26 @@ def _was_section(document: DocxDocument, dataset: Mapping[str, Any], profile: Cl
         "was_top_vulnerabilities",
         enabled=profile.presentation.show_source_filters,
     )
-    _heading(document, "6.3.1. OWASP top 10", 3)
+    _heading(document, "6.3.1. OWASP Top 10:2025", 3)
     _paragraph(document, copy.OWASP_ORGANIZATION)
     _paragraph(document, copy.OWASP_TOP10)
     _paragraph(document, "Mais informações em: https://owasp.org/Top10/")
     _paragraph(document, copy.OWASP_TABLES)
     owasp = was.get("owasp") if isinstance(was.get("owasp"), Mapping) else {}
-    for title, definition in copy.OWASP_CATEGORIES:
+    owasp_coverage = (
+        was.get("owasp_2025_coverage")
+        if isinstance(was.get("owasp_2025_coverage"), Mapping)
+        else {}
+    )
+    owasp_coverage_status = str(owasp_coverage.get("status") or "COMPLETE").upper()
+    if owasp_coverage_status == "PARTIAL":
+        _paragraph(document, copy.OWASP_CATALOG_PARTIAL)
+    elif owasp_coverage_status == "UNAVAILABLE":
+        _paragraph(document, copy.OWASP_CATALOG_UNAVAILABLE)
+    categories = (
+        () if owasp_coverage_status == "UNAVAILABLE" else copy.OWASP_CATEGORIES
+    )
+    for title, definition in categories:
         _heading(document, title, 4)
         _paragraph(document, definition)
         category = title[:3]
@@ -949,10 +1123,15 @@ def _was_section(document: DocxDocument, dataset: Mapping[str, Any], profile: Cl
                 dataset,
                 "was_owasp",
                 enabled=profile.presentation.show_source_filters,
-                extra_filters={"OWASP 2021": category},
+                extra_filters={"OWASP 2025": category},
             )
         elif was_available:
-            _paragraph(document, copy.OWASP_EMPTY_MONTH)
+            _paragraph(
+                document,
+                copy.OWASP_EMPTY_PARTIAL
+                if owasp_coverage_status == "PARTIAL"
+                else copy.OWASP_EMPTY_MONTH,
+            )
     _heading(document, "6.4. Vulnerabilidades WEB e Suas Correções e/ou Contramedidas Recomendadas", 2)
     _paragraph(document, copy.TOP5_WEB_INTRO)
     rendered_web_details = _web_vulnerability_details(
@@ -1212,11 +1391,17 @@ def generate_full_base_report(
         translator,
         active_font_profile,
     )
-    _append_official_back_cover(document, report_shell)
+    _append_official_back_cover(
+        document,
+        report_shell,
+        active_font_profile,
+        template.parent / "assets" / "brand-pattern-cover.png",
+    )
     _materialize_static_toc(document)
     _justify_narrative_body(document)
     base._enable_field_updates(document)
     base._apply_font_profile(document, active_font_profile)
+    base._center_body_table_content(document)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)
     return FullBaseReportRenderResult(

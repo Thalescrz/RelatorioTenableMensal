@@ -82,13 +82,42 @@ class _ChunkClient:
 
 
 class PluginCatalogTests(unittest.TestCase):
-    def test_was_catalog_sync_fetches_only_uncached_plugin_ids(self) -> None:
-        repository = MemoryPluginCatalogRepository()
-        repository.upsert(build_plugin_catalog_entries(
-            [{"plugin_id": 980001, "name": "Cached", "family": "General"}],
+    def test_was_plugin_detail_persists_cwe_and_versioned_owasp_categories(self) -> None:
+        entries = build_plugin_catalog_entries(
+            [{
+                "plugin_id": 980001,
+                "name": "Finding WEB de fixture",
+                "family": "Web Servers",
+                "cwe": ["79", "89"],
+                "owasp": [
+                    {"year": "2021", "category": "A3"},
+                    {"year": "2025", "category": "A5"},
+                    {"year": "2025", "category": "A02"},
+                ],
+            }],
             client_id="client-a",
             tenant_id="tenant-a",
-            source="tenable_was_plugins",
+            source="tenable_was_plugin_detail",
+        )
+
+        self.assertEqual(entries[0].cwes, ("79", "89"))
+        self.assertEqual(
+            entries[0].owasp_categories,
+            (("2021", "A03"), ("2025", "A02"), ("2025", "A05")),
+        )
+
+    def test_was_catalog_sync_fetches_details_only_for_uncached_plugin_ids(self) -> None:
+        repository = MemoryPluginCatalogRepository()
+        repository.upsert(build_plugin_catalog_entries(
+            [{
+                "plugin_id": 980001,
+                "name": "Cached",
+                "family": "General",
+                "owasp": [{"year": "2025", "category": "A01"}],
+            }],
+            client_id="client-a",
+            tenant_id="tenant-a",
+            source="tenable_was_plugin_detail",
         ))
         findings = normalize_was_findings(
             [
@@ -113,15 +142,19 @@ class PluginCatalogTests(unittest.TestCase):
         ).findings
 
         class PluginClient:
-            requested: set[int] | None = None
+            requested: list[int]
 
-            def list_was_plugins(self, *, wanted_plugin_ids: set[int]):
-                self.requested = wanted_plugin_ids
-                return [{
+            def __init__(self) -> None:
+                self.requested = []
+
+            def get_was_plugin_details(self, plugin_id: int):
+                self.requested.append(plugin_id)
+                return {
                     "plugin_id": 980002,
                     "name": "Missing",
                     "family": "Web Servers",
-                }]
+                    "owasp": [{"year": "2025", "category": "A02"}],
+                }
 
         client = PluginClient()
         persisted = synchronize_was_plugin_catalog(
@@ -132,7 +165,7 @@ class PluginCatalogTests(unittest.TestCase):
             plugin_client=client,
         )
 
-        self.assertEqual(client.requested, {980002})
+        self.assertEqual(client.requested, [980002])
         self.assertEqual(persisted, 1)
         self.assertEqual(repository.count, 2)
 
@@ -171,6 +204,51 @@ class PluginCatalogTests(unittest.TestCase):
         self.assertEqual(entries[0].family, "Web Servers")
         self.assertEqual(enriched[0].plugin_family, "Web Servers")
 
+    def test_was_enrichment_adds_owasp_2025_without_relabeling_2021(self) -> None:
+        repository = MemoryPluginCatalogRepository()
+        repository.upsert(build_plugin_catalog_entries(
+            [{
+                "plugin_id": 980001,
+                "name": "Finding WEB de fixture",
+                "family": "Web Servers",
+                "cwe": ["79"],
+                "owasp": [
+                    {"year": "2021", "category": "A03"},
+                    {"year": "2025", "category": "A05"},
+                ],
+            }],
+            client_id="client-a",
+            tenant_id="tenant-a",
+            source="tenable_was_plugin_detail",
+        ))
+        finding = normalize_was_findings(
+            [{
+                "finding_id": "was-fixture",
+                "asset": {"uuid": "application-fixture"},
+                "plugin": {
+                    "id": 980001,
+                    "name": "Finding WEB de fixture",
+                    "owasp_2021": ["A03:2021-Injection"],
+                },
+                "state": "OPEN",
+                "severity": "HIGH",
+                "last_found": "2026-07-15T00:00:00Z",
+            }],
+            client_id="client-a",
+        ).findings[0]
+
+        enriched = enrich_was_findings(
+            [finding],
+            client_id="client-a",
+            tenant_id="tenant-a",
+            repository=repository,
+        )
+
+        self.assertEqual(enriched[0].cwes, ("79",))
+        self.assertEqual(enriched[0].owasp_2021, ("A03:2021-Injection",))
+        self.assertEqual(enriched[0].owasp_2025, ("A05",))
+
+
     def test_was_enrichment_does_not_guess_missing_plugin_id(self) -> None:
         finding = normalize_was_findings(
             [{
@@ -204,6 +282,15 @@ class PluginCatalogTests(unittest.TestCase):
         self.assertIn("normalized_name", sql)
         self.assertIn("plugin_catalog_name_idx", sql)
         self.assertIn("provenance jsonb", sql)
+
+    def test_owasp_2025_catalog_migration_adds_versioned_metadata(self) -> None:
+        sql = (
+            ROOT
+            / "src/tenable_reports/infrastructure/postgresql_migrations/0016_was_plugin_owasp.sql"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("add column if not exists cwes jsonb", sql)
+        self.assertIn("add column if not exists owasp_categories jsonb", sql)
 
     def test_catalog_upsert_is_idempotent_and_isolated_by_client_and_tenant(self) -> None:
         repository = MemoryPluginCatalogRepository()

@@ -17,7 +17,9 @@ controle documental.
 - cabeçalho e rodapé internos oficiais, com cliente dinâmico;
 - estilos semânticos de título;
 - texto narrativo do corpo justificado, sem alterar o alinhamento próprio de
-  títulos, listas, notas, tabelas, gráficos e páginas institucionais;
+  títulos, listas, notas, gráficos e páginas institucionais;
+- todas as células das tabelas de dados do corpo centralizadas horizontal e
+  verticalmente, sem modificar as tabelas estruturais de cabeçalho e rodapé;
 - sumário materializado e navegável após a capa, criado a partir de `Heading 1` a
   `Heading 3` sem depender de atualização manual no Word;
 - oito seções principais do relatório-base numeradas explicitamente de `1` a `8`;
@@ -42,7 +44,25 @@ paginação próprias. Toda mudança no shell ou no perfil exige geração dos q
 tipos de relatório, renderização pelo LibreOffice fixado e comparação visual por
 plataforma.
 
-Os PNG em `assets/` foram extraídos dos materiais fornecidos pelo usuário e são usados somente para identidade visual do relatório.
+Na materialização com `linux-carlito-v1`, o EMF decorativo da capa é substituído
+por `assets/brand-pattern-cover.png`, rasterização da mesma arte na dimensão
+efetiva de exibição, com fundo branco opaco e traço azul corporativo reforçado.
+Essa forma evita tanto a interpretação verde/roxa da paleta EMF pelo LibreOffice
+Linux quanto a dessaturação acinzentada causada pela redução de um traço de um
+pixel. A contracapa usa espaçadores de 12,5 pt antes da logomarca, 9 pt no bloco
+central e 16 pt antes dos contatos. A mensagem institucional recebe uma quebra
+controlada antes de `DIGITAL.`, e a logomarca usa contorno acima/abaixo para que a
+frase comece inteira na linha seguinte. A seção final possui cabeçalhos e rodapés
+vazios próprios nas variantes padrão, primeira e par, impedindo que os elementos
+internos sejam herdados na contracapa. O pequeno texto decorativo que o LibreOffice
+Linux recortava fora da página é omitido nesse perfil. A tabela institucional usa
+três colunas com centros equidistantes, aproximando Portugal do mesmo ritmo visual
+de Fortaleza e Belém. Essas regras mantêm mensagem, contatos e identidade em uma
+única página sem alterar o perfil
+`windows-calibri-v1`.
+
+Os PNG em `assets/` foram extraídos ou rasterizados dos materiais fornecidos pelo
+usuário e são usados somente para identidade visual do relatório.
 
 ## Reconstrução
 

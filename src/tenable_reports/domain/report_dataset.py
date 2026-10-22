@@ -1029,8 +1029,9 @@ def build_report_dataset(
                 "scope": "WAS_GENERAL",
                 "states": ["OPEN", "REOPENED"],
                 "date_fields": ["Last Seen"],
-                "group_by": "OWASP 2021 e Plugin ID",
-                "rule": "cada tabela aplica a categoria OWASP indicada na própria nota",
+                "group_by": "OWASP 2025 e Plugin ID",
+                "order_by": "VPR (decrescente; registros sem VPR ao final)",
+                "rule": "classificação OWASP 2025 fornecida pelo detalhe do plugin Tenable",
             },
             "top_web_vulnerabilities": {
                 **general_filter,

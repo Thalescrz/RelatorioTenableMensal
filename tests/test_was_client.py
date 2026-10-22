@@ -49,6 +49,22 @@ def client_with(responses: list[TransportResponse]) -> tuple[TenableWasClient, F
 
 
 class TenableWasClientTests(unittest.TestCase):
+    def test_gets_was_plugin_details_for_versioned_owasp_metadata(self) -> None:
+        client, transport = client_with([response(200, {
+            "plugin_id": 201,
+            "cwe": ["79"],
+            "owasp": [
+                {"year": "2021", "category": "A3"},
+                {"year": "2025", "category": "A5"},
+            ],
+        })])
+
+        details = client.get_was_plugin_details(201)
+
+        self.assertEqual(details["plugin_id"], 201)
+        self.assertEqual(details["owasp"][1], {"year": "2025", "category": "A5"})
+        self.assertTrue(transport.calls[0]["url"].endswith("/was/v2/plugins/201"))
+
     def test_lists_was_plugins_until_all_requested_ids_are_found(self) -> None:
         client, transport = client_with([
             response(200, {

@@ -112,15 +112,17 @@ Qualquer nova lista de propriedades seletivas precisa ser validada contra payloa
 completo no tenant antes de virar padrão. O fallback seletivo é restrito às falhas
 de contrato já previstas; não mascare autenticação, limite de taxa ou timeout.
 
-O export WAS não é obrigado a trazer `plugin.family`. Resolva famílias somente por
-Plugin ID no endpoint paginado `/was/v2/plugins`, persista o resultado isolado por
-cliente e tenant e trate essa consulta como enriquecimento em melhor esforço. Não
-use OWASP como substituto. Cubra por teste os dois esquemas da tabela: com a coluna
+O export WAS não é obrigado a trazer `plugin.family`, CWE ou OWASP 2025. Resolva
+esses metadados somente por Plugin ID em `GET /was/v2/plugins/{plugin_id}` e
+persista o resultado isolado por cliente e tenant. O campo `owasp` do detalhe deve
+ser armazenado como pares versionados `ano + categoria`; nunca converta
+`plugin.owasp_2021` em OWASP 2025. Metadados detalhados já catalogados não devem
+ser consultados novamente. Cubra por teste os dois esquemas da tabela: com a coluna
 **Família** quando houver ao menos uma correspondência real e sem ela quando não
 houver nenhuma.
 
-O agrupamento OWASP pertence ao domínio WAS. Ele deve conservar maior severidade e
-maior VPR por Plugin ID em cada categoria e ordenar por VPR decrescente antes de
+O agrupamento OWASP 2025 pertence ao domínio WAS. Ele deve conservar maior
+severidade e maior VPR por Plugin ID em cada categoria e ordenar por VPR decrescente antes de
 chegar à apresentação. O DOCX apenas traduz a severidade e aplica a convenção
 visual de `0` para VPR nulo. Testes precisam provar que mais instâncias não passam
 à frente de um VPR maior e que valores nulos permanecem por último.
@@ -455,7 +457,13 @@ O template `templates/corporate/base-v1.docx` preserva a capa e a contracapa do
 documento oficial, mas substitui cliente, período, cabeçalho interno e metadados por
 valores controlados. Não reconstrua essas páginas com elementos aproximados. O
 conteúdo geral, customizado, por TAG ou Cloud deve ser inserido entre as duas páginas
-oficiais. Após a capa, o sumário é materializado com parágrafos `toc 1` a `toc 3` e
+oficiais. Ao recolocar a contracapa, a seção final deve possuir variantes vazias e
+não vinculadas de cabeçalho e rodapé (`default`, `first` e `even`), para que a
+identidade interna do corpo não apareça na página institucional quando a paginação
+final for par. No perfil Linux, preserve intervalos horizontais equivalentes entre
+os centros das três colunas de contatos da contracapa; uma terceira coluna mais
+larga desloca Portugal para a direita no LibreOffice. Após a capa, o sumário é
+materializado com parágrafos `toc 1` a `toc 3` e
 hiperlinks internos para os respectivos títulos; não depende de atualização do
 Word. `SUMÁRIO` usa `TOC Heading`, fica fora da própria lista, e seções/subseções
 usam `Heading 1` a `Heading 3` com números explícitos. `Heading 4` pode estruturar
@@ -487,9 +495,14 @@ automação do Word.
 
 O alinhamento justificado é restrito aos parágrafos narrativos do corpo. O helper
 compartilhado deve ignorar capa e contracapa, títulos, sumário, listas, notas de
-fonte em tipografia secundária, tabelas, gráficos e qualquer alinhamento explícito
-do componente. Os geradores Geral, Customizações, TAG e Cloud aplicam a mesma regra
-antes de salvar; a republicação aplica a regra novamente para documentos antigos.
+fonte em tipografia secundária, gráficos e qualquer alinhamento explícito do
+componente. Em seguida, os geradores Geral, Customizações, TAG e Cloud aplicam uma
+segunda regra compartilhada a todas as tabelas de dados do corpo: cada célula fica
+centralizada horizontal e verticalmente, inclusive em tabelas aninhadas. Não
+percorra tabelas estruturais de cabeçalho ou rodapé, pois elas preservam a
+geometria do shell corporativo. A republicação narrativa aplica somente a regra de
+justificação aos documentos antigos; a centralização integral das tabelas exige
+regeneração pelo gerador vigente.
 
 Rótulos integrais de severidade/faixa em tabelas destacadas usam a paleta aprovada:
 `CRITICAL`, `HIGH`, `MEDIUM` e `LOW`. A classificação deve ser estrita;

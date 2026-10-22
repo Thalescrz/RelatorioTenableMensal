@@ -242,18 +242,37 @@ Linux possuem testes automatizados.
 
 Os payloads redistribuíveis oficiais foram montados e verificados: Authenticode com
 certificado exato no Windows; Sigstore para Python no Linux; chave TDF conferida
-pelo fingerprint fixado para LibreOffice; hashes e
-manifesto do bundle nas duas plataformas. Em um contêiner limpo derivado de Ubuntu
-24.04, sem rede, o instalador Linux concluiu duas execuções consecutivas, aplicou
-as migrations e confirmou Python 3.14.5, LibreOffice 26.2.4.2, PostgreSQL 18.6 e o
-perfil `linux-carlito-v1`. A segunda execução comprovou a idempotência do fluxo.
+pelo fingerprint fixado para LibreOffice; hashes e manifesto do bundle nas duas
+plataformas. Em um contêiner limpo derivado de Ubuntu 24.04, sem rede e com
+`systemd` como PID 1, o instalador Linux concluiu duas execuções consecutivas,
+aplicou as 15 migrations e confirmou Python 3.14.5, LibreOffice 26.2.4.2,
+PostgreSQL 18.6 e o perfil `linux-carlito-v1`. A segunda execução comprovou a
+idempotência do fluxo e o serviço PostgreSQL permaneceu ativo sob o gerenciador de
+serviços real.
 
-Essa evidência de contêiner não substitui a homologação em Ubuntu Server/VM com
-`systemd`: o contêiner não oferece um gerenciador de serviços real, então a subida
-do PostgreSQL foi adaptada somente para o ensaio e o agendador permaneceu em
-`WARNING`. Antes da primeira publicação Linux, ainda é obrigatório validar o timer
-e inspecionar visualmente os quatro DOCX em uma VM/servidor limpo. A instalação
-completa em uma máquina Windows limpa também permanece pendente; o funcionamento
-editorial no Windows atual e o bundle verificado não devem ser descritos como essa
-homologação. A ausência do payload proprietário continua aceita apenas porque as
-fontes licenciadas do host são validadas antes de liberar a aplicação.
+Na mesma instalação foram gerados, convertidos em PDF pelo LibreOffice Linux e
+inspecionados integralmente os quatro documentos sanitizados: Geral com 15
+páginas, Inteligência e Customizações com 12, TAG com 7 e Cloud com 15. A métrica
+de Carlito exigiu uma adaptação restrita ao perfil Linux: o EMF decorativo da capa
+é trocado por uma rasterização PNG da mesma arte na dimensão efetiva de exibição,
+com fundo branco opaco e traço azul corporativo reforçado para impedir a perda de
+saturação durante a redução; a contracapa
+usa espaçadores de 12,5 pt antes da logomarca, 9 pt no bloco central e 16 pt antes
+dos contatos; a mensagem institucional quebra antes de `DIGITAL.`; e a logomarca
+usa contorno acima/abaixo para impedir que `SUA` seja deslocado para a lateral da
+imagem. A seção final materializa variantes vazias próprias de cabeçalho e rodapé,
+inclusive para páginas pares, evitando herança do corpo. O pequeno texto
+decorativo que era recortado para fora da página pelo LibreOffice Linux é omitido.
+A tabela de contatos equilibra a largura da terceira coluna com a primeira para
+manter Fortaleza, Belém e Portugal em intervalos horizontais equivalentes. A
+baseline Windows não é alterada; identidade, endereços e contatos institucionais
+continuam preservados na contracapa única.
+
+Essa evidência de contêiner com `systemd` é mais próxima do servidor final, mas
+ainda não substitui uma homologação em Ubuntu Server/VM. O timer de usuário não foi
+configurado no ensaio e permaneceu em `WARNING`; valide-o no host final antes da
+primeira publicação automática. A instalação completa em uma máquina Windows
+limpa também permanece pendente; o funcionamento editorial no Windows atual e o
+bundle verificado não devem ser descritos como essa homologação. A ausência do
+payload proprietário continua aceita apenas porque as fontes licenciadas do host
+são validadas antes de liberar a aplicação.

@@ -103,6 +103,25 @@ def _strings(value: Any) -> tuple[str, ...]:
     return tuple(sorted(result, key=str.casefold))
 
 
+def _canonical_owasp_category(value: Any) -> str | None:
+    match = re.search(r"\bA0?(10|[1-9])\b", str(value or "").upper())
+    return f"A{int(match.group(1)):02d}" if match else None
+
+
+def _owasp_categories(record: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    raw = _first(record, "plugin.owasp", "definition.owasp", "owasp")
+    values = raw if isinstance(raw, (list, tuple)) else ()
+    result: set[tuple[str, str]] = set()
+    for item in values:
+        if not isinstance(item, Mapping):
+            continue
+        year = str(item.get("year") or "").strip()
+        category = _canonical_owasp_category(item.get("category"))
+        if year and category:
+            result.add((year, category))
+    return tuple(sorted(result))
+
+
 def _frameworks(record: Mapping[str, Any]) -> tuple[str, ...]:
     values = set(_strings(_first(
         record, "plugin.exploit_frameworks", "definition.exploit_frameworks"
@@ -137,6 +156,8 @@ class PluginCatalogEntry:
     solution: str | None
     references: tuple[str, ...]
     cves: tuple[str, ...]
+    cwes: tuple[str, ...]
+    owasp_categories: tuple[tuple[str, str], ...]
     cvss2_base_score: float | None
     cvss3_base_score: float | None
     vpr_score: float | None
@@ -158,6 +179,8 @@ class PluginCatalogEntry:
             "solution": self.solution,
             "references": self.references,
             "cves": self.cves,
+            "cwes": self.cwes,
+            "owasp_categories": self.owasp_categories,
             "cvss2_base_score": self.cvss2_base_score,
             "cvss3_base_score": self.cvss3_base_score,
             "vpr_score": self.vpr_score,
@@ -270,6 +293,8 @@ def build_plugin_catalog_entries(
                 + _strings(_first(record, "plugin.xrefs", "definition.references"))
             ), key=str.casefold)),
             cves=_strings(_first(record, "plugin.cve", "definition.cve")),
+            cwes=_strings(_first(record, "plugin.cwe", "definition.cwe", "cwe")),
+            owasp_categories=_owasp_categories(record),
             cvss2_base_score=_number(_first(
                 record, "plugin.cvss_base_score", "definition.cvss_base_score"
             )),
@@ -282,6 +307,7 @@ def build_plugin_catalog_entries(
             provenance={
                 "source": source,
                 "source_finding_id": _text(_first(record, "finding_id", "id")),
+                "was_plugin_detail": source == "tenable_was_plugin_detail",
             },
             observed_at=timestamp,
         )
@@ -368,15 +394,13 @@ def enrich_was_findings(
     repository: PluginCatalogRepository,
 ) -> tuple[NormalizedWasFinding, ...]:
     rows = tuple(findings)
-    missing_ids = sorted({
-        item.plugin_id for item in rows if not (item.plugin_family or "").strip()
-    })
+    plugin_ids = sorted({item.plugin_id for item in rows})
     matches = {
         item.plugin_id: item
         for item in repository.find_by_plugin_ids(
             client_id=client_id,
             tenant_id=tenant_id,
-            plugin_ids=missing_ids,
+            plugin_ids=plugin_ids,
         )
     }
     return tuple(
@@ -385,6 +409,28 @@ def enrich_was_findings(
             plugin_family=(
                 item.plugin_family
                 or (matches.get(item.plugin_id).family if matches.get(item.plugin_id) else None)
+            ),
+            cwes=tuple(sorted(set(
+                item.cwes
+                + (matches.get(item.plugin_id).cwes if matches.get(item.plugin_id) else ())
+            ), key=str.casefold)),
+            owasp_2025=tuple(sorted(set(
+                item.owasp_2025
+                + tuple(
+                    category
+                    for year, category in (
+                        matches.get(item.plugin_id).owasp_categories
+                        if matches.get(item.plugin_id) else ()
+                    )
+                    if year == "2025"
+                )
+            ))),
+            owasp_detail_observed=(
+                item.owasp_detail_observed
+                or bool(
+                    matches.get(item.plugin_id)
+                    and matches[item.plugin_id].provenance.get("was_plugin_detail")
+                )
             ),
         )
         for item in rows
@@ -400,9 +446,7 @@ def synchronize_was_plugin_catalog(
     plugin_client: Any,
 ) -> int:
     rows = tuple(findings)
-    wanted = sorted({
-        item.plugin_id for item in rows if not (item.plugin_family or "").strip()
-    })
+    wanted = sorted({item.plugin_id for item in rows})
     if not wanted:
         return 0
     cached = repository.find_by_plugin_ids(
@@ -410,15 +454,22 @@ def synchronize_was_plugin_catalog(
         tenant_id=tenant_id,
         plugin_ids=wanted,
     )
-    resolved = {item.plugin_id for item in cached if (item.family or "").strip()}
+    resolved = {
+        item.plugin_id
+        for item in cached
+        if bool(item.provenance.get("was_plugin_detail"))
+    }
     missing = set(wanted) - resolved
     if not missing:
         return 0
-    records = plugin_client.list_was_plugins(wanted_plugin_ids=missing)
-    entries = build_plugin_catalog_entries(
-        records,
-        client_id=client_id,
-        tenant_id=tenant_id,
-        source="tenable_was_plugins",
-    )
-    return repository.upsert(entries)
+    persisted = 0
+    for plugin_id in sorted(missing):
+        record = plugin_client.get_was_plugin_details(plugin_id)
+        entries = build_plugin_catalog_entries(
+            (record,),
+            client_id=client_id,
+            tenant_id=tenant_id,
+            source="tenable_was_plugin_detail",
+        )
+        persisted += repository.upsert(entries)
+    return persisted

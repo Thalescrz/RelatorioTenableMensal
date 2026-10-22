@@ -146,7 +146,7 @@ OWASP_ORGANIZATION = (
 )
 
 OWASP_TOP10 = (
-    "O OWASP top 10 é um relatório atualizado regularmente que descreve questões de "
+    "O OWASP Top 10 é um relatório atualizado regularmente que descreve questões de "
     "segurança focado em aplicativos web, com foco nos 10 (dez) riscos mais críticos. "
     "Este relatório é elaborado por uma equipe de especialistas em segurança de todo "
     "o mundo. O OWASP refere-se ao Top 10 como um “documento de conscientização” e "
@@ -154,16 +154,15 @@ OWASP_TOP10 = (
     "de minimizar e/ou mitigar os riscos de segurança como o Tenable.io Web App "
     "Scanning oferecendo esse cruzamento de informações com verificação de "
     "vulnerabilidades abrangente e precisa, de acordo com as essas fragilidades "
-    "encontradas no ambiente."
+    "encontradas no ambiente. Esta seção utiliza a edição OWASP Top 10:2025."
 )
 
 OWASP_TABLES = (
-    "Nas tabelas abaixo serão exibidas as aplicações WEB que se encaixam no OWASP "
-    "top 10, de acordo com as fragilidades encontrada pelo sensor WAS, onde a coluna "
-    "“instâncias” é a quantidade de URLs encontradas, por determinada técnica de "
-    "ataque (plugin ID) em um FQDN específico que estão vulneráveis. Para mais "
-    "detalhes a respeito é necessário visitar a plataforma do Tenable.io, pela grade "
-    "granularidade de informações que podem ser coletadas."
+    "As tabelas abaixo apresentam as vulnerabilidades WEB classificadas pela "
+    "Tenable nas categorias do OWASP Top 10:2025. A coluna “instâncias” representa "
+    "a quantidade de ocorrências associadas ao plugin, e as linhas são ordenadas "
+    "do maior para o menor VPR; registros sem VPR são apresentados ao final. "
+    "Informações adicionais podem ser consultadas na plataforma Tenable."
 )
 
 OWASP_EMPTY_MONTH = (
@@ -171,46 +170,62 @@ OWASP_EMPTY_MONTH = (
     "categoria OWASP."
 )
 
+OWASP_EMPTY_PARTIAL = (
+    "Não foram identificadas vulnerabilidades nesta categoria entre os plugins "
+    "com classificação OWASP Top 10:2025 disponível."
+)
+
+OWASP_CATALOG_PARTIAL = (
+    "A classificação OWASP Top 10:2025 estava disponível somente para parte dos "
+    "plugins observados. As tabelas abaixo refletem exclusivamente essa cobertura."
+)
+
+OWASP_CATALOG_UNAVAILABLE = (
+    "A classificação OWASP Top 10:2025 não estava disponível para os plugins "
+    "observados neste período. A ausência de tabelas não representa ausência de "
+    "vulnerabilidades WEB."
+)
+
 OWASP_CATEGORIES = (
     (
-        "A01 – Broken Access Control (Falha no controle de Acesso)",
-        "O controle de acesso reforça a política de forma que os usuários não possam agir fora de suas permissões pretendidas. As falhas geralmente levam à divulgação não autorizada de informações, modificação ou destruição de todos os dados ou à execução de uma função comercial fora dos limites do usuário.",
+        "A01 - Broken Access Control (Falhas de Controle de Acesso)",
+        "Reúne falhas que permitem ao usuário agir fora das permissões previstas, podendo resultar em acesso, alteração ou exclusão indevida de informações e funções.",
     ),
     (
-        "A02 - Cryptographic Failures (Falhas de criptografia)",
-        "A primeira coisa é determinar as necessidades de proteção dos dados em trânsito e em repouso. Por exemplo, senhas, números de cartão de crédito, registros de saúde, informações pessoais e segredos comerciais exigem proteção extra, principalmente se esses dados estiverem sob leis de privacidade, por exemplo, Regulamento Geral de Proteção de Dados da UE (GDPR) ou regulamentos, por exemplo, proteção de dados financeiros como o padrão de segurança de dados PCI (PCI DSS).",
+        "A02 - Security Misconfiguration (Configuração Insegura)",
+        "Abrange configurações ausentes, permissivas ou inconsistentes, recursos desnecessários e mensagens de erro excessivas que ampliam a superfície de ataque da aplicação.",
     ),
     (
-        "A03 – Injection (Injeção)",
-        "Os ataques de injeção acontecem quando dados não confiáveis são enviados a um intérprete de código por meio de uma entrada de formulário ou algum outro envio de dados a aplicativo web. Por exemplo, um invasor pode inserir o código do banco de dados SQL em um formulário que espera um nome de usuário em texto não criptografado. Se essa entrada não estiver devidamente protegida, isso resultará na execução do código SQL.",
+        "A03 - Software Supply Chain Failures (Falhas na Cadeia de Suprimentos de Software)",
+        "Considera riscos introduzidos por dependências, ferramentas, repositórios, processos de construção e distribuição que não sejam adequadamente inventariados, verificados e protegidos.",
     ),
     (
-        "A04 – Insecure Design (Design Inseguro)",
-        "O design inseguro é uma categoria ampla que representa diferentes pontos fracos, expressos como “projeto de controle ausente ou ineficaz”. O design inseguro não é a fonte de todas as outras 10 principais categorias de risco. Há uma diferença entre design inseguro e implementação insegura. Nós diferenciamos entre falhas de design e defeitos de implementação por um motivo, eles têm causas e remediações diferentes. Um design seguro ainda pode ter defeitos de implementação levando a vulnerabilidades que podem ser exploradas. Um design inseguro não pode ser corrigido por uma implementação perfeita, pois, por definição, os controles de segurança necessários nunca foram criados para se defender contra ataques específicos. Um dos fatores que contribuem para o design inseguro é a falta de perfil de risco de negócios inerente ao software ou sistema que está sendo desenvolvido e, portanto, a falha em determinar qual nível de design de segurança é necessário.",
+        "A04 - Cryptographic Failures (Falhas Criptográficas)",
+        "Inclui proteção criptográfica ausente ou inadequada para dados sensíveis em trânsito e em repouso, bem como escolhas frágeis de algoritmos, chaves, protocolos e armazenamento.",
     ),
     (
-        "A05 – Security Misconfiguration (Configuração incorreta de segurança)",
-        "A configuração incorreta de segurança é a vulnerabilidade mais comum, e geralmente é o resultado do uso desses elementos padrões ou das exibições de erros excessivamente detalhados. Por exemplo, um aplicativo pode mostrar a um usuário erros em demasiados podendo assim revelar vulnerabilidades no mesmo.",
+        "A05 - Injection (Injeção)",
+        "Ocorre quando dados não confiáveis são interpretados como comandos ou consultas, possibilitando a alteração da lógica esperada e a execução de operações não autorizadas.",
     ),
     (
-        "A06 - Vulnerable and Outdated Components (Componentes vulneráveis e desatualizados)",
-        "Muitos desenvolvedores voltados para aplicações web, que são modernos, usam componentes como bibliotecas e estruturas em seus aplicativos. Esses componentes são peças de software que ajudam os desenvolvedores a evitar trabalho redundante e fornecem a funcionalidade necessária. Exemplos comuns incluem estruturas de front-end como React e bibliotecas menores que costumavam adicionar ícones de compartilhamento ou teste a/b. Alguns invasores procuram vulnerabilidades nesses componentes que podem ser usados para orquestrar ataques.",
+        "A06 - Insecure Design (Design Inseguro)",
+        "Representa controles de segurança ausentes ou ineficazes no desenho da solução. A correção depende de requisitos, modelagem de ameaças e padrões de projeto seguros, não apenas da implementação.",
     ),
     (
-        "A07 - Identification and Authentication Failures (Falhas de identificação e autenticação)",
-        "Vulnerabilidades em sistemas de autenticação (login) podem dar aos invasores acesso a contas de usuários e até mesmo a capacidade de comprometer um sistema inteiro usando uma conta de administrador. Por exemplo, um invasor pode pegar uma lista contendo milhares de combinações de nome de usuário/senhas conhecidos obtidos durante uma violação de dados e usar um script para tentar todas essas combinações em um sistema de login para ver se há alguma que funcione.",
+        "A07 - Authentication Failures (Falhas de Autenticação)",
+        "Abrange problemas no estabelecimento e na manutenção da identidade e da sessão do usuário, incluindo controles insuficientes contra credenciais comprometidas e sequestro de sessão.",
     ),
     (
-        "A08 - Software and Data Integrity Failures (Falhas de software e integridade dos dados)",
-        "Falhas de software e integridade de dados estão relacionadas a código e infraestrutura que não protegem contra violações de integridade. Um exemplo disso é quando um aplicativo depende de plugins, bibliotecas ou módulos de fontes, repositórios e redes de distribuição de conteúdo (CDNs) não confiáveis. Um pipeline de CI/CD inseguro pode introduzir o potencial de acesso não autorizado, código malicioso ou comprometimento do sistema. Por fim, muitos aplicativos agora incluem a funcionalidade de atualização automática, onde as atualizações são baixadas sem verificação de integridade suficiente e aplicadas ao aplicativo confiável anteriormente. Os invasores podem carregar suas próprias atualizações para serem distribuídas e executadas em todas as instalações. Outro exemplo é onde objetos ou dados são codificados ou serializados em uma estrutura que um invasor pode ver e modificar é vulnerável à desserialização insegura.",
+        "A08 - Software or Data Integrity Failures (Falhas de Integridade de Software ou Dados)",
+        "Inclui código, atualizações, artefatos e dados críticos processados sem verificação suficiente de origem e integridade, permitindo alterações não autorizadas.",
     ),
     (
-        "A09 - Security Logging and Monitoring Failures (Falhas de registro e monitoramento de segurança)",
-        "Muitos aplicativos web não estão realizando etapas suficientes para detectar violações de dados. O tempo médio de descoberta de uma violação é de cerca de 200 dias após sua ocorrência. Isso dá aos invasores muito tempo para causar danos antes que haja qualquer resposta. O OWASP recomenda que os desenvolvedores da web implementem o registro e o monitoramento, bem como os planos de resposta a incidentes, para garantir que estejam cientes dos ataques aos seus aplicativos.",
+        "A09 - Security Logging and Alerting Failures (Falhas de Registro e Alerta de Segurança)",
+        "Reúne deficiências de registro, correlação, monitoramento e alerta que dificultam a detecção, a investigação e a resposta tempestiva a atividades maliciosas.",
     ),
     (
-        "A10 - Server-Side Request Forgery ou SSRF (Falsificação de solicitação via o lado do servidor)",
-        "As falhas de SSRF ocorrem sempre que um aplicativo da Web está buscando um recurso remoto sem validar a URL fornecida pelo usuário. Ele permite que um invasor force o aplicativo a enviar uma solicitação criada para um destino inesperado, mesmo quando protegido por um firewall, VPN ou outro tipo de lista de controle de acesso à rede (ACL). Como os aplicativos da web modernos fornecem aos usuários finais recursos convenientes, buscar uma URL se torna um cenário comum. Como resultado, a incidência de SSRF está aumentando. Além disso, a gravidade do SSRF está aumentando devido aos serviços em nuvem e à complexidade das arquiteturas.",
+        "A10 - Mishandling of Exceptional Conditions (Tratamento Inadequado de Condições Excepcionais)",
+        "Abrange falhas ao prever, limitar e tratar condições excepcionais, permitindo estados inseguros, comportamento inesperado, indisponibilidade ou exposição indevida de informações.",
     ),
 )
 

@@ -395,12 +395,18 @@ def generate_cloud_report(
         render_conclusion(builder)
 
         anchor._element.getparent().remove(anchor._element)
-        faithful._append_official_back_cover(document, report_shell)
+        faithful._append_official_back_cover(
+            document,
+            report_shell,
+            active_font_profile,
+            template.parent / "assets" / "brand-pattern-cover.png",
+        )
         faithful._materialize_static_toc(document)
         faithful._justify_narrative_body(document)
         base._enable_field_updates(document)
         _sanitize_properties(document, profile)
         base._apply_font_profile(document, active_font_profile)
+        base._center_body_table_content(document)
         output.parent.mkdir(parents=True, exist_ok=True)
         document.save(output)
 

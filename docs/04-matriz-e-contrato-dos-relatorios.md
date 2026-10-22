@@ -9,6 +9,10 @@
 **Amostra:** Cliente Y, Cliente X, Cliente Z e Cliente A  
 **Escopo:** estrutura, conteúdo, semântica, identidade visual, recorrência e possibilidade de automação
 
+> **Estado vigente em 2026-10-22:** novos relatórios usam OWASP Top 10:2025 com
+> classificação versionada fornecida pelo detalhe do plugin Tenable. A matriz
+> abaixo permanece como evidência das divergências históricas observadas.
+
 ## 1. Conclusão
 
 Os quatro documentos pertencem claramente à mesma família editorial, mas cresceram por cópia e adição de blocos. O produto não deve cristalizar qualquer um deles como um único template universal. A saída correta é composta por dois documentos derivados do mesmo snapshot:

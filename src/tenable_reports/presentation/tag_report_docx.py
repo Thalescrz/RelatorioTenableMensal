@@ -312,11 +312,17 @@ def generate_tag_report(
         mask_sensitive=mask_sensitive,
         font_profile=active_font_profile,
     )
-    _append_official_back_cover(document, report_shell)
+    _append_official_back_cover(
+        document,
+        report_shell,
+        active_font_profile,
+        template.parent / "assets" / "brand-pattern-cover.png",
+    )
     _materialize_static_toc(document)
     _justify_narrative_body(document)
     base._enable_field_updates(document)
     base._apply_font_profile(document, active_font_profile)
+    base._center_body_table_content(document)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)
@@ -400,6 +406,7 @@ def refresh_tag_temporal_comparison(
     _justify_narrative_body(document)
     base._enable_field_updates(document)
     base._apply_font_profile(document, active_font_profile)
+    base._center_body_table_content(document)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)

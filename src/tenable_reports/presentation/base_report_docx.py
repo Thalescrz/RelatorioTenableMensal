@@ -593,6 +593,27 @@ def _enable_field_updates(document: DocxDocument) -> None:
     update.set(qn("w:val"), "true")
 
 
+def _center_body_table_content(document: DocxDocument) -> None:
+    """Center every cell in body tables, including nested data tables."""
+
+    seen_cells: set[Any] = set()
+
+    def center_table(table: Any) -> None:
+        for row in table.rows:
+            for cell in row.cells:
+                if cell._tc in seen_cells:
+                    continue
+                seen_cells.add(cell._tc)
+                cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+                for paragraph in cell.paragraphs:
+                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                for nested_table in cell.tables:
+                    center_table(nested_table)
+
+    for table in document.tables:
+        center_table(table)
+
+
 def create_base_template(
     output_path: str | Path,
     *,
@@ -616,6 +637,7 @@ def create_base_template(
     _build_summary(document)
     _build_top_assets(document)
     _enable_field_updates(document)
+    _center_body_table_content(document)
 
     document.core_properties.title = "Template controlado do relatório-base Tenable"
     document.core_properties.subject = "Fase 5 - capa e seção de prova"
@@ -834,6 +856,7 @@ def generate_base_report(
         f"campos sensíveis {'mascarados' if mask_sensitive else 'conforme dataset'}."
     )
     _apply_font_profile(document, active_font_profile)
+    _center_body_table_content(document)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)
     return BaseReportRenderResult(

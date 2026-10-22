@@ -31,6 +31,7 @@ from tenable_reports.presentation.cloud_report_sections import (
 )
 from tenable_reports.presentation.full_base_report_docx import generate_full_base_report
 from tests.font_profile_helpers import assert_docx_uses_linux_fonts, linux_font_profile
+from tests.docx_table_assertions import assert_all_body_table_cells_centered
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,21 @@ def test_cloud_report_accepts_linux_font_profile(tmp_path: Path) -> None:
     )
 
     assert_docx_uses_linux_fonts(output)
+
+
+def test_cloud_report_centers_every_body_table_cell(tmp_path: Path) -> None:
+    output = tmp_path / "centered-tables.docx"
+
+    generate_cloud_report(
+        template_path=OFFICIAL_TEMPLATE,
+        dataset_path=_dataset(tmp_path),
+        profile=_profile(),
+        output_path=output,
+        variant=CloudReportVariant.EXPANDED,
+        mask_sensitive=True,
+    )
+
+    assert_all_body_table_cells_centered(Document(output))
 
 
 def _all_text(path: Path) -> str:

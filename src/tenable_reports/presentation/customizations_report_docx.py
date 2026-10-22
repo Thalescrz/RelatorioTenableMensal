@@ -1226,11 +1226,17 @@ def generate_customizations_report(
             _attack_vector(document, data, dataset, profile, rendered)
         if _module_enabled(profile, "was_unsupported_tech"):
             _was_unsupported(document, data, dataset, profile, rendered)
-    faithful._append_official_back_cover(document, report_shell)
+    faithful._append_official_back_cover(
+        document,
+        report_shell,
+        active_font_profile,
+        template.parent / "assets" / "brand-pattern-cover.png",
+    )
     faithful._materialize_static_toc(document)
     faithful._justify_narrative_body(document)
     base._enable_field_updates(document)
     base._apply_font_profile(document, active_font_profile)
+    base._center_body_table_content(document)
     output.parent.mkdir(parents=True, exist_ok=True)
     document.save(output)
     requested = tuple(profile.report.intelligence_modules)
