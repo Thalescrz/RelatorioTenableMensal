@@ -397,10 +397,11 @@
         </div>
         <p id="monthly-eligible-copy" class="monthly-note">Nenhum cliente elegível.</p>
         <p class="monthly-note">Fluxo: Janela 1 de 10h; Janela 2 de 10h reutilizando UUID/cursor; Janela 3 de 10h somente quando a Janela 2 precisou criar uma nova operação. A montagem DOCX permanece serial.</p>
+        <p class="monthly-note"><strong>Salvar política</strong> e <strong>Validar sem executar</strong> não alteram a tarefa do sistema. Use <strong>Criar/atualizar tarefa</strong> para sincronizar o agendador e, depois, ative ou desative a execução automática.</p>
         <div class="monthly-actions">
           <button class="button ghost" id="monthly-save-button" type="submit">Salvar política</button>
           <button class="button ghost" id="monthly-validate-button" type="button">Validar sem executar</button>
-          <button class="button ghost" id="monthly-apply-button" type="button">Sincronizar agendamento</button>
+          <button class="button ghost" id="monthly-apply-button" type="button">Criar/atualizar tarefa</button>
           <button class="button primary" id="monthly-toggle-button" type="button">Ativar automação</button>
         </div>
       </form>

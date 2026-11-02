@@ -27,5 +27,25 @@
     };
   }
 
-  return { scheduleView };
+  async function runWithDisabledButton(button, operation) {
+    button.disabled = true;
+    try {
+      return await operation();
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function scheduleActionMessage(action) {
+    const messages = {
+      save: "A política foi salva. A tarefa do sistema operacional não foi alterada.",
+      validate: "Configuração válida; nenhuma tarefa foi criada e nenhuma coleta foi iniciada.",
+      apply: "A tarefa mensal foi criada ou atualizada no sistema operacional.",
+      enable: "A tarefa mensal foi ativada no sistema operacional.",
+      disable: "A tarefa mensal foi desativada no sistema operacional.",
+    };
+    return messages[action] || "Configuração mensal atualizada.";
+  }
+
+  return { scheduleView, runWithDisabledButton, scheduleActionMessage };
 }));

@@ -1,6 +1,6 @@
 const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue, mergeSavedClient, conflictingJobsByClient } = window.TenableClientSelection;
 const { filterPortfolioByFamily, toggleFamilyFilter } = window.TenableBatchFamilyFilters;
-const { scheduleView } = window.TenableMonthlySchedule;
+const { scheduleView, runWithDisabledButton, scheduleActionMessage } = window.TenableMonthlySchedule;
 const { environmentView } = window.TenableEnvironmentStatus;
 const { copyRecipients, addRecipient, removeRecipient } = window.TenableDocumentDistribution;
 const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, standardDistributionDraft: undefined, clientDistributionDraft: [], connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, monthlySchedule: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: null, batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
@@ -1422,17 +1422,16 @@ function loadDocumentControlAdmin() {
 async function runMonthlyScheduleAction(button, action) {
   const confirmation = state.monthlySchedule?.confirmation || "SINCRONIZAR AUTOMACAO MENSAL";
   if (!window.confirm("Esta ação altera o agendamento mensal. Deseja continuar?")) return;
-  button.disabled = true;
   try {
-    renderMonthlySchedule(await api(`/api/admin/monthly-schedule/${action}`, {
-      method: "POST",
-      body: { confirmation },
-    }));
-    toast("Configuração da tarefa mensal atualizada.");
+    await runWithDisabledButton(button, async () => {
+      renderMonthlySchedule(await api(`/api/admin/monthly-schedule/${action}`, {
+        method: "POST",
+        body: { confirmation },
+      }));
+      toast(scheduleActionMessage(action));
+    });
   } catch (error) {
     toast(error.message, "error");
-  } finally {
-    button.disabled = false;
   }
 }
 
@@ -1555,28 +1554,29 @@ document.querySelectorAll("[data-admin-tab]").forEach(button => button.addEventL
 $("#monthly-schedule-form").addEventListener("submit", async event => {
   event.preventDefault();
   const button = $("#monthly-save-button");
-  button.disabled = true;
   try {
-    renderMonthlySchedule(await api("/api/admin/monthly-schedule", {
-      method: "PATCH",
-      body: {
-        enabled: $("#monthly-enabled").checked,
-        day_of_month: 1,
-        local_start_time: $("#monthly-start-time").value,
-        task_name: state.monthlySchedule?.config?.task_name || "Relatorios Tenable - Mensal",
-      },
-    }));
-    toast("Política mensal salva; nenhuma execução foi iniciada.");
+    await runWithDisabledButton(button, async () => {
+      renderMonthlySchedule(await api("/api/admin/monthly-schedule", {
+        method: "PATCH",
+        body: {
+          enabled: $("#monthly-enabled").checked,
+          day_of_month: 1,
+          local_start_time: $("#monthly-start-time").value,
+          task_name: state.monthlySchedule?.config?.task_name || "Relatorios Tenable - Mensal",
+        },
+      }));
+      toast(scheduleActionMessage("save"));
+    });
   } catch (error) { toast(error.message, "error"); }
-  finally { button.disabled = false; }
 });
 $("#monthly-validate-button").addEventListener("click", async event => {
-  event.currentTarget.disabled = true;
+  const button = event.currentTarget;
   try {
-    renderMonthlySchedule(await api("/api/admin/monthly-schedule/validate", { method: "POST", body: {} }));
-    toast("Configuração validada sem iniciar coleta.");
+    await runWithDisabledButton(button, async () => {
+      renderMonthlySchedule(await api("/api/admin/monthly-schedule/validate", { method: "POST", body: {} }));
+      toast(scheduleActionMessage("validate"));
+    });
   } catch (error) { toast(error.message, "error"); }
-  finally { event.currentTarget.disabled = false; }
 });
 $("#monthly-apply-button").addEventListener("click", event => runMonthlyScheduleAction(event.currentTarget, "apply"));
 $("#monthly-toggle-button").addEventListener("click", event => runMonthlyScheduleAction(event.currentTarget, state.monthlySchedule?.config?.enabled ? "disable" : "enable"));
