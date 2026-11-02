@@ -160,11 +160,16 @@ def manual_rolling_month(
         month=previous_month,
         day=previous_day,
     )
+    mode = (
+        PeriodMode.MONTHLY_CUTOFF
+        if reference.day == 1 and start.day == 1
+        else PeriodMode.MANUAL_ROLLING_MONTH
+    )
     return ReportingPeriod(
         start_at=start.astimezone(UTC),
         end_at=reference.astimezone(UTC),
         timezone=timezone_name,
-        mode=PeriodMode.MANUAL_ROLLING_MONTH,
+        mode=mode,
         reference_at=reference.astimezone(UTC),
     )
 

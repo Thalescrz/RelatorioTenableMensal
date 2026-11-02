@@ -218,6 +218,11 @@ preservação do término efetivo.
 Classifique também como `MONTHLY_CUTOFF` a seleção manual do mês completo quando o
 `reference_at` já estiver no mês seguinte; a fronteira exclusiva continua sendo o
 primeiro dia do mês seguinte.
+O padrão manual móvel também deve ser promovido a `MONTHLY_CUTOFF` quando, no fuso
+do cliente, `start_at` cair no dia 1 do mês inicial e `end_at` no dia 1 do mês
+seguinte, sem exigir meia-noite nem igualdade artificial de horários. Preserve os
+instantes recebidos. Na apresentação, derive do `period_id` o primeiro e o último
+dia civil do mês; nunca mostre o dia 1 do mês seguinte como término editorial.
 
 Na camada de referência e histórico, normalize meses completos e
 `MONTHLY_CUTOFF` para `MONTHLY_CANONICAL`. Preserve `period.mode`, `start_at` e
@@ -240,6 +245,11 @@ Uma migração de competência deve atualizar também `period.period_id` e
 mesma janela mensal. Valide o JSON pelo contrato correspondente antes da escrita,
 restrinja caminhos à raiz `data`, preserve `start_at`, `end_at`, artefatos,
 fingerprints e hashes, faça backup e exija idempotência na segunda execução.
+No snapshot compacto, não descompacte nem recomprima o payload imutável apenas para
+trocar caminhos de DOCX. Atualize `period_mode` e `document_references` no envelope
+PostgreSQL; o replay considera esse envelope autoritativo e só usa a cópia legada
+do payload quando o envelope estiver vazio. Isso evita consumo de memória
+proporcional ao volume de findings e preserva o checksum da evidência.
 
 No Cloud, consultas GraphQL obrigatórias e opcionais são separadas por contrato. O
 probe mínimo deve ocorrer antes da coleta completa; token nunca entra em perfil,
@@ -647,6 +657,10 @@ do navegador.
 mensal completa. A migração de publicações antigas deve ser explícita, auditável e
 transacional: validar arquivos e manifesto, recusar colisões, preservar o fim real,
 reclassificar `MAIN` e manter cópia local dos metadados anteriores.
+Se a fase de arquivos terminar antes da confirmação do banco, a repetição deve
+reconhecer que o destino mensal já existe, reconciliar o caminho antigo do catálogo
+com o manifesto novo e concluir a mesma operação; ela não pode duplicar nem
+sobrescrever silenciosamente outro documento.
 
 Uma reparação posterior de comparativos deve partir do snapshot compacto validado,
 comparar o resumo e as chaves de findings reconstruídos com o snapshot histórico

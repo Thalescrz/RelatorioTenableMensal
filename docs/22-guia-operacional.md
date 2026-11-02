@@ -241,6 +241,13 @@ No card do cliente, escolha gerar relatório, confirme o modo manual e defina:
 - últimos dias: janela de `X` dias;
 - período específico: datas inicial e final escolhidas.
 
+No caso especial em que o padrão móvel liga o dia 1 de um mês ao dia 1 do mês
+seguinte, a aplicação trata a geração como competência do mês inicial,
+independentemente do horário. Por exemplo, uma execução iniciada em 01/11 às
+02:19 para a janela iniciada em 01/10 às 02:19 aparece como `2026-10`, usa o
+sufixo `OUT26` e apresenta editorialmente `01/10/2026` a `31/10/2026`. Os horários
+02:19 continuam nos metadados operacionais para auditoria.
+
 No período específico, as duas datas são inclusivas para o analista. A aplicação
 transforma a data final no início do dia seguinte: selecionar 01/07 a 31/07 produz
 o intervalo técnico `[01/07 00:00, 01/08 00:00)`. Assim, nenhum minuto do último
@@ -643,6 +650,22 @@ iguais; somente `period_id` e `mode` passam ao contrato mensal. Um backup local 
 criado antes da alteração e uma segunda execução deve encontrar zero checkpoints
 pendentes.
 
+Para intervalos do dia 1 ao dia 1 seguinte que tenham sido publicados como mês
+móvel, use primeiro `tools/repair_monthly_cutoff_competence.py --period-id AAAA-MM`
+sem `--apply`. O plano deve listar somente conjuntos `READY`, documentos existentes
+e zero jobs ativos. A aplicação exige `--confirmation "REPARAR AAAA-MM"`, cria
+backup e é retomável caso arquivos já tenham sido renomeados mas a transação do
+banco ainda não tenha sido confirmada. Depois, republique os rótulos do período:
+
+```powershell
+.\.venv\Scripts\python.exe tools\refresh_official_report_documents.py `
+  --period-id AAAA-MM --all-ready --canonicalize-monthly-period --apply --fail-fast
+```
+
+Esse segundo comando não recalcula métricas nem consulta a Tenable. Ele preserva
+tabelas, imagens e texto técnico, corrige capa e corpo para o último dia civil do
+mês e inclui conjuntos `READY` sem promovê-los a `MAIN`.
+
 ### Reparar comparativos mensais publicados
 
 Use `tools/repair_monthly_comparison_documents.py` somente quando uma competência
@@ -796,6 +819,9 @@ Uma execução de mês completo encerrada antecipadamente no último dia aparece
 mesmo mês do ZIP, com sufixo mensal (`SET26`, por exemplo). O resumo e os metadados
 da publicação preservam o instante efetivo do corte; a competência mensal não deve
 ser interpretada como coleta do período posterior a esse instante.
+O mesmo vale para uma janela que comece no dia 1 e termine no dia 1 seguinte em
+qualquer horário: o ZIP e o DOCX usam o mês inicial, mas a auditoria preserva os
+instantes reais.
 
 O mesmo diálogo permite escolher um analista responsável. Nesse caso, entram
 somente os clientes atualmente vinculados a ele, ainda separados em uma pasta por

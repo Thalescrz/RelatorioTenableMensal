@@ -12,6 +12,9 @@ from tenable_reports.application.monthly_cutoff_repair import (
     rewrite_history_snapshot_payload,
     rewrite_monthly_cutoff_manifest,
 )
+from tools.repair_monthly_cutoff_competence import (
+    _reconcile_document_moves,
+)
 
 
 def test_monthly_cutoff_interval_requires_first_and_last_day() -> None:
@@ -34,6 +37,24 @@ def test_monthly_cutoff_interval_accepts_completed_full_month() -> None:
         period_id="2026-09",
         start_at="2026-09-01T03:00:00Z",
         end_at="2026-10-01T03:00:00Z",
+        timezone_name="America/Fortaleza",
+    )
+
+
+def test_monthly_cutoff_interval_accepts_day_one_to_day_one_at_any_time() -> None:
+    assert is_monthly_cutoff_interval(
+        period_id="2026-10",
+        start_at="2026-10-01T05:19:31.781143Z",
+        end_at="2026-11-01T05:19:31.781143Z",
+        timezone_name="America/Fortaleza",
+    )
+
+
+def test_monthly_cutoff_interval_rejects_day_two_to_day_two() -> None:
+    assert not is_monthly_cutoff_interval(
+        period_id="2026-10",
+        start_at="2026-10-02T05:19:31.781143Z",
+        end_at="2026-11-02T05:19:31.781143Z",
         timezone_name="America/Fortaleza",
     )
 
@@ -64,6 +85,21 @@ def test_document_path_replaces_exact_range_with_month_competence(
     result = monthly_competence_document_path(source, period_id="2026-09")
 
     assert result.name == "[CLIENTE] Relatório Tenable SET26.docx"
+
+
+def test_interrupted_file_phase_reconciles_old_database_path_with_new_manifest(
+    tmp_path: Path,
+) -> None:
+    old = tmp_path / "[CLIENTE] Relatório Tenable OUT26-NOV26.docx"
+    new = tmp_path / "[CLIENTE] Relatório Tenable OUT26.docx"
+
+    moves = _reconcile_document_moves(
+        database_paths={old.resolve()},
+        manifest_paths={new.resolve()},
+        period_id="2026-10",
+    )
+
+    assert moves == ((old.resolve(), new.resolve()),)
 
 
 def test_manifest_rewrite_preserves_effective_cutoff_and_relabels_documents(

@@ -690,12 +690,29 @@ def _parse_utc(value: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def _period_labels(period: Mapping[str, Any]) -> tuple[str, str]:
+def _period_dates(period: Mapping[str, Any]) -> tuple[datetime, datetime]:
     timezone_name = str(period.get("timezone") or "UTC")
     timezone = ZoneInfo(timezone_name)
     start = _parse_utc(str(period["start_at"])).astimezone(timezone)
     end_exclusive = _parse_utc(str(period["end_at"])).astimezone(timezone)
+    period_id = str(period.get("period_id") or "").strip()
+    mode = str(period.get("mode") or "").strip()
+    if mode in {"MONTHLY_CUTOFF", "PREVIOUS_CALENDAR_MONTH"} and re.fullmatch(
+        r"\d{4}-\d{2}", period_id
+    ):
+        parsed = datetime.strptime(period_id, "%Y-%m")
+        start = parsed.replace(tzinfo=timezone)
+        end_exclusive = (
+            start.replace(year=start.year + 1, month=1)
+            if start.month == 12
+            else start.replace(month=start.month + 1)
+        )
     end_inclusive = end_exclusive - timedelta(microseconds=1)
+    return start, end_inclusive
+
+
+def _period_labels(period: Mapping[str, Any]) -> tuple[str, str]:
+    start, end_inclusive = _period_dates(period)
     if start.year == end_inclusive.year and start.month == end_inclusive.month:
         label = f"{MONTHS_PT[start.month]}/{start.year}"
     else:

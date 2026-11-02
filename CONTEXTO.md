@@ -114,6 +114,12 @@ editorial anterior.
 Quando a execução ou retentativa alcança a fronteira completa do mês no primeiro
 dia seguinte, a seleção continua `MONTHLY_CUTOFF`; ela não volta a ser
 `EXPLICIT_RANGE` apenas porque o mês já encerrou.
+Uma geração manual móvel que comece no dia 1 de um mês e termine no dia 1 do mês
+seguinte também é `MONTHLY_CUTOFF`, independentemente do horário local dos dois
+limites. Os instantes técnicos reais continuam em `start_at` e `end_at`, enquanto
+capa, corpo, nomes de arquivo, histórico e ZIP usam a competência do mês inicial e
+o intervalo editorial entre o primeiro e o último dia civil desse mês. Execuções
+que não liguem essas duas fronteiras de dia 1 permanecem intervalos móveis.
 
 Para seleção de `MAIN` e comparativos, tanto o mês-calendário completo quanto
 `MONTHLY_CUTOFF` usam internamente a identidade mensal canônica
@@ -352,6 +358,12 @@ verdade.
 O ZIP mensal seleciona a competência `YYYY-MM` das referências `MAIN`. Relatórios
 `MONTHLY_CUTOFF` participam da mesma competência mensal sem ocultar o término
 efetivo da coleta em seus metadados de auditoria.
+Uma republicação de competência pode incluir também conjuntos `READY` ainda sem
+`MAIN`, mas não os promove automaticamente. Ela valida os manifestos autoritativos,
+preserva tabelas, gráficos e texto técnico, atualiza somente os rótulos mensais e
+registra hashes novos de forma atômica. No snapshot compacto, o payload de
+evidência permanece imutável; caminhos atuais de documentos pertencem ao envelope
+PostgreSQL e são os usados no replay.
 
 ## Interface web
 

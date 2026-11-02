@@ -267,9 +267,13 @@ def replay_compact_snapshot(
         for tag, values in (payload.get("tag_asset_ids") or {}).items()
         if isinstance(values, list)
     }
-    documents = {
+    payload_documents = {
         str(key): str(value)
         for key, value in (payload.get("document_references") or {}).items()
+    }
+    documents = {
+        str(key): str(value)
+        for key, value in snapshot.document_references.items()
     }
     tag_scope = (
         dict(payload["tag_scope"])
@@ -284,8 +288,8 @@ def replay_compact_snapshot(
     }
     if dict(snapshot.record_counts) != expected:
         raise ValueError("Contagens do snapshot compacto divergem do payload.")
-    if documents != dict(snapshot.document_references):
-        raise ValueError("Referencias de documentos divergem do envelope compacto.")
+    if not documents and payload_documents:
+        documents = payload_documents
     return ReplayedCompactSnapshot(
         assets=assets,
         findings=findings,
