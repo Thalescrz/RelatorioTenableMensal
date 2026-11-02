@@ -940,20 +940,102 @@ class CliTests(unittest.TestCase):
                 patch.object(cli_module, "_cloud_snapshot_repository_for_args", return_value=(object(), True)),
                 patch.object(cli_module, "retry_cloud_component", return_value=result) as cloud_call,
                 patch.object(cli_module, "upsert_publication_documents", return_value=manifest) as upsert,
+                patch.object(
+                    cli_module,
+                    "_persist_component_retry_attempt",
+                    return_value=True,
+                ),
                 patch.object(cli_module, "_execute_period", side_effect=AssertionError("VM nao pode ser chamada")),
                 patch.object(cli_module, "load_dotenv_file"),
                 patch.object(cli_module.CloudCredentialConfig, "from_environment", return_value=SimpleNamespace()),
+                patch.object(
+                    cli_module,
+                    "_auto_promote_completed_component_set",
+                    return_value=True,
+                ) as auto_promote,
                 patch("builtins.print"),
             ):
                 self.assertEqual(cli_module.command_retry_cloud(args), 0)
 
             self.assertEqual(cloud_call.call_count, 1)
             self.assertEqual(upsert.call_count, 1)
+            auto_promote.assert_called_once_with(
+                args=args,
+                client_id="cliente-a",
+                source_run_id="run-a",
+            )
             documents = upsert.call_args.kwargs["documents"]
             self.assertEqual(
                 [item.document_variant for item in documents],
                 ["expanded"],
             )
+
+    def test_completed_component_retry_promotes_only_the_first_eligible_main(self) -> None:
+        component_repository = Mock()
+        component_repository.latest_attempts.return_value = (object(),)
+        report = SimpleNamespace(candidate=object())
+        registry = Mock()
+        registry.get_report.return_value = report
+        registry.auto_promote_if_empty.return_value = True
+        key = object()
+        summary = SimpleNamespace(status=SimpleNamespace(value="COMPLETE"))
+        args = SimpleNamespace(database_env_file="database.env")
+
+        with (
+            patch.object(
+                cli_module,
+                "_report_component_repository",
+                return_value=component_repository,
+            ),
+            patch.object(cli_module, "planned_components_from_attempts", return_value=()),
+            patch.object(cli_module, "summarize_component_set", return_value=summary),
+            patch.object(cli_module, "_report_registry", return_value=registry),
+            patch.object(cli_module, "reference_key_for_candidate", return_value=key),
+        ):
+            promoted = cli_module._auto_promote_completed_component_set(
+                args=args,
+                client_id="cliente-a",
+                source_run_id="run-a",
+            )
+
+        self.assertTrue(promoted)
+        registry.auto_promote_if_empty.assert_called_once_with(key, "run-a")
+
+    def test_completed_component_retry_never_replaces_an_existing_main(self) -> None:
+        component_repository = Mock()
+        component_repository.latest_attempts.return_value = (object(),)
+        registry = InMemoryReportRegistry()
+        existing = valid_backfill_run("run-existing")
+        retried = valid_backfill_run("run-retried")
+        key = cli_module.reference_key_for_candidate(existing)
+        registry.register_report(existing)
+        registry.register_report(retried)
+        registry.promote_main(
+            key,
+            existing.run_id,
+            actor="analista",
+            reason="seleção aprovada",
+        )
+        summary = SimpleNamespace(status=SimpleNamespace(value="COMPLETE"))
+
+        with (
+            patch.object(
+                cli_module,
+                "_report_component_repository",
+                return_value=component_repository,
+            ),
+            patch.object(cli_module, "planned_components_from_attempts", return_value=()),
+            patch.object(cli_module, "summarize_component_set", return_value=summary),
+            patch.object(cli_module, "_report_registry", return_value=registry),
+        ):
+            promoted = cli_module._auto_promote_completed_component_set(
+                args=SimpleNamespace(database_env_file="database.env"),
+                client_id=retried.client_id,
+                source_run_id=retried.run_id,
+            )
+
+        self.assertFalse(promoted)
+        self.assertEqual(registry.get_main(key).run_id, existing.run_id)
 
     def test_retry_cloud_resumed_dataset_does_not_require_live_confirmation(
         self,
@@ -1016,6 +1098,11 @@ class CliTests(unittest.TestCase):
                 patch.object(cli_module, "retry_cloud_component", return_value=result) as cloud_call,
                 patch.object(cli_module, "upsert_publication_documents", return_value=manifest),
                 patch.object(cli_module, "_persist_component_retry_attempt"),
+                patch.object(
+                    cli_module,
+                    "_auto_promote_completed_component_set",
+                    return_value=False,
+                ),
                 patch.object(cli_module, "load_dotenv_file") as load_env,
                 patch.object(cli_module.CloudCredentialConfig, "from_environment") as credentials,
                 patch("builtins.print"),

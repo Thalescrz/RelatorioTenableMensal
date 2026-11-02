@@ -751,10 +751,10 @@ def _persist_component_retry_attempt(
     failure_message: str | None = None,
     checkpoint_path: str | Path | None = None,
     artifact_references: Mapping[str, Any] | None = None,
-) -> None:
+) -> bool:
     repository = _report_component_repository(args)
     if repository is None:
-        return
+        return False
     latest = repository.latest_attempts(
         source_run_id=source_run_id,
         client_id=client_id,
@@ -819,6 +819,34 @@ def _persist_component_retry_attempt(
             ended_at=created_at,
         )
     repository.create_attempt(attempt)
+    return True
+
+
+def _auto_promote_completed_component_set(
+    *,
+    args: argparse.Namespace,
+    client_id: str,
+    source_run_id: str,
+) -> bool:
+    component_repository = _report_component_repository(args)
+    if component_repository is None:
+        return False
+    latest = component_repository.latest_attempts(
+        source_run_id=source_run_id,
+        client_id=client_id,
+    )
+    if not latest:
+        return False
+    summary = summarize_component_set(
+        latest,
+        planned_components=planned_components_from_attempts(latest),
+    )
+    if summary.status.value != "COMPLETE":
+        return False
+    registry = _report_registry(args, None)
+    report = registry.get_report(source_run_id)
+    key = reference_key_for_candidate(report.candidate)
+    return bool(registry.auto_promote_if_empty(key, source_run_id))
 
 
 def _was_recovery_repository(
@@ -1119,6 +1147,9 @@ def _manual_period(args: argparse.Namespace, profile: Any) -> Any:
         days=getattr(args, "days", None),
         start_at=getattr(args, "start_at", None),
         end_at=getattr(args, "end_at", None),
+        previous_calendar_month_selection=bool(
+            getattr(args, "previous_calendar_month", False)
+        ),
     )
 
 
@@ -1128,7 +1159,7 @@ def _period_for_mode(args: argparse.Namespace, profile: Any) -> Any:
     if any(
         getattr(args, name, None) is not None
         for name in ("days", "start_at", "end_at")
-    ):
+    ) or bool(getattr(args, "previous_calendar_month", False)):
         raise ValueError("--days/--start-at/--end-at pertencem ao modo manual.")
     return _automatic_period(args, profile)
 
@@ -4050,6 +4081,15 @@ def _build_cloud_only_from_collection_checkpoint(
         planned_components=planned_components_from_attempts(attempts),
     )
     component_set_status = summary.status.value
+    main_promoted = (
+        _auto_promote_completed_component_set(
+            args=args,
+            client_id=profile.client_id,
+            source_run_id=checkpoint.run_id,
+        )
+        if component_set_status == "COMPLETE"
+        else False
+    )
     payload = {
         "status": (
             "complete"
@@ -4067,6 +4107,7 @@ def _build_cloud_only_from_collection_checkpoint(
             for item in cloud_result.documents
         ],
         "component_set_status": component_set_status,
+        "main_promoted": main_promoted,
         "retryable_components": [
             component.value for component in summary.retryable_components
         ],
@@ -5308,7 +5349,7 @@ def command_retry_cloud(args: argparse.Namespace) -> int:
         (item for item in result.warnings if isinstance(item, Mapping)),
         {},
     )
-    _persist_component_retry_attempt(
+    component_attempt_persisted = _persist_component_retry_attempt(
         args=args,
         client_id=context.client_id,
         source_run_id=context.run_id,
@@ -5328,6 +5369,15 @@ def command_retry_cloud(args: argparse.Namespace) -> int:
             ],
             "publication_manifest": str(manifest.resolve()),
         },
+    )
+    payload["main_promoted"] = (
+        _auto_promote_completed_component_set(
+            args=args,
+            client_id=context.client_id,
+            source_run_id=context.run_id,
+        )
+        if success and component_attempt_persisted is True
+        else False
     )
     print(json.dumps(payload, ensure_ascii=False))
     return 0 if success else 2
@@ -5535,6 +5585,7 @@ def command_orchestrate(args: argparse.Namespace) -> int:
         request=OrchestrationRequest(
             mode=args.mode,
             reference_at=args.reference_at,
+            previous_calendar_month=bool(args.previous_calendar_month),
             days=args.days,
             start_at=args.start_at,
             end_at=args.end_at,
@@ -5899,6 +5950,7 @@ def _add_complete_collection_arguments(parser: argparse.ArgumentParser) -> None:
         choices=("SCHEDULED", "AUTOMATIC_RETRY", "MANUAL"),
     )
     parser.add_argument("--reference-at")
+    parser.add_argument("--previous-calendar-month", action="store_true")
     parser.add_argument("--days", type=int)
     parser.add_argument("--start-at")
     parser.add_argument("--end-at")
@@ -6210,6 +6262,7 @@ def build_parser() -> argparse.ArgumentParser:
     manual.add_argument("--output-root", default="data")
     manual.add_argument("--run-id")
     manual.add_argument("--reference-at")
+    manual.add_argument("--previous-calendar-month", action="store_true")
     manual.add_argument("--days", type=int)
     manual.add_argument("--start-at")
     manual.add_argument("--end-at")
@@ -6550,6 +6603,7 @@ def build_parser() -> argparse.ArgumentParser:
     orchestrate.add_argument("--config", required=True)
     orchestrate.add_argument("--mode", choices=("automatic", "manual"), default="automatic")
     orchestrate.add_argument("--reference-at")
+    orchestrate.add_argument("--previous-calendar-month", action="store_true")
     orchestrate.add_argument("--days", type=int)
     orchestrate.add_argument("--start-at")
     orchestrate.add_argument("--end-at")

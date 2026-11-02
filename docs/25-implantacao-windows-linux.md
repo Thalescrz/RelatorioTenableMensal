@@ -165,6 +165,11 @@ adaptador usa o Agendador de Tarefas. No Linux, ele materializa um serviço e um
 timer de usuário do `systemd`; `cron` não é utilizado. Salvar ou validar a política
 não cria agenda. Sincronizar, ativar ou desativar exige confirmação explícita e
 nenhuma dessas ações executa uma coleta imediatamente.
+No Windows, a ação cadastrada informa a raiz absoluta por `-ProjectRoot`; o
+launcher muda para essa raiz antes do preflight e resolve o LibreOffice sem depender
+do diretório herdado pelo Agendador. Cada disparo escreve um registro sanitizado em
+`data/automation-logs/monthly-scheduler.jsonl`. Use `-PreflightOnly` para validar
+essa instalação a partir de outro diretório sem criar lote ou iniciar coleta.
 
 ## Diagnóstico pós-instalação
 

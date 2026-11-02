@@ -1,9 +1,10 @@
 const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue, mergeSavedClient, conflictingJobsByClient } = window.TenableClientSelection;
 const { filterPortfolioByFamily, toggleFamilyFilter } = window.TenableBatchFamilyFilters;
 const { scheduleView, runWithDisabledButton, scheduleActionMessage } = window.TenableMonthlySchedule;
+const { periodRequest, formatPeriodPreview } = window.TenableReportPeriod;
 const { environmentView } = window.TenableEnvironmentStatus;
 const { copyRecipients, addRecipient, removeRecipient } = window.TenableDocumentDistribution;
-const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, standardDistributionDraft: undefined, clientDistributionDraft: [], connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, monthlySchedule: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: null, batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
+const state = { data: null, selectedClient: null, runClientIds: [], runScope: "single", periodPreview: null, filter: "", analystFilter: "all", statusFilter: "all", runSelection: [], runSelectionQuery: "", runSelectionAnalystFilter: "all", runSelectionFilterSnapshot: null, responsibleAnalystDraft: undefined, standardDistributionDraft: undefined, clientDistributionDraft: [], connectionChecks: {}, editingClientId: null, currentReports: [], backfillPlan: null, monthlySchedule: null, availableTags: [], tagSearch: "", selectedBatchId: null, batchFamily: null, batchFamilyFilter: null, batchFamilyLoadingId: null, componentRetryRunId: null, componentRetryState: null };
 const { createLatestRequestGuard, reportExecutionCopy } = window.TenableReportRequestGuard;
 const reportRequestGuard = createLatestRequestGuard();
 const { createRefreshCoordinator, hasDashboardStateChanged, createAdaptivePoller } = window.TenableDashboardRefresh;
@@ -1455,6 +1456,41 @@ function openRun(clientIds, runScope = "single") {
   const all = runScope === "all"; $("#run-title").textContent = all ? "Gerar todos os clientes" : "Gerar relatório";
   $("#run-subtitle").textContent = all ? `${clientIds.length} clientes serão adicionados à fila.` : state.data.clients.find(c => c.client_id === clientIds[0])?.display_name || "";
   $("#run-dialog").showModal();
+  void refreshPeriodPreview();
+}
+
+function selectedPeriodPayload() {
+  const form = new FormData($("#run-form"));
+  return periodRequest(form.get("period_type"), Object.fromEntries(form.entries()));
+}
+
+function periodPreviewSignature(payload) {
+  return JSON.stringify({ client_ids: state.runClientIds, ...payload });
+}
+
+async function refreshPeriodPreview() {
+  const node = $("#period-preview");
+  const payload = selectedPeriodPayload();
+  if (payload.start_date === "" || payload.end_date === "") {
+    state.periodPreview = null;
+    node.textContent = "Informe as duas datas para visualizar o período efetivo.";
+    return null;
+  }
+  const signature = periodPreviewSignature(payload);
+  node.textContent = "Calculando período efetivo...";
+  try {
+    const preview = await api("/api/jobs/preview", {
+      method: "POST",
+      body: { client_ids: state.runClientIds, ...payload },
+    });
+    state.periodPreview = { signature, reference_at: preview.reference_at };
+    node.textContent = `Período efetivo: ${formatPeriodPreview(preview)}`;
+    return preview;
+  } catch (error) {
+    state.periodPreview = null;
+    node.textContent = `Período inválido: ${error.message}`;
+    return null;
+  }
 }
 
 function toast(message, type = "success") {
@@ -1712,7 +1748,11 @@ $("#confirm-run-selection").addEventListener("click", () => {
 document.querySelectorAll('input[name="period_type"]').forEach(input => input.addEventListener("change", () => {
   const type = document.querySelector('input[name="period_type"]:checked').value;
   $("#days-fields").classList.toggle("hidden", type !== "days"); $("#range-fields").classList.toggle("hidden", type !== "range");
+  void refreshPeriodPreview();
 }));
+$("#run-form [name='days']").addEventListener("input", () => void refreshPeriodPreview());
+$("#run-form [name='start_date']").addEventListener("change", () => void refreshPeriodPreview());
+$("#run-form [name='end_date']").addEventListener("change", () => void refreshPeriodPreview());
 
 const nameField = $("#client-form [name='display_name']");
 const idField = $("#client-form [name='client_id']");
@@ -1958,15 +1998,11 @@ clientForm.addEventListener("submit", async event => {
 });
 
 $("#run-form").addEventListener("submit", async event => {
-  event.preventDefault(); const form = new FormData(event.currentTarget); const type = form.get("period_type"); const payload = { client_ids: state.runClientIds, mode: "manual", run_scope: state.runScope };
+  event.preventDefault(); const form = new FormData(event.currentTarget); const type = form.get("period_type"); const periodPayload = periodRequest(type, Object.fromEntries(form.entries())); const payload = { client_ids: state.runClientIds, ...periodPayload, run_scope: state.runScope };
   if (state.runScope === "all") payload.selection_filter_snapshot = state.runSelectionFilterSnapshot || { analyst_id: null, query: "", unassigned: false };
-  if (type === "days") payload.days = Number(form.get("days"));
   payload.force_live_collection = form.has("force_live_collection");
   if (type === "range") {
     if (!form.get("start_date") || !form.get("end_date")) { toast("Informe a data inicial e a data final.", "error"); return; }
-    payload.start_date = String(form.get("start_date"));
-    payload.end_date = String(form.get("end_date"));
-
     const inventoryClients = state.runClientIds
       .map(clientId => state.data?.clients.find(client => client.client_id === clientId))
       .filter(client => client?.historical_source === "inventory_beta");
@@ -1984,6 +2020,11 @@ $("#run-form").addEventListener("submit", async event => {
     if (!window.confirm(message)) return;
   }
 
+  const previewSignature = periodPreviewSignature(periodPayload);
+  if (!state.periodPreview || state.periodPreview.signature !== previewSignature) {
+    const preview = await refreshPeriodPreview();
+    if (!preview) { toast("Revise o período antes de adicionar à fila.", "error"); return; }
+  }
   const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
   try { const result = await api("/api/jobs", { method: "POST", body: payload }); $("#run-dialog").close(); toast(`${result.jobs.length} execução(ões) adicionada(s) à fila.`); button.disabled = false; void refresh(true, { ensureAfterCurrent: true }); }
   catch (error) { toast(error.message, "error"); } finally { button.disabled = false; }

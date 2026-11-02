@@ -92,6 +92,7 @@ class OrchestrationConfig:
 class OrchestrationRequest:
     mode: str
     reference_at: str | None = None
+    previous_calendar_month: bool = False
     days: int | None = None
     start_at: str | None = None
     end_at: str | None = None
@@ -587,6 +588,16 @@ def _validate_request(request: OrchestrationRequest) -> None:
         value is not None for value in (request.days, request.start_at, request.end_at)
     ):
         raise ValueError("--days/--start-at/--end-at pertencem ao modo manual.")
+    if request.mode == "automatic" and request.previous_calendar_month:
+        raise ValueError(
+            "--previous-calendar-month pertence ao modo manual."
+        )
+    if request.previous_calendar_month and (
+        request.days is not None or has_start
+    ):
+        raise ValueError(
+            "--previous-calendar-month nao pode ser combinado com outro periodo."
+        )
     if request.days is not None and has_start:
         raise ValueError("--days nao pode ser combinado com --start-at/--end-at.")
     if request.vm_selective_mode not in {None, "disabled", "validation", "enabled"}:
@@ -699,6 +710,8 @@ def build_client_command(
         command.extend(("--historical-source", request.historical_source))
     if request.reference_at:
         command.extend(("--reference-at", request.reference_at))
+    if request.previous_calendar_month:
+        command.append("--previous-calendar-month")
     if request.days is not None:
         command.extend(("--days", str(request.days)))
     if request.start_at:

@@ -4113,6 +4113,95 @@ class WebDashboardTests(unittest.TestCase):
             self.assertIn("cliente-teste", observed[0])
             self.assertIn("15", observed[0])
 
+    def test_manual_previous_calendar_month_reaches_cli_without_becoming_scheduled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            observed: list[list[str]] = []
+
+            def runner(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+                observed.append(list(command))
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout='{"status":"complete","run_id":"run-calendar"}\n',
+                    stderr="",
+                )
+
+            jobs = JobQueue(root, root / "orchestration" / "clients.json", runner)
+            created = jobs.enqueue(
+                ["cliente-teste"],
+                {
+                    "mode": "manual",
+                    "previous_calendar_month": True,
+                    "reference_at": "2026-11-15T13:30:00Z",
+                },
+            )
+            self.assertEqual(len(created), 1)
+            jobs._pending.join()
+
+            self.assertIn("--previous-calendar-month", observed[0])
+            mode_index = observed[0].index("--mode")
+            self.assertEqual(observed[0][mode_index + 1], "manual")
+
+    def test_period_preview_is_read_only_and_uses_client_timezone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+            )
+            app.config.add_client({
+                "client_id": "cliente-preview",
+                "display_name": "Cliente Preview",
+                "access_key": "access",
+                "secret_key": "secret",
+            })
+            try:
+                before = app.jobs.snapshot()
+                payload = app.preview_period(
+                    ["cliente-preview"],
+                    {
+                        "mode": "manual",
+                        "previous_calendar_month": True,
+                        "reference_at": "2026-11-15T13:30:00Z",
+                    },
+                )
+                after = app.jobs.snapshot()
+            finally:
+                app.jobs.close()
+
+            self.assertEqual(before, after)
+            self.assertEqual(payload["periods"][0]["period_id"], "2026-10")
+            self.assertEqual(
+                payload["periods"][0]["timezone"],
+                "America/Fortaleza",
+            )
+            self.assertEqual(payload["periods"][0]["interval"], "[start_at, end_at)")
+
+    def test_period_preview_rejects_days_outside_the_queue_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+            )
+            app.config.add_client({
+                "client_id": "cliente-preview",
+                "display_name": "Cliente Preview",
+                "access_key": "access",
+                "secret_key": "secret",
+            })
+            try:
+                with self.assertRaisesRegex(ValueError, "entre 1 e 366"):
+                    app.preview_period(
+                        ["cliente-preview"],
+                        {"mode": "manual", "days": 367},
+                    )
+            finally:
+                app.jobs.close()
+
     def test_run_all_retries_was_automatically_but_individual_run_waits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

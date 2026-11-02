@@ -176,6 +176,27 @@ class ReportingPeriodTests(unittest.TestCase):
                 start_at="2026-07-01T00:00:00-03:00",
             )
 
+    def test_manual_previous_calendar_month_is_an_explicit_selection(self) -> None:
+        period = resolve_manual_period(
+            timezone_name="America/Fortaleza",
+            reference_at="2026-11-15T10:30:00-03:00",
+            previous_calendar_month_selection=True,
+        )
+
+        self.assertEqual(period.mode, PeriodMode.PREVIOUS_CALENDAR_MONTH)
+        self.assertEqual(period.period_id, "2026-10")
+        self.assertEqual(period.to_dict()["start_at"], "2026-10-01T03:00:00Z")
+        self.assertEqual(period.to_dict()["end_at"], "2026-11-01T03:00:00Z")
+
+    def test_manual_previous_calendar_month_rejects_other_period_filters(self) -> None:
+        with self.assertRaises(ValueError):
+            resolve_manual_period(
+                timezone_name="America/Fortaleza",
+                reference_at="2026-11-15T10:30:00-03:00",
+                previous_calendar_month_selection=True,
+                days=30,
+            )
+
     def test_invalid_days_are_rejected(self) -> None:
         with self.assertRaises(ValueError):
             trailing_days_period(0, reference_at="2026-08-12")

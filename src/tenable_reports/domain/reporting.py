@@ -232,10 +232,22 @@ def resolve_manual_period(
     days: int | None = None,
     start_at: str | datetime | date | None = None,
     end_at: str | datetime | date | None = None,
+    previous_calendar_month_selection: bool = False,
 ) -> ReportingPeriod:
     has_explicit_boundary = start_at is not None or end_at is not None
+    if previous_calendar_month_selection and (
+        days is not None or has_explicit_boundary
+    ):
+        raise ValueError(
+            "O mes-calendario anterior nao pode ser combinado com outros filtros."
+        )
     if days is not None and has_explicit_boundary:
         raise ValueError("Use --days ou --start-at/--end-at, nunca os dois modos juntos.")
+    if previous_calendar_month_selection:
+        return previous_calendar_month(
+            reference_at=reference_at,
+            timezone_name=timezone_name,
+        )
     if has_explicit_boundary:
         if start_at is None or end_at is None:
             raise ValueError("--start-at e --end-at precisam ser informados juntos.")

@@ -97,6 +97,12 @@ permanecem somente enquanto necessários para publicação, diagnóstico ou reto
   atualiza o manifesto existente e o catálogo de documentos sem reconstruir nem
   republicar o histórico VM.
 
+O snapshot Cloud é persistência da coleta, não da publicação editorial: ele pode
+ser gravado antes de `report_runs`, mantém `run_id` único e é reconciliado quando o
+manifesto é publicado. Quando uma retentativa seletiva completa todos os
+componentes, a aplicação tenta ocupar apenas uma referência `MAIN` ainda vazia;
+uma seleção existente nunca é substituída automaticamente.
+
 Cloud representa a fotografia preservada no instante da coleta. A competência do
 relatório não transforma essa fotografia em reconstrução histórica; reprodução
 exata de período anterior exige snapshot Cloud compatível já preservado.
@@ -120,6 +126,11 @@ limites. Os instantes técnicos reais continuam em `start_at` e `end_at`, enquan
 capa, corpo, nomes de arquivo, histórico e ZIP usam a competência do mês inicial e
 o intervalo editorial entre o primeiro e o último dia civil desse mês. Execuções
 que não liguem essas duas fronteiras de dia 1 permanecem intervalos móveis.
+Na interface, **Mês anterior** e **Um mês móvel** são escolhas distintas. A primeira
+resolve o mês-calendário completo no fuso do cliente, sem transformar a origem
+manual em agendada. Antes de enfileirar, uma prévia somente leitura mostra
+competência, fuso e limites; o relógio efetivo da execução continua sendo fixado no
+servidor para toda a seleção.
 
 Para seleção de `MAIN` e comparativos, tanto o mês-calendário completo quanto
 `MONTHLY_CUTOFF` usam internamente a identidade mensal canônica
@@ -330,6 +341,13 @@ processo com a implementação Python e a `libpq.dll` da instalação mais recen
 `Program Files\PostgreSQL`. Instalações em outro local podem informar somente a
 pasta `bin` em `TENABLE_REPORTS_POSTGRESQL_BIN`. Esse fallback não altera o `PATH`
 do sistema nem suas políticas; a configuração vale apenas para o processo atual.
+
+No agendamento Windows, o launcher recebe a raiz absoluta, muda para ela e resolve
+configuração, Python e LibreOffice sem depender do diretório corrente. Cada disparo
+gera JSONL sanitizado em `data/automation-logs`; a validação `PreflightOnly` não
+inicia coleta. Salvar e validar a política não criam a tarefa do sistema; a ação
+**Criar/atualizar tarefa** é separada e os botões sempre recuperam seu estado após
+sucesso, falha ou timeout.
 
 DOCX publicados permanecem no armazenamento local controlado e são registrados no
 catálogo. Arquivos raw, chunks e datasets intermediários só são removidos depois de
