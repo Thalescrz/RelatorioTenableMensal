@@ -143,6 +143,13 @@ adaptador chama `schtasks.exe`; no Linux, materializa unidades e usa `systemctl
 a política nunca invoca o sistema nem cria lote. Aplicar, ativar e desativar exigem
 confirmação e devem ser testados com runner falso.
 Comandos reais devem exigir confirmação explícita.
+O launcher PowerShell recebe `-ProjectRoot`, muda para essa raiz e resolve
+configuração, Python e LibreOffice de forma absoluta. Cubra em teste um preflight
+executado a partir de diretório externo, sem coleta. A saída automática deve passar
+por `automation_execution_log.py` e virar JSONL sanitizado; nunca persista stdout ou
+stderr bruto, caminhos, identificadores, mensagens livres ou credenciais.
+Controles assíncronos do painel precisam restaurar `disabled` em `finally`; não use
+`event.currentTarget` depois de um `await`.
 
 ## Release offline e transferência
 
@@ -209,6 +216,13 @@ qualquer `reference_at` recebido do formulário ou da requisição HTTP. Como de
 na fronteira dos subprocessos, `staged_component` usa o `created_at` persistido do
 job quando um payload manual legado ou derivado ainda chegar sem `reference_at`.
 
+O formulário manual separa `previous_calendar_month` do mês móvel. O primeiro usa
+`previous_calendar_month()` no fuso do perfil, conserva origem `MANUAL` e produz
+`period_id=YYYY-MM`; não o implemente trocando o modo para automático. A rota
+`POST /api/jobs/preview` é somente leitura e pode exibir competência, fuso e
+`[start_at, end_at)` antes da confirmação. O envio real continua substituindo
+qualquer relógio recebido pelo `reference_at` do servidor.
+
 Quando o intervalo solicitado vai do primeiro ao último dia do mesmo mês e sofre
 apenas esse corte no último dia, use `MONTHLY_CUTOFF`: `period_id` e nome de arquivo
 continuam mensais, mas `period_end_at` permanece no instante real. A referência
@@ -218,6 +232,11 @@ preservação do término efetivo.
 Classifique também como `MONTHLY_CUTOFF` a seleção manual do mês completo quando o
 `reference_at` já estiver no mês seguinte; a fronteira exclusiva continua sendo o
 primeiro dia do mês seguinte.
+O padrão manual móvel também deve ser promovido a `MONTHLY_CUTOFF` quando, no fuso
+do cliente, `start_at` cair no dia 1 do mês inicial e `end_at` no dia 1 do mês
+seguinte, sem exigir meia-noite nem igualdade artificial de horários. Preserve os
+instantes recebidos. Na apresentação, derive do `period_id` o primeiro e o último
+dia civil do mês; nunca mostre o dia 1 do mês seguinte como término editorial.
 
 Na camada de referência e histórico, normalize meses completos e
 `MONTHLY_CUTOFF` para `MONTHLY_CANONICAL`. Preserve `period.mode`, `start_at` e
@@ -240,6 +259,11 @@ Uma migração de competência deve atualizar também `period.period_id` e
 mesma janela mensal. Valide o JSON pelo contrato correspondente antes da escrita,
 restrinja caminhos à raiz `data`, preserve `start_at`, `end_at`, artefatos,
 fingerprints e hashes, faça backup e exija idempotência na segunda execução.
+No snapshot compacto, não descompacte nem recomprima o payload imutável apenas para
+trocar caminhos de DOCX. Atualize `period_mode` e `document_references` no envelope
+PostgreSQL; o replay considera esse envelope autoritativo e só usa a cópia legada
+do payload quando o envelope estiver vazio. Isso evita consumo de memória
+proporcional ao volume de findings e preserva o checksum da evidência.
 
 No Cloud, consultas GraphQL obrigatórias e opcionais são separadas por contrato. O
 probe mínimo deve ocorrer antes da coleta completa; token nunca entra em perfil,
@@ -285,6 +309,11 @@ consulta somente referências `MAIN/MONTHLY`, aceita `cloud-metrics-v2` e
 tenant, fuso, escopo, conector, normalizador e schema como dimensões obrigatórias.
 A exclusão permanente remove o snapshot Cloud pelo `run_id` dentro da mesma
 transação que apaga `report_runs`.
+O snapshot Cloud é artefato de coleta e pode ser persistido antes de existir a
+publicação editorial. Por isso `cloud_report_snapshots.run_id` permanece único,
+mas não possui chave estrangeira para `report_runs`; a publicação posterior
+reconcilia o mesmo `run_id`. Não volte a impor uma ordem que force a coleta a
+esperar pelo manifesto.
 
 ## Lotes duráveis
 
@@ -414,6 +443,11 @@ seleção explicitamente. Mesmo quando VM está `COMPLETE` no checkpoint consoli
 ele renderiza apenas Cloud, usa `upsert_publication_documents` sobre o manifesto
 original e não chama a publicação de histórico VM. Teste o comando do executor, o
 desvio no CLI, a preservação do manifesto e o estado final `COMPLETE`.
+Depois de persistir a nova tentativa, recalcule o conjunto pela tentativa mais
+recente de cada componente. Somente `COMPLETE` pode chamar
+`auto_promote_if_empty`; essa operação é idempotente e nunca substitui uma `MAIN`
+existente. Cubra o caso parcial→retry Cloud→completo e o caso com referência já
+selecionada.
 
 O registro completo por `record_publication_manifest` tem semântica de substituição
 do catálogo do `run_id`, não de acréscimo por caminho. Dentro da mesma transação,
@@ -647,6 +681,10 @@ do navegador.
 mensal completa. A migração de publicações antigas deve ser explícita, auditável e
 transacional: validar arquivos e manifesto, recusar colisões, preservar o fim real,
 reclassificar `MAIN` e manter cópia local dos metadados anteriores.
+Se a fase de arquivos terminar antes da confirmação do banco, a repetição deve
+reconhecer que o destino mensal já existe, reconciliar o caminho antigo do catálogo
+com o manifesto novo e concluir a mesma operação; ela não pode duplicar nem
+sobrescrever silenciosamente outro documento.
 
 Uma reparação posterior de comparativos deve partir do snapshot compacto validado,
 comparar o resumo e as chaves de findings reconstruídos com o snapshot histórico

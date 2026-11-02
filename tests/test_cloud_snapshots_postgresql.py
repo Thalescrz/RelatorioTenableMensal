@@ -90,6 +90,17 @@ def test_cloud_migration_is_additive_compact_and_supports_document_variants() ->
     assert "'base', 'expanded'" in sql
 
 
+def test_cloud_snapshot_capture_is_decoupled_from_report_publication_order() -> None:
+    sql = (
+        ROOT
+        / "src/tenable_reports/infrastructure/postgresql_migrations/0017_cloud_snapshot_collection_order.sql"
+    ).read_text(encoding="utf-8").lower()
+
+    assert "alter table tenable_reports.cloud_report_snapshots" in sql
+    assert "drop constraint if exists cloud_report_snapshots_run_id_fkey" in sql
+    assert "drop column" not in sql
+
+
 def test_postgres_repository_publishes_snapshot_without_decoding_payload() -> None:
     module = importlib.import_module(
         "tenable_reports.infrastructure.cloud_snapshots_postgresql"

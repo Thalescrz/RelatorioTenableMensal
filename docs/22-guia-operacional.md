@@ -237,9 +237,23 @@ falhar, o aviso da TAG permanece retentável e os demais documentos são preserv
 
 No card do cliente, escolha gerar relatório, confirme o modo manual e defina:
 
-- padrão: um mês móvel até agora;
+- padrão: **Mês anterior**, o mês-calendário completo no fuso do cliente;
+- **Um mês móvel**: o mesmo dia do mês anterior até agora;
 - últimos dias: janela de `X` dias;
 - período específico: datas inicial e final escolhidas.
+
+Antes de adicionar à fila, o diálogo consulta somente o resolvedor local e mostra
+o `period_id`, o fuso e os limites efetivos com fim exclusivo. Essa prévia não cria
+lote, job, export nem consulta a Tenable. Na confirmação, o servidor fixa um novo
+`reference_at` único para todos os clientes selecionados; o navegador não escolhe
+o relógio operacional.
+
+No caso especial em que o padrão móvel liga o dia 1 de um mês ao dia 1 do mês
+seguinte, a aplicação trata a geração como competência do mês inicial,
+independentemente do horário. Por exemplo, uma execução iniciada em 01/11 às
+02:19 para a janela iniciada em 01/10 às 02:19 aparece como `2026-10`, usa o
+sufixo `OUT26` e apresenta editorialmente `01/10/2026` a `31/10/2026`. Os horários
+02:19 continuam nos metadados operacionais para auditoria.
 
 No período específico, as duas datas são inclusivas para o analista. A aplicação
 transforma a data final no início do dia seguinte: selecionar 01/07 a 31/07 produz
@@ -390,7 +404,7 @@ No painel **Admin → Automação mensal**:
 
 1. ajuste e salve o horário; isso não cria lote nem altera o agendador;
 2. use **Validar sem executar** e confira competência e clientes elegíveis;
-3. use **Sincronizar tarefa** somente após a confirmação exibida;
+3. use **Criar/atualizar tarefa** somente após a confirmação exibida;
 4. ative ou desative a tarefa separadamente.
 
 No Windows, o adaptador usa o Agendador de Tarefas e
@@ -398,6 +412,11 @@ No Windows, o adaptador usa o Agendador de Tarefas e
 `systemd`; não usa `cron`. O timer pode continuar sem sessão aberta quando o
 administrador instalar com `--enable-linger-for <usuário>`. VM, WAS e Cloud usam a
 mesma política 10h + 10h + 10h condicional do botão **Gerar todos**.
+O launcher Windows recebe a raiz absoluta do projeto, muda para ela antes do
+preflight e resolve configuração, Python e LibreOffice por caminhos absolutos. O
+resultado de cada disparo fica em
+`data/automation-logs/monthly-scheduler.jsonl`, com horário, código de saída e
+estado sanitizado; nomes, caminhos, mensagens livres e segredos não são gravados.
 
 ## Backup e transferência entre máquinas
 
@@ -535,6 +554,13 @@ a publicação local for interrompida, conclua a retomada pelo próprio cliente:
 checkpoint validado permite repetir apenas renderização e registro, sem outra
 consulta GraphQL.
 
+Depois de registrar a tentativa Cloud, o sistema reavalia o conjunto completo. Se
+VM, WAS e Cloud obrigatórios estiverem concluídos, os documentos forem elegíveis e
+ainda não houver `MAIN` para a mesma chave, o próprio `run_id` é promovido por
+`auto_promote_if_empty`. Uma `MAIN` já existente nunca é substituída por esse
+processo. Falha, parcialidade ou retentativa em andamento preservam a referência
+anterior.
+
 Essa retomada deve ser feita pelo fluxo oficial **Tentar Cloud novamente** ou pelo
 comando `retry-cloud`, nunca chamando o gerador DOCX isoladamente. O fluxo valida e
 mantém o checkpoint bruto, recompõe a evolução com snapshots mensais `MAIN`, grava
@@ -642,6 +668,22 @@ checkpoints persistidos. O intervalo efetivo, os artefatos e os hashes permanece
 iguais; somente `period_id` e `mode` passam ao contrato mensal. Um backup local é
 criado antes da alteração e uma segunda execução deve encontrar zero checkpoints
 pendentes.
+
+Para intervalos do dia 1 ao dia 1 seguinte que tenham sido publicados como mês
+móvel, use primeiro `tools/repair_monthly_cutoff_competence.py --period-id AAAA-MM`
+sem `--apply`. O plano deve listar somente conjuntos `READY`, documentos existentes
+e zero jobs ativos. A aplicação exige `--confirmation "REPARAR AAAA-MM"`, cria
+backup e é retomável caso arquivos já tenham sido renomeados mas a transação do
+banco ainda não tenha sido confirmada. Depois, republique os rótulos do período:
+
+```powershell
+.\.venv\Scripts\python.exe tools\refresh_official_report_documents.py `
+  --period-id AAAA-MM --all-ready --canonicalize-monthly-period --apply --fail-fast
+```
+
+Esse segundo comando não recalcula métricas nem consulta a Tenable. Ele preserva
+tabelas, imagens e texto técnico, corrige capa e corpo para o último dia civil do
+mês e inclui conjuntos `READY` sem promovê-los a `MAIN`.
 
 ### Reparar comparativos mensais publicados
 
@@ -796,6 +838,9 @@ Uma execução de mês completo encerrada antecipadamente no último dia aparece
 mesmo mês do ZIP, com sufixo mensal (`SET26`, por exemplo). O resumo e os metadados
 da publicação preservam o instante efetivo do corte; a competência mensal não deve
 ser interpretada como coleta do período posterior a esse instante.
+O mesmo vale para uma janela que comece no dia 1 e termine no dia 1 seguinte em
+qualquer horário: o ZIP e o DOCX usam o mês inicial, mas a auditoria preserva os
+instantes reais.
 
 O mesmo diálogo permite escolher um analista responsável. Nesse caso, entram
 somente os clientes atualmente vinculados a ele, ainda separados em uma pasta por
@@ -863,7 +908,9 @@ no PostgreSQL. Não há botão de desfazer. Registros legados anteriormente excl
 de forma lógica ainda podem mostrar **Restaurar**, mas esse não é o fluxo das novas
 exclusões.
 
-Uma execução automática bem-sucedida torna-se `MAIN` por padrão. Se o analista
+Uma execução automática bem-sucedida torna-se `MAIN` por padrão. Uma execução
+parcial que se complete depois por retentativa seletiva também pode ocupar a
+referência vazia, mas nunca substitui uma seleção existente. Se o analista
 refizer o relatório por falta de dados, deve promover manualmente a melhor versão.
 O sistema nunca escolhe a base apenas pelo nome do arquivo.
 

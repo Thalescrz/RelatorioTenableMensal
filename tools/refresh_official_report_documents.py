@@ -7,9 +7,10 @@ import shutil
 import subprocess
 import sys
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 from docx import Document
 from docx.oxml.ns import qn
@@ -38,6 +39,7 @@ from tenable_reports.config.database import DatabaseConfig  # noqa: E402
 from tenable_reports.config.environment import load_dotenv_file  # noqa: E402
 from tenable_reports.config.profile import load_client_profile  # noqa: E402
 from tenable_reports.infrastructure.postgresql import (  # noqa: E402
+    SCHEMA_NAME,
     PostgresDatabase,
     PostgresOperationsRepository,
 )
@@ -48,7 +50,65 @@ from tenable_reports.presentation import full_base_report_docx as faithful  # no
 SHELL_OPERATION = "OFFICIAL_REPORT_SHELL_V3"
 JUSTIFIED_BODY_OPERATION = "OFFICIAL_REPORT_JUSTIFIED_BODY_V1"
 MATERIALIZED_TOC_OPERATION = "OFFICIAL_REPORT_MATERIALIZED_TOC_V1"
+CANONICAL_MONTH_OPERATION = "OFFICIAL_REPORT_CANONICAL_MONTH_V1"
 OPERATION = SHELL_OPERATION
+
+
+def _canonical_period_replacements(period: Mapping[str, object]) -> dict[str, str]:
+    timezone = ZoneInfo(str(period.get("timezone") or "UTC"))
+    raw_start = base._parse_utc(str(period["start_at"])).astimezone(timezone)
+    raw_end = (
+        base._parse_utc(str(period["end_at"])).astimezone(timezone)
+        - timedelta(microseconds=1)
+    )
+    canonical_start, canonical_end = base._period_dates(period)
+    canonical_label, canonical_range = base._period_labels(period)
+    raw_label = (
+        f"{base.MONTHS_PT[raw_start.month]}/{raw_start.year}"
+        if raw_start.year == raw_end.year and raw_start.month == raw_end.month
+        else f"{raw_start:%d/%m/%Y} A {raw_end:%d/%m/%Y}"
+    )
+    raw_range = f"{raw_start:%d/%m/%Y} a {raw_end:%d/%m/%Y}"
+    raw_joined = f"{raw_start:%d/%m/%Y} e {raw_end:%d/%m/%Y}"
+    canonical_joined = (
+        f"{canonical_start:%d/%m/%Y} e {canonical_end:%d/%m/%Y}"
+    )
+    replacements = {
+        raw_label: canonical_label,
+        raw_range: canonical_range,
+        raw_joined: canonical_joined,
+        faithful._written_period(raw_start, raw_end): faithful._written_period(
+            canonical_start,
+            canonical_end,
+        ),
+    }
+    return {
+        source: target
+        for source, target in replacements.items()
+        if source and source != target
+    }
+
+
+def _replace_text(value: str, replacements: Mapping[str, str]) -> str:
+    updated = value
+    for source, target in replacements.items():
+        updated = updated.replace(source, target)
+    return updated
+
+
+def _canonicalize_monthly_period(
+    document: Document,
+    period: Mapping[str, object],
+) -> dict[str, str]:
+    replacements = _canonical_period_replacements(period)
+    for part in document.part.package.parts:
+        element = getattr(part, "_element", None)
+        if element is None:
+            continue
+        for node in element.iter():
+            if len(node) == 0 and node.text:
+                node.text = _replace_text(node.text, replacements)
+    return replacements
 
 
 def _repair_and_update_toc_with_word(
@@ -245,6 +305,7 @@ def _validate_repackaged(
     staged: Path,
     *,
     document_kind: str,
+    text_replacements: Mapping[str, str] | None = None,
 ) -> None:
     validate_docx_package(staged)
     source_document = Document(source)
@@ -266,12 +327,12 @@ def _validate_repackaged(
         for paragraph in staged_document.paragraphs
     )
     missing = [
-        paragraph
+        _replace_text(paragraph, text_replacements or {})
         for paragraph in _long_body_paragraphs(
             source,
             document_kind=document_kind,
         )
-        if paragraph not in staged_text
+        if _replace_text(paragraph, text_replacements or {}) not in staged_text
     ]
     if missing:
         raise ValueError("A republicação não preservou todo o texto técnico do corpo.")
@@ -311,12 +372,18 @@ def _stage_manifest(
     client_name: str,
     editorial_mode: str = "official_shell",
 ) -> tuple[Path, tuple[PublicationDocumentReplacement, ...]]:
-    if editorial_mode not in {"official_shell", "justified_body", "materialized_toc"}:
+    if editorial_mode not in {
+        "official_shell",
+        "justified_body",
+        "materialized_toc",
+        "canonical_month",
+    }:
         raise ValueError("Modo editorial de republicação inválido.")
     staging_label = {
         "official_shell": "shell",
         "justified_body": "justify",
         "materialized_toc": "toc",
+        "canonical_month": "month",
     }[editorial_mode]
     staging = manifest.path.parent / f".official-{staging_label}-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=False)
@@ -328,13 +395,23 @@ def _stage_manifest(
                 position=index,
                 source_name=document.path.name,
             )
-            if editorial_mode in {"justified_body", "materialized_toc"}:
+            text_replacements: Mapping[str, str] | None = None
+            if editorial_mode in {
+                "justified_body",
+                "materialized_toc",
+                "canonical_month",
+            }:
                 shutil.copy2(document.path, staged)
                 staged_document = Document(staged)
                 if editorial_mode == "justified_body":
                     faithful._justify_narrative_body(staged_document)
-                else:
+                elif editorial_mode == "materialized_toc":
                     faithful._materialize_static_toc(staged_document)
+                else:
+                    text_replacements = _canonicalize_monthly_period(
+                        staged_document,
+                        manifest.period,
+                    )
                 base._enable_field_updates(staged_document)
                 staged_document.save(staged)
             else:
@@ -353,6 +430,7 @@ def _stage_manifest(
                 document.path,
                 staged,
                 document_kind=document.document_kind,
+                text_replacements=text_replacements,
             )
             replacements.append(
                 PublicationDocumentReplacement(
@@ -372,6 +450,31 @@ def _operations(database_env_file: Path) -> PostgresOperationsRepository:
         raise ValueError("A configuração PostgreSQL não está disponível.")
     database = PostgresDatabase(DatabaseConfig.from_environment())
     return PostgresOperationsRepository(database, migrate=False)
+
+
+def _ready_manifest_paths(
+    operations: PostgresOperationsRepository,
+    *,
+    period_id: str,
+) -> dict[str, Path]:
+    with operations.database.connection() as connection:
+        rows = connection.execute(
+            f"""
+            select run_id, publication_manifest_path
+            from {SCHEMA_NAME}.report_runs
+            where period_id = %s
+              and period_mode = 'MONTHLY_CUTOFF'
+              and status = 'READY_FOR_CONTROLLED_DISTRIBUTION'
+              and deleted_at is null
+              and publication_manifest_path is not null
+            order by run_id
+            """,
+            (period_id,),
+        ).fetchall()
+    return {
+        str(run_id): Path(str(manifest_path)).resolve()
+        for run_id, manifest_path in rows
+    }
 
 
 def _selected_manifests(
@@ -485,6 +588,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             "o Word nem reconstruir o shell."
         ),
     )
+    editorial_group.add_argument(
+        "--canonicalize-monthly-period",
+        action="store_true",
+        help=(
+            "Republica todos os textos de período como competência mensal, "
+            "preservando o conteúdo técnico e sem iniciar o Word."
+        ),
+    )
+    parser.add_argument(
+        "--all-ready",
+        action="store_true",
+        help="Inclui conjuntos READY sem referência MAIN; exige --period-id.",
+    )
     parser.add_argument(
         "--fail-fast",
         action="store_true",
@@ -493,7 +609,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
 
-    if args.materialize_toc_only:
+    if args.canonicalize_monthly_period:
+        operation = CANONICAL_MONTH_OPERATION
+        editorial_mode = "canonical_month"
+    elif args.materialize_toc_only:
         operation = MATERIALIZED_TOC_OPERATION
         editorial_mode = "materialized_toc"
     elif args.justify_body_only:
@@ -503,11 +622,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         operation = SHELL_OPERATION
         editorial_mode = "official_shell"
     operations = _operations(args.database_env_file)
-    main_run_ids = frozenset(operations.retention_state()["main_run_ids"])
-    main_manifest_paths = {
-        run_id: operations.report_run_context(run_id).publication_manifest
-        for run_id in main_run_ids
-    }
+    if args.all_ready:
+        if not args.period_id:
+            raise ValueError("--all-ready exige --period-id.")
+        selected_manifest_paths = _ready_manifest_paths(
+            operations,
+            period_id=args.period_id,
+        )
+        scope = "postgresql-ready"
+    else:
+        main_run_ids = frozenset(operations.retention_state()["main_run_ids"])
+        selected_manifest_paths = {
+            run_id: operations.report_run_context(run_id).publication_manifest
+            for run_id in main_run_ids
+        }
+        scope = "postgresql-main"
     plan = plan_official_document_backfill(args.project_root)
     manifests = _selected_manifests(
         plan.manifests,
@@ -515,12 +644,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         period_id=args.period_id,
         limit=args.limit_manifests,
         include_completed=args.include_completed,
-        main_run_ids=main_manifest_paths,
+        main_run_ids=selected_manifest_paths,
         operation=operation,
     )
     summary = {
         "operation": operation,
-        "scope": "postgresql-main",
+        "scope": scope,
         "mode": "apply" if args.apply else "dry-run",
         "manifest_count": len(manifests),
         "document_count": sum(len(item.documents) for item in manifests),

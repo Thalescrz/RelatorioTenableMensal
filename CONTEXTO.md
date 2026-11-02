@@ -97,6 +97,12 @@ permanecem somente enquanto necessários para publicação, diagnóstico ou reto
   atualiza o manifesto existente e o catálogo de documentos sem reconstruir nem
   republicar o histórico VM.
 
+O snapshot Cloud é persistência da coleta, não da publicação editorial: ele pode
+ser gravado antes de `report_runs`, mantém `run_id` único e é reconciliado quando o
+manifesto é publicado. Quando uma retentativa seletiva completa todos os
+componentes, a aplicação tenta ocupar apenas uma referência `MAIN` ainda vazia;
+uma seleção existente nunca é substituída automaticamente.
+
 Cloud representa a fotografia preservada no instante da coleta. A competência do
 relatório não transforma essa fotografia em reconstrução histórica; reprodução
 exata de período anterior exige snapshot Cloud compatível já preservado.
@@ -114,6 +120,17 @@ editorial anterior.
 Quando a execução ou retentativa alcança a fronteira completa do mês no primeiro
 dia seguinte, a seleção continua `MONTHLY_CUTOFF`; ela não volta a ser
 `EXPLICIT_RANGE` apenas porque o mês já encerrou.
+Uma geração manual móvel que comece no dia 1 de um mês e termine no dia 1 do mês
+seguinte também é `MONTHLY_CUTOFF`, independentemente do horário local dos dois
+limites. Os instantes técnicos reais continuam em `start_at` e `end_at`, enquanto
+capa, corpo, nomes de arquivo, histórico e ZIP usam a competência do mês inicial e
+o intervalo editorial entre o primeiro e o último dia civil desse mês. Execuções
+que não liguem essas duas fronteiras de dia 1 permanecem intervalos móveis.
+Na interface, **Mês anterior** e **Um mês móvel** são escolhas distintas. A primeira
+resolve o mês-calendário completo no fuso do cliente, sem transformar a origem
+manual em agendada. Antes de enfileirar, uma prévia somente leitura mostra
+competência, fuso e limites; o relógio efetivo da execução continua sendo fixado no
+servidor para toda a seleção.
 
 Para seleção de `MAIN` e comparativos, tanto o mês-calendário completo quanto
 `MONTHLY_CUTOFF` usam internamente a identidade mensal canônica
@@ -325,6 +342,13 @@ processo com a implementação Python e a `libpq.dll` da instalação mais recen
 pasta `bin` em `TENABLE_REPORTS_POSTGRESQL_BIN`. Esse fallback não altera o `PATH`
 do sistema nem suas políticas; a configuração vale apenas para o processo atual.
 
+No agendamento Windows, o launcher recebe a raiz absoluta, muda para ela e resolve
+configuração, Python e LibreOffice sem depender do diretório corrente. Cada disparo
+gera JSONL sanitizado em `data/automation-logs`; a validação `PreflightOnly` não
+inicia coleta. Salvar e validar a política não criam a tarefa do sistema; a ação
+**Criar/atualizar tarefa** é separada e os botões sempre recuperam seu estado após
+sucesso, falha ou timeout.
+
 DOCX publicados permanecem no armazenamento local controlado e são registrados no
 catálogo. Arquivos raw, chunks e datasets intermediários só são removidos depois de
 publicação validada e persistência do histórico necessário. Falhas preservam os
@@ -352,6 +376,12 @@ verdade.
 O ZIP mensal seleciona a competência `YYYY-MM` das referências `MAIN`. Relatórios
 `MONTHLY_CUTOFF` participam da mesma competência mensal sem ocultar o término
 efetivo da coleta em seus metadados de auditoria.
+Uma republicação de competência pode incluir também conjuntos `READY` ainda sem
+`MAIN`, mas não os promove automaticamente. Ela valida os manifestos autoritativos,
+preserva tabelas, gráficos e texto técnico, atualiza somente os rótulos mensais e
+registra hashes novos de forma atômica. No snapshot compacto, o payload de
+evidência permanece imutável; caminhos atuais de documentos pertencem ao envelope
+PostgreSQL e são os usados no replay.
 
 ## Interface web
 

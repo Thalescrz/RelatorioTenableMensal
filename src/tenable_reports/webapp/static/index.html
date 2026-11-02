@@ -342,7 +342,8 @@
     <form id="run-form">
       <fieldset class="period-options">
         <legend>Período</legend>
-        <label><input type="radio" name="period_type" value="rolling" checked><span><strong>Último mês</strong><small>Um mês até agora</small></span></label>
+        <label><input type="radio" name="period_type" value="calendar" checked><span><strong>Mês anterior</strong><small>Mês-calendário completo</small></span></label>
+        <label><input type="radio" name="period_type" value="rolling"><span><strong>Um mês móvel</strong><small>Mesmo dia até agora</small></span></label>
         <label><input type="radio" name="period_type" value="days"><span><strong>Últimos dias</strong><small>Quantidade definida</small></span></label>
         <label><input type="radio" name="period_type" value="range"><span><strong>Período exato</strong><small>Início e fim</small></span></label>
       </fieldset>
@@ -351,6 +352,7 @@
         <label>Data inicial<input name="start_date" type="date"></label>
         <label>Data final (inclusiva)<input name="end_date" type="date"></label>
       </div>
+      <p id="period-preview" class="period-preview" aria-live="polite">Calculando período efetivo...</p>
       <label class="force-live-option">
         <input name="force_live_collection" type="checkbox">
         <span><strong>Forçar nova coleta pela API</strong><small>Ignora o snapshot deste período sem apagá-lo.</small></span>
@@ -397,10 +399,11 @@
         </div>
         <p id="monthly-eligible-copy" class="monthly-note">Nenhum cliente elegível.</p>
         <p class="monthly-note">Fluxo: Janela 1 de 10h; Janela 2 de 10h reutilizando UUID/cursor; Janela 3 de 10h somente quando a Janela 2 precisou criar uma nova operação. A montagem DOCX permanece serial.</p>
+        <p class="monthly-note"><strong>Salvar política</strong> e <strong>Validar sem executar</strong> não alteram a tarefa do sistema. Use <strong>Criar/atualizar tarefa</strong> para sincronizar o agendador e, depois, ative ou desative a execução automática.</p>
         <div class="monthly-actions">
           <button class="button ghost" id="monthly-save-button" type="submit">Salvar política</button>
           <button class="button ghost" id="monthly-validate-button" type="button">Validar sem executar</button>
-          <button class="button ghost" id="monthly-apply-button" type="button">Sincronizar agendamento</button>
+          <button class="button ghost" id="monthly-apply-button" type="button">Criar/atualizar tarefa</button>
           <button class="button primary" id="monthly-toggle-button" type="button">Ativar automação</button>
         </div>
       </form>
@@ -481,6 +484,7 @@
   <script src="/static/client_selection.js" defer></script>
   <script src="/static/batch_family_filters.js" defer></script>
   <script src="/static/monthly_schedule.js" defer></script>
+  <script src="/static/report_period.js" defer></script>
   <script src="/static/environment_status.js" defer></script>
   <script src="/static/report_request_guard.js" defer></script>
   <script src="/static/dashboard_refresh.js" defer></script>

@@ -135,15 +135,24 @@ def _is_monthly_cutoff(start: datetime, end: datetime, timezone_name: str) -> bo
     zone = _zone(timezone_name)
     local_start = start.astimezone(zone)
     local_end = end.astimezone(zone)
-    next_month = _next_month_start(local_start)
+    month_start = local_start.replace(
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    next_month = _next_month_start(month_start)
     return (
         local_start.day == 1
-        and local_start.hour == 0
-        and local_start.minute == 0
-        and local_start.second == 0
-        and local_start.microsecond == 0
-        and local_end.date() == (next_month - timedelta(days=1)).date()
-        and local_start < local_end < next_month
+        and local_start < local_end
+        and (
+            local_end.date() == next_month.date()
+            or (
+                local_end.date() == (next_month - timedelta(days=1)).date()
+                and local_end < next_month
+            )
+        )
     )
 
 

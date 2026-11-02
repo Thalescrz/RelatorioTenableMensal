@@ -119,6 +119,7 @@ from tenable_reports.config.profile import (
     parse_distribution_recipients,
 )
 from tenable_reports.config.monthly_schedule import MonthlyScheduleConfig
+from tenable_reports.domain.reporting import resolve_manual_period
 from tenable_reports.infrastructure.cloud_snapshots_postgresql import (
     PostgresCloudSnapshotRepository,
 )
@@ -864,6 +865,9 @@ class DashboardConfigStore:
                 ),
                 "historical_source": str(
                     vm_export.get("historical_source") or "legacy"
+                ),
+                "timezone": str(
+                    reporting.get("timezone") or "America/Fortaleza"
                 ),
                 "tag_reports_enabled": bool(tag_reports.get("enabled", False)),
                 "tag_reports": self._tag_reports(tag_reports.get("tags")),
@@ -1794,6 +1798,7 @@ class JobQueue:
         }:
             raise ValueError("Politica de falha WAS invalida.")
         force_live_collection = request.get("force_live_collection") is True
+        previous_calendar_month = request.get("previous_calendar_month") is True
         days = request.get("days")
         start_at = str(request.get("start_at") or "").strip() or None
         end_at = str(request.get("end_at") or "").strip() or None
@@ -1827,6 +1832,14 @@ class JobQueue:
             raise ValueError("Informe inicio e fim do periodo.")
         if days is not None and start_at:
             raise ValueError("Use dias ou periodo especifico, nao os dois.")
+        if previous_calendar_month and (days is not None or start_at):
+            raise ValueError(
+                "Mes-calendario anterior nao pode ser combinado com outro periodo."
+            )
+        if mode == "automatic" and previous_calendar_month:
+            raise ValueError(
+                "A selecao manual de mes-calendario nao pertence ao modo automatico."
+            )
         if mode == "automatic" and (days is not None or start_at):
             raise ValueError("O modo automatico sempre usa o mes anterior completo.")
         created: list[dict[str, Any]] = []
@@ -1845,6 +1858,7 @@ class JobQueue:
                     "operation": "report",
                     "mode": mode,
                     "reference_at": reference_at,
+                    "previous_calendar_month": previous_calendar_month,
                     "days": days,
                     "start_at": start_at,
                     "end_at": end_at,
@@ -2325,6 +2339,8 @@ class JobQueue:
                     )
                 if job.get("reference_at"):
                     command.extend(("--reference-at", str(job["reference_at"])))
+                if job.get("previous_calendar_month"):
+                    command.append("--previous-calendar-month")
                 if job["days"] is not None:
                     command.extend(("--days", str(job["days"])))
                 if job["start_at"]:
@@ -2419,6 +2435,8 @@ class JobQueue:
                     command.extend(("--was-failure-policy", job["was_failure_policy"]))
                 if job.get("reference_at"):
                     command.extend(("--reference-at", str(job["reference_at"])))
+                if job.get("previous_calendar_month"):
+                    command.append("--previous-calendar-month")
                 if job["days"] is not None:
                     command.extend(("--days", str(job["days"])))
                 if job["start_at"]:
@@ -2559,6 +2577,8 @@ class JobQueue:
                     command.extend((
                         "--reference-at", str(job["reference_at"])
                     ))
+                if job.get("previous_calendar_month"):
+                    command.append("--previous-calendar-month")
                 if job["days"] is not None:
                     command.extend(("--days", str(job["days"])))
                 if job["start_at"]:
@@ -4073,6 +4093,59 @@ class DashboardApplication:
             created.extend(self.jobs.enqueue([client_id], client_request))
         return created
 
+    def preview_period(
+        self,
+        client_ids: Sequence[str],
+        request: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        mode = str(request.get("mode") or "manual").strip().lower()
+        if mode != "manual":
+            raise ValueError("A pre-visualizacao do painel pertence ao modo manual.")
+        reference_at = str(request.get("reference_at") or "").strip() or _utc_now()
+        days = request.get("days")
+        days = int(days) if days not in (None, "") else None
+        if days is not None and not 1 <= days <= 366:
+            raise ValueError("Dias deve estar entre 1 e 366.")
+        start_at = str(request.get("start_at") or "").strip() or None
+        end_at = str(request.get("end_at") or "").strip() or None
+        start_date = str(request.get("start_date") or "").strip() or None
+        end_date = str(request.get("end_date") or "").strip() or None
+        if bool(start_date) != bool(end_date):
+            raise ValueError("Informe a data inicial e a data final.")
+        if start_date:
+            if start_at or end_at:
+                raise ValueError(
+                    "Use datas inclusivas ou instantes especificos, nao os dois."
+                )
+            parsed_start = date.fromisoformat(start_date)
+            parsed_end = date.fromisoformat(end_date)
+            if parsed_end < parsed_start:
+                raise ValueError("Data final nao pode ser anterior a data inicial.")
+            start_at = parsed_start.isoformat()
+            end_at = (parsed_end + timedelta(days=1)).isoformat()
+        clients = {
+            item["client_id"]: item for item in self.config.list_clients()
+        }
+        timezones = sorted({
+            str(clients[client_id].get("timezone") or "America/Fortaleza")
+            for client_id in client_ids
+            if client_id in clients
+        })
+        periods = [
+            resolve_manual_period(
+                timezone_name=timezone_name,
+                reference_at=reference_at,
+                days=days,
+                start_at=start_at,
+                end_at=end_at,
+                previous_calendar_month_selection=(
+                    request.get("previous_calendar_month") is True
+                ),
+            ).to_dict()
+            for timezone_name in timezones
+        ]
+        return {"reference_at": reference_at, "periods": periods}
+
     def batch_list(self) -> dict[str, Any]:
         snapshot = getattr(self.jobs, "batches_snapshot", None)
         if not callable(snapshot):
@@ -4976,7 +5049,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     raise ValueError("O cliente ja esta na fila ou em execucao.")
                 self._json(HTTPStatus.ACCEPTED, {"job": jobs[0]})
                 return
-            if parsed.path == "/api/jobs":
+            if parsed.path in {"/api/jobs", "/api/jobs/preview"}:
                 known = {
                     item["client_id"] for item in self.app.config.list_clients() if item["enabled"]
                 }
@@ -4990,6 +5063,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     for item in requested
                 ):
                     raise ValueError("Ha clientes inexistentes ou desabilitados na selecao.")
+                if parsed.path == "/api/jobs/preview":
+                    self._json(
+                        HTTPStatus.OK,
+                        self.app.preview_period(requested, payload),
+                    )
+                    return
                 jobs = self.app.enqueue_jobs(requested, payload)
                 if not jobs:
                     raise ValueError("Os clientes selecionados ja estao na fila ou em execucao.")

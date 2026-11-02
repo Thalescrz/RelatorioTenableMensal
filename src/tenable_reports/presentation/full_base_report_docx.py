@@ -3,10 +3,8 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
-from zoneinfo import ZoneInfo
 
 from docx import Document
 from docx.document import Document as DocxDocument
@@ -605,10 +603,7 @@ def _bullet(document: DocxDocument, text: str) -> Any:
 
 
 def _period_dates(period: Mapping[str, Any]) -> tuple[Any, Any]:
-    timezone = ZoneInfo(str(period.get("timezone") or "UTC"))
-    start = base._parse_utc(str(period["start_at"])).astimezone(timezone)
-    end = base._parse_utc(str(period["end_at"])).astimezone(timezone) - timedelta(microseconds=1)
-    return start, end
+    return base._period_dates(period)
 
 
 def _written_period(start: Any, end: Any) -> str:

@@ -235,6 +235,7 @@ class OfficeRenderer:
             with tempfile.TemporaryDirectory(
                 prefix=".tenable-lo-",
                 dir=output,
+                ignore_cleanup_errors=True,
             ) as profile_directory:
                 command = [
                     str(executable),

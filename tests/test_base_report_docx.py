@@ -11,6 +11,7 @@ from tenable_reports.config.profile import load_client_profile
 from tenable_reports.presentation.base_report_docx import (
     ASSET_HEADERS,
     TEMPLATE_VERSION,
+    _period_labels,
     create_base_template,
     generate_base_report,
 )
@@ -38,6 +39,20 @@ def all_text(document):
 
 
 class BaseReportDocxTests(unittest.TestCase):
+    def test_monthly_cutoff_uses_canonical_editorial_month(self) -> None:
+        label, date_range = _period_labels(
+            {
+                "period_id": "2026-10",
+                "mode": "MONTHLY_CUTOFF",
+                "timezone": "America/Fortaleza",
+                "start_at": "2026-10-01T05:19:31.781143Z",
+                "end_at": "2026-11-01T05:19:31.781143Z",
+            }
+        )
+
+        self.assertEqual(label, "OUTUBRO/2026")
+        self.assertEqual(date_range, "01/10/2026 a 31/10/2026")
+
     def test_base_report_accepts_linux_font_profile(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             template = Path(directory) / "base-v1.docx"

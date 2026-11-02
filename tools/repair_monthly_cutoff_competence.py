@@ -5,7 +5,7 @@ import gzip
 import hashlib
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -129,6 +129,30 @@ def _candidate_key(run: RepairRun):
     )
 
 
+def _reconcile_document_moves(
+    *,
+    database_paths: set[Path],
+    manifest_paths: set[Path],
+    period_id: str,
+) -> tuple[tuple[Path, Path], ...]:
+    """Map stale catalog paths to manifest paths after an interrupted file phase."""
+
+    if database_paths == manifest_paths:
+        return tuple((path, path) for path in sorted(database_paths))
+    mapped = tuple(
+        (
+            source,
+            monthly_competence_document_path(source, period_id=period_id).resolve(),
+        )
+        for source in sorted(database_paths)
+    )
+    if {target for _, target in mapped} != manifest_paths:
+        raise ValueError(
+            "Documentos do banco divergem do manifesto; correção recusada."
+        )
+    return mapped
+
+
 def build_plan(
     database: PostgresDatabase,
     *,
@@ -228,7 +252,7 @@ def build_plan(
                 )
             )
 
-        for run in plan:
+        for index, run in enumerate(plan):
             db_paths = {
                 Path(str(item[0])).resolve()
                 for item in connection.execute(
@@ -243,10 +267,18 @@ def build_plan(
                 ).fetchall()
             }
             manifest_paths = {move.source for move in run.moves}
-            if db_paths != manifest_paths:
-                raise ValueError(
-                    "Documentos do banco divergem do manifesto; correção recusada."
-                )
+            reconciled = _reconcile_document_moves(
+                database_paths=db_paths,
+                manifest_paths=manifest_paths,
+                period_id=period_id,
+            )
+            plan[index] = replace(
+                run,
+                moves=tuple(
+                    DocumentMove(source=source, target=target)
+                    for source, target in reconciled
+                ),
+            )
     return tuple(plan)
 
 
@@ -369,28 +401,22 @@ def _update_compact_snapshot(
 ) -> None:
     rows = connection.execute(
         f"""
-        select snapshot_id, payload_gzip, document_references
+        select snapshot_id, document_references
         from {SCHEMA_NAME}.compact_finding_snapshots where run_id = %s
         for update
         """,
         (run.run_id,),
     ).fetchall()
-    for snapshot_id, payload_gzip, document_references in rows:
-        payload = json.loads(gzip.decompress(bytes(payload_gzip)).decode("utf-8"))
+    for snapshot_id, document_references in rows:
         documents = _replace_paths(document_references or {}, run.moves)
-        payload["document_references"] = documents
-        logical = _canonical_json(payload)
         connection.execute(
             f"""
             update {SCHEMA_NAME}.compact_finding_snapshots
-            set period_mode = %s, content_sha256 = %s, payload_gzip = %s,
-                document_references = %s
+            set period_mode = %s, document_references = %s
             where snapshot_id = %s
             """,
             (
                 MONTHLY_CUTOFF_MODE,
-                hashlib.sha256(logical).hexdigest(),
-                gzip.compress(logical, compresslevel=9, mtime=0),
                 _jsonb(documents),
                 snapshot_id,
             ),
@@ -438,7 +464,18 @@ def _update_database(
 ) -> None:
     main_runs = [run for run in plan if run.main_reference_key]
     with database.connection() as connection:
-        for run in plan:
+        for position, run in enumerate(plan, start=1):
+            print(
+                json.dumps(
+                    {
+                        "status": "UPDATING_DATABASE",
+                        "position": position,
+                        "total": len(plan),
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
             manifest_period = dict(run.updated_manifest["period"])
             metadata = dict(run.metadata)
             metadata["period"] = manifest_period
@@ -629,16 +666,35 @@ def apply_plan(
     written: list[RepairRun] = []
     written_checkpoints: list[CheckpointRepair] = []
     try:
+        print(
+            json.dumps(
+                {"status": "UPDATING_FILES", "total": len(plan)},
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
         for run in plan:
             for move in run.moves:
                 if move.source != move.target:
-                    move.source.replace(move.target)
-                    moved.append(move)
+                    if move.source.exists():
+                        move.source.replace(move.target)
+                        moved.append(move)
+                    elif not move.target.exists():
+                        raise ValueError(
+                            "Documento não existe nem no caminho original nem no destino."
+                        )
             write_json_atomic(run.manifest_path, run.updated_manifest)
             written.append(run)
         for checkpoint in checkpoint_plan:
             write_json_atomic(checkpoint.path, checkpoint.updated)
             written_checkpoints.append(checkpoint)
+        print(
+            json.dumps(
+                {"status": "STARTING_DATABASE", "total": len(plan)},
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
         _update_database(database, plan, period_id=period_id)
     except Exception:
         for checkpoint in reversed(written_checkpoints):
@@ -654,7 +710,10 @@ def apply_plan(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Regulariza competência mensal com corte no último dia."
+        description=(
+            "Regulariza competência mensal com corte no último dia ou no dia 1 "
+            "do mês seguinte."
+        )
     )
     parser.add_argument("--period-id", required=True)
     parser.add_argument(

@@ -49,7 +49,8 @@ class WindowsTaskScheduler:
     def task_command(self) -> str:
         return (
             'powershell.exe -NoProfile -ExecutionPolicy Bypass -File '
-            f'"{self.launcher}" -Config "{self.config_path}"'
+            f'"{self.launcher}" -ProjectRoot "{self.project_root}" '
+            f'-Config "{self.config_path}"'
         )
 
     def _run(self, command: list[str]) -> subprocess.CompletedProcess[str]:

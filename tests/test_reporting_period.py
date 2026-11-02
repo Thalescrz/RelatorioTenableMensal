@@ -50,6 +50,23 @@ class ReportingPeriodTests(unittest.TestCase):
         self.assertEqual(period.to_dict()["start_at"], "2026-07-13T13:30:00Z")
         self.assertEqual(period.to_dict()["end_at"], "2026-08-13T13:30:00Z")
 
+    def test_manual_day_one_to_day_one_is_monthly_competence_at_any_time(self) -> None:
+        period = manual_rolling_month(
+            reference_at="2026-11-01T02:19:31.781143-03:00",
+            timezone_name="America/Fortaleza",
+        )
+
+        self.assertEqual(period.mode, PeriodMode.MONTHLY_CUTOFF)
+        self.assertEqual(period.period_id, "2026-10")
+        self.assertEqual(
+            period.to_dict()["start_at"],
+            "2026-10-01T05:19:31.781143Z",
+        )
+        self.assertEqual(
+            period.to_dict()["end_at"],
+            "2026-11-01T05:19:31.781143Z",
+        )
+
     def test_manual_month_clamps_day_at_shorter_month(self) -> None:
         period = manual_rolling_month(
             reference_at="2026-03-31T10:00:00-03:00",
@@ -157,6 +174,27 @@ class ReportingPeriodTests(unittest.TestCase):
                 timezone_name="America/Fortaleza",
                 reference_at="2026-08-13T10:00:00-03:00",
                 start_at="2026-07-01T00:00:00-03:00",
+            )
+
+    def test_manual_previous_calendar_month_is_an_explicit_selection(self) -> None:
+        period = resolve_manual_period(
+            timezone_name="America/Fortaleza",
+            reference_at="2026-11-15T10:30:00-03:00",
+            previous_calendar_month_selection=True,
+        )
+
+        self.assertEqual(period.mode, PeriodMode.PREVIOUS_CALENDAR_MONTH)
+        self.assertEqual(period.period_id, "2026-10")
+        self.assertEqual(period.to_dict()["start_at"], "2026-10-01T03:00:00Z")
+        self.assertEqual(period.to_dict()["end_at"], "2026-11-01T03:00:00Z")
+
+    def test_manual_previous_calendar_month_rejects_other_period_filters(self) -> None:
+        with self.assertRaises(ValueError):
+            resolve_manual_period(
+                timezone_name="America/Fortaleza",
+                reference_at="2026-11-15T10:30:00-03:00",
+                previous_calendar_month_selection=True,
+                days=30,
             )
 
     def test_invalid_days_are_rejected(self) -> None:

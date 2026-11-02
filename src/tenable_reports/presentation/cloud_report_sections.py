@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from zoneinfo import ZoneInfo
 
 from docx.document import Document as DocxDocument
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
@@ -304,12 +302,7 @@ class CloudDocumentBuilder:
 
 def _period_labels(dataset: Mapping[str, Any]) -> tuple[str, str, str]:
     period = dataset.get("period") or {}
-    timezone_name = str(period.get("timezone") or "UTC")
-    timezone = ZoneInfo(timezone_name)
-    start = datetime.fromisoformat(str(period["start_at"]).replace("Z", "+00:00"))
-    end = datetime.fromisoformat(str(period["end_at"]).replace("Z", "+00:00"))
-    start_local = start.astimezone(timezone)
-    end_local = (end.astimezone(timezone) - timedelta(microseconds=1))
+    start_local, end_local = base._period_dates(period)
     return (
         start_local.strftime("%d/%m/%Y"),
         end_local.strftime("%d/%m/%Y"),

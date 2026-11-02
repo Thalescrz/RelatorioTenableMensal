@@ -57,10 +57,10 @@ def is_monthly_cutoff_interval(
     )
     last_day = (next_month_start - timedelta(days=1)).date()
     return (
-        start == month_start
+        start.date() == month_start.date()
         and end > start
         and (
-            end == next_month_start
+            end.date() == next_month_start.date()
             or (end < next_month_start and end.date() == last_day)
         )
     )

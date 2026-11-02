@@ -150,6 +150,34 @@ class CompactSnapshotTests(unittest.TestCase):
         self.assertEqual(len(snapshot.content_sha256), 64)
         self.assertTrue(snapshot.payload_gzip.startswith(b"\x1f\x8b"))
 
+    def test_replay_prefers_current_envelope_document_references(self) -> None:
+        normalized = normalized_fixture()
+        snapshot = build_compact_snapshot(
+            client_id="client-a",
+            tenant_id="tenant-a",
+            run_id="run-a",
+            execution_type="MANUAL",
+            period_mode="MONTHLY_CUTOFF",
+            period_start_at="2026-10-01T05:19:31Z",
+            period_end_at="2026-11-01T05:19:31Z",
+            assets=normalized.assets,
+            findings=normalized.findings,
+            quality_issues=(),
+            tag_asset_ids={},
+            document_references={"base": "C:/reports/OUT26-NOV26.docx"},
+        )
+        repaired = replace(
+            snapshot,
+            document_references={"base": "C:/reports/OUT26.docx"},
+        )
+
+        replay = replay_compact_snapshot(repaired)
+
+        self.assertEqual(
+            replay.document_references,
+            {"base": "C:/reports/OUT26.docx"},
+        )
+
     def test_repository_prefers_latest_exact_snapshot_and_is_idempotent(self) -> None:
         normalized = normalized_fixture()
         repository = MemoryCompactSnapshotRepository()

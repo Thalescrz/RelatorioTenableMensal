@@ -762,6 +762,61 @@ def test_body_alignment_staging_does_not_require_word_automation(
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def test_monthly_period_staging_replaces_technical_range_with_competence(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    report_root = tmp_path / "data" / "manual" / "reports" / "client-fixture"
+    report_root.mkdir(parents=True, exist_ok=True)
+    document_path = _shell_with_body(report_root / "base.docx", "base")
+    document = Document(document_path)
+    document.add_paragraph("01/10/2026 A 01/11/2026")
+    document.add_paragraph("01/10/2026 a 01/11/2026")
+    document.add_paragraph("01/10/2026 e 01/11/2026")
+    document.save(document_path)
+    manifest_path = _manifest(
+        tmp_path,
+        [{"path": str(document_path), "document_kind": "base"}],
+    )
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["period"].update(
+        {
+            "period_id": "2026-10",
+            "mode": "MONTHLY_CUTOFF",
+            "start_at": "2026-10-01T05:19:31.781143Z",
+            "end_at": "2026-11-01T05:19:31.781143Z",
+        }
+    )
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    manifest = plan_official_document_backfill(tmp_path).manifests[0]
+    tool = _refresh_tool()
+
+    monkeypatch.setattr(
+        tool,
+        "_repair_and_update_toc_with_word",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("A correção mensal não deve iniciar o Word.")
+        ),
+    )
+
+    staging, replacements = tool._stage_manifest(
+        manifest,
+        template=TEMPLATE,
+        client_name="Cliente Exemplo",
+        editorial_mode="canonical_month",
+    )
+    try:
+        text = "\n".join(
+            paragraph.text for paragraph in Document(replacements[0].staged_path).paragraphs
+        )
+        assert "OUTUBRO/2026" in text
+        assert "01/10/2026 a 31/10/2026" in text
+        assert "01/10/2026 e 31/10/2026" in text
+        assert "01/11/2026" not in text
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
 def test_toc_staging_materializes_entries_without_word_automation(
     tmp_path: Path,
     monkeypatch,
