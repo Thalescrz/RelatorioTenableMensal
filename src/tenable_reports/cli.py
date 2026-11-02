@@ -6794,6 +6794,7 @@ def build_parser() -> argparse.ArgumentParser:
     monthly_batch.add_argument("--config", default="orchestration/clients.json")
     monthly_batch.add_argument("--reference-at")
     monthly_batch.add_argument("--wait-timeout-seconds", type=int, default=108_300)
+    monthly_batch.add_argument("--libreoffice")
     monthly_batch.set_defaults(handler=command_run_monthly_batch)
     return parser
 

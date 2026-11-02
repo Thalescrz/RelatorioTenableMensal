@@ -62,6 +62,19 @@ def test_apply_uses_argument_list_and_never_shell(tmp_path: Path) -> None:
     assert "00:05" in command
 
 
+def test_task_command_declares_project_root_and_absolute_config(tmp_path: Path) -> None:
+    scheduler = WindowsTaskScheduler(
+        project_root=tmp_path / "project",
+        config_path=tmp_path / "project" / "orchestration" / "clients.json",
+        runner=Runner(subprocess.CompletedProcess([], 0, "SUCCESS", "")),
+    )
+
+    command = scheduler.task_command()
+
+    assert f'-ProjectRoot "{scheduler.project_root}"' in command
+    assert f'-Config "{scheduler.config_path}"' in command
+
+
 def test_windows_task_state_exposes_generic_backend_without_changing_legacy_status(
     tmp_path: Path,
 ) -> None:

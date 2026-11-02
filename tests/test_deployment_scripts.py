@@ -93,6 +93,72 @@ def test_windows_setup_preserves_quoted_paths_and_isolates_database_bootstrap() 
     assert "environment-status --json --require-ready" in script
 
 
+def test_windows_monthly_launcher_resolves_root_and_libreoffice_outside_cwd(
+    tmp_path: Path,
+) -> None:
+    project_root = tmp_path / "project with spaces"
+    external_cwd = tmp_path / "external"
+    config = project_root / "orchestration" / "clients.json"
+    office = (
+        project_root
+        / "vendor"
+        / "libreoffice"
+        / "program"
+        / "soffice.exe"
+    )
+    stub = tmp_path / "python-stub.ps1"
+    config.parent.mkdir(parents=True)
+    office.parent.mkdir(parents=True)
+    external_cwd.mkdir()
+    config.write_text("{}", encoding="utf-8")
+    office.write_bytes(b"fixture")
+    stub.write_text(
+        "$payload = [pscustomobject]@{ cwd = (Get-Location).Path; arguments = @($args) }\n"
+        "$payload | ConvertTo-Json -Compress\n"
+        "exit 0\n",
+        encoding="utf-8-sig",
+    )
+
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(ROOT / "scripts" / "run_monthly_orchestration.ps1"),
+            "-ProjectRoot",
+            str(project_root),
+            "-Config",
+            str(config),
+            "-PythonExecutable",
+            str(stub),
+            "-PreflightOnly",
+        ],
+        cwd=external_cwd,
+        shell=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = __import__("json").loads(completed.stdout.strip())
+    assert Path(payload["cwd"]).resolve() == project_root.resolve()
+    assert payload["arguments"] == [
+        "-m",
+        "tenable_reports",
+        "environment-status",
+        "--root",
+        str(project_root.resolve()),
+        "--json",
+        "--require-ready",
+        "--libreoffice",
+        str(office.resolve()),
+    ]
+
+
 def test_linux_setup_can_enable_linger_without_starting_the_monthly_timer() -> None:
     script = (ROOT / "scripts" / "setup.sh").read_text(encoding="utf-8")
 
