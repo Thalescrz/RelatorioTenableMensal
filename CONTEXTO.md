@@ -1,7 +1,7 @@
 # Contexto do projeto
 
-**Atualizado em:** 2026-10-22  
-**Base verificada:** `48878db` (`codex/portabilidade-windows-linux-implementacao` antes desta complementação)  
+**Atualizado em:** 2026-11-03  
+**Base verificada:** `8c4c4b8` (`codex/owasp-2025-modo-cliente`)  
 **Natureza:** resumo versionado; estado operacional transitório fica fora deste arquivo
 
 ## Finalidade
@@ -89,8 +89,14 @@ permanecem somente enquanto necessários para publicação, diagnóstico ou reto
 - **VM:** coleta ativos e findings, forma o dataset geral e sustenta os documentos
   gerais e por TAG.
 - **WAS:** é opcional; indisponibilidade, ausência de licença ou ausência de
-  achados não invalida VM concluído. Uma recuperação WAS publicada reutiliza o
-  checkpoint VM e não repete assets, VM, TAG ou Cloud.
+  achados não invalida VM concluído. Cada cliente mantém permanentemente o modo
+  OWASP 2025 `inclusive` (padrão, derivado localmente do catálogo de plugins) ou
+  `console_exclusive` (seleção exata A01–A10 pela análise interna autenticada).
+  Como o filtro remoto da análise exclusiva por `application_ids` ainda não foi
+  comprovado, perfis com esse recorte permanecem obrigatoriamente em `inclusive`;
+  isso impede a inclusão de aplicações fora do escopo configurado.
+  Uma recuperação WAS publicada reutiliza o checkpoint VM e os findings WAS
+  normalizados, não repete assets, VM, TAG ou Cloud e relê o modo atual do perfil.
 - **Cloud:** é opcional e usa credencial e fluxo GraphQL próprios. Sua falha não
   invalida VM ou WAS concluídos. A retentativa Cloud não repete os demais
   componentes. Quando o dataset Cloud já está íntegro, a publicação seletiva
@@ -273,16 +279,22 @@ destinatários globais ao reutilizar um dataset já coletado.
 - Indicadores de explorabilidade permanecem segregados pelo framework definido;
   um indicador geral não substitui os demais.
 - Nas tabelas OWASP Top 10, cada Plugin ID exibe a maior severidade e o maior VPR
-  observados dentro da categoria OWASP Top 10:2025 retornada pelo detalhe oficial
-  do plugin WAS. O catálogo preserva as associações por ano; a aplicação não
-  relabela uma categoria de 2021 como se fosse 2025. As linhas são ordenadas por
-  VPR decrescente;
+  observados dentro da categoria OWASP Top 10:2025. No modo `inclusive`, a
+  categoria vem do detalhe oficial do plugin WAS já preservado; no modo
+  `console_exclusive`, vem da seleção exata feita pela rota interna de análise,
+  sem reinterpretar o resultado inclusivo. O catálogo preserva as associações por
+  ano; a aplicação não relabela uma categoria de 2021 como se fosse 2025. O
+  dataset registra fonte, modos solicitado e efetivo, cobertura, período e
+  contagens por categoria em `was.owasp_selection`. Categorias concluídas e código
+  de falha sanitizado pertencem ao manifesto de publicação e aos checkpoints de
+  recuperação, pois uma tentativa exclusiva incompleta não forma tabela. As linhas
+  são ordenadas por VPR decrescente;
   severidade, quantidade de instâncias e Plugin ID são apenas critérios de
   desempate. Plugin sem VPR permanece nulo no dataset e aparece como `0` somente
   na apresentação. Metadados já obtidos ficam no catálogo PostgreSQL isolado por
   cliente e tenant, evitando repetir a consulta de detalhe nos meses seguintes.
-  A cobertura fica explícita como `COMPLETE`, `PARTIAL`, `UNAVAILABLE` ou
-  `NO_DATA`; indisponibilidade do catálogo não é publicada como ausência de
+  A cobertura fica explícita como `COMPLETE`, `PARTIAL`, `UNAVAILABLE`,
+  `NO_DATA` ou `NOT_COLLECTED`; indisponibilidade do catálogo não é publicada como ausência de
   vulnerabilidades.
 
 As fórmulas, populações e regras de ausência estão no
@@ -309,6 +321,13 @@ UUIDs remotos, manifests parciais ou checkpoints reutilizáveis.
 Uma retentativa deve consultar primeiro o identificador ou snapshot preservado e
 nunca repetir componente já concluído sem causa validada. Publicação parcial não se
 torna `MAIN` enquanto os componentes obrigatórios não estiverem resolvidos.
+Se uma categoria exclusiva A01–A10 falhar, somente o componente WAS fica
+retentável: VM, TAG, Cloud e os documentos válidos continuam publicados, sem tabela
+OWASP exclusiva parcial. A ação **Tentar somente WAS novamente** relê o modo
+permanente atual. Se continuar exclusivo, reutiliza export, chunks, findings
+normalizados e categorias válidas; se o analista mudar para inclusivo, pula a rota
+exclusiva e recompõe apenas o relatório-base afetado. Customizações, TAG e Cloud
+permanecem byte a byte inalterados.
 Checkpoints só seguem diretamente para consolidação local quando cliente, tenant,
 run, origem e período efetivo `[início, fim)` forem compatíveis entre todos os
 componentes. Um conjunto divergente é devolvido ao fluxo remoto de recuperação;

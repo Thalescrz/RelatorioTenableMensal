@@ -102,11 +102,17 @@ possui proteção para exposição pública e deve permanecer no ambiente local.
 3. Salve Access Key e Secret Key no formulário local.
 4. Mantenha **Vulnerabilidades WEB** habilitado quando desejar detecção automática;
    ausência de WAS não interrompe VM.
-5. Habilite **Cloud Security** somente quando o cliente possuir o produto e informe
+5. Em **OWASP Top 10:2025**, mantenha **Inclusivo (padrão)** para o modelo atual ou
+   selecione **Exclusivo da console** para reproduzir a seleção exata A01–A10. A
+   escolha é permanente por cliente e também vale para retentativas futuras.
+   Perfis que restringem WAS por `application_ids` devem permanecer em
+   **Inclusivo** até a equivalência do filtro remoto exclusivo ser comprovada; a
+   aplicação recusa a combinação para não ampliar silenciosamente o escopo.
+6. Habilite **Cloud Security** somente quando o cliente possuir o produto e informe
    o token próprio no campo Cloud.
-6. Habilite relatório customizado, filtros de validação e coluna `Output` conforme
+7. Habilite relatório customizado, filtros de validação e coluna `Output` conforme
    a necessidade do cliente.
-7. Salve e use **Testar API** e, quando aplicável, **Testar API Cloud** no próprio
+8. Salve e use **Testar API** e, quando aplicável, **Testar API Cloud** no próprio
    cliente.
 
 As chaves ficam no arquivo local ignorado pelo Git e não retornam para a tela.
@@ -471,17 +477,21 @@ Na execução manual individual, a interface mantém VM, assets, TAG e Cloud já
 coletados e solicita uma decisão:
 
 - **Continuar sem WEB** conclui a publicação com alerta;
-- **Tentar WEB novamente** executa somente WAS e reutiliza chunks já persistidos.
+- **Tentar somente WAS novamente** executa somente WAS e reutiliza chunks já
+  persistidos.
 
 Em **Gerar todos** e na execução mensal automática, WAS usa as duas janelas
 automáticas e a terceira condicional do coordenador. Ao esgotar a política, o
-conjunto permanece semiconcluído e **Tentar WEB novamente** continua disponível
+conjunto permanece semiconcluído e **Tentar somente WAS novamente** continua disponível
 quando a causa for retentável. Essa ação posterior usa uma única janela manual,
-reconstrói o contexto pelo histórico compacto e substitui os DOCX VM/TAG sem
-repetir assets, VM, TAG ou Cloud. O comportamento também vale para uma execução
+reconstrói o contexto pelo histórico compacto e substitui somente o relatório-base,
+sem repetir assets, VM, TAG ou Cloud. Customizações, TAG e Cloud permanecem
+inalterados. O comportamento também vale para uma execução
 manual que já tenha sido publicada e cujo staging pesado tenha sido reciclado.
 Antes da substituição, a aplicação valida o snapshot compacto e, após concluir,
 confirma que o hash da coleta VM permaneceu inalterado.
+O manifesto também é atualizado com modo original, modo efetivo, cobertura,
+categorias concluídas, falha sanitizada quando aplicável e número da recuperação.
 
 No Word, “não foram identificadas vulnerabilidades WEB” significa coleta concluída
 sem ocorrências. A mensagem “não foi possível concluir a coleta WEB” indica dados
@@ -499,6 +509,18 @@ a quantidade de instâncias não define mais a ordem principal. Em igualdade de 
 a aplicação usa severidade, instâncias e Plugin ID como desempates determinísticos.
 VPR ausente aparece como `0` no Word, mas continua nulo no dataset e é posicionado
 depois de qualquer VPR real.
+
+No modo **Exclusivo da console**, uma falha em qualquer categoria A01–A10 não
+publica uma tabela exclusiva parcial. VM e os demais componentes válidos continuam;
+o painel registra `WAS_OWASP_2025_EXCLUSIVE_UNAVAILABLE` e oferece **Tentar somente
+WAS novamente**. A retentativa relê a preferência atual do cliente. Mantendo o modo
+exclusivo, ela reutiliza o export/chunks/findings e as categorias já válidas;
+mudando permanentemente para inclusivo, ela não chama a análise exclusiva e monta
+a seção localmente a partir dos mesmos findings normalizados. Não existe fallback
+automático entre os dois modos.
+Depois de uma publicação completa, o histórico compacto mantém tanto o indicador
+de coleta WAS vazia quanto o snapshot exclusivo A01–A10. Assim, um replay posterior
+continua reproduzível mesmo após a reciclagem do staging pesado.
 
 Se a consulta de detalhe do plugin falhar, a execução registra
 `WAS_PLUGIN_CATALOG_UNAVAILABLE`; classificações de 2021 não são promovidas para

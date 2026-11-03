@@ -127,6 +127,25 @@ chegar à apresentação. O DOCX apenas traduz a severidade e aplica a convenç�
 visual de `0` para VPR nulo. Testes precisam provar que mais instâncias não passam
 à frente de um VPR maior e que valores nulos permanecem por último.
 
+O modo permanente `scope.was.owasp_2025_mode` aceita `inclusive` e
+`console_exclusive`. O primeiro usa o catálogo local; o segundo chama a fronteira
+`TenableWasOwaspAnalysisClient`, isolando o contrato interno autenticado da console
+do export público WAS. A camada de aplicação deve produzir o mesmo dataset pronto
+para apresentação nos dois modos e registrar a decisão em `was.owasp_selection`.
+A apresentação não consulta API nem decide fonte.
+Enquanto não houver filtro remoto comprovado para `scope.was.application_ids`, a
+validação do perfil deve recusar essa combinação com `console_exclusive`; não tente
+recortar localmente uma resposta que já chegou agregada por plugin.
+
+Checkpoints exclusivos são granulares por A01–A10 e incluem cliente, tenant,
+período, modo e hash dos critérios. A retomada copia somente categorias compatíveis
+e consulta as faltantes. Qualquer falha impede a publicação da seleção exclusiva
+completa, usa código sanitizado e mantém somente WAS retentável; não aplique
+fallback silencioso para inclusivo.
+O cliente da análise também deve impor orçamento agregado de páginas e linhas,
+além de rejeitar cursor repetido, para que uma resposta remota anômala não mantenha
+o worker preso indefinidamente.
+
 Não inicie export real, servidor ou cancelamento sem necessidade e autorização.
 
 ## Mensal e agendadores por plataforma
@@ -470,6 +489,21 @@ proibição de chamadas VM/Cloud e a invariância do hash VM. Backups de substit
 atômica precisam permanecer no mesmo diretório do destino, mas com nome curto
 baseado em identificador de transação e hash do caminho, para evitar `MAX_PATH` no
 Windows.
+
+O snapshot compacto precisa conservar `was_collected` separadamente da quantidade
+de findings e incluir o snapshot exclusivo A01–A10 quando ele existir. Ao
+materializar um replay, regrave somente a identidade do novo `run_id`; preserve
+tenant, período, fonte, hash do contrato e categorias. Isso garante reprodução de
+WAS vazio e exclusivo depois da limpeza do staging.
+
+Na recuperação OWASP, preserve o raw/normalizado WAS quando a falha ocorrer depois
+do export. O comando relê o perfil: em `console_exclusive`, retoma categorias; em
+`inclusive`, ignora a fronteira exclusiva e recompõe localmente. A substituição
+atômica altera somente o documento `base`; customizado, TAG e Cloud devem manter
+os mesmos bytes e entradas de manifesto. A limpeza pesada só pode ocorrer quando o
+conjunto de componentes estiver completo, para não destruir o material de retomada.
+Na mesma transação, atualize `component_metadata.WAS.owasp_2025` no manifesto; o
+documento novo não pode ficar associado ao modo ou à tentativa anterior.
 
 O servidor valida confirmação, conjunto excluído, enum e subconjunto retentável
 antes de chamar o executor. Sem `component_retry_enqueuer`, somente o caminho

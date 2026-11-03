@@ -297,6 +297,28 @@ Referência: https://developer.tenable.com/reference/was-export-findings-status
 Baixa chunk JSON; atributos vazios podem ser omitidos; retenção de até 24 horas.  
 Referência: https://developer.tenable.com/reference/was-export-findings-download-chunk
 
+### POST `/api/v3/findings/vulnerabilities/webapp/analysis` — contrato interno autenticado
+
+| Campo | Registro |
+|---|---|
+| Finalidade | Reproduzir a seleção exclusiva da console para cada categoria OWASP Top 10:2025 |
+| Uso | Somente quando o perfil do cliente estiver em `console_exclusive` |
+| Escopo de aplicações | Enquanto o filtro remoto equivalente a `scope.was.application_ids` não estiver comprovado, `console_exclusive` é recusado para perfis que usam esse recorte |
+| Filtros invariáveis | finding WEB não corrigido, severidade diferente de informativa, risco não aceito, período `[início, fim)` e uma categoria A01–A10 por chamada |
+| Persistência | checkpoint por categoria, identidade e hash dos critérios; resultado consolidado em `was.owasp_selection` |
+| Limites locais | Até 500 grupos por página, 1.000 páginas e 100.000 grupos por categoria; cursor repetido também encerra com falha retentável |
+| Falha | `WAS_OWASP_2025_EXCLUSIVE_UNAVAILABLE`, sanitizado e retentável somente no componente WAS |
+
+Esta rota pertence à aplicação autenticada da console e não ao contrato público de
+export em volume. Por isso fica isolada em `TenableWasOwaspAnalysisClient`; não deve
+ser usada como substituta do export WAS nem chamada no modo inclusivo. Uma falha em
+qualquer A01–A10 invalida a seleção exclusiva completa para publicação, sem fallback
+silencioso para o catálogo inclusivo. Na retentativa, categorias compatíveis já
+concluídas são reutilizadas e somente as ausentes voltam a ser consultadas.
+O histórico compacto preserva o snapshot consolidado A01–A10 e o estado de coleta
+WAS, inclusive quando a população é vazia, para que o replay continue reproduzível
+depois da limpeza normal do staging.
+
 ### Evidência autenticada da Fase 8 — 2026-08-13
 
 O teste de contrato usou `num_assets=50`, filtros temporais explícitos e somente
