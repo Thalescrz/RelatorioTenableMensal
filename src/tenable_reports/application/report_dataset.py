@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from tenable_reports import __version__
-from tenable_reports.config.profile import ClientProfile
+from tenable_reports.config.profile import ClientProfile, Owasp2025Mode
 from tenable_reports.domain.normalization import NormalizedAsset, NormalizedFinding
 from tenable_reports.domain.report_dataset import (
     METRIC_DEFINITION_VERSION,
@@ -49,6 +49,8 @@ class ReportDatasetInputs:
     finding_snapshot: dict[str, Any]
     was_snapshot_path: Path
     was_snapshot: dict[str, Any] | None
+    was_owasp_snapshot_path: Path
+    was_owasp_snapshot: dict[str, Any] | None
     finding_query: Mapping[str, Any]
     plugin_output_collected: bool
     collection_completed_at: datetime
@@ -178,6 +180,7 @@ def load_report_dataset_inputs(
     profile: ClientProfile,
     run_id: str,
     output_root: str | Path,
+    include_was: bool = True,
 ) -> ReportDatasetInputs:
     """Carrega uma unica vez os normalizados e snapshots usados pelos datasets."""
     root = Path(output_root)
@@ -197,14 +200,17 @@ def load_report_dataset_inputs(
         resolve_jsonl_artifact(normalized_directory, "findings"),
         NormalizedFinding.from_dict,
     )
-    try:
-        was_findings_path = resolve_jsonl_artifact(
-            normalized_directory, "was-findings"
-        )
-    except FileNotFoundError:
-        was_findings: tuple[NormalizedWasFinding, ...] = ()
+    if include_was:
+        try:
+            was_findings_path = resolve_jsonl_artifact(
+                normalized_directory, "was-findings"
+            )
+        except FileNotFoundError:
+            was_findings: tuple[NormalizedWasFinding, ...] = ()
+        else:
+            was_findings = _read_jsonl(was_findings_path, NormalizedWasFinding.from_dict)
     else:
-        was_findings = _read_jsonl(was_findings_path, NormalizedWasFinding.from_dict)
+        was_findings = ()
 
     snapshot_directory = root / "snapshots" / profile.client_id / run_id
     finding_snapshot_path = snapshot_directory / "tenable_vm_vulnerabilities.snapshot.json"
@@ -212,7 +218,25 @@ def load_report_dataset_inputs(
     asset_snapshot_path = snapshot_directory / "tenable_vm_assets_v2.snapshot.json"
     asset_snapshot = _read_json(asset_snapshot_path)
     was_snapshot_path = snapshot_directory / "tenable_was_findings.snapshot.json"
-    was_snapshot = _read_json(was_snapshot_path) if was_snapshot_path.is_file() else None
+    was_snapshot = (
+        _read_json(was_snapshot_path)
+        if include_was and was_snapshot_path.is_file()
+        else None
+    )
+    was_owasp_snapshot_path = (
+        snapshot_directory / "tenable_was_owasp_2025.snapshot.json"
+    )
+    was_owasp_snapshot = None
+    if include_was and profile.was_scope.owasp_2025_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE:
+        if not was_owasp_snapshot_path.is_file():
+            raise ValueError("O modo OWASP exclusivo nao possui snapshot completo.")
+        was_owasp_snapshot = _read_json(was_owasp_snapshot_path)
+        if (
+            was_owasp_snapshot.get("client_id") != profile.client_id
+            or was_owasp_snapshot.get("run_id") != run_id
+            or was_owasp_snapshot.get("coverage") != "COMPLETE"
+        ):
+            raise ValueError("O snapshot OWASP exclusivo e incompatível com a execucao.")
 
     finding_query_value = finding_snapshot.get("query")
     finding_query: Mapping[str, Any] = (
@@ -248,6 +272,8 @@ def load_report_dataset_inputs(
         finding_snapshot=finding_snapshot,
         was_snapshot_path=was_snapshot_path,
         was_snapshot=was_snapshot,
+        was_owasp_snapshot_path=was_owasp_snapshot_path,
+        was_owasp_snapshot=was_owasp_snapshot,
         finding_query=finding_query,
         plugin_output_collected=plugin_output_collected,
         collection_completed_at=max(completed_dates),
@@ -272,6 +298,7 @@ def build_report_dataset_from_snapshot(
     period: ReportingPeriod,
     output_root: str | Path,
     include_output: bool = False,
+    include_was: bool = True,
     execution_type: str = "UNSPECIFIED",
 ) -> ReportDatasetArtifact:
     root = Path(output_root)
@@ -279,12 +306,27 @@ def build_report_dataset_from_snapshot(
         profile=profile,
         run_id=run_id,
         output_root=root,
+        include_was=include_was,
     )
     if include_output and not inputs.plugin_output_collected:
         raise ValueError(
             "Plugin Output foi solicitado, mas nao foi coletado no snapshot selecionado."
         )
     generated_at = datetime.now(UTC)
+    exclusive_owasp_rows = None
+    if include_was and profile.was_scope.owasp_2025_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE:
+        if inputs.was_owasp_snapshot is None:
+            raise ValueError("O modo OWASP exclusivo nao possui snapshot completo.")
+        snapshot_period = inputs.was_owasp_snapshot.get("period")
+        if not isinstance(snapshot_period, Mapping) or any(
+            snapshot_period.get(key) != period.to_dict().get(key)
+            for key in ("start_at", "end_at", "timezone")
+        ):
+            raise ValueError("O snapshot OWASP exclusivo pertence a outro periodo.")
+        categories = inputs.was_owasp_snapshot.get("categories")
+        if not isinstance(categories, Mapping):
+            raise ValueError("O snapshot OWASP exclusivo possui categorias invalidas.")
+        exclusive_owasp_rows = categories
     result = build_report_dataset(
         client_id=profile.client_id,
         run_id=run_id,
@@ -302,7 +344,9 @@ def build_report_dataset_from_snapshot(
         late_collection_grace_days=profile.reporting.late_collection_grace_days,
         tag_scope=inputs.tag_scope,
         was_findings=inputs.was_findings,
-        was_collected=inputs.was_snapshot is not None,
+        was_collected=include_was and inputs.was_snapshot is not None,
+        owasp_2025_mode=profile.was_scope.owasp_2025_mode,
+        exclusive_owasp_rows=exclusive_owasp_rows,
     )
     intelligence = build_current_intelligence(
         assets=result.observed_assets,
@@ -311,7 +355,7 @@ def build_report_dataset_from_snapshot(
         period=period,
         open_collected=bool(result.dataset.source_coverage["open_metrics_collected"]),
         fixed_collected=bool(result.dataset.source_coverage["fixed_metrics_collected"]),
-        was_collected=inputs.was_snapshot is not None,
+        was_collected=include_was and inputs.was_snapshot is not None,
     )
     customizations = dict(result.dataset.customizations or {})
     customizations.update(intelligence.data)

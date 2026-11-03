@@ -14,7 +14,7 @@ from tenable_reports.application.plugin_catalog import (
     MemoryPluginCatalogRepository,
     build_plugin_catalog_entries,
 )
-from tenable_reports.config.profile import load_client_profile
+from tenable_reports.config.profile import Owasp2025Mode, load_client_profile
 from tenable_reports.domain.models import build_source_snapshot
 from tenable_reports.domain.reporting import previous_calendar_month
 from tenable_reports.domain.was import build_was_report_data, normalize_was_findings
@@ -158,6 +158,92 @@ class WasNormalizationTests(unittest.TestCase):
         self.assertEqual(rows[1]["vpr_score"], 6.1)
         self.assertEqual(rows[1]["instances"], 3)
         self.assertIsNone(rows[2]["vpr_score"])
+
+    def test_exclusive_owasp_rows_replace_inclusive_catalog_membership(self) -> None:
+        multiclasse = was_record("multiclasse", plugin_id=980040, vpr_score=8.0)
+        multiclasse["plugin"]["owasp"] = [
+            {"year": "2025", "category": "A1"},
+            {"year": "2025", "category": "A2"},
+        ]
+        normalized = normalize_was_findings([multiclasse], client_id="client-fixture")
+        exclusive_rows = {
+            f"A{index:02d}": [] for index in range(1, 11)
+        }
+        exclusive_rows["A02"] = [{
+            "category": "A02",
+            "plugin_id": 980040,
+            "name": "Finding WEB de fixture",
+            "family": "Fixture",
+            "severity": "HIGH",
+            "vpr_score": 8.0,
+            "instances": 7,
+        }]
+
+        was, _, _ = build_was_report_data(
+            normalized.findings,
+            period=self.period,
+            collected=True,
+            include_info_severity=False,
+            top_limit=5,
+            owasp_2025_mode=Owasp2025Mode.CONSOLE_EXCLUSIVE,
+            exclusive_owasp_rows=exclusive_rows,
+        )
+
+        self.assertEqual(was["owasp"]["A01"], [])
+        self.assertEqual([row["plugin_id"] for row in was["owasp"]["A02"]], [980040])
+        self.assertEqual(was["owasp"]["A02"][0]["instances"], 7)
+        self.assertEqual(
+            was["owasp_selection"]["source"],
+            "console_analysis_exclusive",
+        )
+        self.assertEqual(was["owasp_selection"]["coverage"], "COMPLETE")
+
+    def test_exclusive_owasp_rows_are_sorted_by_vpr_descending(self) -> None:
+        exclusive_rows = {f"A{index:02d}": [] for index in range(1, 11)}
+        exclusive_rows["A01"] = [
+            {
+                "category": "A01",
+                "plugin_id": 3,
+                "name": "Sem VPR",
+                "family": None,
+                "severity": "CRITICAL",
+                "vpr_score": None,
+                "instances": 30,
+            },
+            {
+                "category": "A01",
+                "plugin_id": 2,
+                "name": "VPR maior",
+                "family": None,
+                "severity": "HIGH",
+                "vpr_score": 9.7,
+                "instances": 1,
+            },
+            {
+                "category": "A01",
+                "plugin_id": 1,
+                "name": "VPR menor",
+                "family": None,
+                "severity": "CRITICAL",
+                "vpr_score": 6.2,
+                "instances": 99,
+            },
+        ]
+
+        was, _, _ = build_was_report_data(
+            (),
+            period=self.period,
+            collected=True,
+            include_info_severity=False,
+            top_limit=5,
+            owasp_2025_mode=Owasp2025Mode.CONSOLE_EXCLUSIVE,
+            exclusive_owasp_rows=exclusive_rows,
+        )
+
+        self.assertEqual(
+            [row["plugin_id"] for row in was["owasp"]["A01"]],
+            [2, 1, 3],
+        )
 
     def test_no_was_snapshot_is_not_reported_as_zero(self) -> None:
         was, top, population = build_was_report_data(

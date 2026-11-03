@@ -6,6 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, Iterable, Mapping, Sequence
 
+from tenable_reports.config.profile import Owasp2025Mode
 from tenable_reports.domain.normalization import NormalizedAsset, NormalizedFinding
 from tenable_reports.domain.late_collection import reconcile_late_open_findings
 from tenable_reports.domain.reporting import ReportingPeriod, iso_utc, parse_utc
@@ -659,6 +660,8 @@ def build_report_dataset(
     tag_scope: Mapping[str, Any] | None = None,
     was_findings: Iterable[NormalizedWasFinding] = (),
     was_collected: bool = False,
+    owasp_2025_mode: Owasp2025Mode = Owasp2025Mode.INCLUSIVE,
+    exclusive_owasp_rows: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> ReportDatasetResult:
     asset_rows = tuple(assets)
     source_finding_rows = tuple(findings)
@@ -850,6 +853,8 @@ def build_report_dataset(
         collected=was_collected,
         include_info_severity=include_info_severity,
         top_limit=top_vulnerabilities_limit,
+        owasp_2025_mode=owasp_2025_mode,
+        exclusive_owasp_rows=exclusive_owasp_rows,
     )
 
     metrics = {
@@ -1031,7 +1036,12 @@ def build_report_dataset(
                 "date_fields": ["Last Seen"],
                 "group_by": "OWASP 2025 e Plugin ID",
                 "order_by": "VPR (decrescente; registros sem VPR ao final)",
-                "rule": "classificação OWASP 2025 fornecida pelo detalhe do plugin Tenable",
+                "selection_source": was["owasp_selection"]["source"],
+                "rule": (
+                    "seleção exclusiva por categoria na análise da console Tenable"
+                    if owasp_2025_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE
+                    else "classificação OWASP 2025 fornecida pelo catálogo de plugins Tenable"
+                ),
             },
             "top_web_vulnerabilities": {
                 **general_filter,
