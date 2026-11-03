@@ -32,9 +32,15 @@ from tenable_reports.application.vm_export_policy import (
     selective_vm_properties,
 )
 from tenable_reports.application.was_recovery import WasFailureDetails
-from tenable_reports.config.profile import ClientProfile
+from tenable_reports.application.was_owasp_2025 import (
+    collect_exclusive_owasp_2025_snapshot,
+)
+from tenable_reports.config.profile import ClientProfile, Owasp2025Mode
 from tenable_reports.domain.normalization import normalize_assets
 from tenable_reports.domain.reporting import ReportingPeriod
+from tenable_reports.infrastructure.tenable_was.owasp_analysis import (
+    TenableWasOwaspAnalysisClient,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +371,25 @@ def collect_was_period(
                     collection=was_attempt.result,
                     output_root=output_root,
                 )
+            if (
+                profile.was_scope.owasp_2025_mode
+                is Owasp2025Mode.CONSOLE_EXCLUSIVE
+            ):
+                owasp_attempt = collect_exclusive_owasp_2025_snapshot(
+                    client=TenableWasOwaspAnalysisClient(was_client),
+                    profile=profile,
+                    period=period,
+                    output_root=output_root,
+                    run_id=run_id,
+                    progress_callback=progress_callback,
+                )
+                warnings.extend(owasp_attempt.warnings)
+                if owasp_attempt.failure is not None:
+                    was_attempt = replace(
+                        was_attempt,
+                        status=owasp_attempt.status,
+                        failure=owasp_attempt.failure,
+                    )
         was_collection_status = was_attempt.status
         was_failure = was_attempt.failure
         warnings.extend(was_attempt.warnings)

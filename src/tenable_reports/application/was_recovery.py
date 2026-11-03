@@ -57,6 +57,7 @@ class WasFailureDetails:
     timeout_phase: str | None = None
     progress_made: bool = False
     safe_cancel_available: bool = False
+    failed_category: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -75,6 +76,7 @@ class WasFailureDetails:
             timeout_phase=_optional_text(payload.get("timeout_phase")),
             progress_made=bool(payload.get("progress_made", False)),
             safe_cancel_available=bool(payload.get("safe_cancel_available", False)),
+            failed_category=_optional_text(payload.get("failed_category")),
         )
 
 
