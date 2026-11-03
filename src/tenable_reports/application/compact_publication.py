@@ -97,6 +97,16 @@ def prepare_compact_run_snapshot(
         tag_asset_ids=_tag_asset_ids(inputs.tag_scope),
         tag_scope=inputs.tag_scope,
         was_findings=inputs.was_findings if include_was else (),
+        was_collected=(
+            include_was
+            and (
+                getattr(inputs, "was_snapshot", None) is not None
+                or bool(inputs.was_findings)
+            )
+        ),
+        was_owasp_2025_snapshot=(
+            getattr(inputs, "was_owasp_snapshot", None) if include_was else None
+        ),
         document_references=references,
         created_at=created_at,
     )

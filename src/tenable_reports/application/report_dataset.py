@@ -231,10 +231,22 @@ def load_report_dataset_inputs(
         if not was_owasp_snapshot_path.is_file():
             raise ValueError("O modo OWASP exclusivo nao possui snapshot completo.")
         was_owasp_snapshot = _read_json(was_owasp_snapshot_path)
+        categories = was_owasp_snapshot.get("categories")
+        contract_sha256 = str(
+            was_owasp_snapshot.get("contract_sha256") or ""
+        ).strip().lower()
         if (
-            was_owasp_snapshot.get("client_id") != profile.client_id
+            was_owasp_snapshot.get("schema_version") != 1
+            or was_owasp_snapshot.get("client_id") != profile.client_id
+            or was_owasp_snapshot.get("tenant_id") != profile.tenant_id
             or was_owasp_snapshot.get("run_id") != run_id
+            or was_owasp_snapshot.get("mode") != "console_exclusive"
+            or was_owasp_snapshot.get("source") != "console_analysis_exclusive"
             or was_owasp_snapshot.get("coverage") != "COMPLETE"
+            or not isinstance(categories, Mapping)
+            or set(categories) != {f"A{index:02d}" for index in range(1, 11)}
+            or len(contract_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in contract_sha256)
         ):
             raise ValueError("O snapshot OWASP exclusivo e incompatível com a execucao.")
 

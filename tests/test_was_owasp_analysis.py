@@ -197,3 +197,22 @@ def test_exclusive_analysis_rejects_invalid_category_and_period() -> None:
         client.list_category_plugins(category="A1", start_at=START, end_at=END)
     with pytest.raises(ValueError, match="periodo"):
         client.list_category_plugins(category="A01", start_at=END, end_at=START)
+
+
+def test_exclusive_analysis_enforces_aggregate_pagination_budget() -> None:
+    client, transport = analysis_client([
+        response(200, {
+            "items": [group(101)],
+            "pagination": {"next": "cursor-2"},
+        }),
+    ])
+
+    with pytest.raises(ApiError, match="limite de paginacao"):
+        client.list_category_plugins(
+            category="A01",
+            start_at=START,
+            end_at=END,
+            max_pages=1,
+        )
+
+    assert len(transport.calls) == 1

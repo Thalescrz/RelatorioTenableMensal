@@ -220,6 +220,22 @@ class ProfileTests(unittest.TestCase):
                 },
             })
 
+    def test_exclusive_owasp_mode_rejects_unverified_application_scope(self) -> None:
+        with self.assertRaisesRegex(ProfileError, "application_ids"):
+            ClientProfile.from_dict({
+                "schema_version": 1,
+                "client_id": "cliente-was",
+                "display_name": "Cliente WAS",
+                "tenant_id": "tenant-was",
+                "scope": {
+                    "was": {
+                        "enabled": True,
+                        "application_ids": ["app-fixture"],
+                        "owasp_2025_mode": "console_exclusive",
+                    }
+                },
+            })
+
     def test_profile_exposes_additional_document_distribution_recipients(self) -> None:
         profile = ClientProfile.from_dict({
             "schema_version": 1,

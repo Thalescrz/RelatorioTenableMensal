@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,7 +19,7 @@ from tenable_reports.application.report_dataset import (
     build_report_dataset_from_snapshot,
     load_report_dataset_inputs,
 )
-from tenable_reports.config.profile import load_client_profile
+from tenable_reports.config.profile import Owasp2025Mode, load_client_profile
 from tenable_reports.domain.normalization import normalize_and_link
 from tenable_reports.domain.reporting import explicit_reporting_period
 
@@ -160,6 +162,84 @@ class CollectionExecutionTests(unittest.TestCase):
         )
         self.assertEqual(replayed_artifact.dataset_path, artifact.dataset_path)
         self.assertEqual(replayed_dataset, original_dataset)
+
+    def test_replay_materializes_preserved_exclusive_owasp_snapshot(self) -> None:
+        exclusive_profile = replace(
+            self.profile,
+            was_scope=replace(
+                self.profile.was_scope,
+                enabled=True,
+                owasp_2025_mode=Owasp2025Mode.CONSOLE_EXCLUSIVE,
+            ),
+        )
+        exclusive = {
+            "schema_version": 1,
+            "client_id": exclusive_profile.client_id,
+            "tenant_id": exclusive_profile.tenant_id,
+            "run_id": "source-run",
+            "mode": "console_exclusive",
+            "source": "console_analysis_exclusive",
+            "coverage": "COMPLETE",
+            "period": self.period.to_dict(),
+            "contract_sha256": "a" * 64,
+            "categories": {
+                f"A{index:02d}": [] for index in range(1, 11)
+            },
+        }
+        snapshot = build_compact_snapshot(
+            client_id=exclusive_profile.client_id,
+            tenant_id=exclusive_profile.tenant_id,
+            run_id="source-run",
+            execution_type="MANUAL",
+            period_mode=self.period.mode.value,
+            period_start_at=self.period.to_dict()["start_at"],
+            period_end_at=self.period.to_dict()["end_at"],
+            assets=self.normalized.assets,
+            findings=self.normalized.findings,
+            quality_issues=self.normalized.issues,
+            tag_asset_ids={},
+            document_references={"base": "C:/reports/source.docx"},
+            was_collected=True,
+            was_owasp_2025_snapshot=exclusive,
+            created_at="2026-08-02T12:00:00Z",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            materialize_compact_snapshot_run(
+                snapshot=snapshot,
+                profile=exclusive_profile,
+                run_id="replay-run",
+                output_root=directory,
+            )
+            path = (
+                Path(directory)
+                / "snapshots"
+                / exclusive_profile.client_id
+                / "replay-run"
+                / "tenable_was_owasp_2025.snapshot.json"
+            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            inputs = load_report_dataset_inputs(
+                profile=exclusive_profile,
+                run_id="replay-run",
+                output_root=directory,
+            )
+            artifact = build_report_dataset_from_snapshot(
+                profile=exclusive_profile,
+                run_id="replay-run",
+                period=self.period,
+                output_root=directory,
+                execution_type="MANUAL",
+            )
+
+        self.assertEqual(payload["run_id"], "replay-run")
+        self.assertEqual(payload["tenant_id"], exclusive_profile.tenant_id)
+        self.assertEqual(set(payload["categories"]), set(exclusive["categories"]))
+        self.assertIsNotNone(inputs.was_snapshot)
+        self.assertEqual(
+            artifact.result.dataset.was["owasp_selection"]["source"],
+            "console_analysis_exclusive",
+        )
 
 
 if __name__ == "__main__":

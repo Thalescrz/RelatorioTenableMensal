@@ -247,6 +247,66 @@ class CliTests(unittest.TestCase):
         self.assertEqual(load_inputs.call_args.kwargs["include_was"], False)
         self.assertEqual(build_dataset.call_args.kwargs["include_was"], False)
 
+    def test_replayed_was_assembly_preserves_was_dataset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            period = previous_calendar_month(
+                reference_at="2026-11-01T00:05:00-03:00",
+                timezone_name="America/Fortaleza",
+            )
+            profile = SimpleNamespace(
+                client_id="cliente-fixture",
+                report=SimpleNamespace(
+                    tag_reports=SimpleNamespace(enabled=False, tags=()),
+                ),
+            )
+            inputs = SimpleNamespace(
+                tag_scope=None,
+                collection_provenance={
+                    "collection_route": "snapshot_replay",
+                    "reconstruction_status": "AUTHORITATIVE_SNAPSHOT",
+                    "sources": ["compact_finding_snapshot"],
+                },
+            )
+            artifact = SimpleNamespace(
+                dataset_path=directory / "dataset.json",
+                directory=directory,
+                result=SimpleNamespace(dataset={}),
+            )
+            args = SimpleNamespace(include_output=False, skip_history=True)
+
+            with (
+                patch.object(
+                    cli_module,
+                    "load_report_dataset_inputs",
+                    return_value=inputs,
+                ) as load_inputs,
+                patch.object(
+                    cli_module,
+                    "build_report_dataset_from_snapshot",
+                    return_value=artifact,
+                ) as build_dataset,
+                patch.object(
+                    cli_module,
+                    "build_tag_report_datasets_from_snapshot",
+                    return_value=SimpleNamespace(artifacts=(), warnings=()),
+                ),
+            ):
+                result = cli_module._assemble_period_from_existing(
+                    args,
+                    profile=profile,
+                    output_root=directory,
+                    actual_run_id="run-replayed-was",
+                    period=period,
+                    execution_type="MANUAL",
+                    normalized_findings_path=directory / "findings.jsonl.gz",
+                    was_collection_status="REPLAYED",
+                )
+
+        self.assertEqual(result.was_collection_status, "REPLAYED")
+        self.assertEqual(load_inputs.call_args.kwargs["include_was"], True)
+        self.assertEqual(build_dataset.call_args.kwargs["include_was"], True)
+
     def test_owasp_publication_metadata_records_incomplete_exclusive_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -270,7 +330,14 @@ class CliTests(unittest.TestCase):
                 output_root=directory,
                 run_id="run-a",
                 was_collection_status="UNAVAILABLE",
-                was_recovery_checkpoint=None,
+                was_recovery_checkpoint=SimpleNamespace(
+                    owasp_2025_original_mode="console_exclusive",
+                    was_failure=WasFailureDetails(
+                        code="WAS_OWASP_2025_EXCLUSIVE_UNAVAILABLE",
+                        retryable=True,
+                        failed_category="A02",
+                    ),
+                ),
                 artifact=SimpleNamespace(
                     result=SimpleNamespace(
                         dataset={
@@ -297,6 +364,12 @@ class CliTests(unittest.TestCase):
         self.assertEqual(owasp["coverage"], "INCOMPLETE")
         self.assertEqual(owasp["contract_sha256"], "b" * 64)
         self.assertIsNone(owasp["snapshot_sha256"])
+        self.assertEqual(owasp["completed_categories"], ["A01"])
+        self.assertEqual(
+            owasp["failure_code"],
+            "WAS_OWASP_2025_EXCLUSIVE_UNAVAILABLE",
+        )
+        self.assertEqual(owasp["failed_category"], "A02")
 
     def test_component_publication_records_only_changed_state_as_next_attempt(
         self,
@@ -3059,8 +3132,17 @@ class CliTests(unittest.TestCase):
                 output_root=str(output_root),
                 include_output=False,
                 was_status="UNAVAILABLE",
+                owasp_2025_original_mode="console_exclusive",
+                owasp_2025_effective_mode="console_exclusive",
             )
-            profile = SimpleNamespace(client_id="cliente-was", tenant_id="tenant-was")
+            profile = SimpleNamespace(
+                client_id="cliente-was",
+                tenant_id="tenant-was",
+                was_scope=SimpleNamespace(
+                    enabled=True,
+                    owasp_2025_mode=Owasp2025Mode.INCLUSIVE,
+                ),
+            )
             context = SimpleNamespace(
                 work_run_id="run-was-was-recovery",
                 publication_manifest=manifest,
@@ -3075,10 +3157,35 @@ class CliTests(unittest.TestCase):
 
             def replace_documents(**kwargs):
                 captured["replacements"] = kwargs["replacements"]
+                captured["component_metadata_updates"] = kwargs[
+                    "component_metadata_updates"
+                ]
                 kwargs["commit_callback"]()
 
             with (
-                patch.object(cli_module, "_assemble_period_from_existing", return_value=SimpleNamespace(dataset_path=dataset)),
+                patch.object(
+                    cli_module,
+                    "_assemble_period_from_existing",
+                    return_value=SimpleNamespace(
+                        dataset_path=dataset,
+                        output_root=output_root,
+                        run_id=context.work_run_id,
+                        was_collection_status="COMPLETE",
+                        was_recovery_checkpoint=None,
+                        artifact=SimpleNamespace(
+                            result=SimpleNamespace(
+                                dataset={
+                                    "was": {
+                                        "owasp_selection": {
+                                            "source": "plugin_catalog_inclusive",
+                                            "coverage": "COMPLETE",
+                                        }
+                                    }
+                                }
+                            )
+                        ),
+                    ),
+                ),
                 patch.object(cli_module, "generate_full_base_report"),
                 patch.object(cli_module, "generate_customizations_report", side_effect=AssertionError("custom nao e afetado pelo WAS")),
                 patch.object(cli_module, "generate_tag_report", side_effect=AssertionError("TAG nao e afetada pelo WAS")),
@@ -3110,6 +3217,10 @@ class CliTests(unittest.TestCase):
             self.assertEqual(paths["custom"].read_bytes(), b"original-custom")
             self.assertEqual(paths["tag"].read_bytes(), b"original-tag")
             self.assertEqual(paths["cloud"].read_bytes(), b"original-cloud")
+            audit = captured["component_metadata_updates"]["WAS"]["owasp_2025"]
+            self.assertEqual(audit["original_mode"], "console_exclusive")
+            self.assertEqual(audit["effective_mode"], "inclusive")
+            self.assertEqual(audit["recovery_attempt"], 2)
 
     def test_build_report_dataset_command_uses_requested_run_id_for_tag_datasets(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:

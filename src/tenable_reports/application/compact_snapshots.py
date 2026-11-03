@@ -44,6 +44,8 @@ class ReplayedCompactSnapshot:
     quality_issues: tuple[DataQualityIssue, ...]
     tag_asset_ids: Mapping[str, tuple[str, ...]]
     was_findings: tuple[NormalizedWasFinding, ...]
+    was_collected: bool
+    was_owasp_2025_snapshot: Mapping[str, Any] | None
     tag_scope: Mapping[str, Any] | None
     document_references: Mapping[str, str]
 
@@ -160,6 +162,8 @@ def build_compact_snapshot(
     document_references: Mapping[str, str],
     created_at: str | None = None,
     was_findings: Sequence[NormalizedWasFinding] = (),
+    was_collected: bool | None = None,
+    was_owasp_2025_snapshot: Mapping[str, Any] | None = None,
     tag_scope: Mapping[str, Any] | None = None,
 ) -> CompactFindingSnapshot:
     documents = {
@@ -179,6 +183,16 @@ def build_compact_snapshot(
         "tag_asset_ids": tags,
         "document_references": documents,
         "was_findings": [item.to_dict() for item in was_findings],
+        "was_collected": (
+            bool(was_collected)
+            if was_collected is not None
+            else bool(was_findings)
+        ),
+        "was_owasp_2025_snapshot": (
+            dict(was_owasp_2025_snapshot)
+            if was_owasp_2025_snapshot is not None
+            else None
+        ),
         "tag_scope": dict(tag_scope) if tag_scope is not None else None,
     }
     logical = _canonical_json(payload)
@@ -280,6 +294,12 @@ def replay_compact_snapshot(
         if isinstance(payload.get("tag_scope"), Mapping)
         else None
     )
+    was_owasp_2025_snapshot = (
+        dict(payload["was_owasp_2025_snapshot"])
+        if isinstance(payload.get("was_owasp_2025_snapshot"), Mapping)
+        else None
+    )
+    was_collected = bool(payload.get("was_collected", was_findings))
     expected = {
         "assets": len(assets),
         "findings": len(findings),
@@ -297,6 +317,8 @@ def replay_compact_snapshot(
         tag_asset_ids=tags,
         document_references=documents,
         was_findings=was_findings,
+        was_collected=was_collected,
+        was_owasp_2025_snapshot=was_owasp_2025_snapshot,
         tag_scope=tag_scope,
     )
 

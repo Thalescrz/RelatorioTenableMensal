@@ -12,6 +12,8 @@ from .client import TenableWasClient
 
 
 ANALYSIS_PATH = "/api/v3/findings/vulnerabilities/webapp/analysis"
+MAX_ANALYSIS_PAGES = 1000
+MAX_ANALYSIS_ROWS = 100000
 CATEGORY_PATTERN = re.compile(r"^A(0[1-9]|10)$")
 SEVERITY_RANK = {
     "INFO": 0,
@@ -153,6 +155,8 @@ class TenableWasOwaspAnalysisClient:
         start_at: datetime,
         end_at: datetime,
         page_size: int = 200,
+        max_pages: int = MAX_ANALYSIS_PAGES,
+        max_rows: int = MAX_ANALYSIS_ROWS,
     ) -> tuple[Owasp2025PluginGroup, ...]:
         normalized_category = str(category or "").strip().upper()
         if not CATEGORY_PATTERN.fullmatch(normalized_category):
@@ -160,11 +164,15 @@ class TenableWasOwaspAnalysisClient:
         if start_at.tzinfo is None or end_at.tzinfo is None or start_at >= end_at:
             raise ValueError("O periodo OWASP deve possuir inicio anterior ao fim.")
         bounded_page_size = max(1, min(int(page_size), 500))
+        page_budget = max(1, min(int(max_pages), MAX_ANALYSIS_PAGES))
+        row_budget = max(1, min(int(max_rows), MAX_ANALYSIS_ROWS))
 
         rows: list[Owasp2025PluginGroup] = []
         cursor: str | None = None
         seen_cursors: set[str] = set()
+        page_count = 0
         while True:
+            page_count += 1
             data = self._client.request(
                 "POST",
                 ANALYSIS_PATH,
@@ -182,10 +190,14 @@ class TenableWasOwaspAnalysisClient:
             pagination = data.get("pagination")
             if not isinstance(items, list) or not isinstance(pagination, Mapping):
                 raise ApiError("Resposta da analise OWASP 2025 possui formato invalido.")
+            if len(rows) + len(items) > row_budget:
+                raise ApiError("Analise OWASP 2025 excedeu o limite de linhas.")
             rows.extend(_parse_group(normalized_category, item) for item in items)
             raw_next = pagination.get("next")
             if raw_next in (None, ""):
                 break
+            if page_count >= page_budget:
+                raise ApiError("Analise OWASP 2025 excedeu o limite de paginacao.")
             next_cursor = str(raw_next).strip()
             if not next_cursor or next_cursor in seen_cursors:
                 raise ApiError("Resposta da analise OWASP 2025 repetiu a paginacao.")

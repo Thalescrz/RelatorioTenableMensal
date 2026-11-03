@@ -187,7 +187,7 @@ def materialize_compact_snapshot_run(
     asset_source.write_json(asset_snapshot_path)
     finding_source.write_json(finding_snapshot_path)
 
-    if replay.was_findings:
+    if replay.was_collected:
         was_path = normalized_directory / "was-findings.jsonl.gz"
         write_jsonl_gzip_exclusive(
             was_path, (item.to_dict() for item in replay.was_findings)
@@ -215,6 +215,16 @@ def materialize_compact_snapshot_run(
             completed_at=snapshot.created_at,
         )
         was_source.write_json(snapshot_directory / "tenable_was_findings.snapshot.json")
+
+    if replay.was_owasp_2025_snapshot is not None:
+        owasp_snapshot = dict(replay.was_owasp_2025_snapshot)
+        owasp_snapshot["client_id"] = profile.client_id
+        owasp_snapshot["tenant_id"] = profile.tenant_id
+        owasp_snapshot["run_id"] = run_id
+        _write_exclusive(
+            snapshot_directory / "tenable_was_owasp_2025.snapshot.json",
+            owasp_snapshot,
+        )
 
     if replay.tag_scope is not None:
         tag_scope = {

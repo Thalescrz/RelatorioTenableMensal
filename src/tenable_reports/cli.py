@@ -2063,7 +2063,10 @@ def _assemble_period_from_existing(
     cloud_retryable: bool = False,
     cloud_warnings: tuple[Mapping[str, Any], ...] = (),
 ) -> _CollectedPeriodExecution:
-    include_was = str(was_collection_status or "").upper() == "COMPLETE"
+    include_was = str(was_collection_status or "").upper() in {
+        "COMPLETE",
+        "REPLAYED",
+    }
     if (
         selected_tag_count is None
         or collection_route is None
@@ -4411,6 +4414,7 @@ def _was_publication_metadata(
     *,
     profile: ClientProfile,
     recovery_attempt: int,
+    original_mode: str | None = None,
 ) -> dict[str, Any]:
     profile_mode = getattr(
         getattr(profile, "was_scope", None),
@@ -4419,8 +4423,10 @@ def _was_publication_metadata(
     )
     effective_mode = str(getattr(profile_mode, "value", profile_mode) or "inclusive")
     checkpoint = getattr(collected, "was_recovery_checkpoint", None)
-    original_mode = str(
-        getattr(checkpoint, "owasp_2025_original_mode", None) or effective_mode
+    resolved_original_mode = str(
+        original_mode
+        or getattr(checkpoint, "owasp_2025_original_mode", None)
+        or effective_mode
     )
     artifact = getattr(collected, "artifact", None)
     dataset = getattr(getattr(artifact, "result", None), "dataset", {})
@@ -4463,6 +4469,7 @@ def _was_publication_metadata(
     )
     snapshot_sha256 = sha256_file(snapshot_path) if snapshot_path.is_file() else None
     contract_sha256 = None
+    completed_categories: set[str] = set()
     audit_paths = [snapshot_path]
     audit_paths.extend(sorted((
         collected.output_root
@@ -4480,18 +4487,36 @@ def _was_publication_metadata(
             continue
         if isinstance(audit, Mapping) and audit.get("contract_sha256"):
             contract_sha256 = str(audit["contract_sha256"])
-            break
+        if audit_path == snapshot_path:
+            categories = audit.get("categories") if isinstance(audit, Mapping) else None
+            if isinstance(categories, Mapping):
+                completed_categories.update(
+                    str(category) for category in categories
+                    if str(category).startswith("A")
+                )
+        elif audit_path.stem.startswith("A"):
+            completed_categories.add(audit_path.stem)
+    failure = getattr(checkpoint, "was_failure", None)
     return {
         "WAS": {
             "status": status or "UNKNOWN",
             "owasp_2025": {
-                "original_mode": original_mode,
+                "original_mode": resolved_original_mode,
                 "effective_mode": effective_mode,
                 "source": source,
                 "coverage": coverage,
                 "snapshot_sha256": snapshot_sha256,
                 "contract_sha256": contract_sha256,
                 "recovery_attempt": max(1, int(recovery_attempt)),
+                "completed_categories": sorted(completed_categories),
+                "failure_code": (
+                    str(failure.code) if failure is not None else None
+                ),
+                "failed_category": (
+                    str(failure.failed_category)
+                    if failure is not None and failure.failed_category is not None
+                    else None
+                ),
             },
         }
     }
@@ -5017,6 +5042,26 @@ def _retry_published_was_documents(
     }
     if set(by_kind) != {"base"}:
         raise ValueError("Publicacao original precisa do documento geral.")
+    raw_component_metadata = manifest_payload.get("component_metadata")
+    component_metadata = (
+        raw_component_metadata
+        if isinstance(raw_component_metadata, Mapping)
+        else {}
+    )
+    previous_was = component_metadata.get("WAS")
+    previous_owasp = (
+        previous_was.get("owasp_2025")
+        if isinstance(previous_was, Mapping)
+        and isinstance(previous_was.get("owasp_2025"), Mapping)
+        else {}
+    )
+    previous_recovery_attempt = int(previous_owasp.get("recovery_attempt") or 1)
+    original_mode = str(
+        checkpoint.owasp_2025_original_mode
+        or checkpoint.owasp_2025_effective_mode
+        or previous_owasp.get("original_mode")
+        or _profile_owasp_2025_mode(profile).value
+    )
 
     staging = context.publication_manifest.parent / f".was-repair-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=False)
@@ -5078,6 +5123,12 @@ def _retry_published_was_documents(
             manifest_path=context.publication_manifest,
             dataset_path=collected.dataset_path,
             replacements=tuple(replacements),
+            component_metadata_updates=_was_publication_metadata(
+                collected,
+                profile=profile,
+                recovery_attempt=previous_recovery_attempt + 1,
+                original_mode=original_mode,
+            ),
             commit_callback=confirm_publication,
         )
         cleanup_plan = plan_published_run_cleanup(

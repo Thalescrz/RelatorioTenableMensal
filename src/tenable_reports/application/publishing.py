@@ -386,6 +386,7 @@ def replace_publication_documents_atomically(
     manifest_path: str | Path,
     dataset_path: str | Path,
     replacements: Sequence[PublicationDocumentReplacement],
+    component_metadata_updates: Mapping[str, Any] | None = None,
     commit_callback: Callable[[], None] | None = None,
 ) -> Path:
     """Replace validated VM documents and commit their manifest last."""
@@ -461,6 +462,16 @@ def replace_publication_documents_atomically(
         *preserved,
         *(validated for _, _, validated in prepared),
     ]
+    validated_updates = _validated_component_metadata(component_metadata_updates)
+    if validated_updates is not None:
+        existing_metadata = updated.get("component_metadata")
+        merged_metadata = (
+            dict(existing_metadata)
+            if isinstance(existing_metadata, Mapping)
+            else {}
+        )
+        merged_metadata.update(validated_updates)
+        updated["component_metadata"] = merged_metadata
     updated["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     transaction_id = uuid.uuid4().hex
