@@ -103,6 +103,11 @@ permanecem somente enquanto necessários para publicação, diagnóstico ou reto
   atualiza o manifesto existente e o catálogo de documentos sem reconstruir nem
   republicar o histórico VM.
 
+O adaptador do modo OWASP 2025 exclusivo usa o contrato interno autenticado
+validado em 2026-11-03: `filter.and`, `template: group`, parâmetros agregados,
+resposta em `groups` e paginação pelo token superior `next`. O código não aceita
+como equivalente o formato público de export nem promove respostas parciais.
+
 O snapshot Cloud é persistência da coleta, não da publicação editorial: ele pode
 ser gravado antes de `report_runs`, mantém `run_id` único e é reconciliado quando o
 manifesto é publicado. Quando uma retentativa seletiva completa todos os
