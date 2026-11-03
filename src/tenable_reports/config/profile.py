@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,21 @@ SECRET_MARKERS = (
 
 class ProfileError(ValueError):
     """Perfil de cliente invalido."""
+
+
+class Owasp2025Mode(StrEnum):
+    INCLUSIVE = "inclusive"
+    CONSOLE_EXCLUSIVE = "console_exclusive"
+
+
+def _as_owasp_2025_mode(value: Any) -> Owasp2025Mode:
+    normalized = str(value or Owasp2025Mode.INCLUSIVE.value).strip().lower()
+    try:
+        return Owasp2025Mode(normalized)
+    except ValueError as exc:
+        raise ProfileError(
+            "scope.was.owasp_2025_mode deve ser inclusive ou console_exclusive."
+        ) from exc
 
 
 def _reject_secrets(value: Any, path: str = "$") -> None:
@@ -230,6 +246,7 @@ class VmScope:
 class WasScope:
     enabled: bool = False
     application_ids: tuple[str, ...] = ()
+    owasp_2025_mode: Owasp2025Mode = Owasp2025Mode.INCLUSIVE
 
 
 @dataclass(frozen=True, slots=True)
@@ -490,6 +507,18 @@ class ClientProfile:
             raise ProfileError(
                 "scope.was.application_ids requer scope.was.enabled=true."
             )
+        owasp_2025_mode = _as_owasp_2025_mode(
+            was_data.get("owasp_2025_mode")
+        )
+        if (
+            application_ids
+            and owasp_2025_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE
+        ):
+            raise ProfileError(
+                "scope.was.owasp_2025_mode=console_exclusive ainda nao garante "
+                "o recorte remoto de scope.was.application_ids. Use inclusive "
+                "para este perfil."
+            )
         vm_top5_include_output = _as_bool(
             presentation_data.get("vm_top5_include_output"),
             "presentation.vm_top5_include_output",
@@ -627,6 +656,7 @@ class ClientProfile:
             was_scope=WasScope(
                 enabled=was_enabled,
                 application_ids=application_ids,
+                owasp_2025_mode=owasp_2025_mode,
             ),
             cloud_security_scope=CloudSecurityScope(
                 enabled=cloud_security_enabled,

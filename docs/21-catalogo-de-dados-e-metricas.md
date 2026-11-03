@@ -107,6 +107,28 @@ Classificação OWASP continua em sua seção própria e nunca preenche essa col
 catálogo conserva pares `ano + categoria`; somente os pares do ano 2025 alimentam
 o OWASP Top 10 atual, sem reinterpretar classificações legadas de 2021.
 
+### Seleção OWASP 2025 por cliente
+
+`scope.was.owasp_2025_mode` é uma preferência permanente do cliente:
+
+- `inclusive` é o padrão compatível: cruza os findings WAS normalizados com as
+  associações OWASP 2025 do catálogo oficial de plugins, sem consulta adicional;
+- `console_exclusive` usa a seleção exata A01–A10 da análise interna autenticada da
+  console para o mesmo período do componente WAS.
+
+O modo exclusivo só é aceito quando `scope.was.application_ids` está vazio. A
+equivalência do filtro remoto por aplicação ainda não foi comprovada; recusar a
+combinação evita que achados de aplicações fora do escopo entrem no documento.
+
+O dataset pronto para apresentação registra `was.owasp_selection` com
+`requested_mode`, `effective_mode`, `source`, `coverage`, período e contagens por
+categoria quando a coleta foi concluída. Código de falha, categoria que falhou e
+categorias já concluídas ficam no manifesto de publicação e nos checkpoints de
+recuperação, não em uma tabela parcial do dataset. Checkpoints exclusivos
+preservam identidade do cliente/tenant/período,
+hash dos critérios e linhas de cada categoria. Resultado parcial exclusivo nunca é
+convertido em tabela nem em zero; ele mantém o WAS como indisponível e retentável.
+
 Quando há ativos normalizados, mas nenhum finding VM, o dataset conserva todos os
 indicadores em zero e inclui o aviso de qualidade
 `VM_FINDINGS_EMPTY_WITH_ASSETS`. Ele diferencia “resultado realmente vazio” de um
@@ -222,14 +244,17 @@ snapshot Cloud ausente.
 - Top 5 VM: ranking local de findings não mitigados usando VPR, severidade e ativos
   afetados, seguido do detalhamento com Plugin ID antes do VPR e conjunto de hosts.
 - Top 5 WAS: ranking equivalente no conjunto WEB suportado.
-- OWASP Top 10: distribuição apenas dos achados que possuem classificação 2025
-  confirmada no detalhe oficial do plugin Tenable.
+- OWASP Top 10: distribuição dos achados selecionados pela fonte configurada no
+  cliente. No modo inclusivo, exige classificação 2025 confirmada no detalhe
+  oficial do plugin; no modo exclusivo, usa somente as linhas exatas retornadas
+  para cada categoria A01–A10 pela análise autenticada.
   Cada linha agrupa um Plugin ID dentro da categoria e apresenta nome, maior
   severidade, maior VPR e quantidade de instâncias. A ordenação é por VPR
   decrescente; em empate, usa maior severidade, mais instâncias e menor Plugin ID.
   Valores nulos de VPR ficam depois dos valores reais e aparecem como `0` somente
   no DOCX. `owasp_2025_coverage` diferencia cobertura `COMPLETE`, `PARTIAL`,
-  `UNAVAILABLE` e `NO_DATA`; uma falha de catálogo nunca é apresentada como zero.
+  `UNAVAILABLE` e `NO_DATA`; `NOT_COLLECTED` identifica WAS não publicado por
+  falha exclusiva. Falha de catálogo ou análise nunca é apresentada como zero.
   Categorias sem ocorrências recebem a mensagem mensal de ausência somente dentro
   da cobertura comprovada.
 
@@ -287,6 +312,11 @@ permanecem menores e não recebem linhas artificiais.
 O histórico compacto conserva as agregações necessárias para tabelas e gráficos,
 incluindo totais por severidade/estado, ativos, novas, mitigadas e não mitigadas.
 Ele não depende de reter permanentemente todos os chunks e findings raw.
+
+Para WAS, a fotografia compacta preserva os findings normalizados, o indicador de
+coleta concluída mesmo quando a população é vazia e, no modo exclusivo, o snapshot
+A01–A10 completo. O replay rematerializa essas evidências com o novo `run_id` sem
+reconsultar a Tenable.
 
 Para TAGs, a fotografia geral preserva até 20 ativos do recorte. Ao compactar o
 histórico específico da TAG, as métricas específicas são mantidas sem reduzir essa

@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from tenable_reports.application.collection_execution import materialize_compact_snapshot_run
 from tenable_reports.application.compact_publication import (
@@ -22,6 +24,87 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CompactPublicationTests(unittest.TestCase):
+    def test_prepare_snapshot_include_was_false_omits_preserved_was_findings(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        period = explicit_reporting_period(
+            start_at="2026-07-01T00:00:00-03:00",
+            end_at="2026-08-01T00:00:00-03:00",
+            reference_at="2026-08-10T12:00:00-03:00",
+            timezone_name="America/Fortaleza",
+        )
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            base = directory / "base.docx"
+            base.write_bytes(b"base")
+            inputs = SimpleNamespace(
+                assets=(),
+                findings=(),
+                was_findings=(SimpleNamespace(to_dict=lambda: {"finding_key": "stale"}),),
+                tag_scope=None,
+            )
+            with patch(
+                "tenable_reports.application.compact_publication.load_report_dataset_inputs",
+                return_value=inputs,
+            ) as loader:
+                snapshot = prepare_compact_run_snapshot(
+                    profile=profile,
+                    source_run_id="run-partial-was",
+                    execution_type="MANUAL",
+                    period=period,
+                    output_root=directory,
+                    document_references={"base": str(base)},
+                    include_was=False,
+                )
+
+        self.assertEqual(snapshot.record_counts["was_findings"], 0)
+        self.assertEqual(loader.call_args.kwargs["include_was"], False)
+
+    def test_prepare_snapshot_preserves_exclusive_owasp_evidence(self) -> None:
+        profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
+        period = explicit_reporting_period(
+            start_at="2026-07-01T00:00:00-03:00",
+            end_at="2026-08-01T00:00:00-03:00",
+            reference_at="2026-08-10T12:00:00-03:00",
+            timezone_name="America/Fortaleza",
+        )
+        exclusive = {
+            "schema_version": 1,
+            "mode": "console_exclusive",
+            "coverage": "COMPLETE",
+            "categories": {f"A{index:02d}": [] for index in range(1, 11)},
+        }
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            base = directory / "base.docx"
+            base.write_bytes(b"base")
+            inputs = SimpleNamespace(
+                assets=(),
+                findings=(),
+                was_findings=(),
+                was_owasp_snapshot=exclusive,
+                tag_scope=None,
+            )
+            with patch(
+                "tenable_reports.application.compact_publication.load_report_dataset_inputs",
+                return_value=inputs,
+            ):
+                snapshot = prepare_compact_run_snapshot(
+                    profile=profile,
+                    source_run_id="run-exclusive",
+                    execution_type="MANUAL",
+                    period=period,
+                    output_root=directory,
+                    document_references={"base": str(base)},
+                    include_was=True,
+                )
+
+        from tenable_reports.application.compact_snapshots import replay_compact_snapshot
+
+        self.assertEqual(
+            replay_compact_snapshot(snapshot).was_owasp_2025_snapshot,
+            exclusive,
+        )
+
     def test_prepares_recovery_snapshot_without_publishing_it(self) -> None:
         profile = load_client_profile(ROOT / "clients/examples/client-profile.json")
         period = explicit_reporting_period(

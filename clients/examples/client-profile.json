@@ -25,7 +25,8 @@
     },
     "was": {
       "enabled": false,
-      "application_ids": []
+      "application_ids": [],
+      "owasp_2025_mode": "inclusive"
     },
     "cloud_security": {
       "enabled": false,

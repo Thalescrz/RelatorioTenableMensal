@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
+
+from tenable_reports.application.collect_was import WasCollectionAttempt
+from tenable_reports.application.period_collection import collect_was_period
+from tenable_reports.config.profile import ClientProfile
+from tenable_reports.domain.reporting import previous_calendar_month
 
 from tenable_reports.application.staged_execution import (
     CheckpointArtifact,
@@ -24,6 +31,48 @@ VM_CONTENT = b"vm-fixture"
 VM_SHA256 = "b7c425cbb44e560fc27deae0c95f1f4d42f2117b5ee229e7c3d80c64958366bf"
 CLOUD_CONTENT = b"cloud-fixture"
 CLOUD_SHA256 = "df35410d229829db6bca80cd3b833cff3501778989bfcae9a9eb77e4013f284f"
+
+
+def test_inclusive_owasp_mode_does_not_call_exclusive_analysis(tmp_path: Path) -> None:
+    profile = ClientProfile.from_dict({
+        "schema_version": 1,
+        "client_id": "client-was",
+        "display_name": "Cliente WAS",
+        "tenant_id": "tenant-was",
+        "scope": {
+            "was": {
+                "enabled": True,
+                "owasp_2025_mode": "inclusive",
+            }
+        },
+    })
+    args = SimpleNamespace(
+        execution_control=None,
+        was_num_assets=100,
+        was_export_uuid=None,
+    )
+
+    with (
+        patch(
+            "tenable_reports.application.period_collection.collect_optional_was_snapshot",
+            return_value=WasCollectionAttempt(result=object(), status="COMPLETE"),
+        ),
+        patch("tenable_reports.application.period_collection.normalize_was_collection"),
+        patch(
+            "tenable_reports.application.period_collection.collect_exclusive_owasp_2025_snapshot"
+        ) as exclusive,
+    ):
+        result = collect_was_period(
+            args=args,
+            profile=profile,
+            period=previous_calendar_month(reference_at="2026-11-01T00:05:00-03:00"),
+            output_root=tmp_path,
+            run_id="run-inclusive",
+            was_client=object(),
+        )
+
+    assert result.collection_status == "COMPLETE"
+    exclusive.assert_not_called()
 
 
 def _remote_request(tmp_path: Path) -> RemoteCollectionRequest:

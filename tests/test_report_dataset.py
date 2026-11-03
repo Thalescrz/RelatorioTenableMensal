@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tenable_reports.domain.normalization import normalize_and_link
+from tenable_reports.config.profile import Owasp2025Mode
 from tenable_reports.domain.report_dataset import (
     AssetPopulationReason,
     FindingPopulationReason,
@@ -64,7 +65,18 @@ class ReportDatasetTests(unittest.TestCase):
             vpr_score=9.8,
         )
 
-    def build(self, assets, findings, query=None, include_info=False, tag_scope=None):
+    def build(
+        self,
+        assets,
+        findings,
+        query=None,
+        include_info=False,
+        tag_scope=None,
+        *,
+        was_collected=False,
+        owasp_2025_mode=Owasp2025Mode.INCLUSIVE,
+        exclusive_owasp_rows=None,
+    ):
         return build_report_dataset(
             client_id="client-fixture",
             run_id="run-fixture",
@@ -79,6 +91,42 @@ class ReportDatasetTests(unittest.TestCase):
             top_vulnerabilities_limit=5,
             late_collection_grace_days=1,
             tag_scope=tag_scope,
+            was_collected=was_collected,
+            owasp_2025_mode=owasp_2025_mode,
+            exclusive_owasp_rows=exclusive_owasp_rows,
+        )
+
+    def test_owasp_table_provenance_identifies_selected_source(self) -> None:
+        exclusive_rows = {f"A{index:02d}": [] for index in range(1, 11)}
+        result = self.build(
+            [self.asset],
+            [self.finding],
+            was_collected=True,
+            owasp_2025_mode=Owasp2025Mode.CONSOLE_EXCLUSIVE,
+            exclusive_owasp_rows=exclusive_rows,
+        )
+
+        provenance = result.dataset.table_provenance["tables"]["was_owasp"]
+        self.assertEqual(provenance["selection_source"], "console_analysis_exclusive")
+        self.assertNotIn("payload", provenance)
+
+    def test_was_unavailable_does_not_require_or_publish_exclusive_rows(self) -> None:
+        result = self.build(
+            [self.asset],
+            [self.finding],
+            was_collected=False,
+            owasp_2025_mode=Owasp2025Mode.CONSOLE_EXCLUSIVE,
+            exclusive_owasp_rows=None,
+        )
+
+        self.assertEqual(result.dataset.was["availability"], "NOT_COLLECTED")
+        self.assertEqual(result.dataset.was["owasp"], {})
+        self.assertEqual(
+            result.dataset.was["owasp_selection"]["coverage"],
+            "NOT_COLLECTED",
+        )
+        self.assertIsNone(
+            result.dataset.was["owasp_selection"]["category_counts"]
         )
 
     def test_finding_in_period_can_prove_asset_observed_despite_later_last_scan(self) -> None:

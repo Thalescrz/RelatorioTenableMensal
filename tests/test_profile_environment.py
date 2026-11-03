@@ -16,6 +16,7 @@ from tenable_reports.config.environment import (
 )
 from tenable_reports.config.profile import (
     ClientProfile,
+    Owasp2025Mode,
     ProfileError,
     load_client_profile,
     load_operational_client_profile,
@@ -151,6 +152,90 @@ def test_loaded_profile_uses_global_preparation_and_version_control(tmp_path: Pa
 
 
 class ProfileTests(unittest.TestCase):
+    def test_legacy_profile_defaults_to_inclusive_owasp_2025_mode(self) -> None:
+        profile = ClientProfile.from_dict({
+            "schema_version": 1,
+            "client_id": "cliente-legado",
+            "display_name": "Cliente Legado",
+            "tenant_id": "tenant-legado",
+            "scope": {"was": {"enabled": True}},
+        })
+
+        self.assertIs(profile.was_scope.owasp_2025_mode, Owasp2025Mode.INCLUSIVE)
+        self.assertEqual(profile.was_scope.owasp_2025_mode.value, "inclusive")
+
+    def test_profile_accepts_both_owasp_2025_modes(self) -> None:
+        for raw_mode, expected in (
+            ("inclusive", Owasp2025Mode.INCLUSIVE),
+            ("console_exclusive", Owasp2025Mode.CONSOLE_EXCLUSIVE),
+        ):
+            with self.subTest(raw_mode=raw_mode):
+                profile = ClientProfile.from_dict({
+                    "schema_version": 1,
+                    "client_id": "cliente-was",
+                    "display_name": "Cliente WAS",
+                    "tenant_id": "tenant-was",
+                    "scope": {
+                        "was": {
+                            "enabled": True,
+                            "owasp_2025_mode": raw_mode,
+                        }
+                    },
+                })
+
+                self.assertIs(profile.was_scope.owasp_2025_mode, expected)
+
+    def test_disabled_was_preserves_exclusive_owasp_2025_mode(self) -> None:
+        profile = ClientProfile.from_dict({
+            "schema_version": 1,
+            "client_id": "cliente-was",
+            "display_name": "Cliente WAS",
+            "tenant_id": "tenant-was",
+            "scope": {
+                "was": {
+                    "enabled": False,
+                    "owasp_2025_mode": "console_exclusive",
+                }
+            },
+        })
+
+        self.assertFalse(profile.was_scope.enabled)
+        self.assertIs(
+            profile.was_scope.owasp_2025_mode,
+            Owasp2025Mode.CONSOLE_EXCLUSIVE,
+        )
+
+    def test_profile_rejects_unknown_owasp_2025_mode(self) -> None:
+        with self.assertRaisesRegex(ProfileError, "scope.was.owasp_2025_mode"):
+            ClientProfile.from_dict({
+                "schema_version": 1,
+                "client_id": "cliente-was",
+                "display_name": "Cliente WAS",
+                "tenant_id": "tenant-was",
+                "scope": {
+                    "was": {
+                        "enabled": True,
+                        "owasp_2025_mode": "automatic",
+                    }
+                },
+            })
+
+    def test_exclusive_owasp_mode_rejects_unverified_application_scope(self) -> None:
+        with self.assertRaisesRegex(ProfileError, "application_ids"):
+            ClientProfile.from_dict({
+                "schema_version": 1,
+                "client_id": "cliente-was",
+                "display_name": "Cliente WAS",
+                "tenant_id": "tenant-was",
+                "scope": {
+                    "was": {
+                        "enabled": True,
+                        "application_ids": ["app-fixture"],
+                        "owasp_2025_mode": "console_exclusive",
+                    }
+                },
+            })
+
     def test_profile_exposes_additional_document_distribution_recipients(self) -> None:
         profile = ClientProfile.from_dict({
             "schema_version": 1,

@@ -1198,6 +1198,12 @@ function unreadDashboardAlertItems() {
   );
 }
 
+function wasOwaspModeLabel(mode) {
+  return mode === "console_exclusive"
+    ? "Exclusivo — mesma seleção da console Tenable"
+    : "Inclusivo — qualquer associação com a categoria";
+}
+
 function renderAlerts() {
   if (!state.data) return;
   const items = unreadDashboardAlertItems();
@@ -1211,8 +1217,10 @@ function renderAlerts() {
     const routeCopy = a.export?.date_field ? ` · filtro ${escapeHtml(a.export.date_field)}` : "";
     const exportCopy = a.export?.export_uuid ? `<p><small>Export VM: ${escapeHtml(a.export.export_uuid)} · ${Number(a.export.completed_chunks || 0)}/${Number(a.export.total_chunks || 0)} chunks · origem ${escapeHtml(a.export.origin || "desconhecida")}${segmentCopy}${routeCopy}${idleCopy}${limitCopy}</small></p>` : "";
     const wasFailure = a.was_recovery?.failure || {};
+    const wasOwaspMode = a.was_recovery?.owasp_2025_mode || "inclusive";
+    const wasOwaspModeCopy = wasOwaspModeLabel(wasOwaspMode);
     const wasCopy = a.was_recovery
-      ? `<p><small>Export WEB: ${escapeHtml(wasFailure.export_uuid || "UUID não informado")} · ${Number(wasFailure.completed_chunks || 0)}/${Number(wasFailure.total_chunks || 0)} chunks · origem ${escapeHtml(wasFailure.origin || "desconhecida")}</small></p>`
+      ? `<p><small>Export WEB: ${escapeHtml(wasFailure.export_uuid || "UUID não informado")} · ${Number(wasFailure.completed_chunks || 0)}/${Number(wasFailure.total_chunks || 0)} chunks · origem ${escapeHtml(wasFailure.origin || "desconhecida")} · OWASP 2025: ${escapeHtml(wasOwaspModeCopy)}</small></p>`
       : "";
     const automaticWasRetry = a.was_recovery?.status === "RETRY_AVAILABLE";
     const reportSetAction = a.run_id && a.client_id && a.client_id !== "Sistema"
@@ -1220,8 +1228,8 @@ function renderAlerts() {
       : "";
     const action = a.was_recovery
       ? automaticWasRetry
-        ? `<p><button class="mini-button" data-was-retry-run="${escapeHtml(a.run_id)}" type="button">Tentar WEB novamente</button></p>`
-        : `<p><button class="mini-button" data-was-continue-run="${escapeHtml(a.run_id)}" type="button">Continuar sem WEB</button> <button class="mini-button" data-was-retry-run="${escapeHtml(a.run_id)}" type="button">Tentar WEB novamente</button></p>`
+        ? `<p><button class="mini-button" data-was-retry-run="${escapeHtml(a.run_id)}" data-was-owasp-mode="${escapeHtml(wasOwaspMode)}" type="button">Tentar somente WAS novamente</button></p>`
+        : `<p><button class="mini-button" data-was-continue-run="${escapeHtml(a.run_id)}" type="button">Continuar sem WEB</button> <button class="mini-button" data-was-retry-run="${escapeHtml(a.run_id)}" data-was-owasp-mode="${escapeHtml(wasOwaspMode)}" type="button">Tentar somente WAS novamente</button></p>`
       : a.cloud_retry
       ? `<p><button class="mini-button" data-retry-cloud-run="${escapeHtml(a.run_id)}" type="button">Tentar Cloud novamente</button></p>`
       : !a.job_id ? "" : stuck
@@ -1262,13 +1270,14 @@ function renderAlerts() {
   }));
   document.querySelectorAll("[data-was-retry-run]").forEach(button => button.addEventListener("click", async () => {
     const runId = button.dataset.wasRetryRun;
-    if (!window.confirm(`Somente a coleta WEB será tentada novamente. VM, assets, TAG e Cloud não serão repetidos.\n\nExecução: ${runId}\n\nDeseja continuar?`)) return;
+    const modeCopy = wasOwaspModeLabel(button.dataset.wasOwaspMode);
+    if (!window.confirm(`Somente o componente WAS será tentado novamente. VM, assets, TAG e Cloud não serão repetidos.\n\nModo OWASP 2025 atual: ${modeCopy}\n\nExecução: ${runId}\n\nDeseja continuar?`)) return;
     button.disabled = true;
     try {
       await api(`/api/was-recoveries/${encodeURIComponent(runId)}/retry`, {
         method: "POST", body: { confirmation: `RETENTAR WAS ${runId}` },
       });
-      await refresh(); toast("Retentativa WEB adicionada à fila.");
+      await refresh(); toast("Retentativa WAS adicionada à fila.");
     } catch (error) { toast(error.message, "error"); button.disabled = false; }
   }));
   document.querySelectorAll("[data-cancel-export-job]").forEach(button => button.addEventListener("click", async () => {
@@ -1813,6 +1822,22 @@ function syncCloudConfig() {
       : "Informe o token Cloud e salve o cliente antes de testar a API.";
 }
 
+function syncWasOwaspConfig() {
+  const field = clientForm.elements.was_owasp_2025_mode;
+  const view = window.owaspModeHelpers.owaspModeView({
+    wasEnabled: clientForm.elements.was_enabled.checked,
+    savedMode: field.value,
+  });
+  field.value = view.value;
+  field.disabled = view.disabled;
+  $("#was-owasp-config").classList.toggle("disabled", view.disabled);
+  $("#was-owasp-config-note").textContent = view.disabled
+    ? "Ative Vulnerabilidades WEB para aplicar esta seleção. A preferência salva será preservada."
+    : view.value === "console_exclusive"
+      ? "O modo exclusivo segue a seleção apresentada pela console Tenable e pode ser retentado somente no WAS."
+      : "O modo inclusivo é o padrão e não adiciona consultas à coleta.";
+}
+
 function resetClientForm() {
   state.editingClientId = null;
   state.responsibleAnalystDraft = "";
@@ -1827,6 +1852,7 @@ function resetClientForm() {
   clientForm.elements.secret_key.placeholder = "Opcional agora";
   clientForm.elements.intelligence_enabled.checked = true;
   clientForm.elements.was_enabled.checked = true;
+  clientForm.elements.was_owasp_2025_mode.value = "inclusive";
   clientForm.elements.cloud_enabled.checked = false;
   clientForm.elements.cloud_api_secret.value = "";
   clientForm.elements.cloud_api_secret.placeholder = "Preencha para salvar";
@@ -1843,6 +1869,7 @@ function resetClientForm() {
   $("#fetch-tags-button").disabled = true;
   renderTagSelector();
   syncCloudConfig();
+  syncWasOwaspConfig();
   $("#client-form-mode").textContent = "NOVO";
   $("#client-form-title").textContent = "Adicionar cliente";
   $("#client-form-note").textContent = "As chaves ficam apenas no arquivo local ignorado pelo Git e nunca retornam à tela.";
@@ -1881,6 +1908,9 @@ function editClient(clientId) {
   renderTagSelector();
   clientForm.elements.intelligence_enabled.checked = Boolean(client.intelligence_enabled);
   clientForm.elements.was_enabled.checked = Boolean(client.was_enabled);
+  clientForm.elements.was_owasp_2025_mode.value = window.owaspModeHelpers.normalizeOwaspMode(
+    client.was_owasp_2025_mode,
+  );
   clientForm.elements.cloud_enabled.checked = Boolean(client.cloud_enabled);
   clientForm.elements.cloud_api_secret.value = "";
   clientForm.elements.cloud_api_secret.placeholder = client.cloud_token_saved ? "Token Cloud salvo · preencha somente para trocar" : "Token Cloud ainda não salvo";
@@ -1893,6 +1923,7 @@ function editClient(clientId) {
   clientForm.elements.historical_source.value = client.historical_source || "legacy";
   $("#validate-vm-export-button").disabled = !client.credentials_ready || !client.enabled;
   syncCloudConfig();
+  syncWasOwaspConfig();
   $("#client-form-mode").textContent = "EDITANDO";
   $("#client-form-title").textContent = client.display_name;
   $("#client-form-note").textContent = "Deixe as chaves vazias para manter as credenciais atuais. O ID interno não pode ser alterado.";
@@ -1916,6 +1947,8 @@ clientForm.elements.responsible_analyst_id.addEventListener("change", event => {
 $("#cancel-edit-button").addEventListener("click", resetClientForm);
 $("#fetch-tags-button").addEventListener("click", fetchClientTags);
 clientForm.elements.cloud_enabled.addEventListener("change", syncCloudConfig);
+clientForm.elements.was_enabled.addEventListener("change", syncWasOwaspConfig);
+clientForm.elements.was_owasp_2025_mode.addEventListener("change", syncWasOwaspConfig);
 $("#test-cloud-button").addEventListener("click", async event => {
   if (!state.editingClientId) return;
   const button = event.currentTarget;

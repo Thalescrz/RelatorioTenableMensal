@@ -150,6 +150,44 @@ class CompactSnapshotTests(unittest.TestCase):
         self.assertEqual(len(snapshot.content_sha256), 64)
         self.assertTrue(snapshot.payload_gzip.startswith(b"\x1f\x8b"))
 
+    def test_exclusive_owasp_snapshot_round_trips_in_compact_history(self) -> None:
+        normalized = normalized_fixture()
+        exclusive = {
+            "schema_version": 1,
+            "client_id": "client-a",
+            "tenant_id": "tenant-a",
+            "run_id": "run-a",
+            "mode": "console_exclusive",
+            "source": "console_analysis_exclusive",
+            "coverage": "COMPLETE",
+            "period": {
+                "start_at": "2026-07-01T03:00:00Z",
+                "end_at": "2026-08-01T03:00:00Z",
+                "timezone": "America/Fortaleza",
+            },
+            "contract_sha256": "a" * 64,
+            "categories": {"A01": []},
+        }
+        snapshot = build_compact_snapshot(
+            client_id="client-a",
+            tenant_id="tenant-a",
+            run_id="run-a",
+            execution_type="MANUAL",
+            period_mode="EXPLICIT_RANGE",
+            period_start_at="2026-07-01T03:00:00Z",
+            period_end_at="2026-08-01T03:00:00Z",
+            assets=normalized.assets,
+            findings=normalized.findings,
+            quality_issues=(),
+            tag_asset_ids={},
+            document_references={"base": "C:/reports/base.docx"},
+            was_owasp_2025_snapshot=exclusive,
+        )
+
+        replay = replay_compact_snapshot(snapshot)
+
+        self.assertEqual(replay.was_owasp_2025_snapshot, exclusive)
+
     def test_replay_prefers_current_envelope_document_references(self) -> None:
         normalized = normalized_fixture()
         snapshot = build_compact_snapshot(

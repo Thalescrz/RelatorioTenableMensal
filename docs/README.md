@@ -25,9 +25,10 @@ uma descrição de fase antiga.
 - [Arquitetura e fluxo de dados](20-arquitetura-e-fluxo-de-dados.md): componentes,
   execução completa, histórico e ciclo de vida dos artefatos.
 - [Catálogo de dados e métricas](21-catalogo-de-dados-e-metricas.md): dados VM/WAS,
-  regras temporais, métricas e validação na plataforma.
+  modos OWASP 2025 por cliente, regras temporais, métricas e validação na plataforma.
 - [Guia operacional](22-guia-operacional.md): instalação, clientes, execução,
-  acompanhamento, falhas, `MAIN` e armazenamento.
+  seleção OWASP inclusiva/exclusiva, retry somente WAS, acompanhamento, `MAIN` e
+  armazenamento.
 - [Guia de desenvolvimento](23-guia-de-desenvolvimento.md): organização do código,
   testes, alterações seguras e validação dos documentos.
 - [Integração Tenable Cloud e licenciamento](24-integracao-apis-tenable-cloud-e-licenciamento.md):

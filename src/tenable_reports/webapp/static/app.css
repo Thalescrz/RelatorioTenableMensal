@@ -219,6 +219,11 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
 .client-form > label select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,.08); }
 .field-row.hidden { display: none !important; }
 .check-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 18px; }.check { display: flex; align-items: center; gap: 8px; }.check input { width: 16px; height: 16px; margin: 0; }.form-note { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.was-owasp-config { margin-top: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 13px; background: rgba(109,169,255,.025); transition: opacity .2s, border-color .2s; }
+.was-owasp-config.disabled { opacity: .58; }
+.was-owasp-config-head > div span, .was-owasp-config-head > div strong { display: block; }.was-owasp-config-head > div span { color: var(--blue); font: 700 8px var(--display); letter-spacing: .13em; }.was-owasp-config-head > div strong { margin-top: 3px; font: 600 13px var(--display); }
+.was-owasp-config > label { display: block; margin-top: 13px; }.was-owasp-config select { display: block; width: 100%; height: 38px; margin-top: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 0 9px; color: var(--ink); background: #0f1418; outline: none; }
+.was-owasp-config select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,.08); }.was-owasp-config > p { margin: 10px 0 0; color: var(--muted); font-size: 9px; line-height: 1.45; }
 .tag-config { margin-top: 18px; padding: 15px; border: 1px solid var(--line); border-radius: 13px; background: linear-gradient(145deg, rgba(109,169,255,.055), rgba(255,255,255,.012)); }
 .tag-config-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .tag-config-head > div span, .tag-config-head > div strong { display: block; }.tag-config-head > div span { color: var(--blue); font: 700 8px var(--display); letter-spacing: .13em; }.tag-config-head > div strong { margin-top: 3px; font: 600 13px var(--display); }

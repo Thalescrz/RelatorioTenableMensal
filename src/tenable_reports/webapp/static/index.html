@@ -237,6 +237,18 @@
           <label class="check"><input name="include_output" type="checkbox"><span>Coluna Output</span></label>
           <label class="check"><input name="show_source_filters" type="checkbox"><span>Exibir filtros de origem</span></label>
         </div>
+        <section class="was-owasp-config" id="was-owasp-config" aria-labelledby="was-owasp-config-title">
+          <div class="was-owasp-config-head">
+            <div><span>OWASP TOP 10:2025</span><strong id="was-owasp-config-title">Seleção das vulnerabilidades WEB</strong></div>
+          </div>
+          <label>Modo de apresentação
+            <select name="was_owasp_2025_mode">
+              <option value="inclusive" selected>Inclusivo — qualquer associação com a categoria</option>
+              <option value="console_exclusive">Exclusivo — mesma seleção da console Tenable</option>
+            </select>
+          </label>
+          <p id="was-owasp-config-note">O modo inclusivo é o padrão e não adiciona consultas à coleta.</p>
+        </section>
         <section class="cloud-config" id="cloud-config" aria-labelledby="cloud-config-title">
           <div class="cloud-config-head">
             <div><span>CLOUD SECURITY</span><strong id="cloud-config-title">Conexão do relatório</strong></div>
@@ -492,6 +504,7 @@
   <script src="/static/dashboard_alerts.js" defer></script>
   <script src="/static/batch_retryability.js" defer></script>
   <script src="/static/document_distribution.js" defer></script>
+  <script src="/static/owasp_mode.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

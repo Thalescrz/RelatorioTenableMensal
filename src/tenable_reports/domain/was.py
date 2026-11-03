@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import urlsplit
 
+from tenable_reports.config.profile import Owasp2025Mode
 from tenable_reports.domain.reporting import ReportingPeriod, parse_utc
 
 
@@ -230,6 +231,8 @@ def build_was_report_data(
     collected: bool,
     include_info_severity: bool,
     top_limit: int,
+    owasp_2025_mode: Owasp2025Mode = Owasp2025Mode.INCLUSIVE,
+    exclusive_owasp_rows: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
 ) -> tuple[dict[str, Any], tuple[dict[str, Any], ...], dict[str, int]]:
     rows = tuple(findings)
     included = tuple(
@@ -292,48 +295,114 @@ def build_was_report_data(
         -item["finding_instances"],
         item["plugin_id"],
     ))
+    category_names = tuple(f"A{index:02d}" for index in range(1, 11))
     owasp: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
-    for item in open_rows:
-        for label in item.owasp_2025:
-            category = _canonical_owasp_category(label)
-            if category is None:
-                continue
-            row = owasp[category].setdefault(item.plugin_id, {
-                "plugin_id": item.plugin_id,
-                "name": item.plugin_name,
-                "severity": item.severity,
-                "vpr_score": item.vpr_score,
-                "instances": 0,
-            })
-            if SEVERITY_WEIGHT.get(item.severity, -1) > SEVERITY_WEIGHT.get(
-                row["severity"], -1
-            ):
-                row["severity"] = item.severity
-            if item.vpr_score is not None and (
-                row["vpr_score"] is None or item.vpr_score > row["vpr_score"]
-            ):
-                row["vpr_score"] = item.vpr_score
-            row["instances"] += 1
+    if owasp_2025_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE:
+        if not collected:
+            pass
+        elif exclusive_owasp_rows is None:
+            raise ValueError("O modo OWASP exclusivo requer snapshot completo da analise.")
+        elif set(exclusive_owasp_rows) != set(category_names):
+            raise ValueError("O snapshot OWASP exclusivo nao cobre A01-A10.")
+        else:
+            for category in category_names:
+                for value in exclusive_owasp_rows[category]:
+                    if not isinstance(value, Mapping):
+                        raise ValueError("Linha OWASP exclusiva possui formato invalido.")
+                    if value.get("category") not in {None, category}:
+                        raise ValueError("Linha OWASP exclusiva pertence a outra categoria.")
+                    plugin_id = int(value["plugin_id"])
+                    if plugin_id in owasp[category]:
+                        raise ValueError("Snapshot OWASP exclusivo possui Plugin ID duplicado.")
+                    raw_vpr = value.get("vpr_score")
+                    owasp[category][plugin_id] = {
+                        "plugin_id": plugin_id,
+                        "name": str(value["name"]).strip() if value.get("name") else None,
+                        "severity": str(value["severity"]).strip().upper(),
+                        "vpr_score": float(raw_vpr) if raw_vpr is not None else None,
+                        "instances": int(value["instances"]),
+                    }
+    else:
+        for item in open_rows:
+            for label in item.owasp_2025:
+                category = _canonical_owasp_category(label)
+                if category is None:
+                    continue
+                row = owasp[category].setdefault(item.plugin_id, {
+                    "plugin_id": item.plugin_id,
+                    "name": item.plugin_name,
+                    "severity": item.severity,
+                    "vpr_score": item.vpr_score,
+                    "instances": 0,
+                })
+                if SEVERITY_WEIGHT.get(item.severity, -1) > SEVERITY_WEIGHT.get(
+                    row["severity"], -1
+                ):
+                    row["severity"] = item.severity
+                if item.vpr_score is not None and (
+                    row["vpr_score"] is None or item.vpr_score > row["vpr_score"]
+                ):
+                    row["vpr_score"] = item.vpr_score
+                row["instances"] += 1
     availability = "AVAILABLE" if collected and rows else "NO_DATA" if collected else "NOT_COLLECTED"
     open_plugin_ids = {item.plugin_id for item in open_rows}
     observed_plugin_ids = {
         item.plugin_id for item in open_rows if item.owasp_detail_observed
     }
-    if not open_plugin_ids:
+    if not collected:
+        owasp_coverage_status = "NOT_COLLECTED"
+        coverage_total = 0
+        coverage_observed = 0
+    elif owasp_2025_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE:
+        exclusive_plugin_ids = {
+            plugin_id for values in owasp.values() for plugin_id in values
+        }
+        owasp_coverage_status = "COMPLETE"
+        coverage_total = len(exclusive_plugin_ids)
+        coverage_observed = coverage_total
+    elif not open_plugin_ids:
         owasp_coverage_status = "NO_DATA"
+        coverage_total = 0
+        coverage_observed = 0
     elif observed_plugin_ids == open_plugin_ids:
         owasp_coverage_status = "COMPLETE"
+        coverage_total = len(open_plugin_ids)
+        coverage_observed = len(observed_plugin_ids)
     elif observed_plugin_ids:
         owasp_coverage_status = "PARTIAL"
+        coverage_total = len(open_plugin_ids)
+        coverage_observed = len(observed_plugin_ids)
     else:
         owasp_coverage_status = "UNAVAILABLE"
+        coverage_total = len(open_plugin_ids)
+        coverage_observed = 0
+    selection_source = (
+        "console_analysis_exclusive"
+        if owasp_2025_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE
+        else "plugin_catalog_inclusive"
+    )
     was = {
         "availability": availability,
         "owasp_catalog_version": "2025",
         "owasp_2025_coverage": {
             "status": owasp_coverage_status,
-            "plugin_ids_total": len(open_plugin_ids),
-            "plugin_ids_observed": len(observed_plugin_ids),
+            "plugin_ids_total": coverage_total,
+            "plugin_ids_observed": coverage_observed,
+        },
+        "owasp_selection": {
+            "requested_mode": owasp_2025_mode.value,
+            "effective_mode": owasp_2025_mode.value,
+            "source": selection_source,
+            "coverage": owasp_coverage_status,
+            "period": period.to_dict(),
+            "category_counts": (
+                {
+                    category: len(owasp.get(category, {}))
+                    for category in category_names
+                }
+                if collected
+                else None
+            ),
         },
         "applications": application_rows,
         "top_vulnerabilities": top_rows[:top_limit],
@@ -348,7 +417,11 @@ def build_was_report_data(
                     item["plugin_id"],
                 ),
             )
-            for category, values in sorted(owasp.items())
+            for category, values in (
+                ((category, owasp.get(category, {})) for category in category_names)
+                if owasp_2025_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE and collected
+                else sorted(owasp.items())
+            )
         },
         "population": {
             "input": len(rows),

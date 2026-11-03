@@ -65,6 +65,7 @@ def prepare_compact_run_snapshot(
     output_root: str | Path,
     document_references: Mapping[str, str],
     created_at: str | None = None,
+    include_was: bool = True,
 ) -> CompactFindingSnapshot:
     references = {
         str(key): str(value)
@@ -79,6 +80,7 @@ def prepare_compact_run_snapshot(
         profile=profile,
         run_id=source_run_id,
         output_root=root,
+        include_was=include_was,
     )
     normalized_directory = root / "normalized" / profile.client_id / source_run_id
     return build_compact_snapshot(
@@ -94,7 +96,17 @@ def prepare_compact_run_snapshot(
         quality_issues=_quality_issues(normalized_directory),
         tag_asset_ids=_tag_asset_ids(inputs.tag_scope),
         tag_scope=inputs.tag_scope,
-        was_findings=inputs.was_findings,
+        was_findings=inputs.was_findings if include_was else (),
+        was_collected=(
+            include_was
+            and (
+                getattr(inputs, "was_snapshot", None) is not None
+                or bool(inputs.was_findings)
+            )
+        ),
+        was_owasp_2025_snapshot=(
+            getattr(inputs, "was_owasp_snapshot", None) if include_was else None
+        ),
         document_references=references,
         created_at=created_at,
     )
@@ -112,6 +124,7 @@ def publish_compact_run_snapshot(
     document_references: Mapping[str, str],
     publication_validated: bool,
     documents_validated: bool,
+    include_was: bool = True,
 ) -> CompactFindingSnapshot:
     if not publication_validated or not documents_validated:
         raise ValueError("Publicacao e documentos precisam estar confirmados.")
@@ -123,6 +136,7 @@ def publish_compact_run_snapshot(
         period=period,
         output_root=output_root,
         document_references=document_references,
+        include_was=include_was,
     )
     finalize_compact_snapshot(
         repository=repository,
