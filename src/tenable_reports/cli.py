@@ -169,6 +169,9 @@ from tenable_reports.application.was_recovery import (
     load_was_recovery_checkpoint,
     write_was_recovery_checkpoint,
 )
+from tenable_reports.application.was_owasp_2025 import (
+    collect_exclusive_owasp_2025_snapshot,
+)
 from tenable_reports.application.retention import (
     apply_cleanup_plan,
     plan_published_run_cleanup,
@@ -189,6 +192,7 @@ from tenable_reports.config.environment import (
 from tenable_reports.config.database import DatabaseAdminConfig, DatabaseConfig
 from tenable_reports.config.profile import (
     ClientProfile,
+    Owasp2025Mode,
     ProfileError,
     load_operational_client_profile as load_client_profile,
 )
@@ -211,6 +215,9 @@ from tenable_reports.infrastructure.tenable_vm.client import (
     TenableVmConfig,
 )
 from tenable_reports.infrastructure.tenable_was.client import TenableWasClient
+from tenable_reports.infrastructure.tenable_was.owasp_analysis import (
+    TenableWasOwaspAnalysisClient,
+)
 from tenable_reports.infrastructure.tenable_inventory.client import InventoryFindingsClient
 from tenable_reports.infrastructure.cloud_snapshots_postgresql import (
     PostgresCloudSnapshotRepository,
@@ -1709,6 +1716,15 @@ def _effective_no_progress_timeout_seconds(
     ))
 
 
+def _profile_owasp_2025_mode(profile: ClientProfile) -> Owasp2025Mode:
+    value = getattr(
+        getattr(profile, "was_scope", None),
+        "owasp_2025_mode",
+        Owasp2025Mode.INCLUSIVE,
+    )
+    return value if isinstance(value, Owasp2025Mode) else Owasp2025Mode(str(value))
+
+
 def _retry_was_once_before_publication(
     args: argparse.Namespace,
     *,
@@ -1720,6 +1736,33 @@ def _retry_was_once_before_publication(
 ) -> WasCollectionAttempt:
     credentials = _load_credentials(args.env_file)
     was_client = _was_client_from_environment(credentials)
+    normalized_was = (
+        output_root / "normalized" / profile.client_id / run_id
+        / "was-findings.jsonl.gz"
+    )
+    normalized_was_manifest = normalized_was.with_name("was-manifest.json")
+    if (
+        previous_failure.code == "WAS_OWASP_2025_EXCLUSIVE_UNAVAILABLE"
+        and normalized_was.is_file()
+        and normalized_was_manifest.is_file()
+        and _profile_owasp_2025_mode(profile)
+        is Owasp2025Mode.CONSOLE_EXCLUSIVE
+    ):
+        owasp_attempt = collect_exclusive_owasp_2025_snapshot(
+            client=TenableWasOwaspAnalysisClient(was_client),
+            profile=profile,
+            period=period,
+            output_root=output_root,
+            run_id=run_id,
+            resume_run_id=run_id,
+            progress_callback=_emit_progress_event,
+        )
+        return WasCollectionAttempt(
+            result=None,
+            status=owasp_attempt.status,
+            warnings=owasp_attempt.warnings,
+            failure=owasp_attempt.failure,
+        )
     reusable_statuses = {"FINISHED", "QUEUED", "PROCESSING"}
     export_uuid = (
         previous_failure.export_uuid
@@ -1910,6 +1953,8 @@ def _execute_period(
                 include_output=bool(args.include_output),
                 was_status=was_collection_status,
                 was_failure=was_failure,
+                owasp_2025_original_mode=_profile_owasp_2025_mode(profile).value,
+                owasp_2025_effective_mode=_profile_owasp_2025_mode(profile).value,
             )
             write_was_recovery_checkpoint(checkpoint_path, checkpoint)
             was_failure_policy = getattr(args, "was_failure_policy", None) or (
@@ -4191,6 +4236,7 @@ def command_run_client(args: argparse.Namespace) -> int:
             "run_id": pending.run_id,
             "client_id": pending.client_id,
             "checkpoint": str(pending.checkpoint_path.resolve()),
+            "owasp_2025_mode": _profile_owasp_2025_mode(profile).value,
             "was_failure": pending.failure.to_dict(),
         }, ensure_ascii=False))
         return WAS_DECISION_EXIT_CODE
@@ -4708,6 +4754,7 @@ def _publish_collected_period(
     )
     if (
         operations is not None
+        and component_set_complete
         and history_confirmed
         and compact_snapshot_confirmed
         and cloud_cleanup_confirmed
@@ -4853,6 +4900,26 @@ def _prepare_published_was_recovery(
             run_id=work_run_id,
             output_root=output_root,
         )
+    source_normalized = (
+        output_root / "normalized" / checkpoint.client_id / checkpoint.run_id
+    )
+    source_was = (
+        source_normalized / "was-findings.jsonl.gz",
+        source_normalized / "was-manifest.json",
+    )
+    target_was = (
+        normalized / "was-findings.jsonl.gz",
+        normalized / "was-manifest.json",
+    )
+    source_was_exists = tuple(path.is_file() for path in source_was)
+    target_was_exists = tuple(path.is_file() for path in target_was)
+    if any(source_was_exists) and not all(source_was_exists):
+        raise ValueError("Dados WAS normalizados da publicacao original estao incompletos.")
+    if any(target_was_exists) and not all(target_was_exists):
+        raise ValueError("Dados WAS normalizados da recuperacao estao incompletos.")
+    if all(source_was_exists) and not any(target_was_exists):
+        for source, target in zip(source_was, target_was, strict=True):
+            shutil.copy2(source, target)
     report_root = output_root / "reports" / checkpoint.client_id / checkpoint.run_id
     manifests = tuple(sorted(report_root.glob("*/publication-manifest.json")))
     if len(manifests) != 1:
@@ -4946,10 +5013,10 @@ def _retry_published_was_documents(
     by_kind = {
         document.document_kind: document
         for document in existing_documents
-        if document.document_kind in {"base", "custom"}
+        if document.document_kind == "base"
     }
-    if set(by_kind) != {"base", "custom"}:
-        raise ValueError("Publicacao original precisa dos documentos base e customizado.")
+    if set(by_kind) != {"base"}:
+        raise ValueError("Publicacao original precisa do documento geral.")
 
     staging = context.publication_manifest.parent / f".was-repair-{uuid.uuid4().hex}"
     staging.mkdir(parents=True, exist_ok=False)
@@ -4971,48 +5038,6 @@ def _retry_published_was_documents(
             staged_path=base_staged,
             destination=base_destination,
         ))
-
-        custom_destination = by_kind["custom"]
-        custom_staged = staging / Path(custom_destination.path).name
-        generate_customizations_report(
-            template_path=args.template,
-            dataset_path=collected.dataset_path,
-            profile=profile,
-            output_path=custom_staged,
-            mask_sensitive=args.mask_sensitive,
-        )
-        replacements.append(PublicationDocumentReplacement(
-            staged_path=custom_staged,
-            destination=custom_destination,
-        ))
-
-        tag_artifacts = {
-            item.tag.uuid: item for item in tuple(collected.tag_artifacts or ())
-        }
-        tag_datasets = dict(collected.tag_enriched_dataset_paths or {})
-        for destination in existing_documents:
-            if destination.document_kind != "tag":
-                continue
-            tag_uuid = str(destination.tag_uuid or "")
-            artifact = tag_artifacts.get(tag_uuid)
-            dataset_path = tag_datasets.get(tag_uuid)
-            if artifact is None or dataset_path is None:
-                raise ValueError(
-                    f"TAG da publicacao original nao foi reconstruida: {tag_uuid}."
-                )
-            staged = staging / Path(destination.path).name
-            generate_tag_report(
-                template_path=args.template,
-                dataset_path=dataset_path,
-                profile=profile,
-                output_path=staged,
-                mask_sensitive=args.mask_sensitive,
-                translator=translator,
-            )
-            replacements.append(PublicationDocumentReplacement(
-                staged_path=staged,
-                destination=destination,
-            ))
 
         document_references: dict[str, str] = {}
         for document in existing_documents:
@@ -5143,6 +5168,19 @@ def command_resume_was(args: argparse.Namespace) -> int:
     )
     was_collection_status = checkpoint.was_status
     warnings = _was_warning_from_checkpoint(checkpoint)
+    current_owasp_mode = _profile_owasp_2025_mode(profile)
+    original_owasp_mode = (
+        checkpoint.owasp_2025_original_mode
+        or checkpoint.owasp_2025_effective_mode
+        or (
+            Owasp2025Mode.CONSOLE_EXCLUSIVE.value
+            if checkpoint.was_failure is not None
+            and checkpoint.was_failure.code
+            == "WAS_OWASP_2025_EXCLUSIVE_UNAVAILABLE"
+            else current_owasp_mode.value
+        )
+    )
+    completed_checkpoint: WasRecoveryCheckpoint | None = None
     if decision is WasRecoveryDecision.RETRY_WAS:
         was_run_id = (
             published_context.work_run_id
@@ -5154,8 +5192,10 @@ def command_resume_was(args: argparse.Namespace) -> int:
         )
         normalized_was_manifest = normalized_was.with_name("was-manifest.json")
         previous_failure = checkpoint.was_failure
+        attempt: WasCollectionAttempt | None = None
+        owasp_attempt = None
+        was_client = None
         if normalized_was.is_file() and normalized_was_manifest.is_file():
-            attempt = None
             was_collection_status = "COMPLETE"
             warnings = ()
         else:
@@ -5206,11 +5246,35 @@ def command_resume_was(args: argparse.Namespace) -> int:
                         collection=attempt.result,
                         output_root=output_root,
                     )
-        if attempt is not None and attempt.failure is not None:
+        export_failure = attempt.failure if attempt is not None else None
+        if (
+            export_failure is None
+            and current_owasp_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE
+        ):
+            if was_client is None:
+                credentials = _load_credentials(args.env_file)
+                was_client = _was_client_from_environment(credentials)
+            owasp_attempt = collect_exclusive_owasp_2025_snapshot(
+                client=TenableWasOwaspAnalysisClient(was_client),
+                profile=profile,
+                period=period,
+                output_root=output_root,
+                run_id=was_run_id,
+                resume_run_id=checkpoint.run_id,
+                progress_callback=_emit_progress_event,
+            )
+            was_collection_status = owasp_attempt.status
+            warnings = tuple(owasp_attempt.warnings)
+        retry_failure = (
+            owasp_attempt.failure if owasp_attempt is not None else export_failure
+        )
+        if retry_failure is not None:
             updated = replace(
                 checkpoint,
-                was_status=attempt.status,
-                was_failure=attempt.failure,
+                was_status=was_collection_status,
+                was_failure=retry_failure,
+                owasp_2025_original_mode=original_owasp_mode,
+                owasp_2025_effective_mode=current_owasp_mode.value,
             )
             write_was_recovery_checkpoint(checkpoint_path, updated)
             if recovery_repository is not None:
@@ -5229,7 +5293,7 @@ def command_resume_was(args: argparse.Namespace) -> int:
                 checkpoint_path=checkpoint_path,
                 run_id=checkpoint.run_id,
                 client_id=checkpoint.client_id,
-                failure=attempt.failure,
+                failure=retry_failure,
             )
             _persist_component_retry_attempt(
                 args=args,
@@ -5237,9 +5301,9 @@ def command_resume_was(args: argparse.Namespace) -> int:
                 source_run_id=checkpoint.run_id,
                 component=ReportComponent.WAS,
                 success=False,
-                retryable=attempt.failure.retryable,
-                failure_code=attempt.failure.code,
-                failure_message=attempt.failure.message,
+                retryable=retry_failure.retryable,
+                failure_code=retry_failure.code,
+                failure_message=retry_failure.message,
                 checkpoint_path=checkpoint_path,
             )
             print(json.dumps({
@@ -5254,9 +5318,16 @@ def command_resume_was(args: argparse.Namespace) -> int:
                 "was_failure": pending.failure.to_dict(),
             }, ensure_ascii=False))
             return WAS_DECISION_EXIT_CODE
-        if attempt is not None:
+        if attempt is not None and owasp_attempt is None:
             was_collection_status = attempt.status
             warnings = tuple(attempt.warnings)
+        completed_checkpoint = replace(
+            checkpoint,
+            was_status="COMPLETE",
+            was_failure=None,
+            owasp_2025_original_mode=original_owasp_mode,
+            owasp_2025_effective_mode=current_owasp_mode.value,
+        )
 
     if published_context is not None:
         try:
@@ -5282,6 +5353,8 @@ def command_resume_was(args: argparse.Namespace) -> int:
                 checkpoint.run_id,
                 client_id=checkpoint.client_id,
             )
+        if completed_checkpoint is not None:
+            write_was_recovery_checkpoint(checkpoint_path, completed_checkpoint)
         _persist_component_retry_attempt(
             args=args,
             client_id=checkpoint.client_id,
@@ -5328,6 +5401,8 @@ def command_resume_was(args: argparse.Namespace) -> int:
             checkpoint.run_id,
             client_id=checkpoint.client_id,
         )
+    if result == 0 and completed_checkpoint is not None:
+        write_was_recovery_checkpoint(checkpoint_path, completed_checkpoint)
     return result
 
 

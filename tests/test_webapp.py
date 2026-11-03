@@ -1034,6 +1034,8 @@ class WebDashboardTests(unittest.TestCase):
                 output_root=str(root / "data"),
                 include_output=False,
                 was_status="UNAVAILABLE",
+                owasp_2025_original_mode="console_exclusive",
+                owasp_2025_effective_mode="console_exclusive",
                 was_failure=WasFailureDetails(
                     code="WAS_COLLECTION_UNAVAILABLE",
                     message="Sanitized WAS failure.",
@@ -1059,6 +1061,8 @@ class WebDashboardTests(unittest.TestCase):
             app.config.add_client({
                 "client_id": "client-one",
                 "display_name": "Client One",
+                "was_enabled": True,
+                "was_owasp_2025_mode": "console_exclusive",
             })
             app.config.add_client({
                 "client_id": "client-two",
@@ -1071,6 +1075,14 @@ class WebDashboardTests(unittest.TestCase):
             clients = {item["client_id"]: item for item in payload["clients"]}
             self.assertEqual(len(clients["client-one"]["was_recoveries"]), 1)
             self.assertEqual(clients["client-two"]["was_recoveries"], [])
+            recovery = clients["client-one"]["was_recoveries"][0]
+            self.assertEqual(recovery["owasp_2025_mode"], "console_exclusive")
+            self.assertEqual(
+                recovery["owasp_2025_original_mode"], "console_exclusive"
+            )
+            self.assertEqual(
+                recovery["failure_code"], "WAS_COLLECTION_UNAVAILABLE"
+            )
 
     def test_generate_all_rejects_explicit_empty_client_selection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3599,7 +3611,11 @@ class WebDashboardTests(unittest.TestCase):
         javascript = (static_root / "app.js").read_text(encoding="utf-8")
 
         self.assertIn("Continuar sem WEB", javascript)
-        self.assertIn("Tentar WEB novamente", javascript)
+        self.assertIn("Tentar somente WAS novamente", javascript)
+        self.assertNotIn("Tentar WEB novamente", javascript)
+        self.assertIn("Inclusivo — qualquer associação com a categoria", javascript)
+        self.assertIn("Exclusivo — mesma seleção da console Tenable", javascript)
+        self.assertIn("Modo OWASP 2025 atual", javascript)
         self.assertIn("/api/was-recoveries/", javascript)
         self.assertIn('was_recovery?.status === "RETRY_AVAILABLE"', javascript)
 
@@ -3681,6 +3697,7 @@ class WebDashboardTests(unittest.TestCase):
                                 "run_id": "run-was-pendente",
                                 "client_id": "cliente-was",
                                 "checkpoint": str(root / "was-recovery.json"),
+                                "owasp_2025_mode": "console_exclusive",
                                 "was_failure": {
                                     "code": "WAS_COLLECTION_UNAVAILABLE",
                                     "message": "Falha WAS sanitizada.",
@@ -3706,6 +3723,9 @@ class WebDashboardTests(unittest.TestCase):
             self.assertEqual(job["run_id"], "run-was-pendente")
             self.assertEqual(job["was_recovery"]["checkpoint"], str(root / "was-recovery.json"))
             self.assertEqual(job["was_recovery"]["failure"]["export_uuid"], "was-job")
+            self.assertEqual(
+                job["was_recovery"]["owasp_2025_mode"], "console_exclusive"
+            )
 
     def test_was_recovery_routes_require_confirmation_and_run_only_resume_was(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

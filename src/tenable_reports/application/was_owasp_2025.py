@@ -161,6 +161,7 @@ def collect_exclusive_owasp_2025_snapshot(
     period: ReportingPeriod,
     output_root: str | Path,
     run_id: str,
+    resume_run_id: str | None = None,
     progress_callback: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> Owasp2025CollectionAttempt:
     if profile.was_scope.owasp_2025_mode is not Owasp2025Mode.CONSOLE_EXCLUSIVE:
@@ -168,6 +169,7 @@ def collect_exclusive_owasp_2025_snapshot(
     normalized_run_id = str(run_id or "").strip()
     if not normalized_run_id:
         raise ValueError("run_id e obrigatorio para a analise OWASP 2025.")
+    normalized_resume_run_id = str(resume_run_id or "").strip() or None
 
     root = Path(output_root)
     checkpoint_root = (
@@ -203,6 +205,39 @@ def collect_exclusive_owasp_2025_snapshot(
             category=category,
             contract_sha256=contract_sha256,
         )
+        if (
+            groups is None
+            and normalized_resume_run_id is not None
+            and normalized_resume_run_id != normalized_run_id
+        ):
+            source_checkpoint_path = (
+                root
+                / "recovery"
+                / profile.client_id
+                / normalized_resume_run_id
+                / "was-owasp-2025"
+                / f"{category}.json"
+            )
+            groups = _load_checkpoint(
+                source_checkpoint_path,
+                profile=profile,
+                period=period,
+                run_id=normalized_resume_run_id,
+                category=category,
+                contract_sha256=contract_sha256,
+            )
+            if groups is not None:
+                write_json_atomic(checkpoint_path, {
+                    "schema_version": 1,
+                    "client_id": profile.client_id,
+                    "tenant_id": profile.tenant_id,
+                    "run_id": normalized_run_id,
+                    "category": category,
+                    "contract_sha256": contract_sha256,
+                    "period": period.to_dict(),
+                    "status": "COMPLETE",
+                    "groups": [_serialize_group(item) for item in groups],
+                })
         if groups is None:
             try:
                 groups = client.list_category_plugins(

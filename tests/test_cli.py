@@ -23,6 +23,8 @@ from tenable_reports.application.cloud_execution import (
     CloudResumeContext,
 )
 from tenable_reports.application.collect_was import WasCollectionAttempt
+from tenable_reports.application.was_owasp_2025 import Owasp2025CollectionAttempt
+from tenable_reports.config.profile import Owasp2025Mode
 from tenable_reports.domain.report_components import (
     ComponentAttempt,
     ComponentStage,
@@ -920,6 +922,48 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertFalse(finalize.call_args.kwargs["auto_promote"])
+
+    def test_partial_component_set_keeps_recovery_artifacts_after_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            period, profile, collected, args = self._tag_run_fixture(directory)
+            collected.history_publication = object()
+            collected.snapshot_repository = object()
+            collected.report_registry = object()
+            collected.history_store = {"backend": "postgresql", "location": "fixture"}
+            collected.was_collection_status = "UNAVAILABLE"
+            manifest = directory / "publication.json"
+            manifest.write_text("{}", encoding="utf-8")
+            operations = Mock()
+
+            with (
+                patch.object(cli_module, "generate_full_base_report", return_value=SimpleNamespace(output_path=directory / "base.docx")),
+                patch.object(cli_module, "generate_customizations_report", return_value=SimpleNamespace(output_path=directory / "custom.docx", rendered_modules=(), omitted_modules=())),
+                patch.object(cli_module, "generate_tag_report", side_effect=lambda **kwargs: SimpleNamespace(output_path=Path(kwargs["output_path"]))),
+                patch.object(cli_module, "_run_cloud_for_client", return_value=CloudComponentResult(status=CloudExecutionStatus.DISABLED, cleanup_ready=True)),
+                patch.object(cli_module, "create_publication_manifest", return_value=manifest),
+                patch.object(cli_module, "_persist_initial_component_states", return_value={
+                    "component_set_status": "PARTIAL_FAILURE",
+                    "retryable_components": ["WAS"],
+                    "components": [],
+                }),
+                patch.object(cli_module, "finalize_history_publication"),
+                patch.object(cli_module, "_postgres_operations", return_value=operations),
+                patch.object(cli_module, "_compact_snapshot_repository", return_value=object()),
+                patch.object(cli_module, "publish_compact_run_snapshot", return_value=SimpleNamespace(snapshot_id="compact-partial")),
+                patch.object(cli_module, "plan_published_run_cleanup", side_effect=AssertionError("artefatos parciais devem ser preservados")) as cleanup_plan,
+                patch("builtins.print"),
+            ):
+                result = cli_module._publish_collected_period(
+                    args=args,
+                    profile=profile,
+                    period=period,
+                    execution_type="AUTOMATIC_MONTHLY",
+                    collected=collected,
+                )
+
+        self.assertEqual(result, 0)
+        cleanup_plan.assert_not_called()
 
     def test_automatic_was_failure_becomes_retryable_only_after_compact_publication(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
@@ -2275,6 +2319,7 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["status"], "waiting_was_decision")
             self.assertEqual(payload["run_id"], "run-was-pendente")
             self.assertEqual(payload["was_failure"]["export_uuid"], "was-job")
+            self.assertEqual(payload["owasp_2025_mode"], "inclusive")
 
     def test_continue_without_was_resumes_checkpoint_without_live_collectors(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
@@ -2465,6 +2510,59 @@ class CliTests(unittest.TestCase):
                 client_id="cliente-was",
             )
 
+    def test_automatic_retry_after_exclusive_failure_does_not_create_new_was_export(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            run_id = "run-exclusive-before-publication"
+            normalized = directory / "normalized" / "cliente-was" / run_id
+            normalized.mkdir(parents=True)
+            (normalized / "was-findings.jsonl.gz").write_bytes(b"fixture")
+            (normalized / "was-manifest.json").write_text("{}", encoding="utf-8")
+            profile = SimpleNamespace(
+                client_id="cliente-was",
+                was_scope=SimpleNamespace(
+                    enabled=True,
+                    application_ids=(),
+                    owasp_2025_mode=Owasp2025Mode.CONSOLE_EXCLUSIVE,
+                ),
+            )
+            analysis_client = object()
+            complete = Owasp2025CollectionAttempt(
+                status="COMPLETE",
+                snapshot_path=directory / "exclusive.snapshot.json",
+                completed_categories=tuple(f"A{index:02d}" for index in range(1, 11)),
+                warnings=(),
+                failure=None,
+            )
+            period = previous_calendar_month(
+                reference_at="2026-11-01T00:05:00-03:00",
+                timezone_name="America/Fortaleza",
+            )
+
+            with (
+                patch.object(cli_module, "_load_credentials", return_value=object()),
+                patch.object(cli_module, "_was_client_from_environment", return_value=object()),
+                patch.object(cli_module, "TenableWasOwaspAnalysisClient", return_value=analysis_client),
+                patch.object(cli_module, "collect_exclusive_owasp_2025_snapshot", return_value=complete) as collect_owasp,
+                patch.object(cli_module, "collect_optional_was_snapshot", side_effect=AssertionError("novo export WAS nao pode ser criado")),
+            ):
+                result = cli_module._retry_was_once_before_publication(
+                    SimpleNamespace(env_file=directory / "client.env"),
+                    profile=profile,
+                    period=period,
+                    output_root=directory,
+                    run_id=run_id,
+                    previous_failure=WasFailureDetails(
+                        code="WAS_OWASP_2025_EXCLUSIVE_UNAVAILABLE",
+                        retryable=True,
+                        failed_category="A05",
+                    ),
+                )
+
+            self.assertEqual(result.status, "COMPLETE")
+            self.assertIsNone(result.failure)
+            collect_owasp.assert_called_once()
+
     def test_published_automatic_retry_uses_compact_context_and_never_runs_cloud_or_vm(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -2562,6 +2660,91 @@ class CliTests(unittest.TestCase):
             self.assertFalse(payload["general_collection_repeated"])
             self.assertFalse(payload["cloud_collection_repeated"])
 
+    def test_prepare_published_was_recovery_preserves_original_normalized_was(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            output_root = directory / "automatic-monthly"
+            checkpoint = WasRecoveryCheckpoint(
+                schema_version=1,
+                run_id="run-preserve-was",
+                client_id="cliente-was",
+                tenant_id="tenant-was",
+                execution_type="AUTOMATIC_MONTHLY",
+                period={
+                    "start_at": "2026-10-01T03:00:00Z",
+                    "end_at": "2026-11-01T03:00:00Z",
+                    "timezone": "America/Fortaleza",
+                    "mode": "PREVIOUS_CALENDAR_MONTH",
+                },
+                profile_path=str(directory / "cliente.json"),
+                output_root=str(output_root),
+                include_output=False,
+                was_status="UNAVAILABLE",
+                was_failure=WasFailureDetails(
+                    code="WAS_OWASP_2025_EXCLUSIVE_UNAVAILABLE",
+                    retryable=True,
+                ),
+            )
+            original_normalized = (
+                output_root
+                / "normalized"
+                / checkpoint.client_id
+                / checkpoint.run_id
+            )
+            original_normalized.mkdir(parents=True)
+            (original_normalized / "was-findings.jsonl.gz").write_bytes(b"was-data")
+            (original_normalized / "was-manifest.json").write_text(
+                '{"status":"COMPLETE"}', encoding="utf-8"
+            )
+            manifest = (
+                output_root
+                / "reports"
+                / checkpoint.client_id
+                / checkpoint.run_id
+                / "publication"
+                / "publication-manifest.json"
+            )
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text("{}", encoding="utf-8")
+            repository = Mock()
+            snapshot = object()
+            repository.find_run.return_value = snapshot
+
+            def materialize(*, run_id, output_root, **_kwargs):
+                target = Path(output_root) / "normalized" / checkpoint.client_id / run_id
+                target.mkdir(parents=True)
+                (target / "assets.jsonl.gz").write_bytes(b"assets")
+                (target / "findings.jsonl.gz").write_bytes(b"findings")
+
+            with (
+                patch.object(cli_module, "_compact_snapshot_repository", return_value=repository),
+                patch.object(cli_module, "materialize_compact_snapshot_run", side_effect=materialize),
+                patch.object(cli_module, "compact_vm_content_sha256", return_value="a" * 64),
+            ):
+                context = cli_module._prepare_published_was_recovery(
+                    args=SimpleNamespace(),
+                    checkpoint=checkpoint,
+                    profile=SimpleNamespace(
+                        client_id=checkpoint.client_id,
+                        tenant_id=checkpoint.tenant_id,
+                    ),
+                )
+
+            work_normalized = (
+                output_root
+                / "normalized"
+                / checkpoint.client_id
+                / context.work_run_id
+            )
+            self.assertEqual(
+                (work_normalized / "was-findings.jsonl.gz").read_bytes(),
+                b"was-data",
+            )
+            self.assertEqual(
+                json.loads((work_normalized / "was-manifest.json").read_text(encoding="utf-8")),
+                {"status": "COMPLETE"},
+            )
+
     def test_published_manual_retry_uses_compact_context_and_never_runs_cloud_or_vm(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
@@ -2646,6 +2829,287 @@ class CliTests(unittest.TestCase):
                 checkpoint.run_id,
                 client_id=checkpoint.client_id,
             )
+
+    def test_published_exclusive_retry_reuses_normalized_was_and_category_checkpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            output_root = directory / "automatic-monthly"
+            work_run_id = "run-exclusive-was-recovery"
+            normalized = output_root / "normalized" / "cliente-was" / work_run_id
+            normalized.mkdir(parents=True)
+            (normalized / "was-findings.jsonl.gz").write_bytes(b"fixture")
+            (normalized / "was-manifest.json").write_text("{}", encoding="utf-8")
+            checkpoint = WasRecoveryCheckpoint(
+                schema_version=1,
+                run_id="run-exclusive",
+                client_id="cliente-was",
+                tenant_id="tenant-was",
+                execution_type="AUTOMATIC_MONTHLY",
+                period={
+                    "start_at": "2026-10-01T03:00:00Z",
+                    "end_at": "2026-11-01T03:00:00Z",
+                    "reference_at": "2026-11-01T03:05:00Z",
+                    "timezone": "America/Fortaleza",
+                    "mode": "PREVIOUS_CALENDAR_MONTH",
+                },
+                profile_path=str(directory / "cliente.json"),
+                output_root=str(output_root),
+                include_output=False,
+                was_status="UNAVAILABLE",
+                was_failure=WasFailureDetails(
+                    code="WAS_OWASP_2025_EXCLUSIVE_UNAVAILABLE",
+                    retryable=True,
+                    failed_category="A05",
+                ),
+                owasp_2025_original_mode="console_exclusive",
+                owasp_2025_effective_mode="console_exclusive",
+            )
+            checkpoint_path = write_was_recovery_checkpoint(
+                directory / "was-recovery.json", checkpoint
+            )
+            profile = SimpleNamespace(
+                client_id="cliente-was",
+                tenant_id="tenant-was",
+                was_scope=SimpleNamespace(
+                    enabled=True,
+                    application_ids=(),
+                    owasp_2025_mode=Owasp2025Mode.CONSOLE_EXCLUSIVE,
+                ),
+            )
+            repository = Mock()
+            repository.get.return_value = SimpleNamespace(
+                status=WasRecoveryStatus.RETRY_AVAILABLE
+            )
+            analysis_client = object()
+            complete = Owasp2025CollectionAttempt(
+                status="COMPLETE",
+                snapshot_path=directory / "exclusive.snapshot.json",
+                completed_categories=tuple(f"A{index:02d}" for index in range(1, 11)),
+                warnings=(),
+                failure=None,
+            )
+            args = SimpleNamespace(
+                checkpoint=checkpoint_path,
+                decision="retry_was",
+                profile=str(directory / "cliente.json"),
+                env_file=directory / "cliente.env",
+                database_env_file=directory / "database.env",
+                was_num_assets=1000,
+                confirm_live_api=True,
+            )
+
+            with (
+                patch.object(cli_module, "load_client_profile", return_value=profile),
+                patch.object(cli_module, "_was_recovery_repository", return_value=repository),
+                patch.object(cli_module, "_prepare_published_was_recovery", return_value=SimpleNamespace(work_run_id=work_run_id)),
+                patch.object(cli_module, "_load_credentials", return_value=object()),
+                patch.object(cli_module, "_was_client_from_environment", return_value=object()),
+                patch.object(cli_module, "TenableWasOwaspAnalysisClient", return_value=analysis_client),
+                patch.object(cli_module, "collect_exclusive_owasp_2025_snapshot", return_value=complete) as collect_owasp,
+                patch.object(cli_module, "collect_optional_was_snapshot", side_effect=AssertionError("novo export WAS nao pode ser criado")),
+                patch.object(cli_module, "_retry_published_was_documents", return_value={
+                    "status": "complete",
+                    "run_id": checkpoint.run_id,
+                    "client_id": checkpoint.client_id,
+                    "documents": [],
+                }),
+            ):
+                result = cli_module.command_resume_was(args)
+
+            self.assertEqual(result, 0)
+            collect_owasp.assert_called_once()
+            self.assertEqual(collect_owasp.call_args.kwargs["run_id"], work_run_id)
+            self.assertEqual(
+                collect_owasp.call_args.kwargs["resume_run_id"],
+                checkpoint.run_id,
+            )
+            updated = load_was_recovery_checkpoint(checkpoint_path)
+            self.assertEqual(updated.was_status, "COMPLETE")
+            self.assertIsNone(updated.was_failure)
+
+    def test_published_retry_uses_new_permanent_inclusive_mode_without_api_or_export(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            output_root = directory / "automatic-monthly"
+            work_run_id = "run-mode-change-was-recovery"
+            normalized = output_root / "normalized" / "cliente-was" / work_run_id
+            normalized.mkdir(parents=True)
+            (normalized / "was-findings.jsonl.gz").write_bytes(b"fixture")
+            (normalized / "was-manifest.json").write_text("{}", encoding="utf-8")
+            checkpoint = WasRecoveryCheckpoint(
+                schema_version=1,
+                run_id="run-mode-change",
+                client_id="cliente-was",
+                tenant_id="tenant-was",
+                execution_type="AUTOMATIC_MONTHLY",
+                period={
+                    "start_at": "2026-10-01T03:00:00Z",
+                    "end_at": "2026-11-01T03:00:00Z",
+                    "reference_at": "2026-11-01T03:05:00Z",
+                    "timezone": "America/Fortaleza",
+                    "mode": "PREVIOUS_CALENDAR_MONTH",
+                },
+                profile_path=str(directory / "cliente.json"),
+                output_root=str(output_root),
+                include_output=False,
+                was_status="UNAVAILABLE",
+                was_failure=WasFailureDetails(
+                    code="WAS_OWASP_2025_EXCLUSIVE_UNAVAILABLE",
+                    retryable=True,
+                    failed_category="A05",
+                ),
+                owasp_2025_original_mode="console_exclusive",
+                owasp_2025_effective_mode="console_exclusive",
+            )
+            checkpoint_path = write_was_recovery_checkpoint(
+                directory / "was-recovery.json", checkpoint
+            )
+            profile = SimpleNamespace(
+                client_id="cliente-was",
+                tenant_id="tenant-was",
+                was_scope=SimpleNamespace(
+                    enabled=True,
+                    application_ids=(),
+                    owasp_2025_mode=Owasp2025Mode.INCLUSIVE,
+                ),
+            )
+            repository = Mock()
+            repository.get.return_value = SimpleNamespace(
+                status=WasRecoveryStatus.RETRY_AVAILABLE
+            )
+            args = SimpleNamespace(
+                checkpoint=checkpoint_path,
+                decision="retry_was",
+                profile=str(directory / "cliente.json"),
+                env_file=directory / "cliente.env",
+                database_env_file=directory / "database.env",
+                was_num_assets=1000,
+                confirm_live_api=True,
+            )
+
+            with (
+                patch.object(cli_module, "load_client_profile", return_value=profile),
+                patch.object(cli_module, "_was_recovery_repository", return_value=repository),
+                patch.object(cli_module, "_prepare_published_was_recovery", return_value=SimpleNamespace(work_run_id=work_run_id)),
+                patch.object(cli_module, "_load_credentials", side_effect=AssertionError("modo inclusivo nao consulta API")),
+                patch.object(cli_module, "collect_optional_was_snapshot", side_effect=AssertionError("novo export WAS nao pode ser criado")),
+                patch.object(cli_module, "collect_exclusive_owasp_2025_snapshot", side_effect=AssertionError("analise exclusiva nao pode ser chamada")),
+                patch.object(cli_module, "_retry_published_was_documents", return_value={
+                    "status": "complete",
+                    "run_id": checkpoint.run_id,
+                    "client_id": checkpoint.client_id,
+                    "documents": [],
+                }),
+            ):
+                result = cli_module.command_resume_was(args)
+
+            self.assertEqual(result, 0)
+            updated = load_was_recovery_checkpoint(checkpoint_path)
+            self.assertEqual(updated.owasp_2025_original_mode, "console_exclusive")
+            self.assertEqual(updated.owasp_2025_effective_mode, "inclusive")
+            self.assertEqual(updated.was_status, "COMPLETE")
+            self.assertIsNone(updated.was_failure)
+
+    def test_published_was_retry_replaces_only_general_document(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            output_root = directory / "automatic-monthly"
+            publication_root = output_root / "reports" / "cliente-was" / "run-was" / "pub"
+            publication_root.mkdir(parents=True)
+            paths = {
+                "base": publication_root / "base.docx",
+                "custom": publication_root / "custom.docx",
+                "tag": publication_root / "tag.docx",
+                "cloud": publication_root / "cloud.docx",
+            }
+            for kind, path in paths.items():
+                path.write_bytes(f"original-{kind}".encode())
+            manifest = publication_root / "publication-manifest.json"
+            manifest.write_text(json.dumps({
+                "documents": [
+                    {"path": str(paths["base"]), "document_kind": "base"},
+                    {"path": str(paths["custom"]), "document_kind": "custom"},
+                    {
+                        "path": str(paths["tag"]),
+                        "document_kind": "tag",
+                        "tag_uuid": "tag-fixture",
+                    },
+                    {
+                        "path": str(paths["cloud"]),
+                        "document_kind": "cloud",
+                        "document_variant": "base",
+                    },
+                ]
+            }), encoding="utf-8")
+            dataset = directory / "dataset.json"
+            dataset.write_text("{}", encoding="utf-8")
+            checkpoint = WasRecoveryCheckpoint(
+                schema_version=1,
+                run_id="run-was",
+                client_id="cliente-was",
+                tenant_id="tenant-was",
+                execution_type="AUTOMATIC_MONTHLY",
+                period={
+                    "start_at": "2026-10-01T03:00:00Z",
+                    "end_at": "2026-11-01T03:00:00Z",
+                    "timezone": "America/Fortaleza",
+                    "mode": "PREVIOUS_CALENDAR_MONTH",
+                },
+                profile_path=str(directory / "profile.json"),
+                output_root=str(output_root),
+                include_output=False,
+                was_status="UNAVAILABLE",
+            )
+            profile = SimpleNamespace(client_id="cliente-was", tenant_id="tenant-was")
+            context = SimpleNamespace(
+                work_run_id="run-was-was-recovery",
+                publication_manifest=manifest,
+                before_vm_metrics_sha256="a" * 64,
+                compact_repository=object(),
+            )
+            period = previous_calendar_month(
+                reference_at="2026-11-01T00:05:00-03:00",
+                timezone_name="America/Fortaleza",
+            )
+            captured: dict[str, object] = {}
+
+            def replace_documents(**kwargs):
+                captured["replacements"] = kwargs["replacements"]
+                kwargs["commit_callback"]()
+
+            with (
+                patch.object(cli_module, "_assemble_period_from_existing", return_value=SimpleNamespace(dataset_path=dataset)),
+                patch.object(cli_module, "generate_full_base_report"),
+                patch.object(cli_module, "generate_customizations_report", side_effect=AssertionError("custom nao e afetado pelo WAS")),
+                patch.object(cli_module, "generate_tag_report", side_effect=AssertionError("TAG nao e afetada pelo WAS")),
+                patch.object(cli_module, "prepare_compact_run_snapshot", return_value=object()),
+                patch.object(cli_module, "compact_vm_content_sha256", return_value="a" * 64),
+                patch.object(cli_module, "_postgres_operations", return_value=Mock()),
+                patch.object(cli_module, "finalize_compact_snapshot"),
+                patch.object(cli_module, "replace_publication_documents_atomically", side_effect=replace_documents),
+                patch.object(cli_module, "plan_published_run_cleanup", return_value=SimpleNamespace(candidates=())),
+                patch.object(cli_module, "apply_cleanup_plan", return_value=SimpleNamespace(status="COMPLETE")),
+            ):
+                payload = cli_module._retry_published_was_documents(
+                    args=SimpleNamespace(
+                        template=directory / "template.docx",
+                        assets_dir=directory / "assets",
+                        mask_sensitive=True,
+                        database_env_file=directory / "database.env",
+                    ),
+                    checkpoint=checkpoint,
+                    profile=profile,
+                    period=period,
+                    context=context,
+                )
+
+            replacements = tuple(captured["replacements"])
+            self.assertEqual(len(replacements), 1)
+            self.assertEqual(replacements[0].destination.document_kind, "base")
+            self.assertEqual(payload["documents"], [str(paths["base"].resolve())])
+            self.assertEqual(paths["custom"].read_bytes(), b"original-custom")
+            self.assertEqual(paths["tag"].read_bytes(), b"original-tag")
+            self.assertEqual(paths["cloud"].read_bytes(), b"original-cloud")
 
     def test_build_report_dataset_command_uses_requested_run_id_for_tag_datasets(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:

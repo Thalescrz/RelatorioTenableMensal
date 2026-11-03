@@ -30,6 +30,8 @@ def _checkpoint(tmp_path) -> WasRecoveryCheckpoint:
         output_root=str(tmp_path),
         include_output=False,
         was_status="UNAVAILABLE",
+        owasp_2025_original_mode="console_exclusive",
+        owasp_2025_effective_mode="console_exclusive",
         was_failure=WasFailureDetails(
             code="WAS_COLLECTION_UNAVAILABLE",
             message="Coleta WEB indisponível.",
@@ -67,6 +69,19 @@ def test_checkpoint_rejects_wrong_client(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="checkpoint WAS incompatível"):
         load_was_recovery_checkpoint(path, client_id="client-b")
+
+
+def test_checkpoint_loads_legacy_payload_without_owasp_modes(tmp_path) -> None:
+    payload = _checkpoint(tmp_path).to_dict()
+    payload.pop("owasp_2025_original_mode")
+    payload.pop("owasp_2025_effective_mode")
+    path = tmp_path / "legacy-checkpoint.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    checkpoint = load_was_recovery_checkpoint(path)
+
+    assert checkpoint.owasp_2025_original_mode is None
+    assert checkpoint.owasp_2025_effective_mode is None
 
 
 def test_checkpoint_rejects_unknown_schema(tmp_path) -> None:

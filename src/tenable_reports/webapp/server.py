@@ -2761,6 +2761,9 @@ class JobQueue:
                     job["was_recovery"] = {
                         "run_id": waiting_payload.get("run_id"),
                         "checkpoint": waiting_payload.get("checkpoint"),
+                        "owasp_2025_mode": str(
+                            waiting_payload.get("owasp_2025_mode") or "inclusive"
+                        ),
                         "failure": dict(waiting_payload.get("was_failure") or {}),
                     }
                 job["warnings"] = [
@@ -4590,16 +4593,28 @@ class DashboardApplication:
             latest_alert.setdefault(str(alert.get("client_id") or ""), alert)
         was_recoveries: list[dict[str, Any]] = []
         recoveries_by_client: dict[str, list[dict[str, Any]]] = {}
+        clients_by_id = {str(item.get("client_id") or ""): item for item in clients}
         if self.was_recovery_repository is not None:
             try:
                 for record in self.was_recovery_repository.pending():
                     failure = record.checkpoint.was_failure
+                    client_config = clients_by_id.get(record.client_id, {})
                     item = {
                         "run_id": record.run_id,
                         "client_id": record.client_id,
                         "status": record.status.value,
                         "checkpoint": record.checkpoint_path,
                         "failure": failure.to_dict() if failure else None,
+                        "failure_code": failure.code if failure else None,
+                        "owasp_2025_mode": str(
+                            client_config.get("was_owasp_2025_mode") or "inclusive"
+                        ),
+                        "owasp_2025_original_mode": (
+                            record.checkpoint.owasp_2025_original_mode
+                        ),
+                        "owasp_2025_effective_mode": (
+                            record.checkpoint.owasp_2025_effective_mode
+                        ),
                         "updated_at": record.updated_at,
                     }
                     recoveries_by_client.setdefault(record.client_id, []).append(item)

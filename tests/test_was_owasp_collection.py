@@ -170,3 +170,40 @@ def test_exclusive_collection_resumes_only_missing_or_incompatible_categories(
     assert resumed.status == "COMPLETE"
     assert second.calls == ["A02", "A05", "A06", "A07", "A08", "A09", "A10"]
     assert final_snapshot.is_file()
+
+
+def test_exclusive_collection_copies_valid_checkpoints_into_recovery_run(
+    tmp_path: Path,
+) -> None:
+    first = FakeAnalysisClient(fail_category="A05")
+    failed = collect_exclusive_owasp_2025_snapshot(
+        client=first,
+        profile=profile(),
+        period=period(),
+        output_root=tmp_path,
+        run_id="run-original",
+    )
+    assert failed.completed_categories == ("A01", "A02", "A03", "A04")
+
+    second = FakeAnalysisClient()
+    resumed = collect_exclusive_owasp_2025_snapshot(
+        client=second,
+        profile=profile(),
+        period=period(),
+        output_root=tmp_path,
+        run_id="run-original-was-recovery",
+        resume_run_id="run-original",
+    )
+
+    assert resumed.status == "COMPLETE"
+    assert second.calls == ["A05", "A06", "A07", "A08", "A09", "A10"]
+    target_root = (
+        tmp_path
+        / "recovery"
+        / "cliente-fixture"
+        / "run-original-was-recovery"
+        / "was-owasp-2025"
+    )
+    assert len(tuple(target_root.glob("A*.json"))) == 10
+    target_a01 = json.loads((target_root / "A01.json").read_text(encoding="utf-8"))
+    assert target_a01["run_id"] == "run-original-was-recovery"

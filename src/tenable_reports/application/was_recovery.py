@@ -93,6 +93,8 @@ class WasRecoveryCheckpoint:
     include_output: bool
     was_status: str
     was_failure: WasFailureDetails | None = None
+    owasp_2025_original_mode: str | None = None
+    owasp_2025_effective_mode: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -129,6 +131,12 @@ class WasRecoveryCheckpoint:
             include_output=bool(payload.get("include_output", False)),
             was_status=_required_text(payload.get("was_status"), "was_status").upper(),
             was_failure=failure,
+            owasp_2025_original_mode=_optional_text(
+                payload.get("owasp_2025_original_mode")
+            ),
+            owasp_2025_effective_mode=_optional_text(
+                payload.get("owasp_2025_effective_mode")
+            ),
         )
         _validate_checkpoint(checkpoint)
         return checkpoint
@@ -232,6 +240,12 @@ def _validate_checkpoint(checkpoint: WasRecoveryCheckpoint) -> None:
         _required_text(value, field)
     if not checkpoint.period.get("start_at") or not checkpoint.period.get("end_at"):
         raise ValueError("Período incompleto no checkpoint WAS.")
+    for mode in (
+        checkpoint.owasp_2025_original_mode,
+        checkpoint.owasp_2025_effective_mode,
+    ):
+        if mode is not None and mode not in {"inclusive", "console_exclusive"}:
+            raise ValueError("Modo OWASP 2025 inválido no checkpoint WAS.")
 
 
 def _required_text(value: Any, field: str) -> str:

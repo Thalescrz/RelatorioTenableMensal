@@ -1198,6 +1198,12 @@ function unreadDashboardAlertItems() {
   );
 }
 
+function wasOwaspModeLabel(mode) {
+  return mode === "console_exclusive"
+    ? "Exclusivo — mesma seleção da console Tenable"
+    : "Inclusivo — qualquer associação com a categoria";
+}
+
 function renderAlerts() {
   if (!state.data) return;
   const items = unreadDashboardAlertItems();
@@ -1211,8 +1217,10 @@ function renderAlerts() {
     const routeCopy = a.export?.date_field ? ` · filtro ${escapeHtml(a.export.date_field)}` : "";
     const exportCopy = a.export?.export_uuid ? `<p><small>Export VM: ${escapeHtml(a.export.export_uuid)} · ${Number(a.export.completed_chunks || 0)}/${Number(a.export.total_chunks || 0)} chunks · origem ${escapeHtml(a.export.origin || "desconhecida")}${segmentCopy}${routeCopy}${idleCopy}${limitCopy}</small></p>` : "";
     const wasFailure = a.was_recovery?.failure || {};
+    const wasOwaspMode = a.was_recovery?.owasp_2025_mode || "inclusive";
+    const wasOwaspModeCopy = wasOwaspModeLabel(wasOwaspMode);
     const wasCopy = a.was_recovery
-      ? `<p><small>Export WEB: ${escapeHtml(wasFailure.export_uuid || "UUID não informado")} · ${Number(wasFailure.completed_chunks || 0)}/${Number(wasFailure.total_chunks || 0)} chunks · origem ${escapeHtml(wasFailure.origin || "desconhecida")}</small></p>`
+      ? `<p><small>Export WEB: ${escapeHtml(wasFailure.export_uuid || "UUID não informado")} · ${Number(wasFailure.completed_chunks || 0)}/${Number(wasFailure.total_chunks || 0)} chunks · origem ${escapeHtml(wasFailure.origin || "desconhecida")} · OWASP 2025: ${escapeHtml(wasOwaspModeCopy)}</small></p>`
       : "";
     const automaticWasRetry = a.was_recovery?.status === "RETRY_AVAILABLE";
     const reportSetAction = a.run_id && a.client_id && a.client_id !== "Sistema"
@@ -1220,8 +1228,8 @@ function renderAlerts() {
       : "";
     const action = a.was_recovery
       ? automaticWasRetry
-        ? `<p><button class="mini-button" data-was-retry-run="${escapeHtml(a.run_id)}" type="button">Tentar WEB novamente</button></p>`
-        : `<p><button class="mini-button" data-was-continue-run="${escapeHtml(a.run_id)}" type="button">Continuar sem WEB</button> <button class="mini-button" data-was-retry-run="${escapeHtml(a.run_id)}" type="button">Tentar WEB novamente</button></p>`
+        ? `<p><button class="mini-button" data-was-retry-run="${escapeHtml(a.run_id)}" data-was-owasp-mode="${escapeHtml(wasOwaspMode)}" type="button">Tentar somente WAS novamente</button></p>`
+        : `<p><button class="mini-button" data-was-continue-run="${escapeHtml(a.run_id)}" type="button">Continuar sem WEB</button> <button class="mini-button" data-was-retry-run="${escapeHtml(a.run_id)}" data-was-owasp-mode="${escapeHtml(wasOwaspMode)}" type="button">Tentar somente WAS novamente</button></p>`
       : a.cloud_retry
       ? `<p><button class="mini-button" data-retry-cloud-run="${escapeHtml(a.run_id)}" type="button">Tentar Cloud novamente</button></p>`
       : !a.job_id ? "" : stuck
@@ -1262,13 +1270,14 @@ function renderAlerts() {
   }));
   document.querySelectorAll("[data-was-retry-run]").forEach(button => button.addEventListener("click", async () => {
     const runId = button.dataset.wasRetryRun;
-    if (!window.confirm(`Somente a coleta WEB será tentada novamente. VM, assets, TAG e Cloud não serão repetidos.\n\nExecução: ${runId}\n\nDeseja continuar?`)) return;
+    const modeCopy = wasOwaspModeLabel(button.dataset.wasOwaspMode);
+    if (!window.confirm(`Somente o componente WAS será tentado novamente. VM, assets, TAG e Cloud não serão repetidos.\n\nModo OWASP 2025 atual: ${modeCopy}\n\nExecução: ${runId}\n\nDeseja continuar?`)) return;
     button.disabled = true;
     try {
       await api(`/api/was-recoveries/${encodeURIComponent(runId)}/retry`, {
         method: "POST", body: { confirmation: `RETENTAR WAS ${runId}` },
       });
-      await refresh(); toast("Retentativa WEB adicionada à fila.");
+      await refresh(); toast("Retentativa WAS adicionada à fila.");
     } catch (error) { toast(error.message, "error"); button.disabled = false; }
   }));
   document.querySelectorAll("[data-cancel-export-job]").forEach(button => button.addEventListener("click", async () => {
