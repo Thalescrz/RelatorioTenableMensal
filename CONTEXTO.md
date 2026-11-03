@@ -103,6 +103,21 @@ permanecem somente enquanto necessários para publicação, diagnóstico ou reto
   atualiza o manifesto existente e o catálogo de documentos sem reconstruir nem
   republicar o histórico VM.
 
+O adaptador do modo OWASP 2025 exclusivo usa o contrato interno autenticado
+validado em 2026-11-03: `filter.and`, `template: group`, parâmetros agregados,
+resposta em `groups` e paginação pelo token superior `next`. O código não aceita
+como equivalente o formato público de export nem promove respostas parciais. O VPR
+agregado é normalizado para a precisão oficial de uma casa decimal antes de ordenar,
+persistir e publicar as tabelas.
+O estado `AVAILABLE` devolvido pelo snapshot WAS representa coleta concluída e é
+tratado como sucesso na montagem, no snapshot compacto e na auditoria da
+publicação, assim como `COMPLETE` e `REPLAYED`.
+Na execução em estágios, o checkpoint WAS exclusivo preserva também o snapshot
+consolidado `tenable_was_owasp_2025.snapshot.json` como artefato obrigatório. A
+montagem materializa esse arquivo junto dos findings WAS antes de formar o dataset;
+assim, uma coleta exclusiva A01–A10 válida não é perdida na transição entre worker
+e publicação.
+
 O snapshot Cloud é persistência da coleta, não da publicação editorial: ele pode
 ser gravado antes de `report_runs`, mantém `run_id` único e é reconciliado quando o
 manifesto é publicado. Quando uma retentativa seletiva completa todos os

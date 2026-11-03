@@ -280,6 +280,11 @@ from tenable_reports.presentation.tag_report_docx import generate_tag_report
 
 
 WAS_DECISION_EXIT_CODE = 3
+WAS_SUCCESS_STATUSES = frozenset({"AVAILABLE", "COMPLETE", "REPLAYED"})
+
+
+def _was_collection_succeeded(status: Any) -> bool:
+    return str(status or "").strip().upper() in WAS_SUCCESS_STATUSES
 
 
 def _emit_progress_event(event: Mapping[str, Any]) -> None:
@@ -2063,10 +2068,7 @@ def _assemble_period_from_existing(
     cloud_retryable: bool = False,
     cloud_warnings: tuple[Mapping[str, Any], ...] = (),
 ) -> _CollectedPeriodExecution:
-    include_was = str(was_collection_status or "").upper() in {
-        "COMPLETE",
-        "REPLAYED",
-    }
+    include_was = _was_collection_succeeded(was_collection_status)
     if (
         selected_tag_count is None
         or collection_route is None
@@ -2793,6 +2795,22 @@ def _materialize_disjoint_component_inputs(
                 component=ReportComponent.WAS.value,
                 kind=kind,
                 destination=destination,
+            )
+        if profile.was_scope.owasp_2025_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE:
+            owasp_kind = str(
+                was_metadata.get("owasp_2025_snapshot_kind") or ""
+            ).strip()
+            if not owasp_kind:
+                raise ValueError(
+                    "Checkpoint WAS exclusivo sem snapshot OWASP obrigatório."
+                )
+            _materialize_checkpoint_artifact(
+                checkpoint,
+                component=ReportComponent.WAS.value,
+                kind=owasp_kind,
+                destination=(
+                    snapshot_directory / "tenable_was_owasp_2025.snapshot.json"
+                ),
             )
     return normalized_directory / "findings.jsonl.gz"
 
@@ -3522,6 +3540,14 @@ def _was_component_checkpoint(
     artifacts = tuple(
         _checkpoint_artifact(component.value, kind, path) for kind, path in paths
     )
+    owasp_snapshot_kind = None
+    if profile.was_scope.owasp_2025_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE:
+        owasp_snapshot_kind = "was_owasp_2025_snapshot"
+        artifacts = (*artifacts, _checkpoint_artifact(
+            component.value,
+            owasp_snapshot_kind,
+            snapshot_directory / "tenable_was_owasp_2025.snapshot.json",
+        ))
     return _component_checkpoint(
         request=request,
         component=component,
@@ -3533,6 +3559,7 @@ def _was_component_checkpoint(
             "normalized_was_manifest_kind": "normalized_was_manifest",
             "normalized_was_findings_kind": "normalized_was_findings",
             "was_snapshot_kind": "was_snapshot",
+            "owasp_2025_snapshot_kind": owasp_snapshot_kind,
             "warnings": [dict(item) for item in result.warnings],
         },
         query_payload={
@@ -4457,7 +4484,7 @@ def _was_publication_metadata(
     ).upper()
     coverage = (
         str(selection.get("coverage") or "COMPLETE").upper()
-        if status == "COMPLETE"
+        if _was_collection_succeeded(status)
         else "INCOMPLETE"
     )
     snapshot_path = (
@@ -4740,9 +4767,8 @@ def _publish_collected_period(
             document_references=document_references,
             publication_validated=True,
             documents_validated=True,
-            include_was=(
-                str(getattr(collected, "was_collection_status", "") or "").upper()
-                == "COMPLETE"
+            include_was=_was_collection_succeeded(
+                getattr(collected, "was_collection_status", "")
             ),
         )
         compact_snapshot_confirmed = True

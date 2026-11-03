@@ -247,7 +247,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(load_inputs.call_args.kwargs["include_was"], False)
         self.assertEqual(build_dataset.call_args.kwargs["include_was"], False)
 
-    def test_replayed_was_assembly_preserves_was_dataset(self) -> None:
+    def test_successful_was_assembly_preserves_was_dataset(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             directory = Path(directory_name)
             period = previous_calendar_month(
@@ -292,20 +292,87 @@ class CliTests(unittest.TestCase):
                     return_value=SimpleNamespace(artifacts=(), warnings=()),
                 ),
             ):
-                result = cli_module._assemble_period_from_existing(
-                    args,
-                    profile=profile,
-                    output_root=directory,
-                    actual_run_id="run-replayed-was",
-                    period=period,
-                    execution_type="MANUAL",
-                    normalized_findings_path=directory / "findings.jsonl.gz",
-                    was_collection_status="REPLAYED",
-                )
+                for status in ("REPLAYED", "AVAILABLE"):
+                    with self.subTest(status=status):
+                        result = cli_module._assemble_period_from_existing(
+                            args,
+                            profile=profile,
+                            output_root=directory,
+                            actual_run_id=f"run-{status.lower()}-was",
+                            period=period,
+                            execution_type="MANUAL",
+                            normalized_findings_path=directory / "findings.jsonl.gz",
+                            was_collection_status=status,
+                        )
 
-        self.assertEqual(result.was_collection_status, "REPLAYED")
-        self.assertEqual(load_inputs.call_args.kwargs["include_was"], True)
-        self.assertEqual(build_dataset.call_args.kwargs["include_was"], True)
+                        self.assertEqual(result.was_collection_status, status)
+                        self.assertEqual(
+                            load_inputs.call_args.kwargs["include_was"], True
+                        )
+                        self.assertEqual(
+                            build_dataset.call_args.kwargs["include_was"], True
+                        )
+
+    def test_owasp_publication_metadata_records_complete_available_collection(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            snapshot_path = (
+                directory
+                / "snapshots"
+                / "cliente-fixture"
+                / "run-complete"
+                / "tenable_was_owasp_2025.snapshot.json"
+            )
+            snapshot_path.parent.mkdir(parents=True)
+            snapshot_path.write_text(
+                json.dumps({
+                    "contract_sha256": "c" * 64,
+                    "categories": {
+                        f"A{index:02d}": [] for index in range(1, 11)
+                    },
+                }),
+                encoding="utf-8",
+            )
+            profile = SimpleNamespace(
+                client_id="cliente-fixture",
+                was_scope=SimpleNamespace(owasp_2025_mode="console_exclusive"),
+            )
+            collected = SimpleNamespace(
+                output_root=directory,
+                run_id="run-complete",
+                was_collection_status="AVAILABLE",
+                was_recovery_checkpoint=None,
+                artifact=SimpleNamespace(
+                    result=SimpleNamespace(
+                        dataset={
+                            "was": {
+                                "owasp_selection": {
+                                    "source": "console_analysis_exclusive",
+                                    "coverage": "COMPLETE",
+                                }
+                            }
+                        }
+                    )
+                ),
+            )
+
+            metadata = cli_module._was_publication_metadata(
+                collected,
+                profile=profile,
+                recovery_attempt=1,
+            )
+
+        self.assertEqual(metadata["WAS"]["status"], "AVAILABLE")
+        owasp = metadata["WAS"]["owasp_2025"]
+        self.assertEqual(owasp["coverage"], "COMPLETE")
+        self.assertIsNotNone(owasp["snapshot_sha256"])
+        self.assertEqual(owasp["contract_sha256"], "c" * 64)
+        self.assertEqual(
+            owasp["completed_categories"],
+            [f"A{index:02d}" for index in range(1, 11)],
+        )
 
     def test_owasp_publication_metadata_records_incomplete_exclusive_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:

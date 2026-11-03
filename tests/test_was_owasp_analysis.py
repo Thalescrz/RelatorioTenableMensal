@@ -63,14 +63,23 @@ def group(
     vpr: float | None = 3.9,
     instances: int = 1,
 ) -> dict[str, Any]:
+    severity_value = {
+        "INFO": 0,
+        "LOW": 1,
+        "MEDIUM": 2,
+        "HIGH": 3,
+        "CRITICAL": 4,
+    }[severity]
     return {
-        "group": {"definition.id": plugin_id},
-        "statistics": {
-            "severity": severity,
-            "definition.name": f"Plugin {plugin_id}",
-            "definition.family": "Família WEB",
-            "definition.vpr.score": vpr,
-            "finding_id": instances,
+        "field": "definition.id",
+        "value": plugin_id,
+        "stats": {
+            "max(severity)": severity_value,
+            "first(definition.name)": f"Plugin {plugin_id}",
+            "first(definition.family)": "Família WEB",
+            "first(definition.vpr.score)": vpr,
+            "first(definition.id)": plugin_id,
+            "count": instances,
         },
     }
 
@@ -81,7 +90,7 @@ END = datetime(2026, 11, 1, 3, 0, tzinfo=timezone.utc)
 
 def test_exclusive_analysis_sends_the_approved_a01_contract() -> None:
     client, transport = analysis_client([
-        response(200, {"items": [group(115540)], "pagination": {"next": None}})
+        response(200, {"groups": [group(115540)]})
     ])
 
     rows = client.list_category_plugins(
@@ -97,48 +106,56 @@ def test_exclusive_analysis_sends_the_approved_a01_contract() -> None:
         "/api/v3/findings/vulnerabilities/webapp/analysis"
     )
     assert json.loads(transport.calls[0]["body"]) == {
-        "filters": [
-            {"property": "state", "operator": "neq", "value": ["FIXED"]},
-            {"property": "severity", "operator": "neq", "value": ["INFO"]},
-            {
-                "property": "risk_modified",
-                "operator": "neq",
-                "value": ["ACCEPTED"],
-            },
-            {"property": "owasp_2025", "operator": "eq", "value": ["A1"]},
-            {
-                "property": "last_seen",
-                "operator": "between",
-                "value": [
-                    "2026-10-01T03:00:00.000Z",
-                    "2026-11-01T02:59:59.999Z",
-                ],
-            },
-        ],
-        "group_by": ["definition.id"],
-        "statistics": [
-            {"property": "severity", "function": "max"},
-            {"property": "definition.name", "function": "first"},
-            {"property": "definition.family", "function": "first"},
-            {"property": "definition.vpr.score", "function": "first"},
-            {"property": "finding_id", "function": "count"},
-        ],
-        "pagination": {"limit": 200},
+        "filter": {
+            "and": [
+                {"property": "state", "operator": "neq", "value": ["FIXED"]},
+                {"property": "severity", "operator": "neq", "value": [0]},
+                {
+                    "property": "risk_modified",
+                    "operator": "neq",
+                    "value": ["ACCEPTED"],
+                },
+                {"property": "owasp_2025", "operator": "eq", "value": ["A1"]},
+                {
+                    "property": "last_seen",
+                    "operator": "between",
+                    "operatorVariation": "between",
+                    "value": [
+                        "2026-10-01T03:00:00.000Z",
+                        "2026-11-01T02:59:59.999Z",
+                    ],
+                },
+            ]
+        },
+        "template": "group",
+        "parameters": {
+            "group_by": "definition.id",
+            "stats": [
+                "max(severity)",
+                "first(definition.name)",
+                "first(definition.family)",
+                "first(definition.vpr.score)",
+                "first(definition.id)",
+                "count",
+            ],
+            "sort": [
+                {"property": "first(definition.vpr.score)", "order": "desc"}
+            ],
+        },
     }
 
 
 def test_exclusive_analysis_paginates_and_sorts_vpr_descending() -> None:
     client, transport = analysis_client([
         response(200, {
-            "items": [group(101, severity="MEDIUM", vpr=5.2, instances=20)],
-            "pagination": {"next": "cursor-2"},
+            "groups": [group(101, severity="MEDIUM", vpr=5.2, instances=20)],
+            "next": "cursor-2",
         }),
         response(200, {
-            "items": [
+            "groups": [
                 group(102, severity="HIGH", vpr=8.7, instances=3),
                 group(103, severity="CRITICAL", vpr=None, instances=30),
             ],
-            "pagination": {"next": None},
         }),
     ])
 
@@ -151,16 +168,27 @@ def test_exclusive_analysis_paginates_and_sorts_vpr_descending() -> None:
 
     assert [row.plugin_id for row in rows] == [102, 101, 103]
     assert rows[-1].vpr_score is None
-    assert json.loads(transport.calls[1]["body"])["pagination"] == {
-        "limit": 2,
-        "cursor": "cursor-2",
-    }
+    assert json.loads(transport.calls[1]["body"])["next"] == "cursor-2"
+
+
+def test_exclusive_analysis_normalizes_vpr_to_tenable_precision() -> None:
+    client, _ = analysis_client([
+        response(200, {"groups": [group(101, vpr=3.9000000953674316)]})
+    ])
+
+    rows = client.list_category_plugins(
+        category="A01",
+        start_at=START,
+        end_at=END,
+    )
+
+    assert rows[0].vpr_score == 3.9
 
 
 def test_exclusive_analysis_retries_transient_http_response() -> None:
     client, transport = analysis_client([
         response(502, {"message": "temporário"}),
-        response(200, {"items": [], "pagination": {"next": None}}),
+        response(200, {"groups": []}),
     ])
 
     assert client.list_category_plugins(
@@ -174,9 +202,9 @@ def test_exclusive_analysis_retries_transient_http_response() -> None:
 @pytest.mark.parametrize(
     "payload",
     (
-        {"pagination": {"next": None}},
-        {"items": [group(101, instances=-1)], "pagination": {"next": None}},
-        {"items": [{"group": {}, "statistics": {}}], "pagination": {"next": None}},
+        {"next": None},
+        {"groups": [group(101, instances=-1)]},
+        {"groups": [{"field": "definition.id", "stats": {}}]},
     ),
 )
 def test_exclusive_analysis_rejects_malformed_responses(payload: Any) -> None:
@@ -202,8 +230,8 @@ def test_exclusive_analysis_rejects_invalid_category_and_period() -> None:
 def test_exclusive_analysis_enforces_aggregate_pagination_budget() -> None:
     client, transport = analysis_client([
         response(200, {
-            "items": [group(101)],
-            "pagination": {"next": "cursor-2"},
+            "groups": [group(101)],
+            "next": "cursor-2",
         }),
     ])
 

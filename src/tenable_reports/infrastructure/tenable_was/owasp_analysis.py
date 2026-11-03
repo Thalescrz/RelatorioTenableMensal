@@ -22,6 +22,13 @@ SEVERITY_RANK = {
     "HIGH": 3,
     "CRITICAL": 4,
 }
+SEVERITY_BY_VALUE = {
+    0: "INFO",
+    1: "LOW",
+    2: "MEDIUM",
+    3: "HIGH",
+    4: "CRITICAL",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,45 +54,53 @@ def _payload(
     category: str,
     start_at: datetime,
     end_at: datetime,
-    page_size: int,
     cursor: str | None,
 ) -> dict[str, Any]:
-    pagination: dict[str, Any] = {"limit": page_size}
-    if cursor is not None:
-        pagination["cursor"] = cursor
-    return {
-        "filters": [
-            {"property": "state", "operator": "neq", "value": ["FIXED"]},
-            {"property": "severity", "operator": "neq", "value": ["INFO"]},
-            {
-                "property": "risk_modified",
-                "operator": "neq",
-                "value": ["ACCEPTED"],
-            },
-            {
-                "property": "owasp_2025",
-                "operator": "eq",
-                "value": [f"A{int(category[1:])}"],
-            },
-            {
-                "property": "last_seen",
-                "operator": "between",
-                "value": [
-                    _iso_milliseconds(start_at),
-                    _iso_milliseconds(end_at - timedelta(milliseconds=1)),
-                ],
-            },
-        ],
-        "group_by": ["definition.id"],
-        "statistics": [
-            {"property": "severity", "function": "max"},
-            {"property": "definition.name", "function": "first"},
-            {"property": "definition.family", "function": "first"},
-            {"property": "definition.vpr.score", "function": "first"},
-            {"property": "finding_id", "function": "count"},
-        ],
-        "pagination": pagination,
+    payload: dict[str, Any] = {
+        "filter": {
+            "and": [
+                {"property": "state", "operator": "neq", "value": ["FIXED"]},
+                {"property": "severity", "operator": "neq", "value": [0]},
+                {
+                    "property": "risk_modified",
+                    "operator": "neq",
+                    "value": ["ACCEPTED"],
+                },
+                {
+                    "property": "owasp_2025",
+                    "operator": "eq",
+                    "value": [f"A{int(category[1:])}"],
+                },
+                {
+                    "property": "last_seen",
+                    "operator": "between",
+                    "operatorVariation": "between",
+                    "value": [
+                        _iso_milliseconds(start_at),
+                        _iso_milliseconds(end_at - timedelta(milliseconds=1)),
+                    ],
+                },
+            ]
+        },
+        "template": "group",
+        "parameters": {
+            "group_by": "definition.id",
+            "stats": [
+                "max(severity)",
+                "first(definition.name)",
+                "first(definition.family)",
+                "first(definition.vpr.score)",
+                "first(definition.id)",
+                "count",
+            ],
+            "sort": [
+                {"property": "first(definition.vpr.score)", "order": "desc"}
+            ],
+        },
     }
+    if cursor is not None:
+        payload["next"] = cursor
+    return payload
 
 
 def _optional_text(value: Any) -> str | None:
@@ -98,22 +113,23 @@ def _optional_text(value: Any) -> str | None:
 def _parse_group(category: str, value: Any) -> Owasp2025PluginGroup:
     if not isinstance(value, Mapping):
         raise ApiError("Resposta da analise OWASP 2025 possui grupo invalido.")
-    group = value.get("group")
-    statistics = value.get("statistics")
-    if not isinstance(group, Mapping) or not isinstance(statistics, Mapping):
+    statistics = value.get("stats")
+    if value.get("field") != "definition.id" or not isinstance(statistics, Mapping):
         raise ApiError("Resposta da analise OWASP 2025 possui grupo invalido.")
     try:
-        plugin_id = int(group["definition.id"])
-        instances = int(statistics["finding_id"])
+        plugin_id = int(value["value"])
+        reported_plugin_id = int(statistics["first(definition.id)"])
+        instances = int(statistics["count"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ApiError("Resposta da analise OWASP 2025 possui grupo invalido.") from exc
-    if plugin_id <= 0 or instances < 0:
+    if plugin_id <= 0 or reported_plugin_id != plugin_id or instances < 0:
         raise ApiError("Resposta da analise OWASP 2025 possui grupo invalido.")
 
-    severity = str(statistics.get("severity") or "").strip().upper()
-    if severity not in SEVERITY_RANK:
+    try:
+        severity = SEVERITY_BY_VALUE[int(statistics["max(severity)"])]
+    except (KeyError, TypeError, ValueError) as exc:
         raise ApiError("Resposta da analise OWASP 2025 possui severidade invalida.")
-    raw_vpr = statistics.get("definition.vpr.score")
+    raw_vpr = statistics.get("first(definition.vpr.score)")
     if raw_vpr is None:
         vpr_score = None
     else:
@@ -123,11 +139,12 @@ def _parse_group(category: str, value: Any) -> Owasp2025PluginGroup:
             raise ApiError("Resposta da analise OWASP 2025 possui VPR invalido.") from exc
         if not math.isfinite(vpr_score) or vpr_score < 0:
             raise ApiError("Resposta da analise OWASP 2025 possui VPR invalido.")
+        vpr_score = round(vpr_score, 1)
     return Owasp2025PluginGroup(
         category=category,
         plugin_id=plugin_id,
-        name=_optional_text(statistics.get("definition.name")),
-        family=_optional_text(statistics.get("definition.family")),
+        name=_optional_text(statistics.get("first(definition.name)")),
+        family=_optional_text(statistics.get("first(definition.family)")),
         severity=severity,
         vpr_score=vpr_score,
         instances=instances,
@@ -163,7 +180,8 @@ class TenableWasOwaspAnalysisClient:
             raise ValueError("A categoria OWASP deve estar entre A01 e A10.")
         if start_at.tzinfo is None or end_at.tzinfo is None or start_at >= end_at:
             raise ValueError("O periodo OWASP deve possuir inicio anterior ao fim.")
-        bounded_page_size = max(1, min(int(page_size), 500))
+        if int(page_size) < 1:
+            raise ValueError("page_size deve ser positivo.")
         page_budget = max(1, min(int(max_pages), MAX_ANALYSIS_PAGES))
         row_budget = max(1, min(int(max_rows), MAX_ANALYSIS_ROWS))
 
@@ -180,20 +198,18 @@ class TenableWasOwaspAnalysisClient:
                     category=normalized_category,
                     start_at=start_at,
                     end_at=end_at,
-                    page_size=bounded_page_size,
                     cursor=cursor,
                 ),
             ).json()
             if not isinstance(data, Mapping):
                 raise ApiError("Resposta da analise OWASP 2025 possui formato invalido.")
-            items = data.get("items")
-            pagination = data.get("pagination")
-            if not isinstance(items, list) or not isinstance(pagination, Mapping):
+            items = data.get("groups")
+            if not isinstance(items, list):
                 raise ApiError("Resposta da analise OWASP 2025 possui formato invalido.")
             if len(rows) + len(items) > row_budget:
                 raise ApiError("Analise OWASP 2025 excedeu o limite de linhas.")
             rows.extend(_parse_group(normalized_category, item) for item in items)
-            raw_next = pagination.get("next")
+            raw_next = data.get("next")
             if raw_next in (None, ""):
                 break
             if page_count >= page_budget:

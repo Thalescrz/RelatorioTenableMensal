@@ -319,6 +319,15 @@ O histórico compacto preserva o snapshot consolidado A01–A10 e o estado de co
 WAS, inclusive quando a população é vazia, para que o replay continue reproduzível
 depois da limpeza normal do staging.
 
+O contrato autenticado validado em 2026-11-03 usa `filter.and`,
+`template: group` e `parameters` com `group_by`, `stats` e `sort`. A resposta
+retorna `groups`; cada grupo possui `field`, `value` e `stats`, e a continuação
+usa o token superior `next`, reenviado no mesmo nível do payload. A severidade
+usa os valores numéricos `0` a `4`. Estruturas alternativas com `filters`,
+`statistics`, `items` e `pagination` recebem HTTP 400 e não pertencem ao contrato
+observado. A validação percorreu A01–A10 e registrou somente contagens agregadas,
+sem persistir ou expor dados reais de findings.
+
 ### Evidência autenticada da Fase 8 — 2026-08-13
 
 O teste de contrato usou `num_assets=50`, filtros temporais explícitos e somente
