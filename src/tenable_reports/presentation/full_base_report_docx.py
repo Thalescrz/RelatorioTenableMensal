@@ -914,6 +914,25 @@ def _host_rows(item: Mapping[str, Any], mask_sensitive: bool, include_output: bo
     return rows
 
 
+MAX_REFERENCE_URLS = 5
+
+
+def _limited_reference_urls(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, (list, tuple)):
+        return ()
+    urls: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        url = str(item or "").strip()
+        if not url or url in seen:
+            continue
+        seen.add(url)
+        urls.append(url)
+        if len(urls) == MAX_REFERENCE_URLS:
+            break
+    return tuple(urls)
+
+
 def _vulnerability_details(
     document: DocxDocument,
     items: Any,
@@ -942,8 +961,8 @@ def _vulnerability_details(
         _labeled_blocks(document, "Descrição:", item.get("description") or item.get("synopsis") or "", translator=translator)
         _labeled_blocks(document, "Solução:", item.get("solution") or "", translator=translator)
         _heading(document, "Mais informações:", 4)
-        for url in item.get("reference_urls") or []:
-            _paragraph(document, str(url))
+        for url in _limited_reference_urls(item.get("reference_urls")):
+            _paragraph(document, url)
         _heading(document, "Host(s) Afetado(s):", 4)
         headers: tuple[str, ...] = ("ASSET NAME", "IP", "PORTA", protocol_header)
         widths: tuple[int, ...] = (2850, 2200, 1200, 1450)
@@ -992,8 +1011,8 @@ def _web_vulnerability_details(
         _labeled_blocks(document, "Descrição:", item.get("description") or item.get("synopsis") or "", translator=translator)
         _labeled_blocks(document, "Solução:", item.get("solution") or "", translator=translator)
         _heading(document, "Mais informações:", 4)
-        for url in item.get("reference_urls") or []:
-            _paragraph(document, str(url))
+        for url in _limited_reference_urls(item.get("reference_urls")):
+            _paragraph(document, url)
         _heading(document, "URI(s) Afetada(s):", 4)
         headers: tuple[str, ...] = ("URI", "Plugin Output") if include_output else ("URI",)
         widths: tuple[int, ...] = (4500, 4500) if include_output else (9000,)

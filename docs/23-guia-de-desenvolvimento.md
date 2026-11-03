@@ -537,6 +537,12 @@ Word. `SUMÁRIO` usa `TOC Heading`, fica fora da própria lista, e seções/subs
 usam `Heading 1` a `Heading 3` com números explícitos. `Heading 4` pode estruturar
 detalhes internos, mas não participa do sumário.
 
+No gerador do relatório-base, normalize `reference_urls` apenas na apresentação:
+remova valores vazios e duplicatas, preserve a ordem e publique no máximo 5 links
+por vulnerabilidade nos blocos **Mais informações**, tanto em VM quanto em WAS.
+Não trunque o dataset nem o snapshot compacto, pois as referências completas são
+necessárias para auditoria e reprocessamento.
+
 `cloud-base-v1.docx` é somente referência histórica. O gerador Cloud atual usa o
 mesmo shell `base-v1.docx` e publica um único modelo completo.
 

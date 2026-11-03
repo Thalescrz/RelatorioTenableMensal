@@ -224,6 +224,11 @@ customizado ou TAG.
 Uma única coleta geral atende os relatórios gerais e os recortes por TAG. Escolher
 uma TAG não reduz o universo dos relatórios gerais.
 
+No relatório-base geral, cada bloco **Mais informações** exibe no máximo 5 links
+distintos por vulnerabilidade, tanto para VM quanto para WAS. A ordem original é
+preservada e duplicatas ou valores vazios são omitidos. O limite afeta somente o
+DOCX; as referências completas permanecem no dataset e no histórico compacto.
+
 No item 4 do relatório TAG, valide primeiro o gráfico consolidado e depois os
 subitens de não mitigadas, mitigadas e novas. O gráfico de novas deve ter séries de
 severidade e **Total Novas**. Meses sem snapshot não aparecem. Quando há dois meses
