@@ -3416,6 +3416,53 @@ class WebDashboardTests(unittest.TestCase):
             self.assertNotIn("cloud_container_images", profile["report"]["intelligence_modules"])
             load_client_profile(root / "clients" / "managed" / "cliente-editavel.json")
 
+    def test_client_owasp_mode_is_created_updated_and_preserved_when_was_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = DashboardConfigStore(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+            )
+
+            created = store.add_client({
+                "client_id": "cliente-owasp",
+                "display_name": "Cliente OWASP",
+                "tenant_id": "tenant-owasp",
+                "was_enabled": True,
+            })
+            self.assertEqual(created["was_owasp_2025_mode"], "inclusive")
+
+            exclusive = store.update_client("cliente-owasp", {
+                "was_owasp_2025_mode": "console_exclusive",
+            })
+            self.assertEqual(
+                exclusive["was_owasp_2025_mode"],
+                "console_exclusive",
+            )
+
+            disabled = store.update_client("cliente-owasp", {
+                "was_enabled": False,
+            })
+            self.assertFalse(disabled["was_enabled"])
+            self.assertEqual(
+                disabled["was_owasp_2025_mode"],
+                "console_exclusive",
+            )
+            persisted = json.loads(
+                (root / "clients" / "managed" / "cliente-owasp.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                persisted["scope"]["was"]["owasp_2025_mode"],
+                "console_exclusive",
+            )
+
+            with self.assertRaisesRegex(ValueError, "scope.was.owasp_2025_mode"):
+                store.update_client("cliente-owasp", {
+                    "was_owasp_2025_mode": "automatic",
+                })
+
     def test_cloud_settings_save_token_without_returning_it_and_blank_edit_preserves_it(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

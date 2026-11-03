@@ -1813,6 +1813,22 @@ function syncCloudConfig() {
       : "Informe o token Cloud e salve o cliente antes de testar a API.";
 }
 
+function syncWasOwaspConfig() {
+  const field = clientForm.elements.was_owasp_2025_mode;
+  const view = window.owaspModeHelpers.owaspModeView({
+    wasEnabled: clientForm.elements.was_enabled.checked,
+    savedMode: field.value,
+  });
+  field.value = view.value;
+  field.disabled = view.disabled;
+  $("#was-owasp-config").classList.toggle("disabled", view.disabled);
+  $("#was-owasp-config-note").textContent = view.disabled
+    ? "Ative Vulnerabilidades WEB para aplicar esta seleção. A preferência salva será preservada."
+    : view.value === "console_exclusive"
+      ? "O modo exclusivo segue a seleção apresentada pela console Tenable e pode ser retentado somente no WAS."
+      : "O modo inclusivo é o padrão e não adiciona consultas à coleta.";
+}
+
 function resetClientForm() {
   state.editingClientId = null;
   state.responsibleAnalystDraft = "";
@@ -1827,6 +1843,7 @@ function resetClientForm() {
   clientForm.elements.secret_key.placeholder = "Opcional agora";
   clientForm.elements.intelligence_enabled.checked = true;
   clientForm.elements.was_enabled.checked = true;
+  clientForm.elements.was_owasp_2025_mode.value = "inclusive";
   clientForm.elements.cloud_enabled.checked = false;
   clientForm.elements.cloud_api_secret.value = "";
   clientForm.elements.cloud_api_secret.placeholder = "Preencha para salvar";
@@ -1843,6 +1860,7 @@ function resetClientForm() {
   $("#fetch-tags-button").disabled = true;
   renderTagSelector();
   syncCloudConfig();
+  syncWasOwaspConfig();
   $("#client-form-mode").textContent = "NOVO";
   $("#client-form-title").textContent = "Adicionar cliente";
   $("#client-form-note").textContent = "As chaves ficam apenas no arquivo local ignorado pelo Git e nunca retornam à tela.";
@@ -1881,6 +1899,9 @@ function editClient(clientId) {
   renderTagSelector();
   clientForm.elements.intelligence_enabled.checked = Boolean(client.intelligence_enabled);
   clientForm.elements.was_enabled.checked = Boolean(client.was_enabled);
+  clientForm.elements.was_owasp_2025_mode.value = window.owaspModeHelpers.normalizeOwaspMode(
+    client.was_owasp_2025_mode,
+  );
   clientForm.elements.cloud_enabled.checked = Boolean(client.cloud_enabled);
   clientForm.elements.cloud_api_secret.value = "";
   clientForm.elements.cloud_api_secret.placeholder = client.cloud_token_saved ? "Token Cloud salvo · preencha somente para trocar" : "Token Cloud ainda não salvo";
@@ -1893,6 +1914,7 @@ function editClient(clientId) {
   clientForm.elements.historical_source.value = client.historical_source || "legacy";
   $("#validate-vm-export-button").disabled = !client.credentials_ready || !client.enabled;
   syncCloudConfig();
+  syncWasOwaspConfig();
   $("#client-form-mode").textContent = "EDITANDO";
   $("#client-form-title").textContent = client.display_name;
   $("#client-form-note").textContent = "Deixe as chaves vazias para manter as credenciais atuais. O ID interno não pode ser alterado.";
@@ -1916,6 +1938,8 @@ clientForm.elements.responsible_analyst_id.addEventListener("change", event => {
 $("#cancel-edit-button").addEventListener("click", resetClientForm);
 $("#fetch-tags-button").addEventListener("click", fetchClientTags);
 clientForm.elements.cloud_enabled.addEventListener("change", syncCloudConfig);
+clientForm.elements.was_enabled.addEventListener("change", syncWasOwaspConfig);
+clientForm.elements.was_owasp_2025_mode.addEventListener("change", syncWasOwaspConfig);
 $("#test-cloud-button").addEventListener("click", async event => {
   if (!state.editingClientId) return;
   const button = event.currentTarget;
