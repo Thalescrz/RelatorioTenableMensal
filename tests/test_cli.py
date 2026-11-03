@@ -184,6 +184,118 @@ def test_blocked_preflight_stops_official_run_before_tenable_handler() -> None:
 
 
 class CliTests(unittest.TestCase):
+    def test_partial_was_assembly_uses_single_include_was_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            period = previous_calendar_month(
+                reference_at="2026-11-01T00:05:00-03:00",
+                timezone_name="America/Fortaleza",
+            )
+            profile = SimpleNamespace(
+                client_id="cliente-fixture",
+                report=SimpleNamespace(
+                    tag_reports=SimpleNamespace(enabled=False, tags=()),
+                ),
+            )
+            inputs = SimpleNamespace(
+                tag_scope=None,
+                collection_provenance={
+                    "collection_route": "legacy_vm",
+                    "reconstruction_status": "CURRENT_WINDOW",
+                    "sources": ["tenable_vm_vulnerabilities"],
+                },
+            )
+            artifact = SimpleNamespace(
+                dataset_path=directory / "dataset.json",
+                directory=directory,
+                result=SimpleNamespace(dataset={}),
+            )
+            tag_bundle = SimpleNamespace(artifacts=(), warnings=())
+            args = SimpleNamespace(include_output=False, skip_history=True)
+
+            with (
+                patch.object(
+                    cli_module,
+                    "load_report_dataset_inputs",
+                    return_value=inputs,
+                ) as load_inputs,
+                patch.object(
+                    cli_module,
+                    "build_report_dataset_from_snapshot",
+                    return_value=artifact,
+                ) as build_dataset,
+                patch.object(
+                    cli_module,
+                    "build_tag_report_datasets_from_snapshot",
+                    return_value=tag_bundle,
+                ),
+            ):
+                result = cli_module._assemble_period_from_existing(
+                    args,
+                    profile=profile,
+                    output_root=directory,
+                    actual_run_id="run-partial-was",
+                    period=period,
+                    execution_type="MANUAL",
+                    normalized_findings_path=directory / "findings.jsonl.gz",
+                    was_collection_status="UNAVAILABLE",
+                )
+
+        self.assertEqual(result.was_collection_status, "UNAVAILABLE")
+        self.assertEqual(load_inputs.call_args.kwargs["include_was"], False)
+        self.assertEqual(build_dataset.call_args.kwargs["include_was"], False)
+
+    def test_owasp_publication_metadata_records_incomplete_exclusive_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            checkpoint_dir = (
+                directory
+                / "recovery"
+                / "cliente-fixture"
+                / "run-a"
+                / "was-owasp-2025"
+            )
+            checkpoint_dir.mkdir(parents=True)
+            (checkpoint_dir / "A01.json").write_text(
+                json.dumps({"contract_sha256": "b" * 64}),
+                encoding="utf-8",
+            )
+            collected = SimpleNamespace(
+                profile=SimpleNamespace(
+                    client_id="cliente-fixture",
+                    was_scope=SimpleNamespace(owasp_2025_mode="console_exclusive"),
+                ),
+                output_root=directory,
+                run_id="run-a",
+                was_collection_status="UNAVAILABLE",
+                was_recovery_checkpoint=None,
+                artifact=SimpleNamespace(
+                    result=SimpleNamespace(
+                        dataset={
+                            "was": {
+                                "owasp_selection": {
+                                    "source": "console_analysis_exclusive",
+                                    "coverage": "NOT_COLLECTED",
+                                }
+                            }
+                        }
+                    )
+                ),
+            )
+
+            metadata = cli_module._was_publication_metadata(
+                collected,
+                profile=collected.profile,
+                recovery_attempt=1,
+            )
+
+        owasp = metadata["WAS"]["owasp_2025"]
+        self.assertEqual(owasp["original_mode"], "console_exclusive")
+        self.assertEqual(owasp["effective_mode"], "console_exclusive")
+        self.assertEqual(owasp["coverage"], "INCOMPLETE")
+        self.assertEqual(owasp["contract_sha256"], "b" * 64)
+        self.assertIsNone(owasp["snapshot_sha256"])
+
     def test_component_publication_records_only_changed_state_as_next_attempt(
         self,
     ) -> None:

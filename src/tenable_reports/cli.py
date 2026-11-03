@@ -2018,6 +2018,7 @@ def _assemble_period_from_existing(
     cloud_retryable: bool = False,
     cloud_warnings: tuple[Mapping[str, Any], ...] = (),
 ) -> _CollectedPeriodExecution:
+    include_was = str(was_collection_status or "").upper() == "COMPLETE"
     if (
         selected_tag_count is None
         or collection_route is None
@@ -2028,6 +2029,7 @@ def _assemble_period_from_existing(
             profile=profile,
             run_id=actual_run_id,
             output_root=output_root,
+            include_was=include_was,
         )
         tag_scope = existing_inputs.tag_scope or {}
         if selected_tag_count is None:
@@ -2048,6 +2050,7 @@ def _assemble_period_from_existing(
         period=period,
         output_root=output_root,
         include_output=args.include_output,
+        include_was=include_was,
         execution_type=execution_type,
     )
     tag_dataset_bundle = build_tag_report_datasets_from_snapshot(
@@ -4357,6 +4360,97 @@ def _persist_initial_component_states(
     }
 
 
+def _was_publication_metadata(
+    collected: _CollectedPeriodExecution,
+    *,
+    profile: ClientProfile,
+    recovery_attempt: int,
+) -> dict[str, Any]:
+    profile_mode = getattr(
+        getattr(profile, "was_scope", None),
+        "owasp_2025_mode",
+        "inclusive",
+    )
+    effective_mode = str(getattr(profile_mode, "value", profile_mode) or "inclusive")
+    checkpoint = getattr(collected, "was_recovery_checkpoint", None)
+    original_mode = str(
+        getattr(checkpoint, "owasp_2025_original_mode", None) or effective_mode
+    )
+    artifact = getattr(collected, "artifact", None)
+    dataset = getattr(getattr(artifact, "result", None), "dataset", {})
+    if isinstance(dataset, Mapping):
+        was = dataset.get("was") if isinstance(dataset.get("was"), Mapping) else {}
+    else:
+        was = dataset.was if isinstance(getattr(dataset, "was", None), Mapping) else {}
+    selection = (
+        was.get("owasp_selection")
+        if isinstance(was.get("owasp_selection"), Mapping)
+        else {}
+    )
+    source = str(
+        selection.get("source")
+        or (
+            "console_analysis_exclusive"
+            if effective_mode == "console_exclusive"
+            else "plugin_catalog_inclusive"
+        )
+    )
+    default_status = (
+        "DISABLED"
+        if getattr(getattr(profile, "was_scope", None), "enabled", False) is False
+        else "UNKNOWN"
+    )
+    status = str(
+        getattr(collected, "was_collection_status", None) or default_status
+    ).upper()
+    coverage = (
+        str(selection.get("coverage") or "COMPLETE").upper()
+        if status == "COMPLETE"
+        else "INCOMPLETE"
+    )
+    snapshot_path = (
+        collected.output_root
+        / "snapshots"
+        / profile.client_id
+        / collected.run_id
+        / "tenable_was_owasp_2025.snapshot.json"
+    )
+    snapshot_sha256 = sha256_file(snapshot_path) if snapshot_path.is_file() else None
+    contract_sha256 = None
+    audit_paths = [snapshot_path]
+    audit_paths.extend(sorted((
+        collected.output_root
+        / "recovery"
+        / profile.client_id
+        / collected.run_id
+        / "was-owasp-2025"
+    ).glob("A*.json")))
+    for audit_path in audit_paths:
+        if not audit_path.is_file():
+            continue
+        try:
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if isinstance(audit, Mapping) and audit.get("contract_sha256"):
+            contract_sha256 = str(audit["contract_sha256"])
+            break
+    return {
+        "WAS": {
+            "status": status or "UNKNOWN",
+            "owasp_2025": {
+                "original_mode": original_mode,
+                "effective_mode": effective_mode,
+                "source": source,
+                "coverage": coverage,
+                "snapshot_sha256": snapshot_sha256,
+                "contract_sha256": contract_sha256,
+                "recovery_attempt": max(1, int(recovery_attempt)),
+            },
+        }
+    }
+
+
 def _publish_collected_period(
     *,
     args: argparse.Namespace,
@@ -4517,6 +4611,11 @@ def _publish_collected_period(
         origin=getattr(args, "origin", None),
         logical_job_id=getattr(args, "logical_job_id", None),
         attempt_number=getattr(args, "attempt_number", 1),
+        component_metadata=_was_publication_metadata(
+            collected,
+            profile=profile,
+            recovery_attempt=getattr(args, "attempt_number", 1),
+        ),
     )
     component_state = _persist_initial_component_states(
         args=args,
@@ -4570,6 +4669,10 @@ def _publish_collected_period(
             document_references=document_references,
             publication_validated=True,
             documents_validated=True,
+            include_was=(
+                str(getattr(collected, "was_collection_status", "") or "").upper()
+                == "COMPLETE"
+            ),
         )
         compact_snapshot_confirmed = True
         compact_snapshot_id = getattr(compact_snapshot, "snapshot_id", None)

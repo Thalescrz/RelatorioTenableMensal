@@ -29,6 +29,64 @@ def _document(path: Path, text: str) -> Path:
 
 
 class AtomicPublicationTests(unittest.TestCase):
+    def test_manifest_persists_sanitized_component_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            dataset = directory / "dataset.json"
+            dataset.write_text("{}", encoding="utf-8")
+            document = _document(directory / "base.docx", "Documento")
+            metadata = {
+                "WAS": {
+                    "status": "UNAVAILABLE",
+                    "owasp_2025": {
+                        "original_mode": "console_exclusive",
+                        "effective_mode": "console_exclusive",
+                        "source": "console_analysis_exclusive",
+                        "coverage": "INCOMPLETE",
+                        "snapshot_sha256": None,
+                        "contract_sha256": "a" * 64,
+                        "recovery_attempt": 1,
+                    },
+                }
+            }
+
+            manifest = create_publication_manifest(
+                output_path=directory / "publication-manifest.json",
+                client_id="cliente-a",
+                tenant_id="tenant-a",
+                run_id="run-a",
+                execution_type="MANUAL",
+                period={"period_id": "2026-10"},
+                dataset_path=dataset,
+                documents=(PublicationDocument(document, "base"),),
+                history_database=None,
+                component_metadata=metadata,
+            )
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["component_metadata"], metadata)
+
+    def test_manifest_rejects_sensitive_component_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            directory = Path(directory_name)
+            dataset = directory / "dataset.json"
+            dataset.write_text("{}", encoding="utf-8")
+            document = _document(directory / "base.docx", "Documento")
+
+            with self.assertRaisesRegex(ValueError, "sensivel"):
+                create_publication_manifest(
+                    output_path=directory / "publication-manifest.json",
+                    client_id="cliente-a",
+                    tenant_id="tenant-a",
+                    run_id="run-a",
+                    execution_type="MANUAL",
+                    period={"period_id": "2026-10"},
+                    dataset_path=dataset,
+                    documents=(PublicationDocument(document, "base"),),
+                    history_database=None,
+                    component_metadata={"WAS": {"access_token": "nao-persistir"}},
+                )
+
     def test_transaction_backup_name_does_not_repeat_long_document_name(self) -> None:
         destination = Path("C:/reports") / ("relatorio-" + ("x" * 180) + ".docx")
 

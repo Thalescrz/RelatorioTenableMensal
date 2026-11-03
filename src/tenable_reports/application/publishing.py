@@ -155,6 +155,62 @@ def write_json_atomic(path: str | Path, payload: Mapping[str, Any]) -> Path:
     return destination
 
 
+_SENSITIVE_METADATA_KEYS = frozenset({
+    "access_key",
+    "access_token",
+    "authorization",
+    "cookie",
+    "email",
+    "hostname",
+    "ip",
+    "ip_address",
+    "password",
+    "payload",
+    "raw_response",
+    "response_body",
+    "secret",
+    "secret_key",
+    "source_asset_id",
+    "asset_id",
+    "token",
+})
+
+
+def _validated_component_metadata(
+    value: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("Metadados de componente precisam ser um mapping.")
+
+    def inspect(item: Any) -> None:
+        if isinstance(item, Mapping):
+            for raw_key, nested in item.items():
+                key = str(raw_key).strip().lower().replace("-", "_")
+                if key in _SENSITIVE_METADATA_KEYS:
+                    raise ValueError("Metadado sensivel nao pode ser persistido.")
+                inspect(nested)
+        elif isinstance(item, (list, tuple)):
+            for nested in item:
+                inspect(nested)
+
+    inspect(value)
+    try:
+        serialized = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            allow_nan=False,
+        )
+        normalized = json.loads(serialized)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Metadados de componente nao sao serializaveis.") from exc
+    if not isinstance(normalized, dict):
+        raise ValueError("Metadados de componente precisam ser um objeto JSON.")
+    return normalized
+
+
 def create_publication_manifest(
     *,
     output_path: str | Path,
@@ -172,6 +228,7 @@ def create_publication_manifest(
     origin: str | None = None,
     logical_job_id: str | None = None,
     attempt_number: int = 1,
+    component_metadata: Mapping[str, Any] | None = None,
 ) -> Path:
     primary_component = str(primary_dataset_component or "").strip().lower()
     if primary_component not in {"vm", "cloud"}:
@@ -216,6 +273,7 @@ def create_publication_manifest(
                 "tag_value": None,
             })
         validated_documents.append(validated)
+    validated_component_metadata = _validated_component_metadata(component_metadata)
     payload = {
         "schema_version": 1,
         "status": "READY_FOR_CONTROLLED_DISTRIBUTION",
@@ -244,6 +302,11 @@ def create_publication_manifest(
             }
         ),
         "documents": validated_documents,
+        **(
+            {"component_metadata": validated_component_metadata}
+            if validated_component_metadata is not None
+            else {}
+        ),
         "distribution": {
             "external_delivery_performed": False,
             "note": "A entrega externa exige uma integracao e autorizacao explicitas.",
