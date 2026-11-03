@@ -504,6 +504,85 @@ class CliCollectionRoutingTests(unittest.TestCase):
         self.assertEqual(args.window_number, 2)
         self.assertEqual(args.identifier_kind, "UUID")
 
+    def test_exclusive_was_checkpoint_preserves_the_consolidated_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name).resolve()
+            period = _routing_period()
+            profile = ClientProfile.from_dict({
+                "schema_version": 1,
+                "client_id": "client-a",
+                "display_name": "Cliente Fixture",
+                "tenant_id": "tenant-a",
+                "scope": {
+                    "was": {
+                        "enabled": True,
+                        "owasp_2025_mode": "console_exclusive",
+                    }
+                },
+            })
+            request = RemoteCollectionRequest(
+                storage_root=root,
+                checkpoint_path=root / "checkpoints" / "client-a" / "run-a.json",
+                client_id=profile.client_id,
+                tenant_id=profile.tenant_id,
+                run_id="run-a",
+                logical_job_id="job-a",
+                execution_type="MANUAL",
+                mode="manual",
+                origin="MANUAL",
+                attempt_number=1,
+                period=period.to_dict(),
+            )
+            args = SimpleNamespace(
+                env_file="credentials.env",
+                was_num_assets=1000,
+                window_number=1,
+                deadline_at="2026-09-05T08:00:00Z",
+                identifier_kind=None,
+                identifier_origin=None,
+                remote_identifier=None,
+            )
+
+            def collect_fixture(**kwargs):
+                output_root = Path(kwargs["output_root"])
+                normalized = output_root / "normalized" / profile.client_id / request.run_id
+                snapshots = output_root / "snapshots" / profile.client_id / request.run_id
+                normalized.mkdir(parents=True)
+                snapshots.mkdir(parents=True)
+                (normalized / "was-manifest.json").write_text("{}", encoding="utf-8")
+                (normalized / "was-findings.jsonl.gz").write_bytes(b"was-fixture")
+                (snapshots / "tenable_was_findings.snapshot.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+                (snapshots / "tenable_was_owasp_2025.snapshot.json").write_text(
+                    "{}", encoding="utf-8"
+                )
+                return SimpleNamespace(
+                    was_failure=None,
+                    collection_status="AVAILABLE",
+                    warnings=(),
+                )
+
+            with (
+                patch.object(cli_module, "_load_credentials", return_value=object()),
+                patch.object(cli_module, "_was_client_from_environment", return_value=object()),
+                patch.object(cli_module, "_plugin_catalog_repository", return_value=None),
+                patch.object(cli_module, "collect_was_period", side_effect=collect_fixture),
+            ):
+                checkpoint = cli_module._was_component_checkpoint(
+                    args,
+                    profile=profile,
+                    period=period,
+                    request=request,
+                )
+
+        artifact_kinds = {artifact.kind for artifact in checkpoint.artifacts}
+        self.assertIn("was_owasp_2025_snapshot", artifact_kinds)
+        self.assertEqual(
+            checkpoint.metadata["owasp_2025_snapshot_kind"],
+            "was_owasp_2025_snapshot",
+        )
+
     def test_collect_client_requires_live_confirmation(self) -> None:
         with self.assertRaisesRegex(ValueError, "confirm-live-api"):
             cli_module.command_collect_client(
@@ -516,7 +595,20 @@ class CliCollectionRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory_name:
             root = Path(directory_name).resolve()
             period = _routing_period()
-            profile = _routing_profile()
+            profile = ClientProfile.from_dict(
+                {
+                    "schema_version": 1,
+                    "client_id": "client-a",
+                    "display_name": "Cliente Fixture",
+                    "tenant_id": "tenant-a",
+                    "scope": {
+                        "was": {
+                            "enabled": True,
+                            "owasp_2025_mode": "console_exclusive",
+                        }
+                    },
+                }
+            )
             source = root / "checkpoints" / "client-a" / "run-a"
 
             def artifact(component: str, kind: str, relative: str, content: bytes):
@@ -540,6 +632,12 @@ class CliCollectionRoutingTests(unittest.TestCase):
                 artifact("WAS", "normalized_was_manifest", "was-manifest.json", b"was-manifest"),
                 artifact("WAS", "normalized_was_findings", "was-findings.jsonl.gz", b"was-findings"),
                 artifact("WAS", "was_snapshot", "was.snapshot.json", b"was-snapshot"),
+                artifact(
+                    "WAS",
+                    "was_owasp_2025_snapshot",
+                    "was-owasp-2025.snapshot.json",
+                    b"was-owasp-2025",
+                ),
             )
             checkpoint = CollectionCheckpoint(
                 schema_version=1,
@@ -569,6 +667,7 @@ class CliCollectionRoutingTests(unittest.TestCase):
                         "normalized_was_manifest_kind": "normalized_was_manifest",
                         "normalized_was_findings_kind": "normalized_was_findings",
                         "was_snapshot_kind": "was_snapshot",
+                        "owasp_2025_snapshot_kind": "was_owasp_2025_snapshot",
                     },
                     "CLOUD": {"status": "NOT_APPLICABLE"},
                 },
@@ -607,6 +706,10 @@ class CliCollectionRoutingTests(unittest.TestCase):
             self.assertEqual(
                 (snapshots / "tenable_was_findings.snapshot.json").read_bytes(),
                 b"was-snapshot",
+            )
+            self.assertEqual(
+                (snapshots / "tenable_was_owasp_2025.snapshot.json").read_bytes(),
+                b"was-owasp-2025",
             )
             self.assertEqual(
                 assemble.call_args.kwargs["normalized_findings_path"],

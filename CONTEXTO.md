@@ -110,6 +110,11 @@ como equivalente o formato público de export nem promove respostas parciais.
 O estado `AVAILABLE` devolvido pelo snapshot WAS representa coleta concluída e é
 tratado como sucesso na montagem, no snapshot compacto e na auditoria da
 publicação, assim como `COMPLETE` e `REPLAYED`.
+Na execução em estágios, o checkpoint WAS exclusivo preserva também o snapshot
+consolidado `tenable_was_owasp_2025.snapshot.json` como artefato obrigatório. A
+montagem materializa esse arquivo junto dos findings WAS antes de formar o dataset;
+assim, uma coleta exclusiva A01–A10 válida não é perdida na transição entre worker
+e publicação.
 
 O snapshot Cloud é persistência da coleta, não da publicação editorial: ele pode
 ser gravado antes de `report_runs`, mantém `run_id` único e é reconciliado quando o

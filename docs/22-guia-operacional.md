@@ -499,6 +499,10 @@ indisponíveis e não deve ser validada na plataforma como zero.
 Internamente, um snapshot WAS concluído pode registrar `AVAILABLE`; esse estado
 inclui o componente na montagem, no histórico compacto e na auditoria do manifesto.
 Ele não equivale a `UNAVAILABLE` nem autoriza omitir silenciosamente as tabelas WEB.
+Em uma execução por componentes, o checkpoint do WAS exclusivo deve conter o
+artefato `was_owasp_2025_snapshot`. A montagem materializa esse snapshot consolidado
+antes de criar o dataset; ausência ou hash inválido interrompem somente a montagem
+do componente, em vez de publicar uma seção exclusiva vazia.
 
 A coluna **Família** da tabela WAS depende de correspondência do Plugin ID no
 catálogo oficial. Se nenhuma linha exibida tiver correspondência, a coluna inteira

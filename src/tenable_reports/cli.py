@@ -2796,6 +2796,22 @@ def _materialize_disjoint_component_inputs(
                 kind=kind,
                 destination=destination,
             )
+        if profile.was_scope.owasp_2025_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE:
+            owasp_kind = str(
+                was_metadata.get("owasp_2025_snapshot_kind") or ""
+            ).strip()
+            if not owasp_kind:
+                raise ValueError(
+                    "Checkpoint WAS exclusivo sem snapshot OWASP obrigatório."
+                )
+            _materialize_checkpoint_artifact(
+                checkpoint,
+                component=ReportComponent.WAS.value,
+                kind=owasp_kind,
+                destination=(
+                    snapshot_directory / "tenable_was_owasp_2025.snapshot.json"
+                ),
+            )
     return normalized_directory / "findings.jsonl.gz"
 
 
@@ -3524,6 +3540,14 @@ def _was_component_checkpoint(
     artifacts = tuple(
         _checkpoint_artifact(component.value, kind, path) for kind, path in paths
     )
+    owasp_snapshot_kind = None
+    if profile.was_scope.owasp_2025_mode is Owasp2025Mode.CONSOLE_EXCLUSIVE:
+        owasp_snapshot_kind = "was_owasp_2025_snapshot"
+        artifacts = (*artifacts, _checkpoint_artifact(
+            component.value,
+            owasp_snapshot_kind,
+            snapshot_directory / "tenable_was_owasp_2025.snapshot.json",
+        ))
     return _component_checkpoint(
         request=request,
         component=component,
@@ -3535,6 +3559,7 @@ def _was_component_checkpoint(
             "normalized_was_manifest_kind": "normalized_was_manifest",
             "normalized_was_findings_kind": "normalized_was_findings",
             "was_snapshot_kind": "was_snapshot",
+            "owasp_2025_snapshot_kind": owasp_snapshot_kind,
             "warnings": [dict(item) for item in result.warnings],
         },
         query_payload={
