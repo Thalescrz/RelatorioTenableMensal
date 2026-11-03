@@ -106,7 +106,9 @@ permanecem somente enquanto necessários para publicação, diagnóstico ou reto
 O adaptador do modo OWASP 2025 exclusivo usa o contrato interno autenticado
 validado em 2026-11-03: `filter.and`, `template: group`, parâmetros agregados,
 resposta em `groups` e paginação pelo token superior `next`. O código não aceita
-como equivalente o formato público de export nem promove respostas parciais.
+como equivalente o formato público de export nem promove respostas parciais. O VPR
+agregado é normalizado para a precisão oficial de uma casa decimal antes de ordenar,
+persistir e publicar as tabelas.
 O estado `AVAILABLE` devolvido pelo snapshot WAS representa coleta concluída e é
 tratado como sucesso na montagem, no snapshot compacto e na auditoria da
 publicação, assim como `COMPLETE` e `REPLAYED`.

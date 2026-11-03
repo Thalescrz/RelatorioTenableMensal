@@ -139,6 +139,7 @@ def _parse_group(category: str, value: Any) -> Owasp2025PluginGroup:
             raise ApiError("Resposta da analise OWASP 2025 possui VPR invalido.") from exc
         if not math.isfinite(vpr_score) or vpr_score < 0:
             raise ApiError("Resposta da analise OWASP 2025 possui VPR invalido.")
+        vpr_score = round(vpr_score, 1)
     return Owasp2025PluginGroup(
         category=category,
         plugin_id=plugin_id,

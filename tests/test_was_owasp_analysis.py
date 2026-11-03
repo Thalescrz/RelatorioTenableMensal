@@ -171,6 +171,20 @@ def test_exclusive_analysis_paginates_and_sorts_vpr_descending() -> None:
     assert json.loads(transport.calls[1]["body"])["next"] == "cursor-2"
 
 
+def test_exclusive_analysis_normalizes_vpr_to_tenable_precision() -> None:
+    client, _ = analysis_client([
+        response(200, {"groups": [group(101, vpr=3.9000000953674316)]})
+    ])
+
+    rows = client.list_category_plugins(
+        category="A01",
+        start_at=START,
+        end_at=END,
+    )
+
+    assert rows[0].vpr_score == 3.9
+
+
 def test_exclusive_analysis_retries_transient_http_response() -> None:
     client, transport = analysis_client([
         response(502, {"message": "temporário"}),

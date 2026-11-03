@@ -515,7 +515,9 @@ possuir o maior VPR da categoria;
 a quantidade de instâncias não define mais a ordem principal. Em igualdade de VPR,
 a aplicação usa severidade, instâncias e Plugin ID como desempates determinísticos.
 VPR ausente aparece como `0` no Word, mas continua nulo no dataset e é posicionado
-depois de qualquer VPR real.
+depois de qualquer VPR real. No modo exclusivo, pequenas imprecisões binárias da
+resposta interna são normalizadas para uma casa decimal antes da persistência e da
+publicação; valores como `3.900000...` não devem aparecer no documento.
 
 No modo **Exclusivo da console**, uma falha em qualquer categoria A01–A10 não
 publica uma tabela exclusiva parcial. VM e os demais componentes válidos continuam;
