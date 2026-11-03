@@ -55,6 +55,45 @@ def _cell_fill(cell) -> str | None:
 
 
 class FullBaseReportDocxTests(unittest.TestCase):
+    def test_more_information_limits_vm_and_was_to_five_unique_links(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dataset = json.loads(FIXTURE.read_text(encoding="utf-8"))
+            vm_links = [
+                f"https://example.invalid/vm-reference-{index:02d}"
+                for index in range(1, 13)
+            ]
+            was_links = [
+                f"https://example.invalid/was-reference-{index:02d}"
+                for index in range(1, 13)
+            ]
+            dataset["top_open_vulnerabilities"][0]["reference_urls"] = [
+                *vm_links,
+                vm_links[0],
+            ]
+            dataset["top_web_vulnerabilities"][0]["reference_urls"] = [
+                *was_links,
+                was_links[0],
+            ]
+            dataset_path = root / "limited-references.json"
+            dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+            output = root / "limited-references.docx"
+
+            generate_full_base_report(
+                template_path=TEMPLATE,
+                dataset_path=dataset_path,
+                profile=load_client_profile(PROFILE),
+                output_path=output,
+                assets_dir=ASSETS,
+                mask_sensitive=True,
+            )
+
+            paragraphs = [paragraph.text for paragraph in Document(output).paragraphs]
+            for links in (vm_links, was_links):
+                self.assertTrue(all(link in paragraphs for link in links[:5]))
+                self.assertTrue(all(link not in paragraphs for link in links[5:]))
+                self.assertEqual(paragraphs.count(links[0]), 1)
+
     def test_full_report_accepts_linux_font_profile(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "linux-full.docx"

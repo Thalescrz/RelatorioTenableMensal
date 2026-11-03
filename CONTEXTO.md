@@ -69,6 +69,12 @@ navegável, títulos numerados e contracapa. As entradas de `Heading 1` a `Headi
 são gravadas no próprio DOCX e não dependem de uma atualização manual no Word. O
 relatório geral nunca é filtrado por TAG.
 
+No relatório-base geral, o bloco **Mais informações** de cada vulnerabilidade VM
+ou WAS apresenta no máximo 5 links distintos e não vazios, mantendo a ordem em
+que foram recebidos. Esse limite é somente editorial: o dataset, os snapshots e o
+histórico compacto preservam a lista completa de referências para auditoria e
+reprocessamento.
+
 ## Arquitetura resumida
 
 O código em `src/tenable_reports` é separado por responsabilidade:
