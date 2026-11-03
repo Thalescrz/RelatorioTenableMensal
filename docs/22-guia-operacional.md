@@ -496,6 +496,9 @@ categorias concluídas, falha sanitizada quando aplicável e número da recupera
 No Word, “não foram identificadas vulnerabilidades WEB” significa coleta concluída
 sem ocorrências. A mensagem “não foi possível concluir a coleta WEB” indica dados
 indisponíveis e não deve ser validada na plataforma como zero.
+Internamente, um snapshot WAS concluído pode registrar `AVAILABLE`; esse estado
+inclui o componente na montagem, no histórico compacto e na auditoria do manifesto.
+Ele não equivale a `UNAVAILABLE` nem autoriza omitir silenciosamente as tabelas WEB.
 
 A coluna **Família** da tabela WAS depende de correspondência do Plugin ID no
 catálogo oficial. Se nenhuma linha exibida tiver correspondência, a coluna inteira

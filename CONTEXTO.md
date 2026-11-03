@@ -107,6 +107,9 @@ O adaptador do modo OWASP 2025 exclusivo usa o contrato interno autenticado
 validado em 2026-11-03: `filter.and`, `template: group`, parâmetros agregados,
 resposta em `groups` e paginação pelo token superior `next`. O código não aceita
 como equivalente o formato público de export nem promove respostas parciais.
+O estado `AVAILABLE` devolvido pelo snapshot WAS representa coleta concluída e é
+tratado como sucesso na montagem, no snapshot compacto e na auditoria da
+publicação, assim como `COMPLETE` e `REPLAYED`.
 
 O snapshot Cloud é persistência da coleta, não da publicação editorial: ele pode
 ser gravado antes de `report_runs`, mantém `run_id` único e é reconciliado quando o
