@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+import re
 import subprocess
 import sys
 import tempfile
@@ -472,6 +473,35 @@ class _ArchiveDashboardDatabase:
 
 
 class WebDashboardTests(unittest.TestCase):
+    def test_every_local_dashboard_script_is_served(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = DashboardApplication(
+                project_root=root,
+                config_path=root / "orchestration" / "clients.json",
+                batch_repository=InMemoryWebBatchRepository(),
+            )
+            client = LocalClient(app)
+            try:
+                page_status, _, page_body = client.download("/")
+                script_paths = re.findall(
+                    r'<script\s+src="(/static/[^"]+\.js)"',
+                    page_body.decode("utf-8"),
+                )
+                script_statuses = {
+                    path: client.download(path)[0] for path in script_paths
+                }
+            finally:
+                client.close()
+                app.jobs.close()
+
+        self.assertEqual(page_status, 200)
+        self.assertTrue(script_paths)
+        self.assertEqual(
+            {path: status for path, status in script_statuses.items() if status != 200},
+            {},
+        )
+
     def test_environment_status_admin_ui_loads_read_only_assets(self) -> None:
         static = (
             Path(__file__).resolve().parents[1]
