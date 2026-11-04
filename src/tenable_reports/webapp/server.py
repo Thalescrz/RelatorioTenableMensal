@@ -4669,6 +4669,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "client_selection.js",
                 "batch_family_filters.js",
                 "monthly_schedule.js",
+                "report_period.js",
                 "environment_status.js",
                 "report_request_guard.js",
                 "dashboard_refresh.js",
@@ -4676,6 +4677,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "dashboard_alerts.js",
                 "batch_retryability.js",
                 "document_distribution.js",
+                "owasp_mode.js",
             }:
                 self._json_error(HTTPStatus.NOT_FOUND, "Arquivo nao encontrado.")
                 return
