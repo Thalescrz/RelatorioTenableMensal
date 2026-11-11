@@ -4,6 +4,9 @@ from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import pytest
+
+from tenable_reports.config.monthly_schedule import MonthlyScheduleConfig
 from tenable_reports.application.monthly_batch import (
     MonthlyBatchRequest,
     monthly_idempotency_key,
@@ -15,6 +18,7 @@ class FakeApplication:
     def __init__(self) -> None:
         self.calls = []
         self.config = SimpleNamespace(
+            monthly_schedule=lambda: MonthlyScheduleConfig.from_mapping({}),
             raw=lambda: {"orchestration_id": "carteira-tenable"},
             list_clients=lambda: [
                 {"client_id": "a", "enabled": True, "credentials_ready": True},
@@ -67,3 +71,46 @@ def test_monthly_batch_enqueues_only_eligible_clients_with_durable_identity() ->
     )
     assert request["_batch_competence"] == "2026-08"
     assert request["_batch_origin"] == "AUTOMATIC_MONTHLY"
+
+
+def _selected_application(selection):
+    app = FakeApplication()
+    app.config.monthly_schedule = lambda: MonthlyScheduleConfig.from_mapping(
+        {"selected_client_ids": selection}
+    )
+    app.config.list_clients = lambda: [
+        {"client_id": "a", "enabled": True, "credentials_ready": True},
+        {"client_id": "b", "enabled": True, "credentials_ready": True},
+        {"client_id": "new", "enabled": True, "credentials_ready": True},
+        {"client_id": "inactive", "enabled": False, "credentials_ready": True},
+        {"client_id": "pending", "enabled": True, "credentials_ready": False},
+    ]
+    return app
+
+
+def test_monthly_batch_honors_saved_selection_and_excludes_new_clients() -> None:
+    app = _selected_application(["b", "inactive", "pending", "removed"])
+    run_monthly_batch(MonthlyBatchRequest(reference_at="2026-11-01T00:05:00-03:00"), application=app, wait=False)
+    assert app.calls[0][0] == ("b",)
+
+
+@pytest.mark.parametrize("selection", [[], ["inactive"], ["pending"], ["removed"]])
+def test_monthly_batch_never_enqueues_all_when_selection_has_no_eligible_clients(selection) -> None:
+    app = _selected_application(selection)
+    with pytest.raises(ValueError):
+        run_monthly_batch(MonthlyBatchRequest(), application=app, wait=False)
+    assert app.calls == []
+
+
+def test_monthly_batch_reuses_existing_family_even_after_selection_changes() -> None:
+    app = _selected_application([])
+    key = monthly_idempotency_key("carteira-tenable", "2026-10")
+    app.jobs.repository.list_batches = lambda limit=500: [
+        SimpleNamespace(id="existing-batch", root_batch_id=None, idempotency_key=key)
+    ]
+    result = run_monthly_batch(
+        MonthlyBatchRequest(reference_at="2026-11-01T00:05:00-03:00"), application=app, wait=False
+    )
+    assert result.reused is True
+    assert result.root_batch_id == "existing-batch"
+    assert app.calls == []

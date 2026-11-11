@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from tenable_reports.config.monthly_schedule import MonthlyScheduleConfig
 from tenable_reports.application.monthly_schedule import MonthlyScheduleService
 from tenable_reports.infrastructure.monthly_scheduler import (
@@ -42,6 +44,78 @@ def test_monthly_schedule_round_trip() -> None:
         {"enabled": True, "local_start_time": "01:30"}
     )
     assert MonthlyScheduleConfig.from_mapping(config.to_mapping()) == config
+
+
+def test_monthly_selection_distinguishes_legacy_all_from_explicit_empty() -> None:
+    legacy = MonthlyScheduleConfig.from_mapping({})
+    empty = MonthlyScheduleConfig.from_mapping({"selected_client_ids": []})
+    selected = MonthlyScheduleConfig.from_mapping({"selected_client_ids": [" a ", "a", "b"]})
+    assert legacy.selected_client_ids is None
+    assert legacy.to_mapping()["selected_client_ids"] is None
+    assert empty.selected_client_ids == ()
+    assert empty.to_mapping()["selected_client_ids"] == []
+    assert selected.selected_client_ids == ("a", "b")
+    assert MonthlyScheduleConfig.from_mapping(selected.to_mapping()) == selected
+
+
+@pytest.mark.parametrize("selection", ["a", {}, 1, False, [None], [1], [" "]])
+def test_monthly_selection_rejects_malformed_values(selection) -> None:
+    with pytest.raises(ValueError, match="seleção|selecionados"):
+        MonthlyScheduleConfig.from_mapping({"selected_client_ids": selection})
+
+
+def _selection_store() -> "_Store":
+    store = _Store()
+    store.list_clients = lambda: [
+        {"client_id": "a", "display_name": "Cliente A", "enabled": True, "credentials_ready": True},
+        {"client_id": "b", "display_name": "Cliente B", "enabled": True, "credentials_ready": True},
+        {"client_id": "inactive", "enabled": False, "credentials_ready": True},
+        {"client_id": "pending", "enabled": True, "credentials_ready": False},
+    ]
+    return store
+
+
+def test_monthly_preview_and_save_use_selected_eligible_clients_only() -> None:
+    store = _selection_store()
+    scheduler = _Scheduler()
+    service = MonthlyScheduleService(store=store, scheduler=scheduler)
+    result = service.save({"selected_client_ids": ["b", "inactive", "pending"]})
+    assert result["eligible_client_ids"] == ["b"]
+    assert result["eligible_client_count"] == 1
+    assert result["config"]["selected_client_ids"] == ["b", "inactive", "pending"]
+    assert result["clients"][0]["display_name"] == "Cliente A"
+    assert scheduler.calls == []
+    assert service.validate()["eligible_client_ids"] == ["b"]
+    assert store.list_clients()[0]["enabled"] is True
+
+
+def test_monthly_partial_save_and_enable_preserve_the_selection() -> None:
+    store = _selection_store()
+    service = MonthlyScheduleService(store=store, scheduler=_Scheduler())
+    service.save({"selected_client_ids": ["b"]})
+    saved = service.save({"local_start_time": "02:30"})
+    assert saved["config"]["selected_client_ids"] == ["b"]
+    enabled = service.set_enabled(True, "SINCRONIZAR AUTOMACAO MENSAL")
+    assert enabled["config"]["selected_client_ids"] == ["b"]
+    assert enabled["config"]["local_start_time"] == "02:30"
+
+
+def test_monthly_save_rejects_unknown_clients_without_changing_policy() -> None:
+    store = _selection_store()
+    service = MonthlyScheduleService(store=store, scheduler=_Scheduler())
+    before = store.config
+    with pytest.raises(ValueError, match="cadastrad"):
+        service.save({"selected_client_ids": ["missing"]})
+    assert store.config == before
+
+
+def test_monthly_empty_selection_and_removed_client_never_expand_scope() -> None:
+    store = _selection_store()
+    service = MonthlyScheduleService(store=store, scheduler=_Scheduler())
+    assert service.save({"selected_client_ids": []})["eligible_client_ids"] == []
+    store.config = MonthlyScheduleConfig.from_mapping({"selected_client_ids": ["removed"]})
+    assert service.validate()["eligible_client_count"] == 0
+    assert service.save({"local_start_time": "03:00"})["eligible_client_count"] == 0
 
 
 class _Store:

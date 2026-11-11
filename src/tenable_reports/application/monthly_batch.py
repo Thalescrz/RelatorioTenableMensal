@@ -63,13 +63,11 @@ def run_monthly_batch(
     if existing is not None:
         batch_id = str(existing.root_batch_id or existing.id)
     else:
-        clients = [
-            row["client_id"]
-            for row in application.config.list_clients()
-            if row.get("enabled") and row.get("credentials_ready")
-        ]
+        clients = application.config.monthly_schedule().eligible_client_ids(
+            application.config.list_clients()
+        )
         if not clients:
-            raise ValueError("Nenhum cliente ativo com credenciais prontas.")
+            raise ValueError("Nenhum cliente da seleção mensal está ativo com credenciais prontas.")
         created = application.enqueue_jobs(
             clients,
             {
