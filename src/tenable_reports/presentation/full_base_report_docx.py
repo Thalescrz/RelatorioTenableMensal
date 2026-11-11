@@ -1194,7 +1194,6 @@ def _security_section(
     add_source_filter_note(
         document, dataset, "by_operating_system", enabled=show_source_filters
     )
-    _paragraph(document, copy.OS_GRAPH)
     _paragraph(document, copy.CVSS)
     cvss_rows = _matrix_rows(metrics.get("by_cvss") or [], ("label", "mitigated", "non_mitigated", "exploitable", "patch_available_over_30_days"))
     _simple_table(
