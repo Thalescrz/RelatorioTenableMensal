@@ -1,6 +1,6 @@
 const { filterClients, selectionForVisibleClients, resolveResponsibleAnalystValue, mergeSavedClient, conflictingJobsByClient } = window.TenableClientSelection;
 const { filterPortfolioByFamily, toggleFamilyFilter } = window.TenableBatchFamilyFilters;
-const { scheduleView, runWithDisabledButton, scheduleActionMessage } = window.TenableMonthlySchedule;
+const { scheduleView, monthlyClientSelectionView, monthlyClientSelectionValue, monthlyClientSelectionPatch, runWithDisabledButton, scheduleActionMessage } = window.TenableMonthlySchedule;
 const { periodRequest, formatPeriodPreview } = window.TenableReportPeriod;
 const { environmentView } = window.TenableEnvironmentStatus;
 const { copyRecipients, addRecipient, removeRecipient } = window.TenableDocumentDistribution;
@@ -1351,6 +1351,44 @@ function renderMonthlySchedule(payload) {
   $("#monthly-enabled").checked = Boolean(state.monthlySchedule.config?.enabled);
   $("#monthly-start-time").value = state.monthlySchedule.config?.local_start_time || "00:05";
   $("#monthly-toggle-button").textContent = state.monthlySchedule.config?.enabled ? "Desativar automação" : "Ativar automação";
+  const selection = monthlyClientSelectionView(state.monthlySchedule.config, state.monthlySchedule.clients || []);
+  $("#monthly-client-scope").value = selection.mode;
+  $("#monthly-client-list").innerHTML = selection.clients.length
+    ? selection.clients.map(client => `<label class="monthly-client-row"><input type="checkbox" data-monthly-client="${escapeHtml(client.client_id)}" ${client.selected ? "checked" : ""}><span><strong>${escapeHtml(client.display_name)}</strong><small>${escapeHtml(client.reason)}</small></span></label>`).join("")
+    : '<p class="monthly-note">Nenhum cliente cadastrado.</p>';
+  updateMonthlyClientSelection();
+}
+
+function monthlySelectedClientsValue() {
+  return monthlyClientSelectionValue(
+    $("#monthly-client-scope").value,
+    [...document.querySelectorAll("[data-monthly-client]:checked")].map(input => input.dataset.monthlyClient),
+  );
+}
+
+function monthlySelectionHasChanges() {
+  return Object.hasOwn(monthlySelectionPatch(), "selected_client_ids");
+}
+
+function monthlySelectionPatch() {
+  return monthlyClientSelectionPatch(
+    state.monthlySchedule?.config?.selected_client_ids ?? null,
+    monthlySelectedClientsValue(),
+    (state.monthlySchedule?.clients || []).map(client => client.client_id),
+  );
+}
+
+function updateMonthlyClientSelection() {
+  const selected = monthlySelectedClientsValue();
+  const clients = state.monthlySchedule?.clients || [];
+  const participating = clients.filter(client => selected === null || selected.includes(client.client_id));
+  const count = participating.filter(client => client.enabled && client.credentials_ready).length;
+  const ineligible = participating.length - count;
+  $("#monthly-client-options").classList.toggle("hidden", selected === null);
+  $("#monthly-eligible-copy").textContent = `${count} ${count === 1 ? "cliente elegível" : "clientes elegíveis"} para o agendamento.`
+    + (ineligible ? ` ${ineligible} sem participação enquanto estiverem inativos ou com credenciais pendentes.` : "")
+    + (!count ? " Nenhuma coleta será iniciada com esta seleção." : "");
+  $("#monthly-selection-unsaved").classList.toggle("hidden", !monthlySelectionHasChanges());
 }
 
 async function loadMonthlySchedule() {
@@ -1430,6 +1468,10 @@ function loadDocumentControlAdmin() {
 }
 
 async function runMonthlyScheduleAction(button, action) {
+  if (monthlySelectionHasChanges()) {
+    toast("Salve a política antes de alterar o agendamento.", "error");
+    return;
+  }
   const confirmation = state.monthlySchedule?.confirmation || "SINCRONIZAR AUTOMACAO MENSAL";
   if (!window.confirm("Esta ação altera o agendamento mensal. Deseja continuar?")) return;
   try {
@@ -1596,6 +1638,14 @@ $("#analyst-list").addEventListener("click", async event => {
 });
 $("#admin-button").addEventListener("click", () => { $("#admin-dialog").showModal(); selectAdminTab("monthly"); });
 document.querySelectorAll("[data-admin-tab]").forEach(button => button.addEventListener("click", () => selectAdminTab(button.dataset.adminTab)));
+$("#monthly-client-scope").addEventListener("change", updateMonthlyClientSelection);
+$("#monthly-client-list").addEventListener("change", updateMonthlyClientSelection);
+for (const [selector, checked] of [["#monthly-select-all", true], ["#monthly-select-none", false]]) {
+  $(selector).addEventListener("click", () => {
+    document.querySelectorAll("[data-monthly-client]").forEach(input => { input.checked = checked; });
+    updateMonthlyClientSelection();
+  });
+}
 $("#monthly-schedule-form").addEventListener("submit", async event => {
   event.preventDefault();
   const button = $("#monthly-save-button");
@@ -1608,6 +1658,7 @@ $("#monthly-schedule-form").addEventListener("submit", async event => {
           day_of_month: 1,
           local_start_time: $("#monthly-start-time").value,
           task_name: state.monthlySchedule?.config?.task_name || "Relatorios Tenable - Mensal",
+          ...monthlySelectionPatch(),
         },
       }));
       toast(scheduleActionMessage("save"));
@@ -1615,6 +1666,10 @@ $("#monthly-schedule-form").addEventListener("submit", async event => {
   } catch (error) { toast(error.message, "error"); }
 });
 $("#monthly-validate-button").addEventListener("click", async event => {
+  if (monthlySelectionHasChanges()) {
+    toast("Salve a política antes de validar a seleção.", "error");
+    return;
+  }
   const button = event.currentTarget;
   try {
     await runWithDisabledButton(button, async () => {

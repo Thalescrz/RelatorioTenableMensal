@@ -46,6 +46,12 @@ código e os testes antes de atualizar a descrição vigente.
   lotes e seleção `MAIN`.
 - O painel reconcilia atualizações sem recriar cartões inalterados e permite
   reconhecer alertas sem apagar o histórico operacional.
+- Em **Admin → Automação mensal**, a política pode incluir todos os clientes
+  elegíveis ou somente uma seleção permanente. `monthly_schedule.selected_client_ids`
+  ausente/`null` mantém todos; uma lista explícita exclui novos cadastros até serem
+  selecionados; `[]` não gera coleta. Prévia e executor aplicam a mesma interseção
+  com clientes ativos e credenciais prontas. A geração manual é independente;
+  lotes mensais já criados mantêm a seleção e a idempotência existentes.
 
 Esse resumo descreve capacidades versionadas. Quantidade de clientes, jobs em
 execução, percentuais, alertas visíveis e último período publicado são estados

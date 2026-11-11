@@ -275,12 +275,26 @@ input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(109,169,255,
 .document-control-table-config .field-row { margin-top: 12px; }
 .admin-dialog .standard-distribution-config .distribution-entry-form { grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; }
 .monthly-schedule-form { display: grid; gap: 18px; padding-bottom: 24px; }
+.monthly-schedule-form .check-option { display: flex; align-items: center; gap: 8px; }
+.monthly-schedule-form .check-option input { flex: 0 0 16px; width: 16px; height: 16px; margin: 0; }
 .monthly-status-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .monthly-status-grid div { padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.018); }
 .monthly-status-grid span, .monthly-status-grid strong { display: block; }
 .monthly-status-grid span { color: var(--muted); font-size: 9px; }
 .monthly-status-grid strong { margin-top: 5px; font: 600 12px var(--display); }
 .monthly-note { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.monthly-client-selection { min-width: 0; margin: 0; padding: 16px; display: grid; gap: 12px; border: 1px solid var(--line); border-radius: 11px; }
+.monthly-client-selection legend { padding: 0 6px; font-size: 12px; font-weight: 600; }
+.monthly-client-selection select { width: 100%; min-height: 42px; padding: 0 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: #0f1418; }
+.monthly-client-toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.monthly-client-list { display: grid; max-height: 260px; overflow-y: auto; gap: 6px; }
+.monthly-client-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.monthly-client-row input { flex: 0 0 16px; width: 16px; height: 16px; margin: 0; }
+.monthly-client-row span { min-width: 0; overflow-wrap: anywhere; }
+.monthly-client-row strong, .monthly-client-row small { display: block; }
+.monthly-client-row small { margin-top: 3px; color: var(--muted); font-size: 10px; }
+.monthly-client-row:has(input:checked) { border-color: var(--blue-deep); background: rgba(109,169,255,.045); }
+#monthly-selection-unsaved { color: var(--amber); }
 .monthly-actions { display: flex; flex-wrap: wrap; gap: 9px; }
 .environment-status-content { display: grid; gap: 14px; padding-bottom: 24px; }
 .environment-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

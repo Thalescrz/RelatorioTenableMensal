@@ -413,10 +413,29 @@ a chamada idempotente: repetir o script acompanha ou retorna a mesma família.
 
 No painel **Admin → Automação mensal**:
 
-1. ajuste e salve o horário; isso não cria lote nem altera o agendador;
-2. use **Validar sem executar** e confira competência e clientes elegíveis;
-3. use **Criar/atualizar tarefa** somente após a confirmação exibida;
-4. ative ou desative a tarefa separadamente.
+1. escolha **Todos os clientes elegíveis** ou **Somente os selecionados**;
+2. no segundo modo, marque os clientes pelo nome. **Marcar todos** e **Limpar
+   seleção** alteram somente essa lista; clientes inativos ou sem credenciais
+   prontas permanecem fora do lote mesmo se marcados;
+3. ajuste o horário e clique em **Salvar política**. Isso não cria lote nem altera
+   o agendador; mudanças ainda não salvas precisam ser salvas antes de validar;
+4. use **Validar sem executar** e confira competência e clientes elegíveis;
+5. use **Criar/atualizar tarefa** somente após a confirmação exibida, se precisar
+   criar a tarefa ou sincronizar o horário;
+6. ative ou desative a tarefa separadamente.
+
+A seleção fica persistida em `monthly_schedule.selected_client_ids` na configuração
+da carteira. Campo ausente ou `null` conserva o comportamento anterior: todos os
+clientes elegíveis, inclusive futuros cadastros. Uma lista explícita permanece
+restrita aos IDs selecionados; `[]` significa nenhum cliente e nunca é interpretado
+como todos. IDs desconhecidos são recusados ao salvar e IDs de clientes removidos
+não ampliam a seleção durante a execução. A lista não altera a ativação geral do
+cliente, o botão **Gerar todos** nem a geração manual individual.
+
+O launcher lê a política salva a cada disparo: mudar apenas os participantes não
+exige recriar a tarefa do sistema. A mudança vale para **novos lotes mensais**.
+Um lote já criado conserva os participantes; repetir o disparo na mesma competência
+reutiliza a família existente e não adiciona clientes nem duplica a coleta.
 
 No Windows, o adaptador usa o Agendador de Tarefas e
 `scripts/run_monthly_orchestration.ps1`. No Linux, usa um timer de usuário do

@@ -409,7 +409,24 @@
           <label class="check-option"><input id="monthly-enabled" type="checkbox"><span>Política mensal ativa</span></label>
           <label>Horário local no dia 1<input id="monthly-start-time" type="time" value="00:05" required></label>
         </div>
-        <p id="monthly-eligible-copy" class="monthly-note">Nenhum cliente elegível.</p>
+        <fieldset class="monthly-client-selection">
+          <legend>Clientes da automação mensal</legend>
+          <label for="monthly-client-scope">Participação no agendamento</label>
+          <select id="monthly-client-scope" aria-describedby="monthly-selection-note">
+            <option value="all">Todos os clientes elegíveis</option>
+            <option value="selected">Somente os selecionados</option>
+          </select>
+          <p id="monthly-selection-note" class="monthly-note">Todos inclui novos clientes elegíveis. Uma seleção específica só muda quando você a edita. A geração manual continua independente.</p>
+          <div id="monthly-client-options" class="hidden">
+            <div class="monthly-client-toolbar">
+              <button class="mini-button" id="monthly-select-all" type="button">Marcar todos</button>
+              <button class="mini-button" id="monthly-select-none" type="button">Limpar seleção</button>
+            </div>
+            <div id="monthly-client-list" class="monthly-client-list" aria-label="Selecionar clientes da automação"></div>
+          </div>
+          <p id="monthly-eligible-copy" class="monthly-note" aria-live="polite">Nenhum cliente elegível.</p>
+          <p id="monthly-selection-unsaved" class="monthly-note hidden" role="status">Seleção alterada. Clique em Salvar política para aplicar aos próximos lotes mensais.</p>
+        </fieldset>
         <p class="monthly-note">Fluxo: Janela 1 de 10h; Janela 2 de 10h reutilizando UUID/cursor; Janela 3 de 10h somente quando a Janela 2 precisou criar uma nova operação. A montagem DOCX permanece serial.</p>
         <p class="monthly-note"><strong>Salvar política</strong> e <strong>Validar sem executar</strong> não alteram a tarefa do sistema. Use <strong>Criar/atualizar tarefa</strong> para sincronizar o agendador e, depois, ative ou desative a execução automática.</p>
         <div class="monthly-actions">

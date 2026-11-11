@@ -27,6 +27,35 @@
     };
   }
 
+  function monthlyClientSelectionView(config = {}, clients = []) {
+    const selected = Array.isArray(config.selected_client_ids)
+      ? new Set(config.selected_client_ids) : null;
+    return {
+      mode: selected === null ? "all" : "selected",
+      clients: clients.map(client => ({
+        ...client,
+        selected: selected === null || selected.has(client.client_id),
+        eligible: Boolean(client.enabled && client.credentials_ready),
+        reason: !client.enabled ? "Cliente inativo"
+          : !client.credentials_ready ? "Credenciais pendentes" : "Elegível",
+      })),
+    };
+  }
+
+  function monthlyClientSelectionValue(mode, selectedIds) {
+    return mode === "all" ? null : [...new Set(selectedIds)];
+  }
+
+  function monthlyClientSelectionPatch(saved, draft, knownIds) {
+    if (saved === null || draft === null) {
+      return saved === draft ? {} : { selected_client_ids: draft };
+    }
+    const known = new Set(knownIds);
+    const visibleSaved = saved.filter(id => known.has(id));
+    const changed = visibleSaved.length !== draft.length || visibleSaved.some(id => !draft.includes(id));
+    return changed ? { selected_client_ids: draft } : {};
+  }
+
   async function runWithDisabledButton(button, operation) {
     button.disabled = true;
     try {
@@ -47,5 +76,5 @@
     return messages[action] || "Configuração mensal atualizada.";
   }
 
-  return { scheduleView, runWithDisabledButton, scheduleActionMessage };
+  return { scheduleView, monthlyClientSelectionView, monthlyClientSelectionValue, monthlyClientSelectionPatch, runWithDisabledButton, scheduleActionMessage };
 }));

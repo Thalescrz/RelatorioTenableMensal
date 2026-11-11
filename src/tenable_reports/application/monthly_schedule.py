@@ -34,17 +34,23 @@ class MonthlyScheduleService:
         raw = self.store.raw()
         orchestration_id = str(raw.get("orchestration_id") or "carteira-tenable")
         competence = MonthlyBatchRequest(reference_at=next_run).competence
-        eligible = [
-            row["client_id"]
-            for row in self.store.list_clients()
-            if row.get("enabled") and row.get("credentials_ready")
-        ]
+        clients = self.store.list_clients()
+        eligible = config.eligible_client_ids(clients)
         return {
             "next_run_at": next_run.isoformat(),
             "competence": competence,
             "idempotency_key": monthly_idempotency_key(orchestration_id, competence),
             "eligible_client_ids": eligible,
             "eligible_client_count": len(eligible),
+            "clients": [
+                {
+                    "client_id": row["client_id"],
+                    "display_name": row.get("display_name") or row["client_id"],
+                    "enabled": bool(row.get("enabled")),
+                    "credentials_ready": bool(row.get("credentials_ready")),
+                }
+                for row in clients
+            ],
         }
 
     @staticmethod
@@ -70,7 +76,13 @@ class MonthlyScheduleService:
         return {"config": config.to_mapping(), **self._preview(config)}
 
     def save(self, values: Mapping[str, Any]) -> dict[str, Any]:
-        config = MonthlyScheduleConfig.from_mapping(values)
+        config = MonthlyScheduleConfig.from_mapping(
+            {**self.store.monthly_schedule().to_mapping(), **values}
+        )
+        if "selected_client_ids" in values and config.selected_client_ids is not None:
+            known = {row["client_id"] for row in self.store.list_clients()}
+            if any(client_id not in known for client_id in config.selected_client_ids):
+                raise ValueError("A seleção contém clientes que não estão cadastrados.")
         self.store.save_monthly_schedule(config)
         return {"config": config.to_mapping(), **self._preview(config)}
 
