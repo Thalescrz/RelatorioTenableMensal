@@ -367,6 +367,13 @@ class FullBaseReportDocxTests(unittest.TestCase):
                     "8. RESUMO DE VULNERABILIDADES",
                 ],
             )
+            self.assertFalse(
+                any(
+                    paragraph.text.startswith("O gráfico de sistemas operacionais mais comuns")
+                    for paragraph in document.paragraphs
+                ),
+                "A seção 7 ainda contém o parágrafo removido do template.",
+            )
             toc_title = next(
                 paragraph
                 for paragraph in document.paragraphs

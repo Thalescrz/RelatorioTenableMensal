@@ -37,6 +37,10 @@ e Top 5 detalhado de vulnerabilidades WEB quando o WAS estiver disponível. A co
 `Exploitable` dos principais ativos contabiliza findings cujo indicador geral de
 exploração esteja ativo. A coluna `Output` nos detalhamentos é opcional.
 
+Na seção 7, **Incrementando a segurança e proteção do ambiente**, a tabela por
+sistema operacional é seguida pela análise CVSS, com a nota de fonte quando
+habilitada.
+
 A identidade editorial compartilhada pelos quatro tipos de relatório usa a capa e
 a contracapa oficiais sanitizadas. O sumário materializado e navegável fica
 imediatamente após a capa, inclui `Heading 1` a `Heading 3` e já é gravado no DOCX,

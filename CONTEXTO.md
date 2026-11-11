@@ -75,6 +75,9 @@ navegável, títulos numerados e contracapa. As entradas de `Heading 1` a `Headi
 são gravadas no próprio DOCX e não dependem de uma atualização manual no Word. O
 relatório geral nunca é filtrado por TAG.
 
+Na seção 7 do relatório-base geral, a análise CVSS vem após a tabela por sistema
+operacional e a nota de fonte, quando habilitada.
+
 No relatório-base geral, o bloco **Mais informações** de cada vulnerabilidade VM
 ou WAS apresenta no máximo 5 links distintos e não vazios, mantendo a ordem em
 que foram recebidos. Esse limite é somente editorial: o dataset, os snapshots e o

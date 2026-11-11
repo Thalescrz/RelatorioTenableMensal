@@ -271,14 +271,6 @@ OS_COLUMNS = (
     "patch disponível por mais de 30 (trinta) dias."
 )
 
-OS_GRAPH = (
-    "O gráfico de sistemas operacionais mais comuns fornece (Abaixo) um gerenciamento "
-    "usando porcentagens dos diferentes sistemas operacionais encontrados no ambiente, "
-    "auxiliando no planejamento de tarefas e correções. Assim a equipe técnica pode "
-    "usar dessas informações para ter uma ideia de quantas horas de trabalho seriam "
-    "necessárias, com base no volume de ativos, para criar tarefas de correção."
-)
-
 CVSS = (
     "A análise da matriz de CVSS, que auxilia bastante no rastreio de mitigação, onde "
     "apresenta informações resumidas de vulnerabilidades por pontuação CVSS. O Common "
